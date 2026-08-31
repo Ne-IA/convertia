@@ -1,0 +1,67 @@
+# tests/engines-lock-anchor-baseline.toml — the anchor-baseline shape (P4.56.1).
+#
+# The §3.8 mixed-mode case: one component PREBUILT on one triple and compiled FROM SOURCE on two
+# others. It takes THREE rows of one id to expose the bug this fixture pins, which is why neither of
+# the other fixtures caught it — the prebuilt row sorts first and carries no anchor, so a comparison
+# baselined on "row 0 of this id" finds nothing to compare and silently no-ops for the two from-source
+# siblings behind it. Their `tarball_sha256` values diverge here (`aaaa…` vs `bbbb…`) even though both
+# rows name the same `source_ref`, which is impossible: one signed source tarball has one hash. That is
+# the xz-class provenance drift the comparison exists to catch, and it must be caught regardless of
+# which mode happens to appear first.
+#
+# So the anchor comparison is baselined on the first sibling that actually HAS an anchor, tracked
+# separately from the string-field baseline.
+
+[[engine]]
+id = "libmp3lame"
+version = "3.100"
+source_ref = "3.100"
+triples = ["x86_64-pc-windows-msvc"]
+kind = "staged-artifact"
+upstream_url = "https://downloads.sourceforge.net/lame/lame-3.100.tar.gz"
+licence = "LGPL-2.0-or-later"
+linkage = "linked"
+acquisition = "prebuilt"
+purl = "pkg:generic/lame@3.100"
+sha256 = "1010101010101010101010101010101010101010101010101010101010101010"
+corroboration_url = "https://lame.sourceforge.io/download.php"
+
+[[engine]]
+id = "libmp3lame"
+version = "3.100"
+source_ref = "3.100"
+triples = ["x86_64-unknown-linux-gnu"]
+kind = "staged-artifact"
+upstream_url = "https://downloads.sourceforge.net/lame/lame-3.100.tar.gz"
+licence = "LGPL-2.0-or-later"
+linkage = "linked"
+acquisition = "from-source"
+purl = "pkg:generic/lame@3.100"
+sha256 = "2020202020202020202020202020202020202020202020202020202020202020"
+corroboration_url = "https://lame.sourceforge.io/download.php"
+
+[engine.from_source]
+tarball_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+signing_key_fingerprint = "1111222233334444555566667777888899990000"
+verified_with = "gpg"
+toolchain_digest = "sha256:3030303030303030303030303030303030303030303030303030303030303030"
+
+[[engine]]
+id = "libmp3lame"
+version = "3.100"
+source_ref = "3.100"
+triples = ["aarch64-apple-darwin"]
+kind = "staged-artifact"
+upstream_url = "https://downloads.sourceforge.net/lame/lame-3.100.tar.gz"
+licence = "LGPL-2.0-or-later"
+linkage = "linked"
+acquisition = "from-source"
+purl = "pkg:generic/lame@3.100"
+sha256 = "4040404040404040404040404040404040404040404040404040404040404040"
+corroboration_url = "https://lame.sourceforge.io/download.php"
+
+[engine.from_source]
+tarball_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+signing_key_fingerprint = "1111222233334444555566667777888899990000"
+verified_with = "gpg"
+toolchain_digest = "sha256:5050505050505050505050505050505050505050505050505050505050505050"

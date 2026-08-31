@@ -1,0 +1,55 @@
+# tests/engines-lock-subcomponent-split.toml — the §3.7.2 item-4 sub-component SPLIT shape (P4.56.1).
+#
+# The row law forces this shape and the duplicate-hash rule must not forbid it. A statically absorbed
+# sub-component (here `libimagequant`, the component P4.54 reads) has:
+#   * a TRIPLE-INVARIANT source anchor — one pinned commit, so one `sha256` and one `tarball_sha256`;
+#   * a TRIPLE-VARIANT `from_source.toolchain_digest` — one digest-pinned build container per target.
+#
+# "The moment a field forks across triples, the row splits" therefore REQUIRES two rows here, and those
+# two rows legitimately share the anchor. That is why `DuplicateSha256` is scoped to
+# `kind = "staged-artifact"`: applying it to sub-components would make the mandated shape unwritable.
+# G35a's imgworker set (libvips + libheif + libde265 + librsvg + libimagequant + ImageMagick + x265,
+# absorbed on all four triples) is the dense real case this fixture stands in for.
+#
+# Kept in its own file rather than appended to `engines-lock-valid.toml`: a second libimagequant row
+# there would duplicate nine of that fixture's substitution anchors at once.
+
+[[engine]]
+id = "libimagequant"
+version = "2.4.1"
+source_ref = "f8b6bcf1e0ff0e6a5f2f6cd8bbd0da4c92a5e4bd"
+triples = ["x86_64-unknown-linux-gnu"]
+kind = "sub-component"
+upstream_url = "https://github.com/lovell/libimagequant"
+licence = "BSD-2-Clause"
+linkage = "linked"
+acquisition = "from-source"
+purl = "pkg:generic/libimagequant@2.4.1"
+sha256 = "6666666666666666666666666666666666666666666666666666666666666666"
+corroboration_url = "https://github.com/lovell/libimagequant/releases/tag/v2.4.1"
+
+[engine.from_source]
+tarball_sha256 = "7777777777777777777777777777777777777777777777777777777777777777"
+signing_key_fingerprint = "FFFF9999EEEE8888DDDD7777CCCC6666BBBB5555"
+verified_with = "sq"
+toolchain_digest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+
+[[engine]]
+id = "libimagequant"
+version = "2.4.1"
+source_ref = "f8b6bcf1e0ff0e6a5f2f6cd8bbd0da4c92a5e4bd"
+triples = ["x86_64-pc-windows-msvc"]
+kind = "sub-component"
+upstream_url = "https://github.com/lovell/libimagequant"
+licence = "BSD-2-Clause"
+linkage = "linked"
+acquisition = "from-source"
+purl = "pkg:generic/libimagequant@2.4.1"
+sha256 = "6666666666666666666666666666666666666666666666666666666666666666"
+corroboration_url = "https://github.com/lovell/libimagequant/releases/tag/v2.4.1"
+
+[engine.from_source]
+tarball_sha256 = "7777777777777777777777777777777777777777777777777777777777777777"
+signing_key_fingerprint = "FFFF9999EEEE8888DDDD7777CCCC6666BBBB5555"
+verified_with = "sq"
+toolchain_digest = "sha256:9999999999999999999999999999999999999999999999999999999999999999"

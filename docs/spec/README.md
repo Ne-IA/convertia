@@ -350,8 +350,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   dependency is honored. Owner: §3.4.
 - **HEVC *encode* (write HEIC)** — **ship-bundled-isolated (x265), behind the §3.4
   availability flag** so it can flip to `unavailable` (SSOT exception-1) as a config
-  change. **The flag is concrete (§3.4.4a):** a **per-platform `available` boolean on
-  the codec's `engines.lock` row**; flipping it `false` makes §3.2.3 resolve the pair to
+  change. **The flag is concrete (§3.4.4a):** a **scalar `available` boolean on the codec's
+  `engines.lock` row(s)**, which are keyed by (artifact, target-triple), so the flag is
+  per-target DATA and the OS level is the derived view; flipping it `false` makes §3.2.3 resolve the pair to
   `PlatformUnavailable` and C12 `get_engine_health` add HEIC to
   `EngineHealth.unavailable_targets`, so §5.2 renders it disabled-with-reason — data,
   not code. HEVC-encode is the **highest patent-exposure** codec in the set (27 000+
@@ -626,8 +627,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   Owner: §3.1 / §3.6.1 / §3.7.2 / §6.1.3.
 - **libvips bundled WITHOUT poppler(GPL)/MuPDF(AGPL)/any GPL-AGPL PDF loader** — keeps
   the image-worker LGPL-only; §6.1.3 positive build assertion. Owner: §3.1 / §3.6.1 / §6.1.3.
-- **§3.4 availability flag is concrete** — per-platform `available` boolean on the codec's
-  `engines.lock` row; C12 `get_engine_health` reads it into `unavailable_targets`; §5.2
+- **§3.4 availability flag is concrete** — a scalar `available` boolean on the codec's
+  `engines.lock` row(s), keyed by (artifact, target-triple); C12 `get_engine_health` reads it into `unavailable_targets`; §5.2
   renders disabled-with-reason. Owner: §3.4.4a / §7.2.3.
 - **WebView2-absent portable launch fails before the core runs** — cannot show an in-app
   fault; the "fail clearly" substitute is the §6.2.4 download-page prerequisite note;

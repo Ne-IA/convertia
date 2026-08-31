@@ -1,0 +1,100 @@
+# tests/engines-lock-valid.toml — the §3.7.2 `engines.lock` SCHEMA fixture (P4.56.1).
+#
+# NOT the committed manifest: `src-tauri/engines.lock` is L(-1)-caged and its real rows land with the
+# P5–P7 staging boxes as owner-acked acts. This file exists so the schema contract is proved against the
+# FORMAT the manifest is written in — a missing key, a typo'd key and a mis-shaped availability value are
+# all parse-level facts a hand-built fixture struct could not exercise. The `crate::engines::lock` tests
+# read it with `include_str!` and derive their malformed cases from it by unique-anchor substitution.
+#
+# It exercises all four row shapes the §3.4.4a row-law admits:
+#   1. a per-triple staged artifact carrying the scalar `available` flag (the x265 codec case),
+#   2. a second row for the SAME artifact on a different triple — the (artifact, triple) key at work,
+#   3. a byte-identical platform-invariant artifact as ONE row over several triples (a bundled font),
+#   4. a sub-component row (§3.7.2 item 4) whose hash anchors the pinned SOURCE, not a staged file.
+#
+# The FIFTH shape — the same sub-component split across triples, sharing its source anchor — lives in
+# its own fixture (`engines-lock-subcomponent-split.toml`) so this file's substitution anchors stay
+# unique: a second libimagequant row here would duplicate nine of them at once.
+
+[[engine]]
+id = "libheif-x265-plugin"
+version = "3.6"
+source_ref = "3.6"
+triples = ["x86_64-unknown-linux-gnu"]
+kind = "staged-artifact"
+upstream_url = "https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz"
+licence = "GPL-2.0-or-later"
+linkage = "plugin-loaded"
+acquisition = "from-source"
+purl = "pkg:generic/x265@3.6"
+cpe = "cpe:2.3:a:multicorewareinc:x265:3.6:*:*:*:*:*:*:*"
+sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+corroboration_url = "https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc"
+available = true
+
+[engine.from_source]
+tarball_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+signing_key_fingerprint = "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555"
+verified_with = "gpg"
+toolchain_digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+[[engine]]
+id = "libheif-x265-plugin"
+version = "3.6"
+source_ref = "3.6"
+triples = ["x86_64-pc-windows-msvc"]
+kind = "staged-artifact"
+upstream_url = "https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz"
+licence = "GPL-2.0-or-later"
+linkage = "plugin-loaded"
+acquisition = "from-source"
+purl = "pkg:generic/x265@3.6"
+sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
+corroboration_url = "https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc"
+available = false
+
+[engine.from_source]
+tarball_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+signing_key_fingerprint = "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555"
+verified_with = "gpg"
+toolchain_digest = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+
+[[engine]]
+id = "LiberationSans-Regular.ttf"
+version = "2.1.5"
+source_ref = "2.1.5"
+triples = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+]
+kind = "staged-artifact"
+upstream_url = "https://github.com/liberationfonts/liberation-fonts/releases/download/2.1.5/liberation-fonts-ttf-2.1.5.tar.gz"
+licence = "OFL-1.1"
+linkage = "invoked"
+acquisition = "prebuilt"
+purl = "pkg:generic/liberation-fonts@2.1.5"
+sha256 = "5555555555555555555555555555555555555555555555555555555555555555"
+corroboration_url = "https://github.com/liberationfonts/liberation-fonts/releases/tag/2.1.5"
+
+[[engine]]
+id = "libimagequant"
+version = "2.4.1"
+source_ref = "f8b6bcf1e0ff0e6a5f2f6cd8bbd0da4c92a5e4bd"
+triples = ["x86_64-unknown-linux-gnu"]
+kind = "sub-component"
+upstream_url = "https://github.com/lovell/libimagequant"
+licence = "BSD-2-Clause"
+linkage = "linked"
+acquisition = "from-source"
+purl = "pkg:generic/libimagequant@2.4.1"
+sha256 = "6666666666666666666666666666666666666666666666666666666666666666"
+corroboration_url = "https://github.com/lovell/libimagequant/releases/tag/v2.4.1"
+
+[engine.from_source]
+tarball_sha256 = "7777777777777777777777777777777777777777777777777777777777777777"
+signing_key_fingerprint = "FFFF9999EEEE8888DDDD7777CCCC6666BBBB5555"
+verified_with = "sq"
+toolchain_digest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+

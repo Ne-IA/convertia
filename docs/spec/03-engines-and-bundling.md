@@ -859,16 +859,36 @@ the row exists only to record that AV1 ships on all platforms with no gate.
 The "behind the §3.4 availability flag" escape hatch (HEVC-encode, SSOT exception-1)
 is concretely:
 
-- **Where it lives:** a **per-platform boolean `available` field on the codec's
-  `engines.lock` row** — e.g. the x265-libheif-plugin row carries
-  `available = { win = true, macos = true, linux = true }`. Flipping any platform to
-  `false` is the **config change** (edit `engines.lock` + rebuild), **not** a code
-  change. (Equivalently a Cargo feature could gate it; `engines.lock` is chosen so the
-  flip is data, lives beside the SBOM, and the build-staging step can skip staging the
-  plugin when `false`.)
+- **Where it lives:** a boolean `available` field on the codec's `engines.lock` row(s).
+  Flipping it to `false` is the **config change** (edit `engines.lock` + rebuild),
+  **not** a code change. (Equivalently a Cargo feature could gate it; `engines.lock` is
+  chosen so the flip is data, lives beside the SBOM, and the build-staging step can skip
+  staging the plugin when `false`.)
+  - **Grain `[DECIDED — owner adjudication 2026-08-31, the P4.56.1 row-law]`:** an
+    `engines.lock` row is keyed by **(artifact, target-triple)**, so `available` is a
+    **scalar** boolean on each row, not a `{win, macos, linux}` table. *(This clause
+    previously read "a per-platform boolean … e.g. `available = { win = true, macos =
+    true, linux = true }`" — an illustrative literal reconciled to its normative
+    invariant: the flip is per-platform DATA, read for the running target. The literal
+    collided with §3.7.2's "every staged shared object gets its **own row** with its
+    **own SHA-256**", which makes a row platform-pure, and with §3.8's "prebuilt vs
+    from-source, **per engine per platform**".)* The **triple**, not the OS, is the key:
+    §3.4.5 gives macOS two of them (`aarch64-apple-darwin` + `x86_64-apple-darwin`), and
+    the universal artifact is `lipo`-merged from both. **The OS level is the DERIVED
+    view** — the parse→map flow below resolves the running target's row(s) and projects
+    them onto the §3.2.2 `Platform` the `PatentDisposition` carries.
+  - Row law, in full: every field is platform-pure and scalar; the ONLY plural field is
+    the row's `triples` list, which exists so a **byte-identical** platform-invariant
+    artifact (a bundled font, the ImageMagick `policy.xml`, the LibreOffice
+    `registrymodifications.xcu`) is ONE row covering several triples rather than N
+    copies that could drift. The invariant is **(artifact, triple) ↦ exactly one row**,
+    and **one row = one `sha256`**; the moment any field forks across triples, the row
+    splits. §3.7.2 item 4's sub-component rows follow the same law, with the hash
+    anchoring the pinned SOURCE rather than a staged artifact.
 - **How it propagates to the registry (the parse→map→capabilities flow) `[DECIDED]`:**
   the startup sequence (§7.2) **parses `engines.lock` once**, reads each codec row's
-  per-platform `available` boolean for the **running** `Platform`, and **maps** it into a
+  `available` boolean on the row(s) for the **running** target triple — the OS-level `Platform` is the
+  DERIVED view (§3.4.5 gives macOS two triples) — and **maps** it into a
   `PatentDisposition` value (`available == true → CodecPosture::Available`, `false →
   CodecPosture::Unavailable`) for each of `heic_hevc` / `aac` / `h264`. This resolved
   `PatentDisposition` is built **before** any `Engine::capabilities(platform, patents)`
@@ -1620,7 +1640,7 @@ gate is **§6.3**. This section produces the *data* those consume.
 ### 3.7.2 How it is generated (build step — cross-ref §6.3)
 
 1. The engine inventory (§3.1) is the **single source list**: each engine's id,
-   pinned version (§3.8), upstream URL, SPDX licence id, `linked|invoked`
+   pinned version (§3.8), upstream URL, SPDX licence id, `linked|invoked|plugin-loaded`
    class, a mandatory **`purl`** (and a CPE where one exists), and the per-artifact
    **SHA-256** are declared in the **build manifest `engines.lock`** (in `src-tauri/`;
    the single canonical name used by §6.3.1/§6.3.2/§6.3.3/§6.8 — there is no
