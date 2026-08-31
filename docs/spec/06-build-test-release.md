@@ -127,7 +127,7 @@ build-time mechanics that realise them**:
   the restored cache (never the live network at package time). **macOS dual-arch key scheme:**
   the universal build needs **two slices per engine** — the key carries the triple, so a
   macOS engine has **two distinct keys** (`<engine>-<version>-aarch64-apple-darwin` AND
-  `<engine>-<version>-x86_64-apple-darwin`); `scripts/stage-engines` restores both and
+  `<engine>-<version>-x86_64-apple-darwin`); `scripts/stage-engines` reads both restored slices and
   `lipo -create`s them into the `<name>-universal-apple-darwin` fat binary (§6.1.4). A
   cache miss on either slice falls back to the pinned-URL fetch for that slice.
 - A platform's artifact ships **only the engines available on that platform per

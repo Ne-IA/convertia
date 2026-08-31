@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""g24-stage-engines.py - the independent armed canary for `scripts/stage-engines` (P4.27's
+planned L(-1) hand-off, landed 2026-08-31; G37's staging half, G24 discipline).
+
+Two jobs, both from OUTSIDE the tool so a neutering edit to stage-engines cannot neuter its own
+check (the P4.27 box's hand-off note):
+
+1. RUN the tool's fixture-driven `--selftest` (its 35 legs now have a CI runner: this file is
+   discovered by `run-gate-selftests`, so the suite executes at L2 (diff-scoped canary) and L4
+   (3-OS)) and PIN the tally at 35 - the host-stable-count claim, CI-checked.
+
+2. The per-OS skip INVENTORY (the 2026-08-31 owner ruling: no silent skips - every OS-gated leg
+   is loud, pinned, and genuinely executes on at least one CI platform). stage-engines records an
+   OS-impossible leg as a labeled `(skipped - ...)` PASS; this canary asserts the skipped-name set
+   per OS fail-closed: on POSIX exactly the junction trio is skipped and the symlink trio RAN; on
+   Windows the junction trio MUST run (`mklink /J` needs no privilege - a junction skip there is a
+   real failure, not an environment fact) and the symlink trio skips all-or-none (one privilege
+   probe gates the trio). Any leg name carrying `(skipped` outside the declared names FAILS - a
+   NEW silently-skipping leg cannot appear unnoticed. The 3-OS canary is what makes "every leg
+   executes somewhere" a CI fact: ubuntu/macos run the symlink trio, windows runs the junction trio.
+
+Plus independent planted positives against the tool's guards (own fixtures, never the tool's
+`_fixture_tree`): the dash-prefix collision, the two-restored-versions refusal, the member-path
+escape, the non-3.3.1 resource subdir, the universal-triple refusal (asserted on the MESSAGE
+naming P4.29 - the generic unknown-triple arm also raises structural on the same input, so a
+type-only assert would stay green with the P4.29 guard deleted; the same masking class as the
+collision probe's first cut), the absent-cache-root refusal (structural), a missing member, the
+check-mode no-write guarantee, the per-destination replace-vs-accumulate clear (the policy.xml
+casualty class), the triple-keyed suffix + exec-bit properties, and the OS-conditional link
+probes (POSIX: a RELATIVE escaping symlink - relative on purpose, since an absolute escape
+target is refused by the absolute-symlink rule even with the containment guard deleted, the
+same masking class - plus an absolute in-entry symlink; Windows: escaping junction +
+ancestor-cycle junction; each a MUST-run probe on its OS, never a skip, message-discriminated
+where a sibling rule could raise the same type; each guard is thereby independently covered on
+the one platform its link shape is constructible on, every push, via the 3-OS runs). The suite
+call AND the planted-positive section are both exception-guarded: an unhandled traceback out of
+either is a NAMED failing leg, never a dead canary.
+
+COUPLING, declared so it is planned and never a surprise mid-box hard-stop (the P4.56.3 pattern):
+this file is L(-1)-caged while stage-engines is not, and it PINS the tally (35), the skip-name
+inventory, and its OWN leg count - so any box that adds a `--selftest` leg to stage-engines (P4.29 lipo, P4.30
+relocation, P4.41 manifest, P4.51 assertions, the P5-P7 staging boxes) carries the matching
+tally/inventory bump HERE as a pre-planned owner-acked L(-1) tail of that box.
+
+Run:  python3 scripts/gate-selftests/g24-stage-engines.py   Exit 0 = every assertion held.
+"""
+import importlib.machinery
+import importlib.util
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+SCRIPT = REPO / "scripts" / "stage-engines"
+_loader = importlib.machinery.SourceFileLoader("stg", str(SCRIPT))
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("stg", _loader))
+_loader.exec_module(m)
+
+results: list[tuple[str, bool]] = []
+
+
+def record(name: str, ok: bool) -> None:
+    results.append((name, ok))
+    print(f"[{'PASS' if ok else 'FAIL'}] {name}")
+
+
+def _refused(fn) -> tuple[bool, bool, str]:
+    """(raised, structural, message) for a callable expected to raise StagingError.
+
+    Any OTHER exception is caught and reported as not-raised (with its text printed), so a
+    neutered guard that lets a raw OSError through fails its leg BY NAME instead of killing the
+    whole canary mid-run with an unreported traceback.
+    """
+    try:
+        fn()
+    except m.StagingError as e:
+        return True, bool(e.structural), str(e)
+    except Exception as e:  # noqa: BLE001 - diagnosability: a named FAIL beats a dead canary
+        print(f"[g24-stage-engines] non-StagingError escaped: {type(e).__name__}: {e}")
+        return False, False, f"{type(e).__name__}: {e}"
+    return False, False, ""
+
+
+_LINUX = "x86_64-unknown-linux-gnu"
+_WIN = "x86_64-pc-windows-msvc"
+
+# The declared OS-gated leg names, verbatim from stage-engines' selftest. A rename there without
+# a matching edit here fails the inventory legs - deliberate: the skip surface is pinned.
+POSIX_JUNCTION_SKIPS = {
+    "fail-closed: junction escape leg (skipped - Windows-only)",
+    "junction allow leg (skipped - junctions are Windows-only)",
+    "junction cycle leg (skipped - junctions are Windows-only)",
+}
+WIN_SYMLINK_SKIPS = {
+    "stage: symlink preserve leg (skipped - host cannot create symlinks)",
+    "fail-closed: symlink escape leg (skipped - host cannot create symlinks)",
+    "fail-closed: absolute-symlink leg (skipped - host cannot create symlinks)",
+}
+# The junction trio ALSO has an on-Windows fallback spelling ("mklink unavailable"); it may never
+# fire on a supported host (mklink /J is unprivileged), so it is in the DECLARED set only for the
+# subset check - the Windows must-run leg below fails if any junction-flavoured skip appears.
+WIN_JUNCTION_FALLBACK_SKIPS = {
+    "fail-closed: junction escape leg (skipped - mklink unavailable)",
+    "junction allow leg (skipped - mklink unavailable)",
+    "junction cycle leg (skipped - mklink unavailable)",
+}
+DECLARED_SKIP_NAMES = POSIX_JUNCTION_SKIPS | WIN_SYMLINK_SKIPS | WIN_JUNCTION_FALLBACK_SKIPS
+
+# --- 1. the full suite, its tally, and the per-OS skip inventory --------------------------------
+print("[g24-stage-engines] running stage-engines --selftest ...")
+try:
+    rc = m.selftest()
+    suite_crashed = ""
+except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary, here as in _refused
+    rc, suite_crashed = 1, f"{type(e).__name__}: {e}"
+    print(f"[g24-stage-engines] --selftest raised: {suite_crashed}")
+record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
+record("the tool's full --selftest suite passes under the canary runner", rc == 0)
+record("the leg tally is host-stable at 35 (the pinned count)", len(m._results) == 35)
+
+skipped = {name for name, ok in m._results if "(skipped" in name}
+record(
+    "skip-inventory: every skipped leg is one of the declared OS-gated names "
+    "(a NEW silent skip fails here)",
+    skipped <= DECLARED_SKIP_NAMES,
+)
+if os.name == "nt":
+    record(
+        "skip-inventory (Windows): the junction trio RAN - mklink /J is unprivileged, "
+        "a junction skip on Windows is a failure",
+        not (skipped & (POSIX_JUNCTION_SKIPS | WIN_JUNCTION_FALLBACK_SKIPS)),
+    )
+    record(
+        "skip-inventory (Windows): the symlink trio skips all-or-none "
+        "(one privilege probe gates the trio)",
+        len(skipped & WIN_SYMLINK_SKIPS) in (0, 3),
+    )
+else:
+    record(
+        "skip-inventory (POSIX): exactly the junction trio is skipped, nothing else",
+        skipped == POSIX_JUNCTION_SKIPS,
+    )
+    record(
+        "skip-inventory (POSIX): the symlink trio genuinely RAN",
+        not (skipped & WIN_SYMLINK_SKIPS),
+    )
+
+# --- 2. independent planted positives (own fixtures, public API) --------------------------------
+fixture_crashed = ""
+try:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        root, cache = base / "own-root", base / "own-cache"
+        # The version deliberately carries a dash ("3.6-full"): the collision probe below adds a
+        # declared engine "pandoc-3.6", and only a non-empty middle after BOTH prefixes makes the
+        # entry genuinely claimable by both parses (engine "pandoc" @ "3.6-full" vs "pandoc-3.6" @
+        # "full") - the first cut of this probe used a dash-free version and proved nothing.
+        entry = cache / f"pandoc-3.6-full-{_LINUX}"
+        entry.mkdir(parents=True)
+        (entry / "pandoc").write_bytes(b"canary sidecar bytes")
+        tree_entry = cache / f"libreoffice-25.2-{_LINUX}"
+        (tree_entry / "program").mkdir(parents=True)
+        (tree_entry / "program" / "soffice.bin").write_bytes(b"canary launcher")
+        rows = (
+            m.EngineStaging("pandoc", m.StagingKind.SIDECAR, "pandoc"),
+            m.EngineStaging("libreoffice", m.StagingKind.RESOURCE_TREE, "libreoffice"),
+        )
+
+        staged = m.stage_all(root, cache, _LINUX, rows)
+        sidecar = root / m.BINARIES_REL / f"pandoc-{_LINUX}"
+        launcher = root / m.RESOURCES_REL / "libreoffice" / "program" / "soffice.bin"
+        record(
+            "independent positive: an outside-authored fixture stages to the two 3.3.1 shapes",
+            len(staged) == 2 and sidecar.is_file() and launcher.is_file(),
+        )
+        record(
+            "independent positive: the sidecar is triple-suffixed exactly as Tauri requires",
+            sidecar.name == m.sidecar_filename("pandoc", _LINUX),
+        )
+        # The suffix keys off the TRIPLE, never the host: this leg and the next are each REAL on both
+        # OSes (POSIX additionally proves the exec bit the tool must set on a non-Windows sidecar).
+        win_entry = cache / f"pandoc-3.6-full-{_WIN}"
+        win_entry.mkdir(parents=True)
+        (win_entry / "pandoc").write_bytes(b"pe-ish bytes")
+        m.stage_all(root, cache, _WIN, rows[:1])
+        win_sidecar = root / m.BINARIES_REL / f"pandoc-{_WIN}.exe"
+        record(
+            "independent positive: a windows-triple stage lands .exe-suffixed on ANY host "
+            "(suffix keys off the triple)",
+            win_sidecar.is_file(),
+        )
+        record(
+            "independent positive: the exec-bit/suffix property holds (POSIX: x-bit on the "
+            "linux-triple sidecar; Windows: no .exe-suffixed linux-triple sidecar exists - the "
+            "host-keyed-suffix regression, not a tautology over this canary's own constant)",
+            bool(sidecar.stat().st_mode & 0o111) if os.name != "nt"
+            else not (root / m.BINARIES_REL / f"pandoc-{_LINUX}.exe").exists(),
+        )
+
+        # The per-destination clear: shared rows ACCUMULATE while a re-stage still REPLACES stale
+        # files - the guard whose per-ROW regression would silently drop e.g. ImageMagick's
+        # policy.xml (the casualty stage-engines' own comment names). Independent probe: neutering
+        # clear_resource_destinations leaves the stale file; a per-ROW clear drops libvips.so.
+        for eng, lib in (("libvips", "libvips.so"), ("libheif", "libheif.so")):
+            libdir = cache / f"{eng}-1.0-{_LINUX}" / "lib"
+            libdir.mkdir(parents=True)
+            (libdir / lib).write_bytes(b"image-stack component")
+        shared_rows = (
+            m.EngineStaging("libvips", m.StagingKind.RESOURCE_TREE, "image"),
+            m.EngineStaging("libheif", m.StagingKind.RESOURCE_TREE, "image"),
+        )
+        m.stage_all(root, cache, _LINUX, shared_rows)
+        stale = root / m.RESOURCES_REL / "image" / "lib" / "stale-from-the-old-pin.so"
+        stale.write_bytes(b"stale")
+        m.stage_all(root, cache, _LINUX, shared_rows)
+        image_libs = sorted(p.name for p in (root / m.RESOURCES_REL / "image" / "lib").iterdir())
+        record(
+            "independent positive: the per-DESTINATION clear replaces stale files while shared rows "
+            "accumulate (the policy.xml casualty class)",
+            not stale.exists() and image_libs == ["libheif.so", "libvips.so"],
+        )
+
+        # --check writes NOTHING: a fresh root stays untouched (the no-write guard, independently).
+        dry_root = base / "own-dry-root"
+        m.stage_all(dry_root, cache, _LINUX, rows, write=False)
+        record(
+            "independent positive: write=False resolves + validates but creates nothing",
+            not (dry_root / m.BINARIES_REL).exists() and not (dry_root / m.RESOURCES_REL).exists(),
+        )
+
+        # The colliding row names an EXISTING member ("pandoc") on purpose: with a bogus member, a
+        # neutered collision guard would be masked by the missing-member raise and this leg would stay
+        # green - proven by patching the revert (the guard is the ONLY raiser on this shape).
+        raised, _, _ = _refused(
+            lambda: m.stage_all(
+                root, cache, _LINUX,
+                rows + (m.EngineStaging("pandoc-3.6", m.StagingKind.SIDECAR, "pandoc"),),
+                write=False,
+            )
+        )
+        record("planted: the dash-prefix engine collision is refused (ambiguous_engine_entries)", raised)
+
+        (cache / f"pandoc-3.5-{_LINUX}").mkdir()
+        raised, _, _ = _refused(lambda: m.select_cache_entry(cache, "pandoc", _LINUX))
+        record("planted: two restored pinned versions of one engine are refused", raised)
+        (cache / f"pandoc-3.5-{_LINUX}").rmdir()
+
+        raised, _, _ = _refused(lambda: m._member_path(tree_entry, f"../pandoc-3.6-full-{_LINUX}"))
+        record("planted: a member path escaping its cache entry is refused", raised)
+
+        raised, _, _ = _refused(lambda: m.resource_dest(root, "ghostscript"))
+        record("planted: a resource subdir outside the closed 3.3.1 key set is refused", raised)
+
+        # Asserted on the MESSAGE, not the type: with the P4.29 guard deleted the generic
+        # unknown-triple arm raises StagingError(structural=True) on the SAME input, so a type-only
+        # assert stays green - the masking class again, proven by patching that revert.
+        raised, structural, msg = _refused(lambda: m.resolve_target(m.UNIVERSAL_TRIPLE))
+        record(
+            "planted: universal-apple-darwin is refused by the P4.29-boundary guard itself "
+            "(message-discriminated, structural)",
+            raised and structural and "P4.29" in msg,
+        )
+
+        raised, structural, _ = _refused(
+            lambda: m.stage_all(root, base / "no-such-cache", _LINUX, rows, write=False)
+        )
+        record("planted: an absent cache root is refused as STRUCTURAL (exit-2 semantics)",
+               raised and structural)
+
+        raised, _, _ = _refused(
+            lambda: m.stage_all(
+                root, cache, _LINUX,
+                rows + (m.EngineStaging("libreoffice", m.StagingKind.SIDECAR, "soffice"),),
+                write=False,
+            )
+        )
+        record("planted: a declared member missing from its cache entry is refused", raised)
+
+        # --- 3. the OS-conditional link probes: MUST run on every platform, never skip -------------
+        # Two probes per OS, covering each link guard on the one platform its shape is constructible
+        # on: POSIX covers the escape + absolute-symlink rules (every push, on the ubuntu/macos
+        # legs); Windows covers the junction escape + ancestor-cycle rules (on the windows leg).
+        outside = base / "outside-sentinel"
+        outside.mkdir()
+        (outside / "secret.txt").write_bytes(b"out-of-entry")
+        program = tree_entry / "program"
+        if os.name == "nt":
+            junction = program / "escape.link"
+            made = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                capture_output=True, check=False,
+            )
+            probe_ready = made.returncode == 0
+            raised, msg = False, ""
+            if probe_ready:
+                raised, _, msg = _refused(
+                    lambda: m.stage_all(root, cache, _LINUX, rows, write=False)
+                )
+                junction.rmdir()
+            record(
+                "planted (Windows): an out-of-entry junction is refused by the CONTAINMENT rule "
+                "itself (message-discriminated; the probe must succeed - no skip)",
+                probe_ready and raised and "resolving outside the staged tree" in msg,
+            )
+            cycle = program / "cycle.link"
+            made = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(cycle), str(tree_entry)],
+                capture_output=True, check=False,
+            )
+            probe_ready = made.returncode == 0
+            raised = False
+            if probe_ready:
+                raised, _, _ = _refused(
+                    lambda: m.stage_all(root, cache, _LINUX, rows, write=False)
+                )
+                cycle.rmdir()
+            record(
+                "planted (Windows): a junction at its own ancestor is refused "
+                "(the materialisation-loop guard; the probe must succeed - no skip)",
+                probe_ready and raised,
+            )
+        else:
+            link = program / "escape.link"
+            # RELATIVE on purpose: an ABSOLUTE escape target is refused by the absolute-symlink rule
+            # even with the containment guard deleted (the same masking class as the universal
+            # probe's), so only a relative escape isolates the containment rule as the sole raiser -
+            # found by the R2 review's own revert probe, closed with the message discrimination.
+            link.symlink_to(Path("..") / ".." / ".." / "outside-sentinel" / "secret.txt")
+            raised, _, msg = _refused(
+                lambda: m.stage_all(root, cache, _LINUX, rows, write=False)
+            )
+            link.unlink()
+            record(
+                "planted (POSIX): a RELATIVE out-of-entry symlink is refused by the CONTAINMENT "
+                "rule itself (message-discriminated)",
+                raised and "resolving outside the staged tree" in msg,
+            )
+            absolute = program / "absolute.link"
+            absolute.symlink_to(program / "soffice.bin")
+            raised, _, _ = _refused(
+                lambda: m.stage_all(root, cache, _LINUX, rows, write=False)
+            )
+            absolute.unlink()
+            record(
+                "planted (POSIX): an ABSOLUTE symlink, even in-entry, is refused "
+                "(copytree preserves it verbatim - the dangling-bundle-path class)",
+                raised,
+            )
+
+except Exception as e:  # noqa: BLE001 - same rationale as the suite guard
+    fixture_crashed = f"{type(e).__name__}: {e}"
+    print(f"[g24-stage-engines] the planted-positive section raised: {fixture_crashed}")
+record("the planted-positive section completed without an unhandled exception", not fixture_crashed)
+record("the canary's own leg count is pinned (22 + this pin)", len(results) == 22)
+
+failed = [n for n, ok in results if not ok]
+print(f"\n[g24-stage-engines] {len(results) - len(failed)}/{len(results)} assertions passed.")
+sys.exit(1 if failed else 0)

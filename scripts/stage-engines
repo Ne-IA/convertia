@@ -49,7 +49,7 @@ would be worse. So the tool carries its own fixture-driven regression suite here
 point takes `--root`/`--cache-root`/`--target` overrides, the same fixture seam every `check-*`
 gate script exposes), and the INDEPENDENT armed canary `scripts/gate-selftests/g24-stage-engines.py`
 - which must plant its positives from outside this file, so a neutering edit here cannot neuter
-its own check - is the planned owner-acked L(-1) hand-off. That canary will load this file the way
+its own check - landed 2026-08-31 as the owner-acked L(-1) hand-off. It loads this file the way
 every `g24-*` self-test loads its tool (a bare `SourceFileLoader` + `module_from_spec`, with NO
 `sys.modules` entry); `@dataclass` cannot survive that idiom - it looks its own class's module up
 in `sys.modules` and dies on the `None` - which is why the two record types below are
@@ -684,9 +684,9 @@ def selftest() -> int:
         # an out-of-entry target INTO the bundle), and a link RESOLVING outside the staged tree is
         # REFUSED (preserving is not a refusal; the packers and P4.41's manifest read follow it).
         # §0.11 T3a. Skipped as a recorded PASS where the OS refuses to create a symlink
-        # (unprivileged Windows), so the leg count stays stable for the future g24 canary - which
-        # should assert the skip REASON, not merely the tally, since these are the suite's only
-        # unconditionally-true legs.
+        # (unprivileged Windows), so the leg count stays stable for the g24 canary (landed
+        # 2026-08-31), which asserts the skip REASON per OS, not merely the tally, since these
+        # are the suite's only unconditionally-true legs.
         outside = base / "outside-the-entry.txt"
         outside.write_bytes(b"out-of-entry sentinel")
         program = cache / f"libreoffice-24.8-{_LINUX}" / "program"

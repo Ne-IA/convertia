@@ -24,7 +24,7 @@ A non-interactive `git commit -S` (every Build-Loop commit) would wedge silently
 pin `gpg.ssh.program` to the native Windows OpenSSH ssh-keygen, which talks to the
 agent's named pipe and signs without a prompt. Non-Windows: a harmless no-op.
 
-Idempotent. stdlib-only (Python 3.11+). Run:  python3 scripts/setup-dev
+Idempotent. stdlib-only (Python 3.12+ - `scripts/stage-engines` uses `Path.is_junction()`, 3.12; CI pins 3.12). Run:  python3 scripts/setup-dev
 Exit: 0 = ready; non-zero = a step failed (with a clear message).
 """
 from __future__ import annotations
