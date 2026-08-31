@@ -122,7 +122,7 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 │   └── src/                        → the core crate source (`lib.rs` crate root + the thin `main.rs` bin shim, P3.87 + the §0.7 tier modules):
 │       ├── detection/              → tier 2 — §1.2 content sniffing (first to touch untrusted bytes)
 │       ├── domain/                 → tier 3 — the PURE §0.6 types (identity / intake / detection / Target / destination/plan / JobStage), a true leaf; the outcome-referencing lifecycle/result types live in orchestrator (§0.7 ‡, P2.10)
-│       ├── engines/                → tier 2 — the §3.2 engine registry/seam + §1.7 invocation + §3.5 args
+│       ├── engines/                → tier 2 — the §3.2 engine registry/seam + §1.7 invocation + §3.5 args + §3.3.3 program resolution
 │       ├── fs_guard/               → tier 2 — the §2.0 no-harm kernel (atomic write / no-clobber / resolved-id)
 │       ├── ipc/                    → tier 0 — the §0.4 command/event handlers (the WebView's only door)
 │       ├── isolation/              → tier 2 — the §2.12 decoder-isolation wrapper (the sole `Command::new`)

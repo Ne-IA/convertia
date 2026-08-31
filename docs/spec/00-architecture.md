@@ -1322,7 +1322,7 @@ the reuse hubs.
                           tokens (§0.4.4), progress fan-out to the Channel
              ▼
   tier 2   detection      content sniffing (§1.2)
-           engines        registry/seam (§3.2) + invocation (§1.7) + args (§3.5);
+           engines        registry/seam (§3.2) + invocation (§1.7) + args (§3.5) + program resolution (§3.3.3);
                           routes every spawn through crate::isolation + the pool
            fs_guard       atomic write / no-clobber / resolved-id / cross-volume (§2.1/§2.3/§2.14)
            run            per-run / per-instance scratch ownership + cleanup (§2.4/§2.6)
@@ -1364,7 +1364,8 @@ Tier 2 is now FINAL, not provisional. [Build-Session-Entscheidung: P2.10 — own
 - **`detection`** — §1.2 content sniffing. First code to touch untrusted bytes;
   §1.2 owns whether header sniffing sits inside/outside the §2.12 boundary.
 - **`engines`** — the §3.2 `Engine` trait + registry + selection, the §1.7 generic
-  invocation lifecycle, and §3.5 per-engine arg construction; every spawn routes
+  invocation lifecycle, §3.5 per-engine arg construction, and the §3.3.3
+  program-path resolution (`program.rs`, P4.32); every spawn routes
   through the **separate `crate::isolation` module** (§1.7 calls it) and the §0.9
   pool. This is the reusable engine home — adding a format pair is (mostly) a
   registry entry.
@@ -1419,8 +1420,9 @@ convertia/
 │     ├─ ipc/                      # tier 0 — §0.4 handlers, one file per command group
 │     ├─ orchestrator/             # tier 1 — queue, lifecycle (§1.9), run registry, cancellation (§0.4.4); homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict/OutputPlanPreview/DestinationResolved + RunResult/ItemResult/ItemOutcome — above tier 3 to break the domain↔outcome cycle, §0.7 ‡)
 │     ├─ detection/                # tier 2 — §1.2
-│     ├─ engines/                  # tier 2 — registry/seam (§3.2), invocation (§1.7), args (§3.5), per-engine modules
+│     ├─ engines/                  # tier 2 — registry/seam (§3.2), invocation (§1.7), args (§3.5), program resolution (§3.3.3), per-engine modules
 │     │  ├─ registry.rs            #   Engine trait + selection (the §3.2 seam — candidate own crate)
+│     │  ├─ program.rs             #   §3.3.3 program-path resolution + the EngineId→binary-name table (P4.32)
 │     │  ├─ invoke.rs              #   §1.7 generic lifecycle (spawn/progress/cancel/timeout/error-map)
 │     │  ├─ ffmpeg.rs  libreoffice.rs  pandoc.rs  poppler.rs  image.rs  csv_native.rs
 │     ├─ fs_guard/                 # tier 2 — the reusable guarantees-fs layer; module path `crate::fs_guard` (§2.0); §2.1/2.3/2.14 atomic write/no-clobber/resolved-id/path-limit/cross-volume

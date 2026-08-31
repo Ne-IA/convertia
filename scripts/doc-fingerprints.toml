@@ -76,10 +76,17 @@ fingerprint = "sha256:f8dc97d001e1ea3e3b475839b2f58af43ad045188f01f9db6c3567a9cb
 #     projection in the same commit (its fuzz/ / fuzz_targets/ / corpus/ rows land with the staged
 #     tree; the corpus SUBDIR rows are §0.7-only detail — the §1a ⊆ §0.7 projection bind holds and
 #     check 26 is green over the staged tree). Hash computed via plan-lint's own _extract_section.
+#     Re-blessed 2026-08-31 (the P4.32 Co-Pilot residual): §0.7's engines/ file list gained the
+#     program.rs FILE row (§3.3.3 resolution + the EngineId→binary-name table — no directory change,
+#     the G69 dir-set untouched); §1a re-verified in the same commit: its engines/ row names
+#     §-responsibilities, not files, and was extended with §3.3.3 in the same act, so the projection
+#     holds. The P3.87 precedent is the PROCEDURE (a FILE row leaves the G69 dir-set untouched;
+#     §1a is re-verified and edited iff its own text is touched by the change — P3.87 did re-cut
+#     §1a's src/ parenthetical then), never a no-edit outcome.
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:e5783375f21a0e6a0023e2b1be615dd3e2903af486195d19dd2467123d40e39b"
+fingerprint = "sha256:c4c238947783cb311cd558a531fab0c53cde573c33919e0ea90f490a68846d9d"
