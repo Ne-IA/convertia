@@ -241,7 +241,7 @@
 - [ ] **P4.31** [BUILD] Wire `tauri.conf.json` `bundle.externalBin` + `bundle.resources` for the engine set · §3.3.1 §0.10 · G47
   needs: P4.27
   > the §3.3.1 Tauri config: `bundle.externalBin` listing the sidecars (`binaries/ffmpeg`, `ffprobe`, `soffice`, `pdftotext`, `pandoc`, `convertia-imgworker`) and `bundle.resources` mapping the LibreOffice tree / image stack / fonts / `THIRD-PARTY-LICENSES.txt`; no `updater`/`createUpdaterArtifacts` block (the G47 structural lint, P0.3.2, enforces the absence). Generic wiring; per-engine entries filled as P5–P7 stage each.
-- [ ] **P4.32** [RUST] Build the runtime program-path resolution (`current_exe().parent()` sidecars · `BaseDirectory::Resource` for resource-tree binaries) + the `EngineId→binary-name` table · §3.3.3 · G29
+- [x] **P4.32** [RUST] Build the runtime program-path resolution (`current_exe().parent()` sidecars · `BaseDirectory::Resource` for resource-tree binaries) + the `EngineId→binary-name` table · §3.3.3 · G29
   needs: P4.2
   > the §3.3.3 [DECIDED] resolution: externalBin sidecars resolved by **bare name** beside the app exe via `current_exe()?.parent()` (Tauri strips the triple suffix; NEVER `BaseDirectory::Resource` for externalBin, `.exe` on Windows); resource-tree binaries (`program/soffice.bin`) via `app.path().resolve(rel, BaseDirectory::Resource)`; the fixed `EngineId → binary-name` table (`FFmpeg→"ffmpeg"`, `FFprobe→"ffprobe"`, `LibreOffice→"soffice"`, `Poppler→"pdftotext"`, `Pandoc→"pandoc"`, `ImageCore→"convertia-imgworker"`; `ImageMagick`/`NativeCsvTsv` absent — delegate / in-core). All absolute paths; `PATH` never relied on.
 - [ ] **P4.33** [RUST] Build the §7.2.4 executable-permission setup (idempotent +x on extracted sidecars, Unix) · §7.2.4 · G29
