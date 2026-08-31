@@ -20,12 +20,24 @@ POSTURE: **fail-soft during the P0 bootstrap (no --enforce): a missing trailer w
 (the P0 build itself edits L(-1) files under owner drive); **--enforce (wired from P1): a missing
 trailer on an L(-1)-touching commit -> exit 1** (the G56a fail-soft-then-hard pattern).
 
+CAGE-LIVENESS AUDIT (P4.56.1 - the dead-glob class): every run additionally asserts each cage glob
+matches >=1 `git ls-files` path (same --enforce posture). Root-anchoring (`^...$`) means a glob
+spelled without its full repo-relative path silently protects NOTHING - the bare `engines.lock`
+pattern hid that way from P0.2.14 until its target landed at `src-tauri/engines.lock` (P4.56.1),
+and the cage keeps growing (the P4.56.3 allow-list artifact, the pending P4.28 cage ruling), so the
+class stays live. A glob for a genuinely target-less path is declared in AUDIT_DECLARED_TARGETLESS
+with its reason - a declared entry is skipped, never silently dead; and a declared glob whose
+target LANDS is itself flagged (a stale declaration), so removing the entry is mechanical - a
+prose-only removal obligation is the shape that silently never happens (the [[fail_open]]-row
+lesson, gate-planes.toml).
+
 stdlib-only (tomllib, Python 3.11+). L(-1) security-critical (matched by `scripts/check-*`).
 
 Usage: check-l-neg1-ack [--base <ref>] [--head <ref>] [--enforce] [--cage <l-neg1-files.toml>]
        (--base default: the @{u}->origin/<branch>->origin/main->origin/HEAD chain; in CI pass
         --base "$GITHUB_EVENT_BEFORE" for the exact push range)
-Exit:  0 = clean or fail-soft (P0); 1 = a missing trailer under --enforce; 2 = bad invocation / cage missing.
+Exit:  0 = clean or fail-soft (P0); 1 = a missing trailer OR a dead/stale-declared cage glob, under
+       --enforce; 2 = bad invocation / cage missing / `git ls-files` failed under --enforce.
 """
 from __future__ import annotations
 
@@ -68,8 +80,8 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(parts) + "$")
 
 
-def load_patterns(cage: Path) -> list[re.Pattern[str]] | None:
-    """Compile the cage globs, or None if the file is missing / unparseable / malformed."""
+def _read_pattern_list(cage: Path) -> list[str] | None:
+    """The raw cage glob strings, or None if the file is missing / unparseable / malformed."""
     if not cage.is_file():
         return None
     try:
@@ -79,7 +91,67 @@ def load_patterns(cage: Path) -> list[re.Pattern[str]] | None:
     pats = data.get("patterns")
     if not isinstance(pats, list) or not pats or not all(isinstance(p, str) and p for p in pats):
         return None
-    return [glob_to_regex(p) for p in pats]
+    return pats
+
+
+def load_patterns(cage: Path) -> list[re.Pattern[str]] | None:
+    """Compile the cage globs, or None if the file is missing / unparseable / malformed."""
+    pats = _read_pattern_list(cage)
+    return None if pats is None else [glob_to_regex(p) for p in pats]
+
+
+# Globs whose target is DECLARED absent - not yet landed, or legitimately optional forever - with
+# the reason; the only sanctioned escape from the cage-liveness audit (an UNdeclared zero-match
+# glob is the dead-glob class and fails). If a declared glob's target lands, stale_declarations()
+# flags the entry so its removal rides that landing act (this file is L(-1)) - the removal
+# obligation is mechanical, never a prose promise.
+AUDIT_DECLARED_TARGETLESS: frozenset[str] = frozenset({
+    ".lfsconfig",   # a git-LFS ENDPOINT OVERRIDE, not required to use LFS (the default endpoint
+                    # needs no such file) - so this glob may legitimately never have a target;
+                    # it pre-cages the trust-relevant override the moment one is introduced.
+})
+
+
+def dead_globs(pattern_strs: list[str], tracked_paths: list[str]) -> list[str]:
+    """The cage-liveness audit core (pure, directly self-testable): every glob must match >=1
+    tracked path or be declared in AUDIT_DECLARED_TARGETLESS, else it silently protects nothing -
+    root-anchoring makes a mis-spelled path unmatchable, the class the bare `engines.lock`
+    pattern exemplified (P0.2.14 -> P4.56.1)."""
+    tracked = [t.strip().replace("\\", "/") for t in tracked_paths if t.strip()]
+    dead: list[str] = []
+    for p in pattern_strs:
+        if p in AUDIT_DECLARED_TARGETLESS:
+            continue
+        rx = glob_to_regex(p)
+        if not any(rx.match(t) for t in tracked):
+            dead.append(p)
+    return dead
+
+
+def stale_declarations(pattern_strs: list[str], tracked_paths: list[str]) -> list[str]:
+    """The audit's escape-hatch catcher (pure): a glob DECLARED target-less that now DOES match a
+    tracked path is a stale declaration - the target landed, so the entry must be removed in the
+    act that lands it. Without this, a declaration outlives its reason silently - the exact shape
+    G71's own [[fail_open]] row already cost this repo (a prose-only removal obligation that
+    "silently never happened through all of P1")."""
+    tracked = [t.strip().replace("\\", "/") for t in tracked_paths if t.strip()]
+    stale: list[str] = []
+    for p in pattern_strs:
+        if p not in AUDIT_DECLARED_TARGETLESS:
+            continue
+        rx = glob_to_regex(p)
+        if any(rx.match(t) for t in tracked):
+            stale.append(p)
+    return stale
+
+
+def orphan_declarations(pattern_strs: list[str]) -> list[str]:
+    """The mirror drift direction: an AUDIT_DECLARED_TARGETLESS member whose GLOB left the cage is
+    an orphan declaration - dead_globs never sees it (not in the patterns) and stale_declarations
+    never sees it either, so without this leg it would outlive its reason silently (the same shape
+    the stale-declaration catcher exists for, one level up)."""
+    pats = set(pattern_strs)
+    return sorted(p for p in AUDIT_DECLARED_TARGETLESS if p not in pats)
 
 
 def is_l_neg1(path: str, regexes: list[re.Pattern[str]]) -> bool:
@@ -88,7 +160,12 @@ def is_l_neg1(path: str, regexes: list[re.Pattern[str]]) -> bool:
 
 
 def git(*args: str) -> tuple[int, str]:
-    p = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    # core.quotePath=false: without it git octal-escapes+quotes any non-ASCII path ("docs/w\303\266..."),
+    # so a caged file with e.g. an umlaut would NOT match its glob - an ack silently not required
+    # (and the liveness audit would false-red its glob). Control chars stay quoted regardless, so
+    # line-splitting is unaffected.
+    p = subprocess.run(["git", "-c", "core.quotePath=false", *args],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     return p.returncode, p.stdout
 
 
@@ -131,14 +208,49 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cage", type=Path, default=DEFAULT_CAGE, help="the L(-1) glob list (l-neg1-files.toml)")
     args = ap.parse_args(argv)
 
-    regexes = load_patterns(args.cage)
-    if regexes is None:
+    pats = _read_pattern_list(args.cage)
+    if pats is None:
         msg = f"cage list {args.cage} missing / unparseable / malformed - cannot audit L(-1) acks"
         if args.enforce:
             fail(msg)
             return 2
         out(f"{msg}; skipping (fail-soft, P0)")
         return 0
+    regexes = [glob_to_regex(p) for p in pats]
+
+    # cage-liveness audit (the dead-glob class, P4.56.1) - independent of the push range.
+    # `--full-name -- :/` pins BOTH the output format and the pathspec scope to the repo root:
+    # a bare `git ls-files` is CWD-scoped (subtree-only, CWD-relative names) and would false-red
+    # a correct cage from any subdirectory - unlike the gate's other git calls, which are all
+    # CWD-agnostic within the repo.
+    rc_ls, ls_out = git("ls-files", "--full-name", "--", ":/")
+    if rc_ls != 0:
+        (fail if args.enforce else out)("git ls-files failed - cannot audit cage-glob liveness"
+                                        + ("" if args.enforce else " (fail-soft)"))
+        if args.enforce:
+            return 2
+    else:
+        tracked = ls_out.splitlines()
+        dead = dead_globs(pats, tracked)
+        stale = stale_declarations(pats, tracked)
+        orphans = orphan_declarations(pats)
+        for p in dead:
+            fail(f"cage glob {p!r} matches NO tracked path (patterns are root-anchored `^...$`) - "
+                 "it protects nothing; re-spell it to the full repo-relative path, or declare the "
+                 "target-less glob in AUDIT_DECLARED_TARGETLESS with its reason")
+        for p in stale:
+            fail(f"declared-targetless cage glob {p!r} NOW matches a tracked path - the target "
+                 "landed; remove its AUDIT_DECLARED_TARGETLESS entry in the act that lands it")
+        for p in orphans:
+            fail(f"AUDIT_DECLARED_TARGETLESS entry {p!r} has NO matching cage glob - the glob left "
+                 "the cage; remove the orphan declaration in the act that removes the glob")
+        if dead or stale or orphans:
+            if args.enforce:
+                fail(f"G71: {len(dead)} dead + {len(stale)} stale-declared + {len(orphans)} orphan-declared "
+                     "cage glob(s) - FAILED (enforced)")
+                return 1
+            out(f"G71: {len(dead)} dead + {len(stale)} stale-declared + {len(orphans)} orphan-declared "
+                "cage glob(s); fail-SOFT without --enforce")
 
     base = resolve_base(args.base)
     commits = commits_in_range(base, args.head)

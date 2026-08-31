@@ -51,12 +51,22 @@ describes = [
   "CLAUDE.md §5 (the L(-1) anti-pattern bullet)",
   "the docs-only-fastpath L(-1) list (G10)",
 ]
-fingerprint = "sha256:f8dc97d001e1ea3e3b475839b2f58af43ad045188f01f9db6c3567a9cbad49f0"
+fingerprint = "sha256:59cf428eea6d3c0ae12b6b2a02e153826f7d7002d174d2d2c5ac16717867fc60"
 # ^ re-blessed 2026-07-21 (P3.72): the cage gained `max_survived_mutants.toml` (the G15 mutation
 #   ratchet, the coverage-floors class); the §2 + G71-row enumerations were synced in the same
 #   commit; CLAUDE §5 is deliberately non-exhaustive, and the docs-only fastpath's skip
 #   eligibility is a hardcoded .md/LICENSE/NOTICE allow-list (it never parses the cage), so a
 #   non-.md file like the ratchet is structurally ineligible — both re-verified, no edit needed.
+# ^ re-blessed 2026-08-31 (the P4.56.1 pre-planned tail (b)): the bare `engines.lock` pattern was
+#   re-spelled `src-tauri/engines.lock` — check-l-neg1-ack matches root-anchored (`^...$`), so the
+#   bare spelling never matched the §3.7.2-homed manifest this act commits; the pattern rename is a
+#   WIDENING onto the real path, not a narrowing (the old pattern matched no spec-sanctioned path —
+#   §3.7.2 fixes the home in src-tauri/; a stray repo-root engines.lock would be an untracked
+#   alien). All four describes copies re-verified: security-concept §2 and the G71
+#   row name `engines.lock` path-free (still true of the file), CLAUDE §5 likewise (and is
+#   deliberately non-exhaustive), and the docs-only fastpath's hardcoded .md allow-list makes a
+#   .lock file structurally ineligible — no prose edit needed FOR THE RENAME (the G71 row and the
+#   §2 sentence ARE edited in this same act, for the separate cage-liveness-audit passage).
 
 # (b) LIVE since P1.64 — the spec §0.7 physical tree is the HIGHER source (SSOT > spec > docs); the
 #     CLAUDE.md §1a "Repo layout" map is its operational projection. This fingerprint is the freshness
@@ -83,17 +93,24 @@ fingerprint = "sha256:f8dc97d001e1ea3e3b475839b2f58af43ad045188f01f9db6c3567a9cb
 #     holds. The P3.87 precedent is the PROCEDURE (a FILE row leaves the G69 dir-set untouched;
 #     §1a is re-verified and edited iff its own text is touched by the change — P3.87 did re-cut
 #     §1a's src/ parenthetical then), never a no-edit outcome.
-#     Re-blessed 2026-08-31 (the P4.56.1 pre-planned tail): §0.7's engines/ file list gained the
+#     Re-blessed 2026-08-31 (the P4.56.1 pre-planned tail (a)): §0.7's engines/ file list gained the
 #     lock.rs FILE row (§3.7.2 engines.lock schema + validator, the (artifact, target-triple) row
 #     law — no directory change, the G69 dir-set untouched) + the three engines container lines
 #     (tree parent row, tier-2 logical block, responsibility bullet) extended with §3.7.2; §1a
 #     re-verified in the same act: its engines/ row was ALREADY extended with the §3.7.2 schema by
 #     the Loop-half commit (3fac83a — §1a is docs-layer, Loop-editable), so this §0.7 edit restores
 #     the projection ORDER (§0.7 is the higher source; the two now agree) with no further §1a edit.
+#     Re-blessed 2026-08-31 (the P4.56.1 pre-planned tail (b), batched per the tail-(a) review's
+#     forward finding): §0.7's src-tauri/ file list gained the engines.lock MANIFEST row in the
+#     same act that creates the file + re-spells its cage glob (one owner-acked commit re-blessing
+#     BOTH ledger entries instead of a third §0.7 tail). A FILE row only — the G69 dir-set is
+#     untouched; §1a re-verified: its src-tauri/ block lists DIRECTORIES only (no rows for files at
+#     the src-tauri/ root — Cargo.toml/tauri.conf.json are likewise unlisted there), so the
+#     projection holds unedited.
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:a7432bb37bc74ae7d3c122e66ebf1cd9e8a2d3f7da02feafda3136b064aa9fba"
+fingerprint = "sha256:39de2367239feed74d63bf2ec99d65ecab354b12621e3ad4a8a0384ac69c2c6f"

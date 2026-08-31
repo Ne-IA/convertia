@@ -77,7 +77,10 @@ manifest, license compliance).
   commit-body trailer. The pre-push gate **G71** mechanically audits the trailer's
   presence on any L(-1)-touching commit (the trailer is the **only** sanctioned escape —
   there is **no** check-off / `[!extern]` exemption for an L(-1) edit; a commit touching no
-  L(-1) file needs no trailer) (fail-soft during the P0 bootstrap, fail-closed from P1). This is the one **ownership control above the deterministic gates** — the
+  L(-1) file needs no trailer) and, since P4.56.1, the cage's own liveness (a glob matching
+  no tracked path, or a stale/orphan targetless declaration, fails the gate — the
+  build-gates G71 row carries the mechanics) (fail-soft during the P0 bootstrap,
+  fail-closed from P1). This is the one **ownership control above the deterministic gates** — the
   trailer records an owner decision; G71 checks the evidence, not the intent (so a leaked
   key or a unilateral cage edit cannot pass unseen). It is independent of the G1
   `Dual-Review:` trailer; both may co-occur on one commit.

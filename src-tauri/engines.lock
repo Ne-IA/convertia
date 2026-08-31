@@ -1,0 +1,29 @@
+# engines.lock — the §3.7.2 build manifest (the single canonical name; there is no engines.toml).
+#
+# The authoritative input to the release plane: every bundled engine, staged codec shared object,
+# bundled security-config file and bundled font declares itself here as `[[engine]]` row(s) —
+# "not hand-curated prose, so it can't drift from what actually ships" (spec §3.7.2).
+#
+# ROW LAW [DECIDED — owner adjudication 2026-08-31, spec §3.4.4a]: a row is keyed by
+# (artifact, target-triple). Every field is platform-pure and scalar; the ONLY plural field is
+# `triples` (a byte-identical platform-invariant artifact — a font, policy.xml, the LibreOffice
+# .xcu — is ONE row over several triples). (artifact, triple) maps to exactly one row; one row =
+# one sha256; if a field forks across triples, the row splits. §3.7.2 item-4 sub-components
+# (kind = "sub-component") follow the same law with the hash anchoring the pinned SOURCE.
+#
+# The schema + validator live in `crate::engines::lock` (src-tauri/src/engines/lock.rs, P4.56.1);
+# the field-by-field contract is documented there. Consumers (verified against the spec; each
+# reader lands with its named box): G37 (staged-byte SHA-256 verify, before staging AND on
+# cache-restore), the §3.4.4a startup parse→map flow (P4.40), `cargo xtask sbom` (§6.3.1,
+# P4.56.2), the engine-source allow-list gate (§3.8, P4.56.3), and the
+# `<engine>-<version>-<triple>` asset cache (§6.1.3, P4.28).
+#
+# THIS FILE IS L(-1) (scripts/l-neg1-files.toml, gate G71): the autonomous Build-Loop NEVER edits
+# it; every edit is an owner-acked act (`L-neg1-ack: owner`), and any SHA-256 edit is additionally
+# a hard Co-Pilot escalation (§3.7.2/§6.3.4 — the pin-establishment provenance rule: a new pin's
+# hash MUST be corroborated against the upstream's own published checksum/signature, with the
+# corroboration URL recorded on the row).
+#
+# An empty manifest is VALID (`crate::engines::lock` and its empty-container test): the container
+# lands at P4.56.1 and each engine's rows land with its staging box (P5–P7); the reading gates
+# hold the fail-open-while-empty / fail-closed-on-first-row posture (the P4.56.3 gate semantics).

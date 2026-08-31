@@ -10,11 +10,17 @@
 # This file is ITSELF L(-1) (matched by `scripts/*.toml` below), so the cage cannot be silently
 # narrowed: removing a pattern is itself an L(-1) edit that needs the owner-ack trailer.
 #
-# Patterns are gitignore-style POSIX paths (forward slashes): `*` matches within one path segment,
-# `**` matches any depth, `?` one non-`/` char. Matched against each commit's diff file paths. Many
-# targets do not exist yet (deny.toml, .gitleaks.toml, supply-chain/, requirements-ci.txt, src-tauri/
-# capabilities/, engines.lock, docs/process/) - their globs are authored NOW so the cage is ready
-# the moment the file lands (a not-yet-existing glob simply matches nothing).
+# Patterns are gitignore-style POSIX paths (forward slashes), matched ROOT-ANCHORED against each
+# commit's diff file paths (check-l-neg1-ack compiles `^...$`): `*` matches within one path segment,
+# `**` matches any depth, `?` one non-`/` char. Several targets did not exist at authoring time
+# (deny.toml, .gitleaks.toml, supply-chain/, requirements-ci.txt, src-tauri/capabilities/,
+# docs/process/) - their globs were authored ahead so the cage is ready the moment each file lands
+# (a not-yet-existing glob matches nothing). engines.lock was ALSO authored ahead but in a spelling
+# root-anchoring could never match, and had to be re-spelled `src-tauri/engines.lock` the day the
+# file landed (P4.56.1): a root-anchored pattern must name the FULL repo-relative path or it
+# silently protects nothing - the dead-glob class that check-l-neg1-ack's cage-liveness audit now
+# fails on. Since that audit, a glob authored ahead of its target must be DECLARED in the gate's
+# AUDIT_DECLARED_TARGETLESS set with its reason, or the audit fails it the moment it is added.
 
 patterns = [
   # --- gate scripts + their self-tests (the enforcement logic itself) ---
@@ -45,7 +51,7 @@ patterns = [
   ".gitleaks-baseline.json",      # the gitleaks one-time accepted-findings baseline (G2)
   "supply-chain/**",              # cargo-vet exemption set (config.toml) + the committed imports.lock
   ".gitattributes",               # LFS / EOL / merge attributes
-  ".lfsconfig",                   # git-LFS endpoint
+  ".lfsconfig",                   # git-LFS endpoint OVERRIDE - optional even under LFS (the default endpoint needs none), so legitimately target-less; declared in AUDIT_DECLARED_TARGETLESS
   "requirements-ci.txt",          # the pip gate-toolchain layer (Semgrep et al.) - reads CI secrets + emits findings (r7, P0.2.14)
   "requirements-yamllint.txt",    # the pip-pinned yamllint linter for the §6.7.1 Lane-A YAML leg (P1.52.3)
 
@@ -56,7 +62,7 @@ patterns = [
   "coverage-floors.toml",         # the G27 per-domain coverage-floor ratchet; lowering a floor weakens the coverage plane (increase-only)
   "max_survived_mutants.toml",    # the G15 mutation-testing survived-mutant ratchet (P3.72); raising a count weakens the kernel-test plane (decrease-only)
   "src-tauri/capabilities/**",    # the locked Tauri capabilities / permissions allowlist
-  "engines.lock",                 # the pinned bundled-engine digests
+  "src-tauri/engines.lock",       # the pinned bundled-engine digests (the §3.7.2 home, landed P4.56.1; patterns are root-anchored, so the path is spelled in full)
 
   # --- the docs that DEFINE the gates + the process (incl. the reviewer-rubric block) ---
   "docs/security/**",             # security-concept.md + build-gates.md (the Gnn catalogue)
