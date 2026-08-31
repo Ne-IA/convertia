@@ -28,6 +28,16 @@ coverage/
 # Installed pinned gate tools (downloaded + checksum-verified by scripts/install-gate-tools)
 .gate-tools/
 
+# The restored engine-asset cache (§6.1.3, keyed `<engine>-<version>-<triple>`) that
+# scripts/stage-engines reads, and the engine bytes it stages out of it. Both are build-time
+# artifacts, never committed (DEVELOPMENT.md "Bundled conversion engines"); the tracked .gitkeep
+# keeps the two §0.7/CLAUDE-§1a-mapped destination dirs present for G69.
+.engine-cache/
+/src-tauri/binaries/*
+!/src-tauri/binaries/.gitkeep
+/src-tauri/resources/*
+!/src-tauri/resources/.gitkeep
+
 # Python bytecode cache (the stdlib-only gate + bootstrap scripts)
 __pycache__/
 *.pyc

@@ -91,7 +91,7 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 │   ├── security/                   → `security-concept.md` + `build-gates.md` (G1..Gnn)
 │   └── spec/                       → the spec (how) — `00-architecture` … `07-app-shell`
 │       └── 04-formats/             → the per-category §04 format matrices
-├── scripts/                        → the stdlib gate scripts + pinned-tool installer + bundle/SBOM/checksum (§06, P0.2; L(-1))
+├── scripts/                        → the stdlib gate scripts + pinned-tool installer + bundle/SBOM/checksum (§06, P0.2; the L(-1) cage is per-FILE via `l-neg1-files.toml`, never dir-wide)
 │   ├── gate-selftests/             → the G24 `g24-*`/`g54-*` planted-positive self-tests (the G10 canary)
 │   │   ├── gitleaks-fixtures/      → G2 gitleaks self-test fixtures
 │   │   └── typos-fixtures/         → G51 typos self-test fixtures

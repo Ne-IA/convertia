@@ -1,0 +1,920 @@
+#!/usr/bin/env python3
+"""stage-engines - the §3.3.2/§6.1.3 build-time engine-assembly script (P4.27).
+
+Runs BEFORE `tauri build` and turns the restored, checksum-verified engine-asset cache
+(§6.1.3, keyed `<engine>-<version>-<triple>`) into the two physical bundling shapes §3.3.1
+`[DECIDED]`:
+
+  * `bundle.externalBin` SIDECARS -> `src-tauri/binaries/<name>-<target-triple>[.exe]`, the
+    target-triple-suffixed naming Tauri requires. The suffix is a STAGE-time convention only:
+    Tauri strips it when bundling, so the shipped file beside the app exe is the bare
+    `ffmpeg`/`ffmpeg.exe` the §3.3.3 `current_exe().parent()` resolver looks for.
+  * `bundle.resources` ENGINE TREES -> `src-tauri/resources/<subdir>/` over the CLOSED §3.3.1
+    source-key set {libreoffice, image, fonts}. The bundle-internal TARGET paths
+    (`engines/libreoffice/`, `engines/image/`, `fonts/`) are Tauri's mapping, not ours, so the
+    §3.3.3 `BaseDirectory::Resource` resolve literals are untouched by where we stage from.
+
+Per-OS layout (§3.4.5): a `-pc-windows-` triple gets the `.exe` suffix; every other triple gets
+the executable bit set on the staged sidecar (a dropped +x otherwise surfaces at runtime as a
+misleading startup "integrity failed" rather than a packaging error, G37). §3.4.5's macOS `.app`
+column is a RECORDED NO-OP for this script: the `.app` is assembled by `tauri build` out of these
+same two destinations, the fat-Mach-O merge that precedes it is P4.29 and the install_name
+relocation P4.30 - staging itself places identical per-arch bytes on all three platforms.
+
+It NEVER touches the network. It reads only the restored cache directory; the cache restore and
+its checksum-verified pinned-URL populate path are P4.28, and the SHA-256 verify against
+`engines.lock` that must precede staging is G37's, run by the workflow ahead of this script.
+The restored cache legitimately carries entries this script does NOT stage - the P4.34 ruling
+(2026-07-22) restores the imgworker's per-triple LINK INPUTS (headers + static libs) under the
+same `<lib>-<version>-<triple>` key scheme, and a header can never ship - so an entry no row
+claims is reported, never an error.
+
+SCOPE (P4.27 - the generic skeleton). `STAGED_ENGINES` is the declarative per-engine row set and
+it is EMPTY here by design: a staging row is inseparable from the version pin and `engines.lock`
+row it stages, so each one is authored by the named, scheduled staging box that owns that engine
+(P5.1 / P5.3 / P5.5 / P5.8 / P5.11 / P5.13 image stack, P6.1 FFmpeg, P7.1 / P7.2 LibreOffice +
+fonts) - and for LibreOffice specifically §3.3.1 additionally `[DEFER]`s the
+launcher-as-externalBin vs launcher-in-resources split to that same §6.1 packaging step.
+The MECHANISM below is live and exercised by --selftest; with no rows declared a run is a
+target-absent no-op that says so - the same skip-with-notice posture `check-build-matrix` (G30)
+holds for its sidecar slice assertion until a sidecar is staged. Each excluded piece is its own
+box: the macOS dual-arch `lipo -create` merge (P4.29), the rpath/install_name relocation
+(P4.30), the `tauri.conf.json` externalBin/resources wiring (P4.31), the in-bundle hash manifest
+(P4.41), the §6.1.3 build-assertion framework (P4.51).
+
+[Build-Session-Entscheidung: P4.27] --selftest lives IN this file. The repo's only Python-test
+runner is `run-gate-selftests` over `scripts/gate-selftests/`, which is L(-1) (G71) and therefore
+not the autonomous Build-Loop's to author; shipping build tooling with no committed test at all
+would be worse. So the tool carries its own fixture-driven regression suite here (every entry
+point takes `--root`/`--cache-root`/`--target` overrides, the same fixture seam every `check-*`
+gate script exposes), and the INDEPENDENT armed canary `scripts/gate-selftests/g24-stage-engines.py`
+- which must plant its positives from outside this file, so a neutering edit here cannot neuter
+its own check - is the planned owner-acked L(-1) hand-off. That canary will load this file the way
+every `g24-*` self-test loads its tool (a bare `SourceFileLoader` + `module_from_spec`, with NO
+`sys.modules` entry); `@dataclass` cannot survive that idiom - it looks its own class's module up
+in `sys.modules` and dies on the `None` - which is why the two record types below are
+`NamedTuple`s. The tool has to be importable under the ESTABLISHED idiom, not one bent to fit it.
+
+Usage:
+  stage-engines [--target TRIPLE] [--cache-root DIR] [--root DIR] [--dry-run] [-v]
+  stage-engines --check [...]      # resolve + validate only, write nothing
+  stage-engines --selftest         # the tool's own fixture-driven regression suite
+
+stdlib-only. Exit: 0 = staged (or nothing declared yet); 1 = a staging violation; 2 = a
+structural prerequisite is unusable (missing cache root, unresolvable target).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import platform
+import shutil
+import stat
+import sys
+import tempfile
+from enum import Enum
+from pathlib import Path
+from typing import NamedTuple
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# §3.3.2 step 2 / step 3: the two staging destinations, relative to the repo root. Both are
+# §0.7/CLAUDE-§1a-mapped, tracked-by-.gitkeep dirs; their staged CONTENT is build output and is
+# gitignored (never committed - DEVELOPMENT.md "Bundled conversion engines").
+BINARIES_REL = "src-tauri/binaries"
+RESOURCES_REL = "src-tauri/resources"
+# The restored engine-asset cache (§6.1.3). P4.28 wires the `actions/cache` restore into this
+# path; a local build populates it the same way. Gitignored, like `.gate-tools/`.
+DEFAULT_CACHE_REL = ".engine-cache"
+
+# §3.3.1's `bundle.resources` map fixes the SOURCE keys, so this set is closed: a resource row
+# naming anything else would stage a tree Tauri never bundles. P5-P7 fill rows INTO these three,
+# they do not add a fourth (that would be a §3.3.1 change, i.e. a spec edit first).
+RESOURCE_SUBDIRS = ("libreoffice", "image", "fonts")
+
+# §3.4.5's v1 target triples. The `[DEFER]`red Windows-aarch64 and Linux-musl triples are absent
+# on purpose: an unknown triple must fail clearly rather than stage under a name Tauri will not
+# resolve. `universal-apple-darwin` is deliberately NOT here - see resolve_target().
+V1_TARGET_TRIPLES = (
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+)
+UNIVERSAL_TRIPLE = "universal-apple-darwin"
+# The §3.4.5 "Engine exe extension" row keys off the triple, never off the HOST: a cross-named
+# stage (e.g. --target for another platform in a self-test) must still get the right suffix.
+_WINDOWS_TRIPLE_MARKER = "-pc-windows-"
+
+# (platform.system(), platform.machine()) -> the §3.4.5 triple for that runner.
+_HOST_TRIPLES = {
+    ("Windows", "AMD64"): "x86_64-pc-windows-msvc",
+    ("Windows", "x86_64"): "x86_64-pc-windows-msvc",
+    ("Darwin", "arm64"): "aarch64-apple-darwin",
+    ("Darwin", "x86_64"): "x86_64-apple-darwin",
+    ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+}
+
+
+class StagingError(Exception):
+    """A staging violation (exit 1) or an unusable prerequisite (exit 2, `structural=True`)."""
+
+    def __init__(self, msg: str, *, structural: bool = False) -> None:
+        super().__init__(msg)
+        self.structural = structural
+
+
+class StagingKind(Enum):
+    SIDECAR = "sidecar"
+    RESOURCE_TREE = "resource-tree"
+
+
+class EngineStaging(NamedTuple):
+    """One declared per-engine staging row (§3.3.2 step 2 / step 3).
+
+    cache_engine: the `<engine>` token of the §6.1.3 cache key `<engine>-<version>-<triple>`.
+    kind:         which of the two §3.3.1 bundling mechanisms this row uses.
+    dest:         SIDECAR -> the BARE binary name (§3.3.3's EngineId->binary-name table, e.g.
+                  "ffmpeg"); RESOURCE_TREE -> the RESOURCE_SUBDIRS member to stage into.
+    member:       the path INSIDE the restored cache entry to take ("" = the entry root). A
+                  sidecar row names the file (one cache entry can carry several, e.g. ffmpeg and
+                  ffprobe); a resource row names the subtree, or "" for the whole entry.
+    """
+
+    cache_engine: str
+    kind: StagingKind
+    dest: str
+    member: str = ""
+
+
+# The per-engine rows. EMPTY at P4.27 by design - see the module docstring's SCOPE paragraph: a
+# staging row is inseparable from the version pin and `engines.lock` row it stages, so each one is
+# authored by the P5-P7 staging box that owns that engine (and for LibreOffice specifically,
+# §3.3.1 additionally `[DEFER]`s the launcher-as-externalBin vs launcher-in-resources split to
+# that same step). SEVERAL rows may share one RESOURCE_TREE destination - §3.3.1 maps the whole
+# image stack onto `resources/image/` - which is what clear_resource_destinations() is keyed on.
+STAGED_ENGINES: tuple[EngineStaging, ...] = ()
+
+
+class StagedResult(NamedTuple):
+    row: EngineStaging
+    entry: Path | None  # the matched cache entry, None when the engine is not in the cache
+    dest: Path | None  # the staged destination, None when nothing was staged
+
+
+def fail(msg: str) -> None:
+    print(f"[stage-engines] {msg}", file=sys.stderr)
+
+
+def note(msg: str) -> None:
+    print(f"[stage-engines] {msg}")
+
+
+def host_target_triple() -> str | None:
+    """The §3.4.5 triple for the current runner, or None if this host has no v1 triple."""
+    return _HOST_TRIPLES.get((platform.system(), platform.machine()))
+
+
+def resolve_target(explicit: str | None) -> str:
+    """The triple to stage for: an explicit --target, else the host's. Raises StagingError."""
+    if explicit == UNIVERSAL_TRIPLE:
+        raise StagingError(
+            f"target '{UNIVERSAL_TRIPLE}' needs both per-arch slices sourced from the cache and "
+            "merged with `lipo -create` into one fat Mach-O (§6.1.3 - Tauri does NOT lipo "
+            "sidecars); that dual-arch merge is box P4.29. This skeleton stages exactly one "
+            "per-arch triple: pass --target aarch64-apple-darwin or x86_64-apple-darwin.",
+            structural=True,
+        )
+    if explicit is not None:
+        if explicit not in V1_TARGET_TRIPLES:
+            raise StagingError(
+                f"unknown target triple '{explicit}'; the §3.4.5 v1 set is "
+                f"{', '.join(V1_TARGET_TRIPLES)}",
+                structural=True,
+            )
+        return explicit
+    host = host_target_triple()
+    if host is None:
+        raise StagingError(
+            f"no §3.4.5 v1 target triple for this host "
+            f"({platform.system()}/{platform.machine()}); pass --target explicitly",
+            structural=True,
+        )
+    return host
+
+
+def exe_suffix(triple: str) -> str:
+    """§3.4.5: `.exe` on Windows, nothing elsewhere - keyed off the TRIPLE, not the host."""
+    return ".exe" if _WINDOWS_TRIPLE_MARKER in triple else ""
+
+
+def sidecar_filename(binary: str, triple: str) -> str:
+    """The externalBin stage-time name Tauri requires: `<name>-<target-triple>[.exe]`."""
+    return f"{binary}-{triple}{exe_suffix(triple)}"
+
+
+def sidecar_dest(root: Path, binary: str, triple: str) -> Path:
+    return root / BINARIES_REL / sidecar_filename(binary, triple)
+
+
+def resource_dest(root: Path, subdir: str) -> Path:
+    if subdir not in RESOURCE_SUBDIRS:
+        raise StagingError(
+            f"resource subdir '{subdir}' is not a §3.3.1 `bundle.resources` source key "
+            f"({', '.join(RESOURCE_SUBDIRS)}) - Tauri would never bundle it"
+        )
+    return root / RESOURCES_REL / subdir
+
+
+def cache_entry_matches(name: str, cache_engine: str, triple: str) -> bool:
+    """Does this cache dir name parse as `<cache_engine>-<version>-<triple>` with a real version?
+
+    The `<version>` is matched by exclusion rather than by a version grammar: both the engine
+    name (`convertia-imgworker`) and a version (`7.1-full_build`) can carry dashes, so anchoring
+    on the two ends and requiring a non-empty middle is the only unambiguous parse.
+    """
+    prefix, suffix = f"{cache_engine}-", f"-{triple}"
+    return (
+        name.startswith(prefix)
+        and name.endswith(suffix)
+        and len(name) > len(prefix) + len(suffix)
+    )
+
+
+def select_cache_entry(cache_root: Path, cache_engine: str, triple: str) -> Path | None:
+    """The one restored cache entry for (engine, triple), or None. Two = fail-closed.
+
+    Two entries mean two pinned versions of one engine are restored at once; picking either would
+    silently decide which version ships, so it is an error, not a heuristic.
+    """
+    matches = sorted(
+        d for d in cache_root.iterdir() if d.is_dir() and cache_entry_matches(d.name, cache_engine, triple)
+    )
+    if len(matches) > 1:
+        raise StagingError(
+            f"ambiguous engine-asset cache: {len(matches)} entries for '{cache_engine}' at "
+            f"{triple} ({', '.join(m.name for m in matches)}) - exactly one pinned version may "
+            "be restored per engine per triple (§6.1.3)"
+        )
+    return matches[0] if matches else None
+
+
+def unclaimed_cache_entries(
+    cache_root: Path, rows: tuple[EngineStaging, ...], triple: str
+) -> list[str]:
+    """Cache entries for the RESOLVED triple that no declared row claims - INFORMATIONAL only.
+
+    Deliberately not an error. The P4.34 ruling (2026-07-22) restores the imgworker's per-triple
+    LINK INPUTS (headers + static libs for libheif/libde265/librsvg/cgif/libimagequant) from this
+    same cache under the same `<lib>-<version>-<triple>` key scheme; those are compile inputs that
+    must never be staged, so "every restored entry has a staging row" is simply false. Surfacing
+    them under -v keeps a genuinely forgotten row visible without inventing a rule the plan
+    contradicts. Entries for OTHER triples are none of this run's business and are skipped.
+    """
+    claimed = {r.cache_engine for r in rows}
+    unclaimed = []
+    for d in sorted(cache_root.iterdir()):
+        if not d.is_dir() or not d.name.endswith(f"-{triple}"):
+            continue
+        if not any(cache_entry_matches(d.name, engine, triple) for engine in claimed):
+            unclaimed.append(d.name)
+    return unclaimed
+
+
+def ambiguous_engine_entries(
+    cache_root: Path, rows: tuple[EngineStaging, ...], triple: str
+) -> list[tuple[str, list[str]]]:
+    """Cache entries that parse as belonging to MORE THAN ONE declared engine - fail-closed.
+
+    `cache_entry_matches` anchors on the two ends and treats the middle as the version, so a
+    declared engine whose name is a dash-prefix of another (`libvips` vs a hypothetical
+    `libvips-tools`) would claim the longer one's entries as version `tools-<ver>`. Picking either
+    reading would silently decide which artifact ships, so an entry two declared engines both
+    claim is an error rather than a longest-prefix heuristic.
+    """
+    engines = sorted({r.cache_engine for r in rows})
+    collisions = []
+    for d in sorted(cache_root.iterdir()):
+        if not d.is_dir():
+            continue
+        claimants = [e for e in engines if cache_entry_matches(d.name, e, triple)]
+        if len(claimants) > 1:
+            collisions.append((d.name, claimants))
+    return collisions
+
+
+def _set_exec_bit(path: Path) -> None:
+    """§3.4.5: the executable bit must be set on a non-Windows staged sidecar."""
+    mode = path.stat().st_mode
+    path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _member_path(entry: Path, member: str) -> Path:
+    """Resolve a row's `member` INSIDE its cache entry, refusing any escape from it."""
+    candidate = (entry / member).resolve() if member else entry.resolve()
+    root = entry.resolve()
+    if candidate != root and root not in candidate.parents:
+        raise StagingError(f"cache member '{member}' escapes its entry {entry.name}")
+    return candidate
+
+
+def stage_sidecar(entry: Path, row: EngineStaging, triple: str, root: Path, *, write: bool) -> Path:
+    src = _member_path(entry, row.member or row.dest)
+    if not src.is_file():
+        raise StagingError(
+            f"sidecar '{row.dest}': {src} is missing from the restored cache entry {entry.name}"
+        )
+    dest = sidecar_dest(root, row.dest, triple)
+    if write:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        if not exe_suffix(triple):
+            _set_exec_bit(dest)
+    return dest
+
+
+def stage_resource_tree(entry: Path, row: EngineStaging, root: Path, *, write: bool) -> Path:
+    src = _member_path(entry, row.member)
+    if not src.is_dir():
+        raise StagingError(
+            f"resource tree '{row.dest}': {src} is missing from the restored cache entry "
+            f"{entry.name} (a `bundle.resources` row stages a DIRECTORY, §3.3.1)"
+        )
+    dest = resource_dest(root, row.dest)
+    # BEFORE any byte moves, and on --check too: a tree that would carry an escaping link is
+    # refused without writing one, so nothing out-of-entry ever lands in src-tauri/.
+    assert_no_escaping_links(src, row)
+    if write:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # dirs_exist_ok because SEVERAL rows legitimately share one destination: §3.3.1 maps the
+        # whole image stack onto the single `resources/image/` source key and the six P5 boxes
+        # (P5.1/P5.3/P5.5/P5.8/P5.11/P5.13) each stage their own cache entry into it. The
+        # replace-don't-merge clear is therefore per DESTINATION, once per run, in
+        # clear_resource_destinations() - doing it here would make row N erase rows 1..N-1.
+        # symlinks=True preserves links instead of dereferencing them: a real LibreOffice/.app
+        # tree is full of internal symlinks, and dereferencing would let a tampered cache entry
+        # (§0.11 T3a, the Actions-cache poisoning class G37 names) pull an out-of-entry file INTO
+        # the bundle. Preserving is not itself a refusal, so assert_no_escaping_links above is the
+        # actual tree-content counterpart of the _member_path guard.
+        shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True)
+    return dest
+
+
+def clear_resource_destinations(
+    root: Path, rows: tuple[EngineStaging, ...], *, write: bool
+) -> None:
+    """Clear each DISTINCT resource destination once per run, BEFORE any row copies into it.
+
+    Replace, never merge: an `engines.lock` version bump re-staged over the previous tree would
+    otherwise leave behind files the new version dropped, and P4.41's hash manifest + G35's SBOM
+    are generated FROM what is staged, so nothing downstream would notice. Keyed on the
+    DESTINATION rather than on the row, because §3.3.1 maps several engines onto one source key.
+
+    Consequence P5-P7 inherit: a declared row whose cache entry is ABSENT is not an error (§6.1.3
+    lets a platform ship without a §3.4-unavailable engine), so a total cache miss now leaves the
+    destination DELETED rather than stale. That is the safe direction - an empty destination fails
+    P4.42's §7.2.3 presence loop, where a leftover stale tree would have passed it. A row that
+    fails mid-loop leaves a partially-cleared destination, which is harmless: the run exits
+    non-zero so `tauri build` never consumes it, the next run clears and repopulates, and these
+    are gitignored build outputs, never user files (§2.0 never-harm is about the SOURCE set).
+    """
+    if not write:
+        return
+    for subdir in sorted({r.dest for r in rows if r.kind is StagingKind.RESOURCE_TREE}):
+        dest = resource_dest(root, subdir)
+        if dest.exists():
+            shutil.rmtree(dest)
+
+
+def _link_target(path: Path) -> Path:
+    r"""Where a symlink or junction points: absolute, prefix-normalised, never raising.
+
+    `os.path.realpath`, NOT `os.readlink` + `Path.resolve()`: on Windows `os.readlink` SUCCEEDS on
+    a junction but returns a `\\?\`-prefixed path that `Path.resolve()` does not normalise, so
+    containment could never hold and every junction - internal ones included - was refused with a
+    wrong diagnosis. `realpath` strips the prefix, resolves both link shapes, and returns a
+    lexically-resolved path for a dangling target instead of raising.
+    """
+    return Path(os.path.realpath(path))
+
+
+def assert_no_escaping_links(src: Path, row: EngineStaging) -> None:
+    """Refuse a SOURCE tree carrying a symlink or junction that resolves OUTSIDE that tree.
+
+    The tree-content counterpart of _member_path, and it runs on the SOURCE, before the copy, for
+    a reason the destination cannot give: `shutil.copytree` keys on `is_symlink()`, which is FALSE
+    for a **Windows directory junction**, so it recurses INTO a junction and MATERIALISES the
+    out-of-entry content as a plain directory - by the time the staged tree exists there is no
+    link left to detect. Checking the source catches both shapes (and never writes the bytes).
+    A preserved absolute/`..` link would in any case still be followed downstream by `tauri
+    build`'s zip/AppImage/`.app` assembly and by P4.41's hash-manifest read, and an out-of-bundle
+    link is exactly the offline-floor break G37b catches at release (§0.11 T3a).
+
+    Two shapes are refused, for two different reasons:
+
+    * a link RESOLVING OUTSIDE the tree - the escape proper; and
+    * an ABSOLUTE symlink, even one pointing inside its own cache entry, because `copytree`
+      preserves a symlink verbatim: the staged copy would still carry the build machine's
+      `.engine-cache/` path, which is outside the bundle on the build box and DANGLING on the
+      user's (breaking the §3.3.3/§3.9.1 beside-the-exe resolution and SSOT *Portable, no
+      installation*). Real engine trees link relatively. A JUNCTION is exempt from this second
+      rule - it is absolute by construction and `copytree` materialises it, so no link survives
+      into the bundle; only its containment matters. Materialisation does mean an in-tree
+      junction's subtree is DUPLICATED in the bundle - a §3.9 size-budget input P5-P7 inherit,
+      invisible at the call site, and the reason a junction is never the cheaper option.
+
+    A junction pointing at its own ANCESTOR is refused as a third shape: it passes containment
+    (an ancestor is inside the tree) yet makes `copytree`'s materialisation recurse until the
+    filesystem refuses. This guard's own walk never descends through a link, so it terminates -
+    but the COPY it would authorise does not, and a named refusal beats a generic OSError.
+    """
+    root = src.resolve()
+    stack = [src]
+    while stack:
+        for path in stack.pop().iterdir():
+            junction = path.is_junction()
+            if junction or path.is_symlink():
+                target = _link_target(path)
+                if target != root and root not in target.parents:
+                    raise StagingError(
+                        f"resource tree '{row.dest}' ({row.cache_engine}): "
+                        f"{path.relative_to(src)} is a link resolving outside the staged tree "
+                        f"({target}) - a bundled tree may only link within itself "
+                        "(§0.11 T3a / the G37b closure)"
+                    )
+                here = path.parent.resolve()
+                if junction and (target == here or target in here.parents):
+                    raise StagingError(
+                        f"resource tree '{row.dest}' ({row.cache_engine}): "
+                        f"{path.relative_to(src)} is a junction pointing at its own ancestor "
+                        f"({target}) - `copytree` MATERIALISES a junction, so staging it would "
+                        "recurse until the filesystem refuses. A junction may only point at a "
+                        "sibling subtree."
+                    )
+                if not junction and os.path.isabs(os.readlink(path)):
+                    raise StagingError(
+                        f"resource tree '{row.dest}' ({row.cache_engine}): "
+                        f"{path.relative_to(src)} is an ABSOLUTE symlink - `copytree` preserves it "
+                        "verbatim, so the staged bundle would carry a build-machine path that "
+                        "dangles on the user's machine (§3.3.3 / §3.9.1). Engine trees link "
+                        "relatively."
+                    )
+                continue
+            if path.is_dir():
+                stack.append(path)
+
+
+def stage_all(
+    root: Path,
+    cache_root: Path,
+    triple: str,
+    rows: tuple[EngineStaging, ...] = STAGED_ENGINES,
+    *,
+    write: bool = True,
+) -> list[StagedResult]:
+    """Stage every declared row for `triple` from `cache_root` into `root`.
+
+    `write=False` is the --check / --dry-run path: everything is resolved and validated (a missing
+    member, an ambiguous pin, an entry two declared engines both claim all still fail), nothing is
+    copied. An entry no row claims is informational, not a failure - see unclaimed_cache_entries.
+    """
+    if not cache_root.is_dir():
+        raise StagingError(
+            f"engine-asset cache root {cache_root} does not exist - it is restored by the "
+            "workflow's `actions/cache` step (P4.28) and is never fetched from the network here",
+            structural=True,
+        )
+    for name, claimants in ambiguous_engine_entries(cache_root, rows, triple):
+        raise StagingError(
+            f"restored cache entry '{name}' parses as belonging to more than one declared engine "
+            f"({', '.join(claimants)}) - the `<engine>-<version>-<triple>` key must identify "
+            "exactly one engine (§6.1.3)"
+        )
+    clear_resource_destinations(root, rows, write=write)
+    results: list[StagedResult] = []
+    for row in rows:
+        entry = select_cache_entry(cache_root, row.cache_engine, triple)
+        if entry is None:
+            results.append(StagedResult(row, None, None))
+            continue
+        if row.kind is StagingKind.SIDECAR:
+            dest = stage_sidecar(entry, row, triple, root, write=write)
+        else:
+            dest = stage_resource_tree(entry, row, root, write=write)
+        results.append(StagedResult(row, entry, dest))
+    return results
+
+
+def report(
+    results: list[StagedResult],
+    triple: str,
+    *,
+    write: bool,
+    verbose: bool,
+    unclaimed: list[str] | None = None,
+) -> None:
+    staged = [r for r in results if r.dest is not None]
+    absent = [r for r in results if r.dest is None]
+    verb = "staged" if write else "resolved"
+    if not results:
+        note(
+            f"no engine staging rows declared yet for {triple} - STAGED_ENGINES is filled by the "
+            "P5-P7 per-engine staging boxes; the mechanism is live"
+        )
+        return
+    note(f"{verb} {len(staged)}/{len(results)} declared engines for {triple}")
+    if verbose:
+        for r in staged:
+            print(f"  {r.row.kind.value:<13} {r.row.dest:<22} <- {r.entry.name if r.entry else ''}")
+        for name in unclaimed or []:
+            print(f"  unclaimed      {name} (a build/link input, or a missing staging row)")
+    for r in absent:
+        note(f"not in the restored cache for {triple}: {r.row.cache_engine} ({r.row.kind.value})")
+
+
+# --------------------------------------------------------------------------------------------
+# --selftest: the fixture-driven regression suite (see the module docstring's decision note).
+# --------------------------------------------------------------------------------------------
+
+_results: list[tuple[str, bool]] = []
+
+
+def _record(name: str, ok: bool) -> None:
+    _results.append((name, ok))
+    print(f"[{'PASS' if ok else 'FAIL'}] {name}")
+
+
+def _raises(fn) -> bool:
+    try:
+        fn()
+    except StagingError:
+        return True
+    return False
+
+
+def _fixture_tree(base: Path) -> tuple[Path, Path]:
+    """A repo-shaped root + a cache root holding one sidecar entry and one resource entry."""
+    root, cache = base / "repo", base / "cache"
+    (root / BINARIES_REL).mkdir(parents=True)
+    (root / RESOURCES_REL).mkdir(parents=True)
+    sidecar_entry = cache / "ffmpeg-7.1-full_build-x86_64-unknown-linux-gnu"
+    sidecar_entry.mkdir(parents=True)
+    (sidecar_entry / "ffmpeg").write_bytes(b"ELF-ish sidecar")
+    (sidecar_entry / "ffprobe").write_bytes(b"ELF-ish sidecar 2")
+    tree_entry = cache / "libreoffice-24.8-x86_64-unknown-linux-gnu"
+    (tree_entry / "program").mkdir(parents=True)
+    (tree_entry / "program" / "soffice.bin").write_bytes(b"launcher")
+    return root, cache
+
+
+_LINUX = "x86_64-unknown-linux-gnu"
+_WIN = "x86_64-pc-windows-msvc"
+_FIXTURE_ROWS = (
+    EngineStaging("ffmpeg", StagingKind.SIDECAR, "ffmpeg"),
+    EngineStaging("ffmpeg", StagingKind.SIDECAR, "ffprobe"),
+    EngineStaging("libreoffice", StagingKind.RESOURCE_TREE, "libreoffice"),
+)
+
+
+def selftest() -> int:
+    # (1) §3.4.5 per-OS layout: the suffix keys off the triple, never off the host.
+    _record("exe suffix: windows triple -> .exe", exe_suffix(_WIN) == ".exe")
+    _record(
+        "exe suffix: macOS/Linux triples -> none",
+        exe_suffix(_LINUX) == "" and exe_suffix("aarch64-apple-darwin") == "",
+    )
+    _record(
+        "externalBin naming: <name>-<triple>[.exe]",
+        sidecar_filename("ffmpeg", _WIN) == "ffmpeg-x86_64-pc-windows-msvc.exe"
+        and sidecar_filename("ffmpeg", _LINUX) == "ffmpeg-x86_64-unknown-linux-gnu",
+    )
+
+    # (2) target resolution, incl. the deliberate universal refusal (the P4.29 boundary).
+    _record("target: explicit v1 triple accepted", resolve_target(_LINUX) == _LINUX)
+    _record("target: universal-apple-darwin refused (P4.29)", _raises(lambda: resolve_target(UNIVERSAL_TRIPLE)))
+    _record("target: unknown triple refused", _raises(lambda: resolve_target("mips-unknown-linux-gnu")))
+    # A host outside _HOST_TRIPLES (Linux aarch64, Windows ARM64) must REPORT, not traceback.
+    host = host_target_triple()
+    _record(
+        "target: host resolution agrees with the table",
+        resolve_target(None) == host if host is not None else _raises(lambda: resolve_target(None)),
+    )
+
+    # (3) cache-key parsing: dashes in both the engine name and the version must still parse.
+    _record(
+        "cache key: dashed version parses",
+        cache_entry_matches("ffmpeg-7.1-full_build-" + _LINUX, "ffmpeg", _LINUX),
+    )
+    _record(
+        "cache key: dashed engine name parses",
+        cache_entry_matches("convertia-imgworker-0.1.0-" + _LINUX, "convertia-imgworker", _LINUX),
+    )
+    _record(
+        "cache key: empty version rejected",
+        not cache_entry_matches("ffmpeg-" + _LINUX, "ffmpeg", _LINUX),
+    )
+    _record(
+        "cache key: other triple rejected",
+        not cache_entry_matches("ffmpeg-7.1-" + _WIN, "ffmpeg", _LINUX),
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        root, cache = _fixture_tree(base)
+
+        # (4) the positive path: placement, triple-suffixing, resources tree, exec bit.
+        results = stage_all(root, cache, _LINUX, _FIXTURE_ROWS)
+        ffmpeg = root / BINARIES_REL / f"ffmpeg-{_LINUX}"
+        ffprobe = root / BINARIES_REL / f"ffprobe-{_LINUX}"
+        tree = root / RESOURCES_REL / "libreoffice" / "program" / "soffice.bin"
+        _record("stage: every declared row resolved", len(results) == 3 and all(r.dest for r in results))
+        _record("stage: sidecars land triple-suffixed in src-tauri/binaries", ffmpeg.is_file() and ffprobe.is_file())
+        _record("stage: two sidecars from ONE cache entry", ffmpeg.read_bytes() != ffprobe.read_bytes())
+        _record("stage: resource tree lands under src-tauri/resources/<subdir>", tree.is_file())
+        _record(
+            "stage: exec bit set on a non-Windows sidecar",
+            bool(ffmpeg.stat().st_mode & stat.S_IXUSR) if os.name != "nt" else True,
+        )
+
+        # (5) idempotence: a re-run over an already-staged tree is clean, not a duplicate/failure.
+        stage_all(root, cache, _LINUX, _FIXTURE_ROWS)
+        _record("stage: re-run is idempotent", ffmpeg.is_file() and tree.is_file())
+
+        # (5b) a re-stage REPLACES the resource tree: a file the bumped version dropped must not
+        # linger and ship (P4.41's manifest + G35's SBOM are generated FROM what is staged).
+        stale = root / RESOURCES_REL / "libreoffice" / "program" / "dropped-by-the-bump"
+        stale.write_bytes(b"stale")
+        stage_all(root, cache, _LINUX, _FIXTURE_ROWS)
+        _record(
+            "stage: a re-stage replaces the tree, leaving no stale file",
+            not stale.exists() and tree.is_file(),
+        )
+
+        # (5b2) SEVERAL rows sharing one destination must ACCUMULATE, not erase each other:
+        # §3.3.1 maps the whole image stack onto `resources/image/`, so P5.1/P5.3/P5.5/P5.8/
+        # P5.11/P5.13 each stage their own cache entry into that one subdir. A per-ROW clear
+        # would leave only the last row's files - up to and including ImageMagick's `policy.xml`,
+        # G37's only structural coder-lockdown. This leg is what pins the per-DESTINATION clear.
+        for eng, lib in (("libvips", "libvips.so"), ("libheif", "libheif.so")):
+            libdir = cache / f"{eng}-1.0-{_LINUX}" / "lib"
+            libdir.mkdir(parents=True)
+            (libdir / lib).write_bytes(b"image-stack component")
+        shared_rows = (
+            EngineStaging("libvips", StagingKind.RESOURCE_TREE, "image"),
+            EngineStaging("libheif", StagingKind.RESOURCE_TREE, "image"),
+        )
+        stage_all(root, cache, _LINUX, shared_rows)
+        image_lib = sorted(p.name for p in (root / RESOURCES_REL / "image" / "lib").iterdir())
+        _record(
+            "stage: rows sharing one destination accumulate, they do not erase each other",
+            image_lib == ["libheif.so", "libvips.so"],
+        )
+        # ...and the per-destination clear still drops what a bump removed, across the group.
+        gone = root / RESOURCES_REL / "image" / "lib" / "dropped-by-the-bump.so"
+        gone.write_bytes(b"stale")
+        stage_all(root, cache, _LINUX, shared_rows)
+        _record(
+            "stage: the per-destination clear still removes a stale file from a shared subdir",
+            not gone.exists()
+            and sorted(p.name for p in (root / RESOURCES_REL / "image" / "lib").iterdir())
+            == ["libheif.so", "libvips.so"],
+        )
+
+        # (5c) symlinks inside a cache entry are PRESERVED (never dereferenced - that would copy
+        # an out-of-entry target INTO the bundle), and a link RESOLVING outside the staged tree is
+        # REFUSED (preserving is not a refusal; the packers and P4.41's manifest read follow it).
+        # §0.11 T3a. Skipped as a recorded PASS where the OS refuses to create a symlink
+        # (unprivileged Windows), so the leg count stays stable for the future g24 canary - which
+        # should assert the skip REASON, not merely the tally, since these are the suite's only
+        # unconditionally-true legs.
+        outside = base / "outside-the-entry.txt"
+        outside.write_bytes(b"out-of-entry sentinel")
+        program = cache / f"libreoffice-24.8-{_LINUX}" / "program"
+        inner, escape = program / "inner.link", program / "escape.link"
+        try:
+            # RELATIVE, like every internal link in a real LibreOffice/.app tree - an ABSOLUTE
+            # link would still point into the build machine's cache entry after the copy, i.e.
+            # outside the bundle, which is precisely what the escape leg below asserts is refused.
+            inner.symlink_to("soffice.bin")
+        except (OSError, NotImplementedError):
+            note("this host cannot create a symlink; the three symlink legs have no subject")
+            _record("stage: symlink preserve leg (skipped - host cannot create symlinks)", True)
+            _record("fail-closed: symlink escape leg (skipped - host cannot create symlinks)", True)
+            _record("fail-closed: absolute-symlink leg (skipped - host cannot create symlinks)", True)
+        else:
+            stage_all(root, cache, _LINUX, _FIXTURE_ROWS)
+            staged_link = root / RESOURCES_REL / "libreoffice" / "program" / "inner.link"
+            _record(
+                "stage: an internal symlink is preserved, not dereferenced",
+                staged_link.is_symlink(),
+            )
+            escape.symlink_to(outside)
+            _record(
+                "fail-closed: a staged symlink resolving outside the staged tree",
+                _raises(lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS)),
+            )
+            escape.unlink()
+            # An ABSOLUTE link pointing INSIDE its own entry passes containment, yet `copytree`
+            # preserves it verbatim so the staged bundle would carry the build machine's
+            # `.engine-cache/` path. This is the class a source-side-only containment check drops.
+            absolute = program / "absolute.link"
+            absolute.symlink_to(program / "soffice.bin")
+            _record(
+                "fail-closed: an absolute symlink, even one pointing inside its own entry",
+                _raises(lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS)),
+            )
+            absolute.unlink()
+            inner.unlink()
+
+        # (5d) a Windows DIRECTORY JUNCTION is NOT a symlink: `copytree` keys on is_symlink(), so
+        # it recurses INTO a junction and materialises the out-of-entry content as a plain
+        # directory - by the time the staged tree exists there is no link left to detect. That is
+        # exactly why the guard runs on the SOURCE. Real junction, real refusal.
+        if os.name == "nt":
+            import subprocess  # test-only: the stdlib has no junction constructor
+
+            outside_dir = base / "outside-dir"
+            outside_dir.mkdir()
+            (outside_dir / "secret.txt").write_bytes(b"out-of-entry sentinel")
+            junction = program / "junction.link"
+            made = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(outside_dir)],
+                capture_output=True,
+                check=False,
+            )
+            if made.returncode == 0:
+                _record(
+                    "fail-closed: a Windows directory junction resolving outside the tree",
+                    _raises(lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS, write=False)),
+                )
+                junction.rmdir()  # removes the junction, never the target
+                # The ALLOW direction, which the refuse leg alone cannot see: `os.readlink`
+                # succeeds on a junction but hands back a `\\?\`-prefixed path that
+                # `Path.resolve()` leaves un-normalised, so containment could never hold and an
+                # INTERNAL junction was refused with a wrong diagnosis - a Windows-only staging
+                # hard-fail at P5-P7. `_link_target` uses `os.path.realpath` for exactly this.
+                inside = program / "real"
+                inside.mkdir()
+                (inside / "inside.txt").write_bytes(b"a genuinely internal target")
+                internal = program / "internal.link"
+                made2 = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(internal), str(inside)],
+                    capture_output=True,
+                    check=False,
+                )
+                if made2.returncode == 0:
+                    allowed = True
+                    try:
+                        stage_all(root, cache, _LINUX, _FIXTURE_ROWS, write=False)
+                    except StagingError:
+                        allowed = False
+                    _record("an internal Windows junction is allowed, not falsely refused", allowed)
+                    internal.rmdir()
+                else:
+                    _record("junction allow leg (skipped - mklink unavailable)", True)
+                shutil.rmtree(inside)
+                # ...and a junction at its own ANCESTOR passes containment yet would make
+                # `copytree`'s materialisation recurse until the filesystem refuses.
+                cycle = program / "cycle.link"
+                made3 = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(cycle), str(cache / f"libreoffice-24.8-{_LINUX}")],
+                    capture_output=True,
+                    check=False,
+                )
+                if made3.returncode == 0:
+                    _record(
+                        "fail-closed: a junction pointing at its own ancestor (the copy would loop)",
+                        _raises(lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS, write=False)),
+                    )
+                    cycle.rmdir()
+                else:
+                    _record("junction cycle leg (skipped - mklink unavailable)", True)
+            else:
+                note("this host refused `mklink /J`; the three junction legs have no subject")
+                _record("fail-closed: junction escape leg (skipped - mklink unavailable)", True)
+                _record("junction allow leg (skipped - mklink unavailable)", True)
+                _record("junction cycle leg (skipped - mklink unavailable)", True)
+        else:
+            _record("fail-closed: junction escape leg (skipped - Windows-only)", True)
+            _record("junction allow leg (skipped - junctions are Windows-only)", True)
+            _record("junction cycle leg (skipped - junctions are Windows-only)", True)
+
+        stage_all(root, cache, _LINUX, _FIXTURE_ROWS)
+
+        # (6) --check / --dry-run resolves + validates but writes nothing.
+        dry_root = base / "dry"
+        (dry_root / BINARIES_REL).mkdir(parents=True)
+        (dry_root / RESOURCES_REL).mkdir(parents=True)
+        stage_all(dry_root, cache, _LINUX, _FIXTURE_ROWS, write=False)
+        _record(
+            "check: nothing written on write=False",
+            not any((dry_root / BINARIES_REL).iterdir()) and not any((dry_root / RESOURCES_REL).iterdir()),
+        )
+
+        # (7) an engine absent from the cache is REPORTED, never invented.
+        absent_rows = _FIXTURE_ROWS + (EngineStaging("pandoc", StagingKind.SIDECAR, "pandoc"),)
+        absent = stage_all(root, cache, _LINUX, absent_rows, write=False)
+        _record(
+            "absent engine reported, not staged",
+            sum(1 for r in absent if r.dest is None) == 1
+            and not (root / BINARIES_REL / f"pandoc-{_LINUX}").exists(),
+        )
+
+        # (8) the fail-closed legs.
+        _record(
+            "fail-closed: a resource subdir outside the §3.3.1 key set",
+            _raises(lambda: resource_dest(root, "ghostscript")),
+        )
+        # An entry no row claims is a build/link input (the P4.34 ruling), NOT a staging error.
+        stage_all(root, cache, _LINUX, _FIXTURE_ROWS[:2], write=False)
+        unclaimed = unclaimed_cache_entries(cache, _FIXTURE_ROWS[:2], _LINUX)
+        _record(
+            "unclaimed cache entry reported, not failed (the P4.34 link-input class)",
+            f"libreoffice-24.8-{_LINUX}" in unclaimed
+            and f"ffmpeg-7.1-full_build-{_LINUX}" not in unclaimed,
+        )
+        _record(
+            "fail-closed: one entry claimed by two declared engines (the dash-prefix collision)",
+            _raises(
+                lambda: stage_all(
+                    root, cache, _LINUX,
+                    _FIXTURE_ROWS + (EngineStaging("ffmpeg-7.1", StagingKind.SIDECAR, "x"),),
+                    write=False,
+                )
+            ),
+        )
+        (cache / f"ffmpeg-7.0-{_LINUX}").mkdir()
+        _record(
+            "fail-closed: two pinned versions of one engine restored",
+            _raises(lambda: select_cache_entry(cache, "ffmpeg", _LINUX)),
+        )
+        shutil.rmtree(cache / f"ffmpeg-7.0-{_LINUX}")
+        _record(
+            "fail-closed: a declared member missing from its cache entry",
+            _raises(
+                lambda: stage_all(
+                    root, cache, _LINUX,
+                    _FIXTURE_ROWS + (EngineStaging("libreoffice", StagingKind.SIDECAR, "soffice"),),
+                    write=False,
+                )
+            ),
+        )
+        _record(
+            "fail-closed: a member path escaping its cache entry",
+            _raises(lambda: _member_path(cache / f"libreoffice-24.8-{_LINUX}", "../ffmpeg-7.1-full_build-" + _LINUX)),
+        )
+        _record(
+            "fail-closed: an absent cache root",
+            _raises(lambda: stage_all(root, base / "no-such-cache", _LINUX, _FIXTURE_ROWS, write=False)),
+        )
+
+    failed = [n for n, ok in _results if not ok]
+    print(f"\n[stage-engines --selftest] {len(_results) - len(failed)}/{len(_results)} passed")
+    if failed:
+        for n in failed:
+            fail(f"FAILED: {n}")
+        return 1
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="stage-engines", description=__doc__.splitlines()[0])
+    ap.add_argument("--root", default=None, help="repo root to stage into (default: the repo; a fixture tree in the self-test)")
+    ap.add_argument("--cache-root", default=None, help=f"restored engine-asset cache (default: <root>/{DEFAULT_CACHE_REL})")
+    ap.add_argument("--target", default=None, help="target triple to stage for (default: this host's)")
+    ap.add_argument("--check", action="store_true", help="resolve + validate only; write nothing")
+    ap.add_argument("--dry-run", action="store_true", help="alias of --check")
+    ap.add_argument("-v", "--verbose", action="store_true", help="list every staged row")
+    ap.add_argument("--selftest", action="store_true", help="run the fixture-driven regression suite")
+    args = ap.parse_args(argv)
+
+    if args.selftest:
+        return selftest()
+
+    root = Path(args.root).resolve() if args.root else ROOT
+    cache_root = Path(args.cache_root).resolve() if args.cache_root else root / DEFAULT_CACHE_REL
+    write = not (args.check or args.dry_run)
+    try:
+        triple = resolve_target(args.target)
+        # With zero declared rows there is nothing to resolve AGAINST the cache, so demanding a
+        # restored cache root would be a spurious failure on a P1-P4 tree that has none. Every
+        # per-row check lives in stage_all and arms itself with the first P5-P7 row.
+        if not STAGED_ENGINES:
+            report([], triple, write=write, verbose=args.verbose)
+            return 0
+        results = stage_all(root, cache_root, triple, STAGED_ENGINES, write=write)
+        unclaimed = unclaimed_cache_entries(cache_root, STAGED_ENGINES, triple)
+    except StagingError as e:
+        fail(str(e))
+        return 2 if e.structural else 1
+    except OSError as e:
+        # A permission denial, a full disk, a dangling symlink in a real engine tree: a clean
+        # diagnosable exit, never a traceback the CI log buries.
+        fail(f"filesystem error while staging for {args.target or 'this host'}: {e}")
+        return 1
+    report(results, triple, write=write, verbose=args.verbose, unclaimed=unclaimed)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -76,9 +76,10 @@ the foundation builds are the app shell and run without them, so an early `pnpm 
 needs no engine download.
 
 When the engines are in play they are **not** committed to the repository — they are large
-and carry their own licenses. Instead each engine is fetched from a **pinned URL recorded in
-`engines.lock`** and verified against its pinned checksum by the staging script
-(`scripts/stage-engines`, added alongside the engine integration) — the same pinned set CI
-stages, so a local build matches what ships. This keeps the repository small and the engine provenance auditable, and it does not
+and carry their own licenses. Instead each engine is pinned by URL and SHA-256 in
+**`engines.lock`**, fetched and checksum-verified at build time into a per-engine asset cache,
+and placed into the bundle by the staging script `scripts/stage-engines`, which reads only that
+verified cache and never the network — the same pinned set CI stages, so a local build matches
+what ships. This keeps the repository small and the engine provenance auditable, and it does not
 weaken the shipped app's offline guarantee: the fetch happens only at **build** time, never
 when a user runs ConvertIA.
