@@ -83,10 +83,17 @@ fingerprint = "sha256:f8dc97d001e1ea3e3b475839b2f58af43ad045188f01f9db6c3567a9cb
 #     holds. The P3.87 precedent is the PROCEDURE (a FILE row leaves the G69 dir-set untouched;
 #     §1a is re-verified and edited iff its own text is touched by the change — P3.87 did re-cut
 #     §1a's src/ parenthetical then), never a no-edit outcome.
+#     Re-blessed 2026-08-31 (the P4.56.1 pre-planned tail): §0.7's engines/ file list gained the
+#     lock.rs FILE row (§3.7.2 engines.lock schema + validator, the (artifact, target-triple) row
+#     law — no directory change, the G69 dir-set untouched) + the three engines container lines
+#     (tree parent row, tier-2 logical block, responsibility bullet) extended with §3.7.2; §1a
+#     re-verified in the same act: its engines/ row was ALREADY extended with the §3.7.2 schema by
+#     the Loop-half commit (3fac83a — §1a is docs-layer, Loop-editable), so this §0.7 edit restores
+#     the projection ORDER (§0.7 is the higher source; the two now agree) with no further §1a edit.
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:c4c238947783cb311cd558a531fab0c53cde573c33919e0ea90f490a68846d9d"
+fingerprint = "sha256:a7432bb37bc74ae7d3c122e66ebf1cd9e8a2d3f7da02feafda3136b064aa9fba"
