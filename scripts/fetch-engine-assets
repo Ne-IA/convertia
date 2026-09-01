@@ -14,9 +14,13 @@ on the P4.28 escalation]`. `ffmpeg`, `ffprobe` and `libmp3lame.so` are three §3
 three ids, three versions and three staged-byte hashes - and ONE download. So the key is built
 from the row's `cache_engine`/`cache_version` (defaulting to `id`/`version`), several rows
 collapse into one fetch, and the §3.7.2 invariant "(cache_engine, triple) has exactly one
-(cache_version, upstream_url, asset_sha256)" is what makes that collapse safe. Keying the group
-on the row's own `version` instead would report `libmp3lame` 3.100 inside the FFmpeg 7.1 entry
-as an ambiguous entry - a hard failure fired at a correct manifest.
+(cache_version, upstream_url, asset_sha256)" is what makes that collapse safe (its
+`upstream_url`/`asset_sha256` half is prebuilt-scoped by the 2026-09-01 mode-scoping follow-up -
+exactly the rows this script accepts; it refuses every non-prebuilt row before grouping, so the
+unqualified reading stays sound HERE, and a P4.28.1 harness that ever extends this script
+inherits the scoped law, not this sentence). Keying the group on the row's own `version` instead
+would report `libmp3lame` 3.100 inside the FFmpeg 7.1 entry as an ambiguous entry - a hard
+failure fired at a correct manifest.
 
 WHAT THE PIN IS A HASH OF. `sha256` is of the STAGED bytes (`RowKind::StagedArtifact`), which
 for an archive asset is a file INSIDE the download - so verifying the download against it can
@@ -83,8 +87,10 @@ a socket - the one network call sits behind an injected `opener` seam the fixtur
 the REAL opener carries the scheme/host guard itself so it is closed by construction rather than
 by its caller. The suite is exception-guarded: an unhandled raise is a NAMED failing leg, never a
 dead tally. The record types are `NamedTuple`s, not `@dataclass`es, for the reason `stage-engines`
-records: the `g24-*` canary idiom (`SourceFileLoader` + `module_from_spec` with NO `sys.modules`
-entry) cannot construct a dataclass, and the tool must be importable under the ESTABLISHED idiom.
+records: this tool's canary loads it with a bare `SourceFileLoader` + `module_from_spec` and NO
+`sys.modules` entry - the NamedTuple-tool discipline this file and stage-engines share (per-tool,
+not a `g24-*` universal) - and a dataclass cannot be constructed under that load, so the tool must
+stay importable without the registration.
 
 Usage:
   fetch-engine-assets --target TRIPLE (--engine GROUP | --all) [--cache-root DIR] [--root DIR]

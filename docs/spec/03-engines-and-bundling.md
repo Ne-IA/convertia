@@ -1672,6 +1672,23 @@ gate is **§6.3**. This section produces the *data* those consume.
        `(cache_version, upstream_url, asset_sha256)`. Deliberately **NOT** keyed on the row's
        own `version`: `libmp3lame` 3.100 ships out of the FFmpeg 7.1 entry, so a
        version-keyed group would report that legitimate pair as an ambiguous entry.
+       **Mode-scoping `[DECIDED — owner adjudication 2026-09-01, the (A′) follow-up on
+       P4.28.1]`:** the `(upstream_url, asset_sha256)` half of the equality is scoped to
+       `acquisition = "prebuilt"` (one entry = one download); a from-source group is a
+       COMPILE that legitimately consumes several signed source tarballs, so there the rule
+       is replaced by the GLOBAL URL-keyed anchor consistency (rows with the same
+       `upstream_url` carry identical `from_source` anchors) plus the explicit
+       one-`acquisition`-per-group check (a mixed-mode group is a contradiction in terms —
+       the check itself is mode-INDEPENDENT, stated here inside the from-source clause only
+       because that is where it becomes load-bearing). `(cache_engine, triple)` ↦ one
+       `cache_version` AND ↦ one `acquisition` stay mode-independent. The validator
+       re-scoping is P4.28.1's Loop-half deliverable (that box also sweeps the interim
+       sentences this decision leaves behind — this passage, the lock.rs module doc, the plan
+       status paragraph, the `tests/engines-lock-cache-group.toml` and
+       `tests/engines-lock-anchor-baseline.toml` fixture headers (both state the unscoped
+       forms), and the L(-1) `engines.lock` header via its pre-declared owner tail); until it
+       lands at P4.28.1 the shipped check is stricter (unconditional) and no from-source group
+       may be written.
      - **`prebuilt_corroboration`** — which §3.8 prebuilt anchor the row rests on
        (`mirrors` | `signed-repo`), **required iff prebuilt**. Without it the corroboration
        URL *count* is uncheckable, which is how a single unsigned download could pass as

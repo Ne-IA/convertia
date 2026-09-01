@@ -31,7 +31,12 @@
 //!   ONE downloaded entry, so those fields are held EQUAL across a group
 //!   ([`LockViolation::CacheGroupMismatch`]) rather than forcing it apart.
 //!   [`EngineRow::asset_sha256`] is likewise exempt from the duplicate-hash rule — siblings out of one
-//!   archive share it by construction.
+//!   archive share it by construction. The 2026-09-01 mode-scoping follow-up (the P4.28.1
+//!   `[DECIDED]` plan note) scopes the `upstream_url`/`asset_sha256` equality to
+//!   `acquisition = "prebuilt"` and re-keys the from-source anchor consistency onto `upstream_url`,
+//!   with an explicit one-`acquisition`-per-group check; that re-scoping is P4.28.1's Loop-half
+//!   deliverable — the check HERE is still the stricter unconditional form, and no from-source
+//!   group may be written to the committed manifest until the re-scoping lands at P4.28.1.
 //! * **The §6.1.3 cache key is a GROUP key, not the row key** `[DECIDED — owner adjudication
 //!   2026-09-01, the (A′) ruling on the P4.28 escalation]`: `(cache_engine, cache_version, triple)`,
 //!   defaulting to `(id, version, triple)` so an engine whose download IS its one artifact declares

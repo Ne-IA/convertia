@@ -53,11 +53,14 @@ would be worse. So the tool carries its own fixture-driven regression suite here
 point takes `--root`/`--cache-root`/`--target` overrides, the same fixture seam every `check-*`
 gate script exposes), and the INDEPENDENT armed canary `scripts/gate-selftests/g24-stage-engines.py`
 - which must plant its positives from outside this file, so a neutering edit here cannot neuter
-its own check - landed 2026-08-31 as the owner-acked L(-1) hand-off. It loads this file the way
-every `g24-*` self-test loads its tool (a bare `SourceFileLoader` + `module_from_spec`, with NO
-`sys.modules` entry); `@dataclass` cannot survive that idiom - it looks its own class's module up
-in `sys.modules` and dies on the `None` - which is why the two record types below are
-`NamedTuple`s. The tool has to be importable under the ESTABLISHED idiom, not one bent to fit it.
+its own check - landed 2026-08-31 as the owner-acked L(-1) hand-off. It loads this file with a
+bare `SourceFileLoader` + `module_from_spec`, with NO `sys.modules` entry; `@dataclass` cannot
+survive that idiom - it looks its own class's module up in `sys.modules` and dies on the `None` -
+which is why the two record types below are `NamedTuple`s. The tool has to be importable under
+that idiom, not one bent to fit it. (The idiom is per-tool, not a `g24-*` universal: canaries
+that DO register the module exist - g24-plan-lint, whose tool legitimately uses `@dataclass`,
+and g24-doc-splice - the no-registration form is the NamedTuple-tool discipline this file and
+fetch-engine-assets share.)
 
 Usage:
   stage-engines [--target TRIPLE] [--cache-root DIR] [--root DIR] [--dry-run] [-v]

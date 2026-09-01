@@ -5,9 +5,11 @@ planned L(-1) hand-off, landed 2026-08-31; G37's staging half, G24 discipline).
 Two jobs, both from OUTSIDE the tool so a neutering edit to stage-engines cannot neuter its own
 check (the P4.27 box's hand-off note):
 
-1. RUN the tool's fixture-driven `--selftest` (its 35 legs now have a CI runner: this file is
+1. RUN the tool's fixture-driven `--selftest` (its 53 legs now have a CI runner: this file is
    discovered by `run-gate-selftests`, so the suite executes at L2 (diff-scoped canary) and L4
-   (3-OS)) and PIN the tally at 35 - the host-stable-count claim, CI-checked.
+   (3-OS)) and PIN the tally at 53 - the host-stable-count claim, CI-checked. (35 at delivery,
+   P4.27; 53 since P4.28/17808aa - the STAGED_ENGINES<->manifest binder + restore-shape legs the
+   (A') ruling rode in; this bump is that box's pre-declared owner-acked tail.)
 
 2. The per-OS skip INVENTORY (the 2026-08-31 owner ruling: no silent skips - every OS-gated leg
    is loud, pinned, and genuinely executes on at least one CI platform). stage-engines records an
@@ -37,7 +39,7 @@ call AND the planted-positive section are both exception-guarded: an unhandled t
 either is a NAMED failing leg, never a dead canary.
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop (the P4.56.3 pattern):
-this file is L(-1)-caged while stage-engines is not, and it PINS the tally (35), the skip-name
+this file is L(-1)-caged while stage-engines is not, and it PINS the tally (53), the skip-name
 inventory, and its OWN leg count - so any box that adds a `--selftest` leg to stage-engines (P4.29 lipo, P4.30
 relocation, P4.41 manifest, P4.51 assertions, the P5-P7 staging boxes) carries the matching
 tally/inventory bump HERE as a pre-planned owner-acked L(-1) tail of that box.
@@ -118,7 +120,7 @@ except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary, here 
     print(f"[g24-stage-engines] --selftest raised: {suite_crashed}")
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
-record("the leg tally is host-stable at 35 (the pinned count)", len(m._results) == 35)
+record("the leg tally is host-stable at 53 (the pinned count)", len(m._results) == 53)
 
 skipped = {name for name, ok in m._results if "(skipped" in name}
 record(
