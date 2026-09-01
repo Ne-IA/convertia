@@ -119,17 +119,30 @@ build-time mechanics that realise them**:
   (Build-from-source remains a documented fallback if a pinned artifact becomes
   unavailable.)
 - **Cache hosting mechanism `[DECIDED]`:** the engine-asset cache is **GitHub Actions
-  cache** (`actions/cache`) keyed **`<engine>-<version>-<triple>`** (e.g.
-  `ffmpeg-7.1-aarch64-apple-darwin`), with a **checksum-verified pinned-upstream-URL fetch**
-  as the populate path / fallback on a cache miss (download the pinned upstream release
-  asset, verify its SHA-256 against the in-repo pin, then store under the same key). Each
+  cache** (`actions/cache`) keyed **`<cache_engine>-<cache_version>-<triple>`** (e.g.
+  `ffmpeg-7.1-aarch64-apple-darwin`) — a **GROUP** key, not a row key: `ffmpeg`, `ffprobe` and
+  `libmp3lame.so` are three §3.7.2 rows and ONE entry, and the tokens default to the row's
+  `id`/`version` so a one-artifact-one-download engine declares neither (§3.7.2 item 1) — with a
+  **checksum-verified pinned-upstream-URL fetch**
+  as the populate path / fallback on a cache miss. **The actor is `scripts/fetch-engine-assets`**
+  (P4.28): it downloads the pinned upstream release asset, verifies its SHA-256 against the
+  **`engines.lock` `asset_sha256` pin** — the DOWNLOAD's own hash, `[DECIDED — owner
+  adjudication 2026-09-01, the (A′) ruling on the P4.28 escalation]`, never the row's `sha256`,
+  which §3.7.2 defines as the hash of the STAGED bytes and so of a file *inside* an archive
+  asset — **before a single byte reaches the cache**, unpacks it, and publishes the entry under
+  the same key with one atomic rename, so a failed verify or a crash leaves no partial entry. Its fetch targets are read from the L(-1)-caged `engines.lock` rows and from
+  nowhere else — never from argv — so the §3.8 engine-source allow-list constrains WHERE it may
+  connect as data, not as script code. Each
   cache entry stores the verified per-triple binary tree; `scripts/stage-engines` reads from
-  the restored cache (never the live network at package time). **macOS dual-arch key scheme:**
+  the restored cache (never the live network at package time) — the two halves are split
+  precisely so that exactly ONE script at package time may open a socket, and only on a miss. **macOS dual-arch key scheme:**
   the universal build needs **two slices per engine** — the key carries the triple, so a
-  macOS engine has **two distinct keys** (`<engine>-<version>-aarch64-apple-darwin` AND
-  `<engine>-<version>-x86_64-apple-darwin`); `scripts/stage-engines` reads both restored slices and
+  macOS engine has **two distinct keys**
+  (`<cache_engine>-<cache_version>-aarch64-apple-darwin` AND
+  `<cache_engine>-<cache_version>-x86_64-apple-darwin`); `scripts/stage-engines` reads both restored slices and
   `lipo -create`s them into the `<name>-universal-apple-darwin` fat binary (§6.1.4). A
-  cache miss on either slice falls back to the pinned-URL fetch for that slice.
+  cache miss on either slice falls back to `scripts/fetch-engine-assets` for that slice, keyed
+  on that slice's own triple.
 - A platform's artifact ships **only the engines available on that platform per
   §3.4**. A patent-gapped engine (e.g. an HEVC encoder absent on a platform) is
   simply not staged there; the affected target is surfaced as unavailable in the UI
@@ -1870,7 +1883,7 @@ If a future SSOT clause is added, it must appear here with an owning section and
 - **[6.1e]** CI runners — **GitHub-hosted for mac/win, self-hosted Linux for Lane A**
   (§6.1.4; budget note retained).
 - **[6.1d]** CI engine-acquisition — **pinned, checksum-verified asset cache** hosted on
-  **`actions/cache` keyed `<engine>-<version>-<triple>`** with a checksum-verified
+  **`actions/cache` keyed `<cache_engine>-<cache_version>-<triple>`** with a checksum-verified
   pinned-upstream-URL populate/fallback; macOS keeps **two per-triple keys per engine**
   (arm64 + x86_64) for the `lipo` universal build (§6.1.3).
 - **[6.4a]** Corpus storage — **small CC0/synthetic in-repo + LFS `corpus-large` for

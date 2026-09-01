@@ -1,0 +1,79 @@
+# tests/engines-lock-cache-group.toml — the §6.1.3 cache-GROUP shape (P4.28, the (A′) ruling).
+#
+# THREE different artifacts that ship out of ONE downloaded cache entry. This is the shape the P4.28
+# escalation surfaced: `scripts/stage-engines` addresses `ffprobe` as a MEMBER inside the
+# `ffmpeg-7.1-<triple>` entry, so the cache key cannot be the row key — keying it on `id` would publish
+# three full unpacked copies of one archive under three keys, and keying the group on the row's own
+# `version` would report `libmp3lame` 3.100 as an ambiguous entry inside FFmpeg 7.1.
+#
+# So each row declares the same `cache_engine`/`cache_version`, and the group invariant holds them to
+# one `upstream_url` and one `asset_sha256` — one entry is one download. What still DIFFERS per row is
+# everything artifact-shaped: `id`, `version`, `licence`, `purl`, and the staged-bytes `sha256`, which
+# is why `asset_sha256` has to be exempt from the duplicate-hash rule (all three carry it identically
+# by construction) while `sha256` stays subject to it.
+#
+# `libmp3lame` additionally carries a DIFFERENT `version` and `licence` from its group siblings, which
+# is the point: the group is an entry, not a component.
+
+[[engine]]
+id = "ffmpeg"
+version = "7.1"
+source_ref = "n7.1"
+triples = ["x86_64-unknown-linux-gnu"]
+kind = "staged-artifact"
+cache_engine = "ffmpeg"
+cache_version = "7.1"
+upstream_url = "https://example.invalid/ffmpeg-7.1-linux64-gpl.tar.xz"
+asset_sha256 = "dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000"
+prebuilt_corroboration = "mirrors"
+licence = "GPL-2.0-or-later"
+linkage = "invoked"
+acquisition = "prebuilt"
+purl = "pkg:generic/ffmpeg@7.1"
+sha256 = "1111000011110000111100001111000011110000111100001111000011110000"
+corroboration_urls = [
+  "https://example.invalid/checksums.sha256",
+  "https://mirror.invalid/ffmpeg/checksums.sha256",
+]
+
+[[engine]]
+id = "ffprobe"
+version = "7.1"
+source_ref = "n7.1"
+triples = ["x86_64-unknown-linux-gnu"]
+kind = "staged-artifact"
+cache_engine = "ffmpeg"
+cache_version = "7.1"
+upstream_url = "https://example.invalid/ffmpeg-7.1-linux64-gpl.tar.xz"
+asset_sha256 = "dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000"
+prebuilt_corroboration = "mirrors"
+licence = "GPL-2.0-or-later"
+linkage = "invoked"
+acquisition = "prebuilt"
+purl = "pkg:generic/ffprobe@7.1"
+sha256 = "2222000022220000222200002222000022220000222200002222000022220000"
+corroboration_urls = [
+  "https://example.invalid/checksums.sha256",
+  "https://mirror.invalid/ffmpeg/checksums.sha256",
+]
+
+[[engine]]
+id = "libmp3lame.so"
+version = "3.100"
+source_ref = "3.100"
+triples = ["x86_64-unknown-linux-gnu"]
+kind = "staged-artifact"
+cache_engine = "ffmpeg"
+cache_version = "7.1"
+upstream_url = "https://example.invalid/ffmpeg-7.1-linux64-gpl.tar.xz"
+asset_sha256 = "dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000"
+prebuilt_corroboration = "mirrors"
+licence = "LGPL-2.0-or-later"
+linkage = "linked"
+acquisition = "prebuilt"
+purl = "pkg:generic/lame@3.100"
+sha256 = "3333000033330000333300003333000033330000333300003333000033330000"
+corroboration_urls = [
+  "https://example.invalid/checksums.sha256",
+  "https://mirror.invalid/ffmpeg/checksums.sha256",
+]

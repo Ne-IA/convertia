@@ -877,12 +877,16 @@ is concretely:
     the universal artifact is `lipo`-merged from both. **The OS level is the DERIVED
     view** — the parse→map flow below resolves the running target's row(s) and projects
     them onto the §3.2.2 `Platform` the `PatentDisposition` carries.
-  - Row law, in full: every field is platform-pure and scalar; the ONLY plural field is
-    the row's `triples` list, which exists so a **byte-identical** platform-invariant
+  - Row law, in full: every field is platform-pure and scalar (or, for `from_source`, a
+    sub-table of scalars); the plural fields are the row's `triples` list (the
+    platform-invariance carve-out) and `corroboration_urls` (declared in §3.7.2 item 1; its
+    ≥ 2-mirror floor is §3.8-(i)); no field is a per-platform MAP.
+    `triples` exists so a **byte-identical** platform-invariant
     artifact (a bundled font, the ImageMagick `policy.xml`, the LibreOffice
     `registrymodifications.xcu`) is ONE row covering several triples rather than N
     copies that could drift. The invariant is **(artifact, triple) ↦ exactly one row**,
-    and **one row = one `sha256`**; the moment any field forks across triples, the row
+    and **one row = one STAGED-BYTES `sha256`**; the moment an ARTIFACT-identifying field forks
+    across triples, the row
     splits. §3.7.2 item 4's sub-component rows follow the same law, with the hash
     anchoring the pinned SOURCE rather than a staged artifact.
 - **How it propagates to the registry (the parse→map→capabilities flow) `[DECIDED]`:**
@@ -1640,13 +1644,38 @@ gate is **§6.3**. This section produces the *data* those consume.
 ### 3.7.2 How it is generated (build step — cross-ref §6.3)
 
 1. The engine inventory (§3.1) is the **single source list**: each engine's id,
-   pinned version (§3.8), upstream URL, SPDX licence id, `linked|invoked|plugin-loaded`
-   class, a mandatory **`purl`** (and a CPE where one exists), and the per-artifact
-   **SHA-256** are declared in the **build manifest `engines.lock`** (in `src-tauri/`;
-   the single canonical name used by §6.3.1/§6.3.2/§6.3.3/§6.8 — there is no
-   `engines.toml`). Every staged shared object (`.dll`/`.dylib`/`.so`, T3a §0.11) gets
-   its own row with its own SHA-256. This manifest is the authoritative input —
-   **not** hand-curated prose, so it can't drift from what actually ships.
+   pinned version (§3.8), upstream URL, one or more **corroboration URLs**
+   (`corroboration_urls`), SPDX licence
+   id, `linked|invoked|plugin-loaded` class, a mandatory **`purl`** (and a CPE where one
+   exists), and the per-artifact **SHA-256** are declared in the **build manifest
+   `engines.lock`** (in `src-tauri/`; the single canonical name used by
+   §6.3.1/§6.3.2/§6.3.3/§6.8 — there is no `engines.toml`). Every staged shared object
+   (`.dll`/`.dylib`/`.so`, T3a §0.11) gets its own row with its own SHA-256. This manifest
+   is the authoritative input — **not** hand-curated prose, so it can't drift from what
+   actually ships.
+   - **The §6.1.3 cache-GROUP fields `[DECIDED — owner adjudication 2026-09-01, the (A′)
+     ruling on the P4.28 escalation]`.** A row's `sha256` is of the **STAGED bytes**, which
+     for an archive asset is a file *inside* the download — so it is **not** what the
+     §6.1.3 populate path can verify a download against, and three artifacts out of one
+     archive are three rows but **one** cache entry. Four further fields close that gap — the
+     three the ruling names plus the corroboration submode that rides with them:
+     - **`asset_sha256`** — SHA-256 of the DOWNLOADED asset, the prebuilt twin of
+       `from_source.tarball_sha256`, **required iff `acquisition = "prebuilt"`**. Where the
+       download IS the staged artifact (a bare binary) it equals `sha256`; that is the
+       degenerate case, not the rule. It is **exempt** from §3.4.4a's one-hash-per-row rule,
+       because every sibling row out of one archive carries it identically by construction.
+     - **`cache_engine` / `cache_version`** — the cache-key tokens, defaulting to the row's
+       `id`/`version` so a one-artifact-one-download engine declares neither. They are
+       **mode-independent**: §6.1.3's download and the §6.1.3-from-source CI compile populate
+       the same key, so no consumer has to know which mode filled it.
+     - **Group invariant:** `(cache_engine, triple)` ↦ exactly one
+       `(cache_version, upstream_url, asset_sha256)`. Deliberately **NOT** keyed on the row's
+       own `version`: `libmp3lame` 3.100 ships out of the FFmpeg 7.1 entry, so a
+       version-keyed group would report that legitimate pair as an ambiguous entry.
+     - **`prebuilt_corroboration`** — which §3.8 prebuilt anchor the row rests on
+       (`mirrors` | `signed-repo`), **required iff prebuilt**. Without it the corroboration
+       URL *count* is uncheckable, which is how a single unsigned download could pass as
+       corroborated.
    - **Pin-establishment provenance `[DECIDED]`:** when a NEW engine version is pinned,
      the recorded SHA-256 MUST be corroborated against the upstream project's own
      published checksum/signature (FFmpeg/LibreOffice/poppler all publish these), with
@@ -1747,7 +1776,12 @@ blocker).
     checksum** for their prebuilt binaries (notably **FFmpeg** — the common Windows builds
     from **gyan.dev / BtbN** are unsigned). For these the corroboration MUST be one of the
     **satisfiable** anchors, named per engine: **(i)** cross-check the **same artifact hash
-    across ≥ 2 independent mirrors/build providers** (an attacker must poison both), **or
+    across ≥ 2 independent mirrors** (an attacker must poison both) — recorded as
+    `prebuilt_corroboration = "mirrors"` with ≥ 2 `corroboration_urls` (§3.7.2 item 1;
+    `[DECIDED — owner adjudication 2026-09-01]` narrows the earlier "mirrors/build providers"
+    literal to **mirrors**: two build PROVIDERS produce two different binaries, so their
+    hashes cannot corroborate one another — only two hosts serving the SAME artifact can),
+    **or
     (ii)** pin via a **distro's GPG-signed package + signed repo metadata** as the provenance
     anchor (e.g. a Debian/Ubuntu/Homebrew-bottle whose package signature is the trust root),
     recording the signed-metadata source URL beside the pin. A bare hash of a single
@@ -1756,7 +1790,9 @@ blocker).
   - **FFmpeg specifically** (the flagship, worst-case engine): v1 corroboration is **either**
     a from-source CI build from the GPG-signed `ffmpeg.org` source release (anchor = signed
     source tarball + digest-pinned build container) **or** a prebuilt cross-checked across ≥ 2
-    independent providers; the chosen mode + corroboration URLs are recorded in `engines.lock`
+    independent **mirrors serving the SAME artifact** (reconciled to the mirrors-only reading
+    above in the same act — two build PROVIDERS produce two different binaries, so a
+    provider cross-check cannot corroborate one hash); the chosen mode + corroboration URLs are recorded in `engines.lock`
     and surfaced to the dual review on any change. build-gates **G37** references this policy
     and must name a satisfiable corroboration source for every engine, FFmpeg included.
 - **Engine-source allow-list (the `[sources]` analogue for engine binaries) `[DECIDED —

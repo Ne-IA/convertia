@@ -1,0 +1,1870 @@
+#!/usr/bin/env python3
+"""fetch-engine-assets - the §6.1.3 checksum-verified cache-MISS populate path (P4.28).
+
+`stage-engines` (P4.27) reads the RESTORED engine-asset cache and never touches the network.
+This is the other half: when `actions/cache` misses a `<cache_engine>-<cache_version>-<triple>`
+key, this script populates it - download the pinned upstream asset, verify its SHA-256 against
+the `engines.lock` row's `asset_sha256`, unpack it, and publish the entry in the exact directory
+shape `stage-engines.select_cache_entry` looks for. It is the ONLY sanctioned network actor at
+package time (§6.1.3's "never the live network at package time" binds `stage-engines`, not this
+populate path), and it runs only on a miss.
+
+A CACHE ENTRY IS A GROUP, NOT A ROW `[DECIDED - owner adjudication 2026-09-01, the (A') ruling
+on the P4.28 escalation]`. `ffmpeg`, `ffprobe` and `libmp3lame.so` are three §3.7.2 rows with
+three ids, three versions and three staged-byte hashes - and ONE download. So the key is built
+from the row's `cache_engine`/`cache_version` (defaulting to `id`/`version`), several rows
+collapse into one fetch, and the §3.7.2 invariant "(cache_engine, triple) has exactly one
+(cache_version, upstream_url, asset_sha256)" is what makes that collapse safe. Keying the group
+on the row's own `version` instead would report `libmp3lame` 3.100 inside the FFmpeg 7.1 entry
+as an ambiguous entry - a hard failure fired at a correct manifest.
+
+WHAT THE PIN IS A HASH OF. `sha256` is of the STAGED bytes (`RowKind::StagedArtifact`), which
+for an archive asset is a file INSIDE the download - so verifying the download against it can
+never succeed. The download's own pin is `asset_sha256`, the prebuilt twin of
+`from_source.tarball_sha256`, required iff `acquisition = "prebuilt"`. Where the download IS the
+staged artifact (a bare binary, no container) the two are equal; that is the degenerate case,
+not the rule. Verifying against the wrong one fails as a FALSE poisoned-upstream alarm, whose
+obvious "fix" - re-pinning `sha256` to the archive hash - would silently destroy G37's
+staged-byte verify.
+
+THE EGRESS BOUND IS THE LOAD-BEARING PROPERTY. Every URL this script opens is READ FROM the
+L(-1)-caged `src-tauri/engines.lock` - never from argv, never from an environment variable,
+never assembled from a template. `--engine` selects a GROUP; it cannot introduce a host, and
+there is deliberately no flag that points the reader at another manifest. So WHERE this script
+may connect is L(-1) data policed by the P4.56.3 origin allow-list gate, not script code.
+REDIRECTS ARE PART OF THAT BOUND: `urllib` follows them by default and its own policy admits
+`http` and `ftp` and any host, so every hop is re-checked here against the same scheme pin and
+an allow-list of origins - without which a compromised allow-listed host could 302 the fetch to
+plaintext on a host the allow-list never approved. Until P4.56.3's committed per-engine origin
+allow-list exists, the allow-list IS the set of hosts the row itself names. THAT INTERIM SET
+IS PROVENANCE, NOT TRANSPORT, and the two are not the same: a GitHub release asset 302s to
+`objects.githubusercontent.com`, which no row names, so a row pinned at a redirect-to-CDN
+source (BtbN's FFmpeg builds, most SourceForge mirrors) cannot be fetched until P4.56.3's
+list carries a per-engine TRANSPORT-origin set alongside the corroboration one. Recorded on
+that box; widening `corroboration_urls` to carry a CDN would corrupt the field's meaning,
+since P4.56.3 reads it as a provenance property (the two on INDEPENDENT origins).
+
+NOTHING IS PUBLISHED BEFORE ITS HASH VERIFIES. The asset is fetched into memory, hashed, and
+compared BEFORE a single byte reaches the cache root; the entry is then built inside a private
+temp directory and moved into place with one `os.replace`, so a crash or a failed verify leaves
+NO partial entry behind - the same either-fully-succeeds-or-leaves-nothing discipline §2.0
+imposes on conversion output. A verified entry that already exists is a cache hit: nothing is
+re-fetched.
+
+WHY IT UNPACKS. §6.1.3 says "each cache entry stores the verified per-triple binary tree", and
+`stage-engines` resolves members INSIDE an entry directory (`_member_path`). A populate path
+that dropped the raw archive would produce a shape the consumer cannot read, so a cache MISS
+would behave differently from a cache HIT - the exact asymmetry that makes a fallback path rot
+undetected. [Build-Session-Entscheidung: P4.28] So fetch -> verify -> unpack -> publish is one
+indivisible act. Extraction is confined: tar goes through the stdlib `data` filter (the Python
+3.12 floor makes it available and it models more than the pre-check does - device nodes, setuid
+bits, absolute links), zip members are validated before extraction, and EVERY member path -
+including the bare-asset filename derived from the URL - is checked against the entry root
+regardless of what the archive or the URL claims.
+
+SCOPE (P4.28's Loop half - the generic mechanism). `src-tauri/engines.lock` is the L(-1) row set
+and it is an EMPTY skeleton today, so a real run is a target-absent no-op that says so - the same
+skip-with-notice posture `stage-engines` holds with no `STAGED_ENGINES` rows. The MECHANISM below
+is live and exercised by --selftest. Deliberately NOT here: the SHA-pinned `actions/cache`
+restore/save wiring and the thin workflow step that invokes this script (`.github/**`, L(-1) -
+the Co-Pilot-landed owner-acked tail this box declares), the independent armed canary
+`scripts/gate-selftests/g24-fetch-engine-assets.py` which plants the off-`engines.lock`-URL
+positive from OUTSIDE this file (`scripts/gate-selftests/**`, L(-1), same tail), the G37
+restore-re-verify step the G56 workflow-lint sub-rule requires between the restore and
+`stage-engines`, and the from-source CI-compile populate path, which is P4.28.1's distinct box
+(this script handles `acquisition = "prebuilt"` rows only and REFUSES the rest, rather than
+silently treating a build-output pin as a download).
+
+[Build-Session-Entscheidung: P4.28] --selftest lives IN this file, for the P4.27 reason recorded
+verbatim in `stage-engines`: the repo's only Python-test runner is `run-gate-selftests` over the
+L(-1) `scripts/gate-selftests/`, which the autonomous Build-Loop does not author, and shipping
+build tooling with no committed test would be worse. The suite is fixture-driven and NEVER opens
+a socket - the one network call sits behind an injected `opener` seam the fixtures replace, and
+the REAL opener carries the scheme/host guard itself so it is closed by construction rather than
+by its caller. The suite is exception-guarded: an unhandled raise is a NAMED failing leg, never a
+dead tally. The record types are `NamedTuple`s, not `@dataclass`es, for the reason `stage-engines`
+records: the `g24-*` canary idiom (`SourceFileLoader` + `module_from_spec` with NO `sys.modules`
+entry) cannot construct a dataclass, and the tool must be importable under the ESTABLISHED idiom.
+
+Usage:
+  fetch-engine-assets --target TRIPLE (--engine GROUP | --all) [--cache-root DIR] [--root DIR]
+  fetch-engine-assets --check [...]      # report what WOULD be fetched, write nothing
+  fetch-engine-assets --selftest         # the tool's own fixture-driven regression suite
+
+stdlib-only. Exit: 0 = populated (or nothing to do); 1 = a fetch/verify/unpack violation;
+2 = a structural prerequisite is unusable (missing lock file, unresolvable target).
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import http.client
+import io
+import os
+import platform
+import re
+import shutil
+import sys
+import tarfile
+import tempfile
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from pathlib import Path
+from typing import Callable, NamedTuple
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# The L(-1) manifest this script reads its rows - and therefore its egress targets - from. There is
+# deliberately NO flag that overrides this: an alternate manifest would be an argv-supplied set of
+# hosts, which is precisely the bound the module docstring claims does not exist.
+LOCK_REL = "src-tauri/engines.lock"
+
+# Kept identical to `stage-engines`: the cache root both halves agree on.
+DEFAULT_CACHE_REL = ".engine-cache"
+
+# §3.4.5's v1 target triples. The THIRD copy of this set (`src-tauri/src/engines/lock.rs` holds the
+# schema-side one, `scripts/stage-engines` the staging-side one) with no mechanical drift catcher;
+# a row naming anything else is a lock error, not a fetch this script should attempt.
+V1_TARGET_TRIPLES = (
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+)
+
+# The only scheme this script will open, on the first request AND on every redirect hop. Not a
+# policy knob: `file://` would turn the populate path into an arbitrary-local-file-read primitive
+# (§0.11 T9b), and `http://` would strip the transport authentication the pinned hash cannot
+# replace on its own - a hash proves WHAT arrived, never that the host was the pinned one.
+ALLOWED_URL_SCHEME = "https"
+
+# How long one read may block. Without it a hung upstream holds the CI job until the workflow
+# timeout, with no diagnostic naming the URL.
+FETCH_TIMEOUT_SECONDS = 120
+
+# A refusal to buffer an implausibly large asset in memory. The largest v1 engine payload (a
+# LibreOffice program tree) is comfortably under this; the bound exists so a hostile or mis-pinned
+# URL cannot drive the runner into swap before the hash is ever checked.
+MAX_ASSET_BYTES = 1_536 * 1024 * 1024
+
+_SHA256_HEX_LEN = 64
+
+# A cache-key token becomes a PATH COMPONENT (`<cache_engine>-<cache_version>-<triple>` is a
+# directory name under the cache root), so it is untrusted input in exactly the way an archive
+# member name is. `engines.lock` is L(-1) data, but the whole posture of this script is that a
+# MIS-pinned row must not be able to reach outside its lane - and a stray `/` or `..` in a
+# hand-edited version string would otherwise put a verified archive somewhere else entirely.
+_SAFE_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+
+_HOST_TRIPLES = {
+    ("Windows", "AMD64"): "x86_64-pc-windows-msvc",
+    ("Windows", "x86_64"): "x86_64-pc-windows-msvc",
+    ("Darwin", "arm64"): "aarch64-apple-darwin",
+    ("Darwin", "x86_64"): "x86_64-apple-darwin",
+    ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+}
+
+
+class FetchError(Exception):
+    """A fetch/verify/unpack violation - exit 1."""
+
+
+class StructuralError(Exception):
+    """A prerequisite that makes the run impossible - exit 2."""
+
+
+class _AlreadyPublished(Exception):
+    """Not a failure: a concurrent populate published this entry first, so ours was discarded.
+
+    Carried as a control-flow signal rather than a bare return so the caller REPORTS the distinct
+    outcome; reporting it as a populate would claim this run wrote bytes that another run wrote.
+    """
+
+    def __init__(self, digest: str) -> None:
+        super().__init__(digest)
+        self.digest = digest
+
+
+class LockRow(NamedTuple):
+    """One `engines.lock` `[[engine]]` row, reduced to what the populate path needs.
+
+    The AUTHORITATIVE validator is `crate::engines::lock` (P4.56.1, Rust); this reader deliberately
+    re-checks only the fields it is about to ACT on, so the two cannot disagree about a field this
+    script never reads. Everything it does read, it fails closed on.
+    """
+
+    id: str
+    version: str
+    triples: tuple[str, ...]
+    kind: str
+    acquisition: str
+    upstream_url: str
+    sha256: str
+    asset_sha256: str
+    cache_engine: str
+    cache_version: str
+    corroboration_urls: tuple[str, ...]
+
+
+class FetchPlan(NamedTuple):
+    """One §6.1.3 cache ENTRY - the unit this script actually fetches.
+
+    Several rows collapse into one plan: an entry is one download, and `member_ids` records which
+    artifacts ship out of it so the report names them rather than the key alone.
+    """
+
+    entry_name: str
+    triple: str
+    cache_engine: str
+    upstream_url: str
+    asset_sha256: str
+    member_ids: tuple[str, ...]
+    allowed_hosts: frozenset[str]
+    cached: bool
+
+
+def fail(msg: str) -> None:
+    print(f"[fetch-engine-assets] FAIL: {msg}", file=sys.stderr)
+
+
+def note(msg: str) -> None:
+    print(f"[fetch-engine-assets] {msg}")
+
+
+# --------------------------------------------------------------------------------------------
+# Target resolution - the same contract `stage-engines` exposes, so both halves of §6.1.3 agree
+# on what a triple is.
+# --------------------------------------------------------------------------------------------
+
+
+def host_target_triple() -> str | None:
+    return _HOST_TRIPLES.get((platform.system(), platform.machine()))
+
+
+def resolve_target(explicit: str | None) -> str:
+    if explicit is not None:
+        if explicit not in V1_TARGET_TRIPLES:
+            raise StructuralError(
+                f"unknown target triple '{explicit}' - §3.4.5 declares exactly "
+                f"{', '.join(V1_TARGET_TRIPLES)}"
+            )
+        return explicit
+    host = host_target_triple()
+    if host is None:
+        raise StructuralError(
+            f"cannot resolve a target triple for this host "
+            f"({platform.system()}/{platform.machine()}) - pass --target explicitly"
+        )
+    return host
+
+
+# --------------------------------------------------------------------------------------------
+# The lock reader. Every egress target this script has originates HERE.
+# --------------------------------------------------------------------------------------------
+
+
+def _require_str(raw: dict, field: str, where: str) -> str:
+    value = raw.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise StructuralError(
+            f"{where}: `{field}` is missing or not a non-empty string - the manifest must satisfy "
+            "the §3.7.2 schema (`crate::engines::lock` is its authoritative validator)"
+        )
+    return value.strip()
+
+
+def _optional_str(raw: dict, field: str, fallback: str, where: str) -> str:
+    """A group token: absent means "default to the artifact's own", blank means a hand-edit slip."""
+    if field not in raw:
+        return assert_safe_token(fallback, field, where)
+    value = raw[field]
+    if not isinstance(value, str) or not value.strip():
+        raise StructuralError(f"{where}: `{field}` is declared but blank")
+    return assert_safe_token(value.strip(), field, where)
+
+
+def assert_safe_token(token: str, field: str, where: str) -> str:
+    """A cache-key token must be usable as ONE path component.
+
+    Checked here rather than trusted from the manifest: this token is concatenated into a
+    directory name under the cache root, so a `/`, a `\\` or a `..` would relocate a verified
+    archive out of its lane. `crate::engines::lock` enforces the same grammar on the schema side.
+    """
+    if not _SAFE_TOKEN.match(token):
+        raise StructuralError(
+            f"{where}: `{field}` value {token!r} is not usable as a cache-key path component "
+            "(letters, digits, and . _ + - only, not starting with a dot)"
+        )
+    return token
+
+
+def parse_lock(text: str, *, where: str = LOCK_REL) -> tuple[LockRow, ...]:
+    """Parse `engines.lock` into the rows the populate path can act on.
+
+    An empty (comment-only) manifest is a VALID container that yields no rows - the P4.56.1
+    skeleton shape - not an error.
+    """
+    try:
+        doc = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise StructuralError(f"{where}: not valid TOML - {exc}") from exc
+
+    raw_rows = doc.get("engine", [])
+    if not isinstance(raw_rows, list):
+        raise StructuralError(f"{where}: `engine` must be an array of tables")
+
+    rows: list[LockRow] = []
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, dict):
+            raise StructuralError(f"{where}: `engine[{index}]` is not a table")
+        seat = f"{where}: engine[{index}]"
+        triples = raw.get("triples")
+        if not isinstance(triples, list) or not triples:
+            raise StructuralError(f"{seat}: `triples` must be a non-empty array")
+        for triple in triples:
+            if not isinstance(triple, str) or triple not in V1_TARGET_TRIPLES:
+                raise StructuralError(f"{seat}: '{triple}' is not one of the §3.4.5 target triples")
+        identity = _require_str(raw, "id", seat)
+        version = _require_str(raw, "version", seat)
+        acquisition = _require_str(raw, "acquisition", seat)
+        corroboration = raw.get("corroboration_urls", [])
+        if not isinstance(corroboration, list):
+            raise StructuralError(f"{seat}: `corroboration_urls` must be an array")
+        # `asset_sha256` is required iff prebuilt; the Rust validator is the authority, but this
+        # reader would otherwise fetch with nothing to verify the download against.
+        asset = ""
+        if acquisition == "prebuilt":
+            asset = _require_str(raw, "asset_sha256", seat)
+        rows.append(
+            LockRow(
+                id=identity,
+                version=version,
+                triples=tuple(triples),
+                kind=_require_str(raw, "kind", seat),
+                acquisition=acquisition,
+                upstream_url=_require_str(raw, "upstream_url", seat),
+                sha256=_require_str(raw, "sha256", seat),
+                asset_sha256=asset,
+                cache_engine=_optional_str(raw, "cache_engine", identity, seat),
+                cache_version=_optional_str(raw, "cache_version", version, seat),
+                corroboration_urls=tuple(
+                    url.strip() for url in corroboration if isinstance(url, str) and url.strip()
+                ),
+            )
+        )
+    return tuple(rows)
+
+
+def load_lock(lock_path: Path) -> tuple[LockRow, ...]:
+    if not lock_path.is_file():
+        raise StructuralError(f"missing engine manifest: {lock_path} (§3.7.2)")
+    return parse_lock(lock_path.read_text(encoding="utf-8"), where=str(lock_path))
+
+
+def is_fetchable(row: LockRow) -> bool:
+    """Only a PREBUILT staged artifact is downloadable.
+
+    A `sub-component` row's hash anchors a pinned SOURCE, not a cache artifact (§3.7.2 item 4),
+    and a `from-source` row's staged hash is OUR OWN build output - a "build-output stability
+    check, NOT a provenance anchor" (§3.8) whose populate path is the P4.28.1 CI compile.
+    Downloading either would be verifying a hash against bytes it was never a hash OF.
+    """
+    return row.kind == "staged-artifact" and row.acquisition == "prebuilt"
+
+
+def refusal_reason(row: LockRow) -> str:
+    if row.kind != "staged-artifact":
+        return (
+            f"row kind '{row.kind}' is not a staged artifact - a §3.7.2 sub-component row's hash "
+            "anchors a pinned source, which this path cannot download"
+        )
+    return (
+        f"acquisition '{row.acquisition}' is not 'prebuilt' - a from-source pin is verified "
+        "against our own CI build output (§3.8), and its populate path is P4.28.1's compile"
+    )
+
+
+def cache_entry_name(row: LockRow, triple: str) -> str:
+    """The §6.1.3 GROUP key, byte-identical to `EngineRow::cache_key` and to what
+    `stage-engines.cache_entry_matches` parses back out."""
+    return f"{row.cache_engine}-{row.cache_version}-{triple}"
+
+
+# --------------------------------------------------------------------------------------------
+# Grouping: several rows, one entry.
+# --------------------------------------------------------------------------------------------
+
+
+def group_plans(
+    rows: tuple[LockRow, ...], triple: str, cache_root: Path, skipped: list[str] | None = None
+) -> list[FetchPlan]:
+    """Collapse the fetchable rows for one triple into one plan per §6.1.3 cache entry.
+
+    The §3.7.2 group invariant is enforced HERE too, not only in the Rust validator: this script
+    can be pointed at a manifest edit that has not been through `validate()` yet, and publishing
+    two different downloads under one key is the failure the invariant exists to prevent.
+
+    `skipped`, when given, collects a human-readable reason for every row this path declines, so
+    the refusal is observable rather than an unexplained absence from the plan list.
+    """
+    if skipped is None:
+        skipped = []
+    ordered: list[str] = []
+    by_entry: dict[str, list[LockRow]] = {}
+    for row in rows:
+        if triple not in row.triples:
+            continue
+        if not is_fetchable(row):
+            # Surfaced rather than silently skipped: the module docstring claims this path REFUSES
+            # a from-source or sub-component row, and a refusal nobody can observe is not one.
+            skipped.append(f"{row.id}: {refusal_reason(row)}")
+            continue
+        name = cache_entry_name(row, triple)
+        if name not in by_entry:
+            by_entry[name] = []
+            ordered.append(name)
+        by_entry[name].append(row)
+
+    plans: list[FetchPlan] = []
+    for name in ordered:
+        members = by_entry[name]
+        first = members[0]
+        for other in members[1:]:
+            for field, mine, theirs in (
+                ("upstream_url", other.upstream_url, first.upstream_url),
+                ("asset_sha256", other.asset_sha256, first.asset_sha256),
+            ):
+                if mine != theirs:
+                    raise FetchError(
+                        f"ambiguous cache entry '{name}': rows '{first.id}' and '{other.id}' "
+                        f"disagree on `{field}`. One entry is ONE download, so publishing it "
+                        "would have to pick a side (§3.7.2 group invariant)"
+                    )
+        hosts = {urllib.parse.urlsplit(first.upstream_url).netloc}
+        hosts.update(urllib.parse.urlsplit(url).netloc for url in first.corroboration_urls)
+        plans.append(
+            FetchPlan(
+                entry_name=name,
+                triple=triple,
+                cache_engine=first.cache_engine,
+                upstream_url=first.upstream_url,
+                asset_sha256=first.asset_sha256,
+                member_ids=tuple(row.id for row in members),
+                allowed_hosts=frozenset(host for host in hosts if host),
+                cached=(cache_root / name).is_dir(),
+            )
+        )
+    return plans
+
+
+def select_plans(
+    rows: tuple[LockRow, ...],
+    engine: str | None,
+    triple: str,
+    cache_root: Path,
+    skipped: list[str] | None = None,
+) -> list[FetchPlan]:
+    plans = group_plans(rows, triple, cache_root, skipped)
+    if engine is None:
+        return plans
+    chosen = [plan for plan in plans if plan.cache_engine == engine]
+    if not chosen:
+        raise StructuralError(
+            f"no fetchable `engines.lock` cache group '{engine}' at {triple} - this script can "
+            "only fetch what the manifest pins (the egress bound, §3.8)"
+        )
+    return chosen
+
+
+# --------------------------------------------------------------------------------------------
+# Egress: the only place a socket is opened.
+# --------------------------------------------------------------------------------------------
+
+
+def assert_fetchable_url(url: str, allowed_hosts: frozenset[str] | None = None) -> None:
+    """The scheme/host pin, applied to the pinned URL AND to every redirect hop.
+
+    A row is L(-1) data, but a MIS-pinned row - or a compromised allow-listed host answering with
+    a 302 - must still not be able to turn this script into a local-file reader, a plaintext
+    downloader, or a client of a host the allow-list never approved.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != ALLOWED_URL_SCHEME:
+        raise FetchError(
+            f"refusing URL scheme '{parsed.scheme or '(none)'}' for {url!r} - only "
+            f"{ALLOWED_URL_SCHEME} is permitted (a file:// pin would make this an "
+            "arbitrary-local-file-read primitive, §0.11 T9b)"
+        )
+    if not parsed.netloc:
+        raise FetchError(f"refusing URL with no host: {url!r}")
+    if allowed_hosts is not None and parsed.netloc not in allowed_hosts:
+        raise FetchError(
+            f"refusing host '{parsed.netloc}' for {url!r} - not an origin this row names "
+            f"({', '.join(sorted(allowed_hosts)) or 'none'}). P4.56.3's committed per-engine "
+            "origin allow-list is what widens this set; a redirect cannot."
+        )
+
+
+class _PinnedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-applies the scheme/host pin to every hop.
+
+    `urllib`'s own redirect policy admits `http`, `https` and `ftp` to ANY host, so without this
+    the pinned URL is the only one ever checked and the server chooses every one after it.
+    """
+
+    def __init__(self, allowed_hosts: frozenset[str]) -> None:
+        super().__init__()
+        self._allowed = allowed_hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        assert_fetchable_url(newurl, self._allowed)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def build_pinned_opener(allowed_hosts: frozenset[str]) -> urllib.request.OpenerDirector:
+    """The opener the real fetch uses, with the per-hop pin installed.
+
+    Factored out so a test can assert the handler actually REACHES the opener: the pin is one
+    `build_opener` argument, and losing it is a silent downgrade to `urllib`'s own policy, which
+    admits `http`, `ftp` and any host on a redirect.
+    """
+    return urllib.request.build_opener(_PinnedRedirectHandler(allowed_hosts))
+
+
+def read_capped(response, url: str) -> bytes:
+    """Read a response body, refusing to buffer past MAX_ASSET_BYTES.
+
+    Separate from `http_opener` so the ceiling is exercisable without a socket: the check has to
+    live INSIDE the loop (refusing mid-stream), and a regression that moves it after the read
+    would defeat the whole point of the bound.
+    """
+    buffer = io.BytesIO()
+    while True:
+        chunk = response.read(1024 * 1024)
+        if not chunk:
+            break
+        buffer.write(chunk)
+        if buffer.tell() > MAX_ASSET_BYTES:
+            raise FetchError(
+                f"asset exceeds the {MAX_ASSET_BYTES} byte ceiling before its hash could be "
+                f"checked: {url}"
+            )
+    return buffer.getvalue()
+
+
+def http_opener(url: str, allowed_hosts: frozenset[str] | None = None) -> bytes:
+    """The real network seam - guarded by construction, not by its caller.
+
+    The fixtures replace this wholesale (see the module docstring); the guard lives HERE so that
+    calling the real opener directly cannot bypass it.
+    """
+    assert_fetchable_url(url, allowed_hosts)
+    hops = allowed_hosts if allowed_hosts is not None else frozenset()
+    request = urllib.request.Request(url, headers={"User-Agent": "convertia-fetch-engine-assets"})
+    with build_pinned_opener(hops).open(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
+        return read_capped(response, url)
+
+
+def fetch_asset(
+    url: str,
+    *,
+    opener: Callable[..., bytes],
+    allowed_hosts: frozenset[str] | None = None,
+) -> bytes:
+    assert_fetchable_url(url, allowed_hosts)
+    try:
+        data = opener(url, allowed_hosts)
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+        raise FetchError(f"download failed for {url}: {exc}") from exc
+    if len(data) > MAX_ASSET_BYTES:
+        raise FetchError(
+            f"asset exceeds the {MAX_ASSET_BYTES} byte ceiling before its hash could be checked: "
+            f"{url}"
+        )
+    if not data:
+        raise FetchError(f"download produced zero bytes: {url}")
+    return data
+
+
+def verify_sha256(data: bytes, expected: str, *, url: str) -> str:
+    """Verify BEFORE anything is written. Returns the actual digest for the caller to report."""
+    want = expected.strip().lower()
+    if len(want) != _SHA256_HEX_LEN or any(c not in "0123456789abcdef" for c in want):
+        raise FetchError(
+            f"malformed `asset_sha256` pin {expected!r} - a §3.7.2 row carries 64 lowercase hex "
+            "characters"
+        )
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != want:
+        raise FetchError(
+            f"SHA-256 mismatch for {url}\n  pinned:   {want}\n  received: {actual}\n"
+            "The pinned artifact is not what the host served - this is the check that stands "
+            "between a poisoned upstream and the bundle (§3.8), so the entry is NOT published."
+        )
+    return actual
+
+
+# --------------------------------------------------------------------------------------------
+# Unpacking, confined.
+# --------------------------------------------------------------------------------------------
+
+
+def assert_confined_member(name: str, *, archive: str) -> None:
+    """Reject a member path that could escape the entry root, whatever the archive claims.
+
+    This runs IN ADDITION to the stdlib's own guards, not instead of them: `tarfile`'s `data`
+    filter and `ZipFile.extractall` both sanitise, but an archive is untrusted third-party input
+    and the confinement of the cache root is worth asserting where it can be read. It also runs on
+    the bare-asset filename derived from the URL, which no stdlib guard covers at all.
+    """
+    if not name or name in (".", ".."):
+        raise FetchError(f"{archive}: refusing empty or dot member path {name!r}")
+    if "\x00" in name:
+        raise FetchError(f"{archive}: refusing member path with an interior NUL: {name!r}")
+    normalised = name.replace("\\", "/")
+    if normalised.startswith("/"):
+        raise FetchError(f"{archive}: refusing absolute member path {name!r}")
+    parts = [p for p in normalised.split("/") if p]
+    if not parts:
+        raise FetchError(f"{archive}: refusing empty member path {name!r}")
+    if any(p == ".." for p in parts):
+        raise FetchError(f"{archive}: refusing traversing member path {name!r}")
+    # A Windows drive-relative or UNC member (`C:evil`, `\\host\share`) is absolute on one
+    # platform and a plain relative name on another; refuse it on every platform so an archive
+    # cannot behave differently depending on which runner unpacks it.
+    if len(parts[0]) >= 2 and parts[0][1] == ":":
+        raise FetchError(f"{archive}: refusing drive-relative member path {name!r}")
+
+
+def _archive_kind(filename: str, data: bytes) -> str:
+    """Sniff the container. The NAME is a hint; the BYTES decide, so a mis-named pin unpacks
+    correctly rather than landing as an opaque blob."""
+    if data[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
+        return "zip"
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data)):
+            return "tar"
+    except tarfile.TarError:
+        pass
+    lowered = filename.lower()
+    if lowered.endswith(".zip"):
+        return "zip"
+    if ".tar" in lowered or lowered.endswith((".tgz", ".txz", ".tbz2")):
+        return "tar"
+    return "raw"
+
+
+def _asset_filename(url: str) -> str:
+    tail = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1]
+    return tail or "asset"
+
+
+def unpack_into(data: bytes, url: str, dest: Path) -> str:
+    """Materialise the asset as the per-triple tree §6.1.3 says a cache entry holds.
+
+    Returns the container kind actually used, so the caller can report it.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    filename = _asset_filename(url)
+    kind = _archive_kind(filename, data)
+
+    if kind == "zip":
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                for name in archive.namelist():
+                    assert_confined_member(name, archive=filename)
+                archive.extractall(dest)
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise FetchError(f"{filename}: unusable zip container - {exc}") from exc
+    elif kind == "tar":
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+                for member in archive.getmembers():
+                    assert_confined_member(member.name, archive=filename)
+                    if member.islnk() or member.issym():
+                        assert_confined_member(member.linkname, archive=filename)
+                # `filter="data"` is the stdlib's sanctioned guard, and it models MORE than
+                # assert_confined_member does - device nodes, setuid/setgid bits, absolute links.
+                # Its refusals are translated here so a hostile archive exits 1 like every other
+                # violation instead of escaping as an uncaught traceback.
+                archive.extractall(dest, filter="data")
+        except (tarfile.TarError, OSError) as exc:
+            raise FetchError(f"{filename}: unusable tar container - {exc}") from exc
+    else:
+        # Not an archive: a bare binary or library IS the tree, stored under its own name so
+        # `stage-engines`' `_member_path(entry, member)` can address it. The name comes from the
+        # URL, which is untrusted in exactly the way an archive member is - a pin ending in
+        # `D:evil` would otherwise collapse the join and land outside the cache root on Windows.
+        assert_confined_member(filename, archive=filename)
+        target = dest / filename
+        if target.parent.resolve() != dest.resolve():
+            raise FetchError(f"{filename}: refusing an asset name that escapes the entry root")
+        target.write_bytes(data)
+
+    if not any(dest.iterdir()):
+        raise FetchError(
+            f"{filename}: unpacked to an EMPTY entry - a cache entry that stages nothing would "
+            "read as a silent success on every subsequent run"
+        )
+    return kind
+
+
+# --------------------------------------------------------------------------------------------
+# Publication.
+# --------------------------------------------------------------------------------------------
+
+
+def populate(plan: FetchPlan, cache_root: Path, *, opener: Callable[..., bytes]) -> str:
+    """Fetch, verify, unpack and publish ONE entry atomically. Returns the verified digest.
+
+    Ordering is the whole point: the bytes are hashed and compared while they are still only in
+    memory, the tree is built in a PRIVATE temp directory beside the destination, and the last act
+    is a single `os.replace`. A failure at any step leaves the cache exactly as it was. The
+    staging directory is per-ATTEMPT rather than derived from the entry name, so two concurrent
+    populates of one entry cannot unpack into each other's tree.
+    """
+    data = fetch_asset(plan.upstream_url, opener=opener, allowed_hosts=plan.allowed_hosts)
+    digest = verify_sha256(data, plan.asset_sha256, url=plan.upstream_url)
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    try:
+        staging = Path(tempfile.mkdtemp(dir=cache_root, prefix=f".{plan.entry_name}."))
+    except OSError as exc:
+        raise FetchError(
+            f"{plan.entry_name}: could not create a staging directory - {exc}"
+        ) from exc
+    try:
+        unpack_into(data, plan.upstream_url, staging)
+        destination = cache_root / plan.entry_name
+        try:
+            os.replace(staging, destination)
+        except OSError:
+            # A concurrent populate winning the race is benign - its bytes verified against the
+            # SAME pin. Anything else at that path is not: `.exists()` alone would also accept a
+            # stray FILE, turning a permanent failure into a silent no-op reported as success.
+            if not destination.is_dir():
+                raise
+            shutil.rmtree(staging, ignore_errors=True)
+            raise _AlreadyPublished(digest)
+    except FetchError:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise FetchError(f"{plan.entry_name}: could not publish the entry - {exc}") from exc
+    return digest
+
+
+def run(
+    *,
+    lock_path: Path,
+    cache_root: Path,
+    triple: str,
+    engine: str | None,
+    check_only: bool,
+    verbose: bool,
+    opener: Callable[..., bytes],
+) -> int:
+    rows = load_lock(lock_path)
+    if not rows:
+        note(
+            f"{lock_path.name} declares no engine rows yet - nothing to populate for {triple} "
+            "(the P4.56.1 skeleton; each P5-P7 staging box adds its own row)"
+        )
+        return 0
+
+    skipped: list[str] = []
+    plans = select_plans(rows, engine, triple, cache_root, skipped)
+    if verbose:
+        for reason in skipped:
+            note(f"not this path's to fetch - {reason}")
+    if not plans:
+        note(f"no prebuilt `engines.lock` row targets {triple} - nothing to populate")
+        return 0
+
+    hits = 0
+    for plan in plans:
+        members = ", ".join(plan.member_ids)
+        if plan.cached:
+            hits += 1
+            if verbose:
+                note(f"cache hit: {plan.entry_name} ({members})")
+            continue
+        if check_only:
+            note(f"would populate: {plan.entry_name} [{members}] <- {plan.upstream_url}")
+            continue
+        try:
+            digest = populate(plan, cache_root, opener=opener)
+        except _AlreadyPublished as won:
+            hits += 1
+            note(
+                f"{plan.entry_name} [{members}] was published by a concurrent run "
+                f"(asset sha256 {won.digest[:16]}...) - ours discarded"
+            )
+            continue
+        note(
+            f"populated {plan.entry_name} [{members}] (asset sha256 {digest[:16]}...) "
+            f"from {plan.upstream_url}"
+        )
+
+    verb = "would populate" if check_only else "populated"
+    note(f"{triple}: {hits} cache hit(s), {verb} {len(plans) - hits} entr(ies)")
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# --selftest: the fixture-driven regression suite (see the module docstring's decision note).
+# --------------------------------------------------------------------------------------------
+
+_results: list[tuple[str, bool]] = []
+
+
+def _record(name: str, ok: bool) -> None:
+    _results.append((name, ok))
+
+
+def _raises(fn, kind: type[Exception] = Exception) -> bool:
+    try:
+        fn()
+    except kind:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def _raises_saying(fn, needle: str, kind: type[Exception] = Exception) -> bool:
+    """Assert the ARM, not just the type.
+
+    Several distinct violations share one exception class, so a type-only assertion can be
+    satisfied by a different arm than the one under test - which is how the malformed-pin legs
+    below originally passed while the shape check they name was neutered.
+    """
+    try:
+        fn()
+    except kind as exc:
+        return needle in str(exc)
+    except Exception:
+        return False
+    return False
+
+
+_LINUX = "x86_64-unknown-linux-gnu"
+_WIN = "x86_64-pc-windows-msvc"
+
+_PAYLOAD = b"convertia-fetch-engine-assets fixture payload"
+_PAYLOAD_SHA = hashlib.sha256(_PAYLOAD).hexdigest()
+_HOST = "example.invalid"
+# A DISTINCT host, so an allow-list leg can tell "this row's hosts" apart from "the upstream
+# host only" and from "every host in the manifest".
+_CORROB_HOST = "mirror.invalid"
+
+
+def _row_toml(
+    *,
+    ident: str = "libvips",
+    version: str = "8.15",
+    triples: str = f'["{_LINUX}"]',
+    kind: str = "staged-artifact",
+    acquisition: str = "prebuilt",
+    url: str = f"https://{_HOST}/libvips-8.15.tar.gz",
+    asset: str | None = None,
+    extra: str = "",
+) -> str:
+    anchor = "" if acquisition != "prebuilt" else f'asset_sha256 = "{asset or _PAYLOAD_SHA}"\n'
+    return (
+        "[[engine]]\n"
+        f'id = "{ident}"\n'
+        f'version = "{version}"\n'
+        f'source_ref = "v{version}"\n'
+        f"triples = {triples}\n"
+        f'kind = "{kind}"\n'
+        f'upstream_url = "{url}"\n'
+        'licence = "LGPL-2.1-or-later"\n'
+        'linkage = "invoked"\n'
+        f'acquisition = "{acquisition}"\n'
+        f'purl = "pkg:generic/{ident}@{version}"\n'
+        f'sha256 = "{"0" * 64}"\n'
+        f"{anchor}"
+        f'corroboration_urls = ["https://{_CORROB_HOST}/checksums"]\n'
+        f"{extra}"
+    )
+
+
+def _tar_bytes(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, payload in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+def _tar_device_bytes() -> bytes:
+    """A tar carrying a CHARACTER-DEVICE member.
+
+    `assert_confined_member` does not model device nodes - the stdlib `data` filter does, and
+    this leg is what makes that argument checkable rather than asserted.
+    """
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        info = tarfile.TarInfo("dev/null")
+        info.type = tarfile.CHRTYPE
+        info.devmajor = 1
+        info.devminor = 3
+        archive.addfile(info)
+    return buffer.getvalue()
+
+
+def _tar_symlink_bytes(name: str, target: str) -> bytes:
+    """A tar carrying ONE symlink member, for the linkname-confinement leg."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        info = tarfile.TarInfo(name)
+        info.type = tarfile.SYMTYPE
+        info.linkname = target
+        archive.addfile(info)
+    return buffer.getvalue()
+
+
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w") as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+    return buffer.getvalue()
+
+
+class _ChunkedFake:
+    """A response-shaped object that yields `total` bytes in chunks, without a socket.
+
+    Deliberately generates rather than allocating. The ceiling legs additionally PATCH
+    `MAX_ASSET_BYTES` down, because `read_capped` accumulates every chunk into one buffer - so
+    feeding it a real over-ceiling body would land 1.5 GiB in the runner however cheaply the
+    chunks were produced.
+    """
+
+    def __init__(self, total: int, payload: bytes | None = None) -> None:
+        self._left = total
+        self._payload = payload
+
+    def remaining(self) -> int:
+        """Bytes still unread - the assertion that carries \"mid-read\"."""
+        return self._left
+
+    def read(self, size: int) -> bytes:
+        take = min(size, self._left)
+        if take <= 0:
+            return b""
+        self._left -= take
+        if self._payload is not None:
+            start = len(self._payload) - self._left - take
+            return self._payload[start : start + take]
+        return b"\0" * take
+
+
+def _opener_for(mapping: dict[str, bytes]) -> Callable[..., bytes]:
+    def _open(url: str, allowed_hosts: frozenset[str] | None = None) -> bytes:
+        if url not in mapping:
+            raise AssertionError(f"the fixture opener was asked for an unpinned URL: {url}")
+        return mapping[url]
+
+    return _open
+
+
+def _legs() -> None:
+    # ---- lock parsing -----------------------------------------------------------------
+    _record("an empty manifest is a valid container", parse_lock("# only a comment\n") == ())
+    rows = parse_lock(_row_toml())
+    _record("a well-formed row parses", len(rows) == 1 and rows[0].id == "libvips")
+    _record("a row's triples are preserved verbatim", rows[0].triples == (_LINUX,))
+    _record(
+        "an unknown triple is refused",
+        _raises(lambda: parse_lock(_row_toml(triples='["sparc-unknown-none"]')), StructuralError),
+    )
+    _record(
+        "an empty triples list is refused",
+        _raises(lambda: parse_lock(_row_toml(triples="[]")), StructuralError),
+    )
+    _record(
+        "a missing required field is refused",
+        _raises(
+            lambda: parse_lock(
+                _row_toml().replace(f'upstream_url = "https://{_HOST}/libvips-8.15.tar.gz"\n', "")
+            ),
+            StructuralError,
+        ),
+    )
+    _record(
+        "a blank required field is refused",
+        _raises(lambda: parse_lock(_row_toml(ident="   ")), StructuralError),
+    )
+    _record("malformed TOML is refused", _raises(lambda: parse_lock("[[engine]\n"), StructuralError))
+    _record(
+        "a non-array `engine` key is refused",
+        _raises_saying(
+            lambda: parse_lock('engine = "not an array"\n'),
+            "must be an array of tables",
+            StructuralError,
+        ),
+    )
+    _record(
+        "an `engine` entry that is not a table is refused",
+        _raises_saying(
+            lambda: parse_lock("engine = [1]\n"), "is not a table", StructuralError
+        ),
+    )
+    _record(
+        "a non-array `corroboration_urls` is refused",
+        _raises_saying(
+            lambda: parse_lock(
+                _row_toml().replace(
+                    f'corroboration_urls = ["https://{_CORROB_HOST}/checksums"]',
+                    'corroboration_urls = "one"',
+                )
+            ),
+            # NOT the bare "must be an array": that is a substring of the `engine` arm too.
+            "`corroboration_urls` must be an array",
+            StructuralError,
+        ),
+    )
+    _record(
+        "a PREBUILT row without asset_sha256 is refused - there is nothing to verify against",
+        _raises_saying(
+            lambda: parse_lock(_row_toml().replace(f'asset_sha256 = "{_PAYLOAD_SHA}"\n', "")),
+            "asset_sha256",
+            StructuralError,
+        ),
+    )
+
+    # ---- the group tokens ---------------------------------------------------------------
+    _record(
+        "the group tokens default to the row's own id/version",
+        rows[0].cache_engine == "libvips" and rows[0].cache_version == "8.15",
+    )
+    grouped = parse_lock(_row_toml(extra='cache_engine = "ffmpeg"\ncache_version = "7.1"\n'))
+    _record(
+        "a declared group token overrides the default",
+        grouped[0].cache_engine == "ffmpeg" and grouped[0].cache_version == "7.1",
+    )
+    _record(
+        "the cache key is `<cache_engine>-<cache_version>-<triple>`",
+        cache_entry_name(grouped[0], _LINUX) == f"ffmpeg-7.1-{_LINUX}",
+    )
+    _record(
+        "an undeclared group falls back to the row key",
+        cache_entry_name(rows[0], _LINUX) == f"libvips-8.15-{_LINUX}",
+    )
+    _record(
+        "a DECLARED-but-blank group token is refused rather than silently defaulted",
+        _raises_saying(
+            lambda: parse_lock(_row_toml(extra='cache_engine = "   "\n')),
+            "declared but blank",
+            StructuralError,
+        ),
+    )
+
+    for bad_token in ("../evil", "a/b", "a\\b", ".hidden", "", "  "):
+        _record(
+            f"a cache token that is not one path component is refused: {bad_token!r}",
+            _raises(
+                lambda b=bad_token: parse_lock(_row_toml(extra=f'cache_engine = "{b}"\n')),
+                StructuralError,
+            ),
+        )
+    _record(
+        "the cache_VERSION half of the grammar is checked too, not only cache_engine",
+        _raises_saying(
+            lambda: parse_lock(_row_toml(extra='cache_version = "../evil"\n')),
+            "not usable as a cache-key path component",
+            StructuralError,
+        ),
+    )
+    _record(
+        "a DEFAULTED token is checked too - the id is the fallback, so it is a path component",
+        _raises_saying(
+            lambda: parse_lock(_row_toml(ident="../evil")),
+            "not usable as a cache-key path component",
+            StructuralError,
+        ),
+    )
+    _record(
+        "an ordinary versioned token passes the grammar",
+        assert_safe_token("7.1-full_build", "cache_version", "w") == "7.1-full_build",
+    )
+
+    # ---- fetchability: the two REFUSED acquisition/kind shapes -------------------------
+    _record("a prebuilt staged artifact is fetchable", is_fetchable(rows[0]))
+    _record(
+        "a from-source row is NOT fetchable",
+        not is_fetchable(parse_lock(_row_toml(acquisition="from-source"))[0]),
+    )
+    _record(
+        "a sub-component row is NOT fetchable",
+        not is_fetchable(parse_lock(_row_toml(kind="sub-component"))[0]),
+    )
+    _record(
+        "the from-source refusal names P4.28.1's compile path",
+        "P4.28.1" in refusal_reason(parse_lock(_row_toml(acquisition="from-source"))[0]),
+    )
+    _record(
+        "the sub-component refusal names the row KIND, not the acquisition mode",
+        "sub-component" in refusal_reason(parse_lock(_row_toml(kind="sub-component"))[0]),
+    )
+
+    # ---- target resolution ---------------------------------------------------------------
+    _record("an explicit valid triple resolves to itself", resolve_target(_WIN) == _WIN)
+    _record(
+        "an unknown explicit triple is a structural error",
+        _raises_saying(
+            lambda: resolve_target("sparc-unknown-none"), "unknown target triple", StructuralError
+        ),
+    )
+    _record(
+        "this host resolves to a v1 triple, or says plainly that it cannot",
+        host_target_triple() is None or host_target_triple() in V1_TARGET_TRIPLES,
+    )
+    _record(
+        "an IMPLICIT target resolves like the host table says, or refuses in so many words",
+        resolve_target(None) == host_target_triple()
+        if host_target_triple() is not None
+        else _raises_saying(
+            lambda: resolve_target(None), "cannot resolve a target triple", StructuralError
+        ),
+    )
+    _record(
+        "every mapped host triple is a declared v1 triple",
+        all(triple in V1_TARGET_TRIPLES for triple in _HOST_TRIPLES.values()),
+    )
+
+    # ---- the egress bound ----------------------------------------------------------------
+    _record("an https URL is accepted", assert_fetchable_url(f"https://{_HOST}/a.tar.gz") is None)
+    for scheme in ("file:///etc/passwd", f"http://{_HOST}/a", f"ftp://{_HOST}/a"):
+        _record(
+            f"the scheme pin refuses {scheme.split(':')[0]}://",
+            _raises_saying(
+                lambda s=scheme: assert_fetchable_url(s), "refusing URL scheme", FetchError
+            ),
+        )
+    _record(
+        "a hostless URL is refused",
+        _raises_saying(lambda: assert_fetchable_url("https:///nowhere"), "no host", FetchError),
+    )
+    _record(
+        "an off-allow-list host is refused even over https",
+        _raises_saying(
+            lambda: assert_fetchable_url("https://evil.invalid/a", frozenset({_HOST})),
+            "refusing host",
+            FetchError,
+        ),
+    )
+    _record(
+        "an allow-listed host passes",
+        assert_fetchable_url(f"https://{_HOST}/a", frozenset({_HOST})) is None,
+    )
+    _record(
+        "the REAL opener carries the guard itself, not its caller",
+        _raises_saying(lambda: http_opener("file:///etc/passwd"), "refusing URL scheme", FetchError),
+    )
+    _record(
+        "the REAL opener refuses an off-allow-list host before opening a socket",
+        _raises_saying(
+            lambda: http_opener("https://evil.invalid/a", frozenset({_HOST})),
+            "refusing host",
+            FetchError,
+        ),
+    )
+    _record(
+        "every redirect hop is re-checked - the handler refuses a downgrade to http",
+        _raises_saying(
+            lambda: _PinnedRedirectHandler(frozenset({_HOST})).redirect_request(
+                None, None, 302, "Found", {}, f"http://{_HOST}/elsewhere"
+            ),
+            "refusing URL scheme",
+            FetchError,
+        ),
+    )
+    _record(
+        "every redirect hop is re-checked - the handler refuses a cross-origin hop",
+        _raises_saying(
+            lambda: _PinnedRedirectHandler(frozenset({_HOST})).redirect_request(
+                None, None, 302, "Found", {}, "https://evil.invalid/elsewhere"
+            ),
+            "refusing host",
+            FetchError,
+        ),
+    )
+    _record(
+        "the per-hop pin is INSTALLED on the opener the fetch actually uses",
+        any(
+            isinstance(h, _PinnedRedirectHandler)
+            for h in build_pinned_opener(frozenset({_HOST})).handlers
+        )
+        and not any(
+            type(h) is urllib.request.HTTPRedirectHandler
+            for h in build_pinned_opener(frozenset({_HOST})).handlers
+        ),
+    )
+    # The ceiling is patched rather than fed: a real MAX_ASSET_BYTES+1 body costs ~1.6 GiB of
+    # runner memory to prove one comparison, and - worse - it makes the leg unable to see the
+    # regression it exists for, because a body of exactly ceiling+1 is fully consumed before
+    # the bound first holds, so a check moved AFTER the loop raises the identical error.
+    _ceiling = globals()["MAX_ASSET_BYTES"]
+    globals()["MAX_ASSET_BYTES"] = 4 * 1024 * 1024
+    try:
+        _oversized = _ChunkedFake(globals()["MAX_ASSET_BYTES"] * 16)
+        _refused_mid_read = _raises_saying(
+            lambda: read_capped(_oversized, "u"), "byte ceiling", FetchError
+        )
+        _left_unread = _oversized.remaining()
+        _refused_after_download = _raises_saying(
+            lambda: fetch_asset(
+                f"https://{_HOST}/a",
+                opener=lambda url, hosts=None: _ChunkedFake(
+                    globals()["MAX_ASSET_BYTES"] * 4
+                ).read(globals()["MAX_ASSET_BYTES"] * 4),
+            ),
+            "byte ceiling",
+            FetchError,
+        )
+    finally:
+        globals()["MAX_ASSET_BYTES"] = _ceiling
+    _record(
+        "the STREAMING ceiling refuses mid-read, before the whole body is buffered",
+        _refused_mid_read and _left_unread > 0,
+    )
+    _record(
+        "an oversized download is refused after the fact too, by fetch_asset's own bound",
+        _refused_after_download,
+    )
+    _record(
+        "a body under the ceiling reads back whole",
+        read_capped(_ChunkedFake(len(_PAYLOAD), payload=_PAYLOAD), "u") == _PAYLOAD,
+    )
+    # sonnet P2: the payload-advancing arithmetic was only ever exercised at start == 0,
+    # because the one real payload fits in a single chunk.
+    _multi = b"".join(bytes([i % 251]) * 700_000 for i in range(4))
+    _record(
+        "a multi-chunk payload reads back in ORDER, not as a repeated prefix",
+        read_capped(_ChunkedFake(len(_multi), payload=_multi), "u") == _multi,
+    )
+    _record(
+        "an empty download is refused",
+        _raises(
+            lambda: fetch_asset(
+                f"https://{_HOST}/a", opener=_opener_for({f"https://{_HOST}/a": b""})
+            ),
+            FetchError,
+        ),
+    )
+    _record(
+        "a transport failure is reported as a fetch violation, not a traceback",
+        _raises_saying(
+            lambda: fetch_asset(
+                f"https://{_HOST}/a",
+                opener=lambda url, hosts=None: (_ for _ in ()).throw(urllib.error.URLError("boom")),
+            ),
+            "download failed",
+            FetchError,
+        ),
+    )
+
+    # ---- hash verification ----------------------------------------------------------------
+    _record(
+        "a matching digest verifies", verify_sha256(_PAYLOAD, _PAYLOAD_SHA, url="u") == _PAYLOAD_SHA
+    )
+    _record(
+        "an UPPERCASE pin still verifies",
+        verify_sha256(_PAYLOAD, _PAYLOAD_SHA.upper(), url="u") == _PAYLOAD_SHA,
+    )
+    _record(
+        "a mismatching digest is refused, as a MISMATCH",
+        _raises_saying(
+            lambda: verify_sha256(b"other", _PAYLOAD_SHA, url="u"), "mismatch", FetchError
+        ),
+    )
+    _record(
+        "a short pin is refused as MALFORMED, not as a mismatch",
+        _raises_saying(lambda: verify_sha256(_PAYLOAD, "abcd", url="u"), "malformed", FetchError),
+    )
+    _record(
+        "a non-hex pin is refused as MALFORMED, not as a mismatch",
+        _raises_saying(lambda: verify_sha256(_PAYLOAD, "z" * 64, url="u"), "malformed", FetchError),
+    )
+    _record(
+        "a 64-char pin of the WRONG bytes still reads as a mismatch",
+        _raises_saying(lambda: verify_sha256(b"other", "a" * 64, url="u"), "mismatch", FetchError),
+    )
+
+    # ---- member confinement ------------------------------------------------------------
+    _record("a plain member is confined", assert_confined_member("bin/vips", archive="a") is None)
+    for bad in ("/etc/passwd", "../escape", "a/../../escape", "C:evil", "\\\\host\\share", ""):
+        _record(
+            f"a hostile member path is refused: {bad!r}",
+            _raises(lambda b=bad: assert_confined_member(b, archive="a"), FetchError),
+        )
+    _record(
+        "an interior-NUL member is refused",
+        _raises(lambda: assert_confined_member("a\x00b", archive="a"), FetchError),
+    )
+    _record(
+        "a backslash-spelled traversal is refused",
+        _raises(lambda: assert_confined_member("..\\escape", archive="a"), FetchError),
+    )
+
+    # ---- archive sniffing -----------------------------------------------------------------
+    _record(
+        "tar magic wins over a wrong name", _archive_kind("a.bin", _tar_bytes({"x": b"y"})) == "tar"
+    )
+    _record(
+        "zip magic wins over a wrong name", _archive_kind("a.bin", _zip_bytes({"x": b"y"})) == "zip"
+    )
+    _record("a bare payload is raw", _archive_kind("libvips.so", _PAYLOAD) == "raw")
+    _record("an empty-zip EOCD magic is recognised", _archive_kind("a.bin", _zip_bytes({})) == "zip")
+    _record(
+        "a .zip NAME is the fallback when the bytes do not decide",
+        _archive_kind("a.zip", b"not-an-archive") == "zip",
+    )
+    _record(
+        "a .tar.gz NAME is the fallback when the bytes do not decide",
+        _archive_kind("a.tar.gz", b"nope") == "tar",
+    )
+    _record("a .tgz NAME is the fallback too", _archive_kind("a.tgz", b"nope") == "tar")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+
+        # ---- unpacking ------------------------------------------------------------------
+        tar_dest = base / "tar"
+        kind = unpack_into(_tar_bytes({"bin/vips": b"x"}), "https://h/a.tar", tar_dest)
+        _record("a tar unpacks as a tree", kind == "tar" and (tar_dest / "bin" / "vips").is_file())
+
+        zip_dest = base / "zip"
+        kind = unpack_into(_zip_bytes({"bin/vips.exe": b"x"}), "https://h/a.zip", zip_dest)
+        _record(
+            "a zip unpacks as a tree", kind == "zip" and (zip_dest / "bin" / "vips.exe").is_file()
+        )
+
+        raw_dest = base / "raw"
+        kind = unpack_into(_PAYLOAD, "https://h/libvips.so", raw_dest)
+        _record(
+            "a bare binary is stored under its own name",
+            kind == "raw" and (raw_dest / "libvips.so").read_bytes() == _PAYLOAD,
+        )
+        _record(
+            "a bare-asset NAME that escapes the entry root is refused AS a member violation",
+            _raises_saying(
+                lambda: unpack_into(_PAYLOAD, "https://h/D:evil", base / "raw-escape"),
+                "drive-relative",
+                FetchError,
+            ),
+        )
+        # A backslash-bearing URL tail is the one name that survives assert_confined_member and
+        # still reaches the containment re-check: Windows reads it as a subdirectory (refused
+        # there), POSIX as one legal filename (written there). The leg asserts the INVARIANT
+        # both outcomes share - nothing lands outside the entry - because the re-check is
+        # defence in depth over a name the member predicate has already bounded, and a leg that
+        # claimed to discriminate it would be claiming more than the code can fail at.
+        sep_dest = base / "raw-sep"
+        sep_refused_cleanly = True
+        try:
+            unpack_into(_PAYLOAD, "https://h/x" + chr(92) + "y.so", sep_dest)
+        except FetchError:
+            pass  # Windows: the containment re-check refuses the subdirectory, CLEANLY.
+        except Exception:
+            # Any other type means the re-check was lost: the write then fails deep in the
+            # filesystem call with a FileNotFoundError instead of this path's exit-1 contract.
+            sep_refused_cleanly = False
+        _record(
+            "a separator in a bare-asset name is refused CLEANLY, or lands flat in the entry",
+            sep_refused_cleanly
+            and all(child.parent == sep_dest for child in sep_dest.rglob("*")),
+        )
+        _record(
+            "a dot bare-asset name is refused too",
+            _raises_saying(
+                lambda: unpack_into(_PAYLOAD, "https://h/a/..", base / "raw-dots"),
+                "empty or dot member path",
+                FetchError,
+            ),
+        )
+        _record(
+            "the stdlib data filter is applied - a device-node member is refused",
+            _raises_saying(
+                lambda: unpack_into(_tar_device_bytes(), "https://h/a.tar", base / "dev-tar"),
+                # `tarfile.SpecialFileError`'s own words. The generic container needle would
+                # also be satisfied by the unprivileged `os.mknod` PermissionError an
+                # unfiltered extract raises on a CI runner - so dropping filter="data" would
+                # have stayed green on exactly the platform that runs it first.
+                "is a special file",
+                FetchError,
+            ),
+        )
+        _record(
+            "a truncated tar container is a violation, not a traceback",
+            _raises_saying(
+                lambda: unpack_into(b"not-a-tar-at-all", "https://h/a.tar", base / "bad-tar"),
+                "unusable tar container",
+                FetchError,
+            ),
+        )
+        _record(
+            "a truncated zip container is a violation, not a traceback",
+            _raises_saying(
+                lambda: unpack_into(b"PK\x03\x04truncated", "https://h/a.zip", base / "bad-zip"),
+                "unusable zip container",
+                FetchError,
+            ),
+        )
+        _record(
+            "a traversing TAR member is refused AS a traversal, before extraction",
+            _raises_saying(
+                lambda: unpack_into(
+                    _tar_bytes({"../escape": b"x"}), "https://h/a.tar", base / "evil-tar"
+                ),
+                "refusing traversing member path",
+                FetchError,
+            ),
+        )
+        _record(
+            "a traversing TAR SYMLINK target is refused AS a traversal",
+            _raises_saying(
+                lambda: unpack_into(
+                    _tar_symlink_bytes("link", "../escape"), "https://h/a.tar", base / "evil-link"
+                ),
+                "refusing traversing member path",
+                FetchError,
+            ),
+        )
+        _record(
+            "a traversing ZIP member is refused AS a traversal, before extraction",
+            _raises_saying(
+                lambda: unpack_into(
+                    _zip_bytes({"../escape": b"x"}), "https://h/a.zip", base / "evil-zip"
+                ),
+                "refusing traversing member path",
+                FetchError,
+            ),
+        )
+        _record("the refused traversal wrote NOTHING outside the entry", not (base / "escape").exists())
+        _record(
+            "an archive that unpacks to nothing is refused",
+            _raises(
+                lambda: unpack_into(_tar_bytes({}), "https://h/empty.tar", base / "empty"),
+                FetchError,
+            ),
+        )
+
+        # ---- grouping --------------------------------------------------------------------
+        url = f"https://{_HOST}/ffmpeg-7.1-linux.tar"
+        good_tar = _tar_bytes({"bin/ffmpeg": b"x", "bin/ffprobe": b"y"})
+        good_sha = hashlib.sha256(good_tar).hexdigest()
+        group_extra = 'cache_engine = "ffmpeg"\ncache_version = "7.1"\n'
+        group_src = (
+            _row_toml(ident="ffmpeg", version="7.1", url=url, asset=good_sha, extra=group_extra)
+            + _row_toml(ident="ffprobe", version="7.1", url=url, asset=good_sha, extra=group_extra)
+            + _row_toml(
+                ident="libmp3lame.so", version="3.100", url=url, asset=good_sha, extra=group_extra
+            )
+        )
+        group_rows = parse_lock(group_src)
+        group_cache = base / "cache-group"
+        plans = group_plans(group_rows, _LINUX, group_cache)
+        _record("three rows of one entry collapse into ONE plan", len(plans) == 1)
+        _record(
+            "the plan names every member it carries",
+            plans[0].member_ids == ("ffmpeg", "ffprobe", "libmp3lame.so"),
+        )
+        _record(
+            "the group is NOT keyed on the row's own version",
+            plans[0].entry_name == f"ffmpeg-7.1-{_LINUX}"
+            and any(row.version == "3.100" for row in group_rows),
+        )
+        forked = group_src.replace(
+            f'purl = "pkg:generic/libmp3lame.so@3.100"\nsha256 = "{"0" * 64}"\n'
+            f'asset_sha256 = "{good_sha}"',
+            f'purl = "pkg:generic/libmp3lame.so@3.100"\nsha256 = "{"0" * 64}"\n'
+            f'asset_sha256 = "{"b" * 64}"',
+        )
+        _record(
+            "a group whose members disagree on the entry hash fails closed",
+            forked != group_src
+            and _raises_saying(
+                lambda: group_plans(parse_lock(forked), _LINUX, group_cache),
+                "ambiguous cache entry",
+                FetchError,
+            ),
+        )
+        forked_url = group_src.replace(
+            f'id = "libmp3lame.so"\nversion = "3.100"\nsource_ref = "v3.100"\n'
+            f'triples = ["{_LINUX}"]\nkind = "staged-artifact"\n'
+            f'upstream_url = "{url}"',
+            f'id = "libmp3lame.so"\nversion = "3.100"\nsource_ref = "v3.100"\n'
+            f'triples = ["{_LINUX}"]\nkind = "staged-artifact"\n'
+            f'upstream_url = "https://{_HOST}/other.tar"',
+        )
+        _record(
+            "a group whose members disagree on the entry URL fails closed",
+            forked_url != group_src
+            and _raises_saying(
+                lambda: group_plans(parse_lock(forked_url), _LINUX, group_cache),
+                "ambiguous cache entry",
+                FetchError,
+            ),
+        )
+        skipped: list[str] = []
+        group_plans(
+            parse_lock(group_src + _row_toml(ident="libimagequant", kind="sub-component",
+                                             acquisition="from-source")),
+            _LINUX,
+            group_cache,
+            skipped,
+        )
+        _record(
+            "a declined row is REPORTED, not silently absent",
+            len(skipped) == 1 and "sub-component" in skipped[0],
+        )
+        _record(
+            "a triple no row targets yields no plans",
+            group_plans(group_rows, _WIN, group_cache) == [],
+        )
+        multi = parse_lock(_row_toml(triples=f'["{_LINUX}", "{_WIN}"]'))
+        _record(
+            "a multi-triple row plans once per triple, keyed on each",
+            group_plans(multi, _LINUX, group_cache)[0].entry_name == f"libvips-8.15-{_LINUX}"
+            and group_plans(multi, _WIN, group_cache)[0].entry_name == f"libvips-8.15-{_WIN}",
+        )
+        _record(
+            "--engine selects a GROUP",
+            select_plans(group_rows, "ffmpeg", _LINUX, group_cache)[0].entry_name
+            == f"ffmpeg-7.1-{_LINUX}",
+        )
+        _record(
+            "--engine on an absent group is a structural error",
+            _raises(lambda: select_plans(group_rows, "nope", _LINUX, group_cache), StructuralError),
+        )
+        _record(
+            "the plan's allow-list carries the row's own hosts - upstream AND corroboration",
+            plans[0].allowed_hosts == frozenset({_HOST, _CORROB_HOST}),
+        )
+        _record(
+            "a host from ANOTHER manifest row is not on this group's allow-list",
+            "other.invalid"
+            not in group_plans(
+                parse_lock(group_src + _row_toml(ident="pandoc", url="https://other.invalid/p.tar")),
+                _LINUX,
+                group_cache,
+            )[0].allowed_hosts,
+        )
+
+        # ---- populate: the atomic publish ------------------------------------------------
+        cache = base / "cache"
+        cache.mkdir()
+        plan = group_plans(group_rows, _LINUX, cache)[0]
+        _record("an absent entry plans as a MISS", not plan.cached)
+        digest = populate(plan, cache, opener=_opener_for({url: good_tar}))
+        entry = cache / f"ffmpeg-7.1-{_LINUX}"
+        _record(
+            "populate publishes the entry under the stage-engines key",
+            digest == good_sha and (entry / "bin" / "ffprobe").is_file(),
+        )
+        _record(
+            "a published entry plans as a HIT", group_plans(group_rows, _LINUX, cache)[0].cached
+        )
+        _record(
+            "no staging residue survives a success",
+            [child.name for child in cache.iterdir()] == [f"ffmpeg-7.1-{_LINUX}"],
+        )
+
+        bad_cache = base / "cache-bad"
+        bad_cache.mkdir()
+        bad_plan = group_plans(group_rows, _LINUX, bad_cache)[0]
+        # The payload is a VALID tar with the wrong bytes: an unusable container would satisfy a
+        # type-only assertion through the container arm, so the leg has to name the arm AND deny
+        # the alternative. Removing verify_sha256 outright previously left this leg green.
+        _record(
+            "a hash mismatch refuses to publish, AS a mismatch",
+            _raises_saying(
+                lambda: populate(
+                    bad_plan,
+                    bad_cache,
+                    opener=_opener_for({url: _tar_bytes({"bin/other": b"z"})}),
+                ),
+                "SHA-256 mismatch",
+                FetchError,
+            ),
+        )
+        _record("a refused populate leaves the cache EMPTY", not any(bad_cache.iterdir()))
+
+        race_cache = base / "cache-race"
+        race_cache.mkdir()
+        # NON-empty on purpose: POSIX `rename(2)` replaces an EMPTY destination directory
+        # (the call succeeds), so an empty fixture would model no race at all off Windows.
+        # A real concurrent publish leaves the unpacked tree behind.
+        won_entry = race_cache / f"ffmpeg-7.1-{_LINUX}"
+        (won_entry / "bin").mkdir(parents=True)
+        (won_entry / "bin" / "ffmpeg").write_bytes(b"the other run's verified bytes")
+        race_plan = FetchPlan(*group_plans(group_rows, _LINUX, base / "cache-race-empty")[0][:-1], cached=False)
+        _record(
+            "a concurrent publish is reported as such, NOT as a populate of ours",
+            _raises(
+                lambda: populate(race_plan, race_cache, opener=_opener_for({url: good_tar})),
+                _AlreadyPublished,
+            ),
+        )
+        _record(
+            "the concurrently-published entry is left INTACT and ours leaves no residue",
+            [c.name for c in race_cache.iterdir()] == [f"ffmpeg-7.1-{_LINUX}"]
+            and (won_entry / "bin" / "ffmpeg").read_bytes() == b"the other run's verified bytes",
+        )
+        stray_cache = base / "cache-stray"
+        stray_cache.mkdir()
+        (stray_cache / f"ffmpeg-7.1-{_LINUX}").write_bytes(b"not a directory")
+        stray_plan = FetchPlan(*group_plans(group_rows, _LINUX, base / "cache-stray-empty")[0][:-1], cached=False)
+        # Platform-split, deliberately asserted as the INVARIANT rather than as one platform's
+        # outcome: `os.replace(dir, existing_file)` succeeds on Windows (the stray file is
+        # replaced by our verified tree) and raises ENOTDIR on POSIX (a clean publish failure).
+        # Both are correct; what must never happen is the third shape - a benign-race report that
+        # leaves the stray file standing and calls it a success.
+        stray_outcome: list[str] = []
+        try:
+            populate(stray_plan, stray_cache, opener=_opener_for({url: good_tar}))
+            stray_outcome.append("published")
+        except _AlreadyPublished:
+            stray_outcome.append("mistaken-for-a-race")
+        except FetchError:
+            stray_outcome.append("failed-loudly")
+        _record(
+            "a stray NON-directory at the entry path is never mistaken for a benign race",
+            stray_outcome != ["mistaken-for-a-race"],
+        )
+        _record(
+            "...and it either becomes the verified tree or is left untouched by a loud failure",
+            (
+                stray_outcome == ["published"]
+                and (stray_cache / f"ffmpeg-7.1-{_LINUX}" / "bin" / "ffmpeg").is_file()
+            )
+            or (
+                stray_outcome == ["failed-loudly"]
+                and (stray_cache / f"ffmpeg-7.1-{_LINUX}").read_bytes() == b"not a directory"
+            ),
+        )
+
+        evil_tar = _tar_bytes({"../escape": b"x"})
+        evil_sha = hashlib.sha256(evil_tar).hexdigest()
+        evil_rows = parse_lock(_row_toml(url=url, asset=evil_sha))
+        evil_cache = base / "cache-evil"
+        evil_cache.mkdir()
+        evil_plan = group_plans(evil_rows, _LINUX, evil_cache)[0]
+        _record(
+            "a hash-VALID but traversing archive is still refused AS a traversal",
+            _raises_saying(
+                lambda: populate(evil_plan, evil_cache, opener=_opener_for({url: evil_tar})),
+                "refusing traversing member path",
+                FetchError,
+            ),
+        )
+        _record(
+            "the refused traversing archive left no entry and no residue",
+            not any(evil_cache.iterdir()) and not (base / "escape").exists(),
+        )
+
+        # ---- run(): the end-to-end shapes -------------------------------------------------
+        empty_lock = base / "empty.lock"
+        empty_lock.write_bytes(b"# no rows yet\n")
+        _record(
+            "an empty manifest is a no-op run",
+            run(
+                lock_path=empty_lock,
+                cache_root=base / "cache-empty",
+                triple=_LINUX,
+                engine=None,
+                check_only=False,
+                verbose=False,
+                opener=_opener_for({}),
+            )
+            == 0,
+        )
+        _record(
+            "an empty manifest run creates no cache directory", not (base / "cache-empty").exists()
+        )
+        real_lock = base / "engines.lock"
+        real_lock.write_text(group_src, encoding="utf-8")
+        run_cache = base / "cache-run"
+        _record(
+            "--check fetches nothing",
+            run(
+                lock_path=real_lock,
+                cache_root=run_cache,
+                triple=_LINUX,
+                engine=None,
+                check_only=True,
+                verbose=False,
+                opener=_opener_for({}),
+            )
+            == 0,
+        )
+        _record("--check creates no cache directory either", not run_cache.exists())
+        _record(
+            "a full run populates the entry",
+            run(
+                lock_path=real_lock,
+                cache_root=run_cache,
+                triple=_LINUX,
+                engine="ffmpeg",
+                check_only=False,
+                verbose=True,
+                opener=_opener_for({url: good_tar}),
+            )
+            == 0
+            and (run_cache / f"ffmpeg-7.1-{_LINUX}").is_dir(),
+        )
+        _record(
+            "a second run is a pure cache hit - the opener is never called",
+            run(
+                lock_path=real_lock,
+                cache_root=run_cache,
+                triple=_LINUX,
+                engine="ffmpeg",
+                check_only=False,
+                verbose=False,
+                opener=_opener_for({}),
+            )
+            == 0,
+        )
+        # A FRESH root, and the winner publishes from INSIDE the opener: seeding the
+        # destination before planning would make the plan `cached` and run() would take the
+        # cache-hit branch, never reaching the handler this leg is named for.
+        run_race = base / "cache-run-race"
+        run_race.mkdir()
+        run_race_won = run_race / f"ffmpeg-7.1-{_LINUX}"
+
+        def _racing_opener(_url: str, _hosts: frozenset[str] | None = None) -> bytes:
+            (run_race_won / "bin").mkdir(parents=True, exist_ok=True)
+            (run_race_won / "bin" / "ffmpeg").write_bytes(b"the other run's bytes")
+            return good_tar
+
+        _record(
+            "run() REPORTS a concurrent publish rather than letting it escape",
+            run(
+                lock_path=real_lock,
+                cache_root=run_race,
+                triple=_LINUX,
+                engine="ffmpeg",
+                check_only=False,
+                verbose=False,
+                opener=_racing_opener,
+            )
+            == 0
+            and (run_race_won / "bin" / "ffmpeg").read_bytes() == b"the other run's bytes",
+        )
+        _record(
+            "a triple with no row is a no-op, not an error",
+            run(
+                lock_path=real_lock,
+                cache_root=base / "cache-win",
+                triple=_WIN,
+                engine=None,
+                check_only=False,
+                verbose=False,
+                opener=_opener_for({}),
+            )
+            == 0,
+        )
+        _record(
+            "main() refuses neither --engine nor --all",
+            main(["--target", _LINUX]) == 2,
+        )
+        _record(
+            "main() refuses BOTH --engine and --all",
+            main(["--target", _LINUX, "--all", "--engine", "x"]) == 2,
+        )
+        _record(
+            "a missing manifest is a structural error",
+            _raises(
+                lambda: run(
+                    lock_path=base / "absent.lock",
+                    cache_root=base / "cache-absent",
+                    triple=_LINUX,
+                    engine=None,
+                    check_only=False,
+                    verbose=False,
+                    opener=_opener_for({}),
+                ),
+                StructuralError,
+            ),
+        )
+
+
+def selftest() -> int:
+    try:
+        _legs()
+    except Exception as exc:
+        # A dead tally is worse than a broad catch: the g24 canary pins the leg COUNT, so an
+        # unhandled raise must surface as a NAMED failing leg rather than as a missing report.
+        _record(f"the suite raised before finishing: {type(exc).__name__}: {exc}", False)
+
+    failed = [name for name, ok in _results if not ok]
+    for name in failed:
+        fail(f"selftest leg failed: {name}")
+    print(f"\n[fetch-engine-assets --selftest] {len(_results) - len(failed)}/{len(_results)} passed")
+    return 1 if failed else 0
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="fetch-engine-assets", description=__doc__.splitlines()[0])
+    ap.add_argument("--root", default=None, help="repo root (default: this script's repo)")
+    ap.add_argument(
+        "--cache-root",
+        default=None,
+        help=f"cache to populate (default: <root>/{DEFAULT_CACHE_REL})",
+    )
+    ap.add_argument("--target", default=None, help="target triple (default: this host's)")
+    ap.add_argument("--engine", default=None, help="populate only this `engines.lock` cache group")
+    ap.add_argument(
+        "--all", action="store_true", help="populate every prebuilt entry for the target triple"
+    )
+    ap.add_argument(
+        "--check", action="store_true", help="report what would be fetched; write nothing"
+    )
+    ap.add_argument("-v", "--verbose", action="store_true", help="report cache hits too")
+    ap.add_argument(
+        "--selftest", action="store_true", help="run the fixture-driven regression suite"
+    )
+    args = ap.parse_args(argv)
+
+    if args.selftest:
+        return selftest()
+
+    if (args.engine is None) == (not args.all):
+        fail("pass exactly one of --engine <group> or --all")
+        return 2
+
+    root = Path(args.root).resolve() if args.root else ROOT
+    cache_root = Path(args.cache_root).resolve() if args.cache_root else root / DEFAULT_CACHE_REL
+
+    try:
+        triple = resolve_target(args.target)
+        return run(
+            lock_path=root / LOCK_REL,
+            cache_root=cache_root,
+            triple=triple,
+            engine=args.engine,
+            check_only=args.check,
+            verbose=args.verbose,
+            opener=http_opener,
+        )
+    except StructuralError as exc:
+        fail(str(exc))
+        return 2
+    except FetchError as exc:
+        fail(str(exc))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

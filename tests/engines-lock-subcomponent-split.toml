@@ -26,7 +26,7 @@ linkage = "linked"
 acquisition = "from-source"
 purl = "pkg:generic/libimagequant@2.4.1"
 sha256 = "6666666666666666666666666666666666666666666666666666666666666666"
-corroboration_url = "https://github.com/lovell/libimagequant/releases/tag/v2.4.1"
+corroboration_urls = ["https://github.com/lovell/libimagequant/releases/tag/v2.4.1"]
 
 [engine.from_source]
 tarball_sha256 = "7777777777777777777777777777777777777777777777777777777777777777"
@@ -46,7 +46,7 @@ linkage = "linked"
 acquisition = "from-source"
 purl = "pkg:generic/libimagequant@2.4.1"
 sha256 = "6666666666666666666666666666666666666666666666666666666666666666"
-corroboration_url = "https://github.com/lovell/libimagequant/releases/tag/v2.4.1"
+corroboration_urls = ["https://github.com/lovell/libimagequant/releases/tag/v2.4.1"]
 
 [engine.from_source]
 tarball_sha256 = "7777777777777777777777777777777777777777777777777777777777777777"

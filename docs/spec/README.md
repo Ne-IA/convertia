@@ -247,7 +247,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   ICO container assembler (wrapping vips-produced PNG/BMP frames) as the named fallback.
   Owner: images.md / §3.5.5 / §6.1.3.
 - **SHOULD-level alignment (same pass) `[DECIDED]`** — **engine-asset cache hosting** =
-  `actions/cache` keyed `<engine>-<version>-<triple>` + checksum-verified pinned-URL
+  `actions/cache` keyed `<cache_engine>-<cache_version>-<triple>` + checksum-verified pinned-URL
   populate/fallback, macOS keeps two per-triple keys per engine for the `lipo` universal build
   (§6.1.3); **Windows network confinement** = AppContainer network-isolation profile / per-program
   firewall (WFP) rule — **NOT** a Job Object (which cannot restrict sockets), §2.12.3/§6.7.3
@@ -1157,7 +1157,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   MOV→MP4 default**, **§1.6 defaults registry (`[REC]`)** — are `[DECIDED]`; the
   synthesis-fix round additionally resolved **`[OPEN-6.1b]` Linux `.deb`** (→ AppImage-only
   v1, `.deb` post-v1), the **engine-asset cache hosting** (→ `actions/cache` keyed
-  `<engine>-<version>-<triple>` + pinned-URL fallback), the **Windows network-confinement
+  `<cache_engine>-<cache_version>-<triple>` + pinned-URL fallback), the **Windows network-confinement
   mechanism** (→ AppContainer profile / per-program firewall rule, NOT a Job Object — *the
   RUNTIME half later superseded by `[DECIDED — P4.17]`: neither is realizable in v1-portable,
   so there is no privilege-drop net-deny leg on Windows; §2.12.3*), the

@@ -12,9 +12,16 @@
 #   3. a byte-identical platform-invariant artifact as ONE row over several triples (a bundled font),
 #   4. a sub-component row (§3.7.2 item 4) whose hash anchors the pinned SOURCE, not a staged file.
 #
+# The prebuilt font row also carries the §3.8 PREBUILT anchor set the (A′) ruling added — `asset_sha256`
+# (of the DOWNLOAD, distinct from the staged `sha256`) plus `prebuilt_corroboration = "mirrors"` and the
+# two independent corroboration URLs that submode requires. Every other row here is from-source and so
+# carries neither, which is itself the mode split under test.
+#
 # The FIFTH shape — the same sub-component split across triples, sharing its source anchor — lives in
 # its own fixture (`engines-lock-subcomponent-split.toml`) so this file's substitution anchors stay
-# unique: a second libimagequant row here would duplicate nine of them at once.
+# unique: a second libimagequant row here would duplicate nine of them at once. The SIXTH — several
+# DIFFERENT artifacts sharing one §6.1.3 cache entry — is `engines-lock-cache-group.toml`, kept apart
+# for the same anchor-uniqueness reason.
 
 [[engine]]
 id = "libheif-x265-plugin"
@@ -29,7 +36,7 @@ acquisition = "from-source"
 purl = "pkg:generic/x265@3.6"
 cpe = "cpe:2.3:a:multicorewareinc:x265:3.6:*:*:*:*:*:*:*"
 sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-corroboration_url = "https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc"
+corroboration_urls = ["https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc"]
 available = true
 
 [engine.from_source]
@@ -50,7 +57,7 @@ linkage = "plugin-loaded"
 acquisition = "from-source"
 purl = "pkg:generic/x265@3.6"
 sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
-corroboration_url = "https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc"
+corroboration_urls = ["https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc"]
 available = false
 
 [engine.from_source]
@@ -76,7 +83,12 @@ linkage = "invoked"
 acquisition = "prebuilt"
 purl = "pkg:generic/liberation-fonts@2.1.5"
 sha256 = "5555555555555555555555555555555555555555555555555555555555555555"
-corroboration_url = "https://github.com/liberationfonts/liberation-fonts/releases/tag/2.1.5"
+asset_sha256 = "aaaa0000aaaa0000aaaa0000aaaa0000aaaa0000aaaa0000aaaa0000aaaa0000"
+prebuilt_corroboration = "mirrors"
+corroboration_urls = [
+  "https://github.com/liberationfonts/liberation-fonts/releases/tag/2.1.5",
+  "https://sources.debian.org/src/fonts-liberation2/2.1.5-1/",
+]
 
 [[engine]]
 id = "libimagequant"
@@ -90,7 +102,7 @@ linkage = "linked"
 acquisition = "from-source"
 purl = "pkg:generic/libimagequant@2.4.1"
 sha256 = "6666666666666666666666666666666666666666666666666666666666666666"
-corroboration_url = "https://github.com/lovell/libimagequant/releases/tag/v2.4.1"
+corroboration_urls = ["https://github.com/lovell/libimagequant/releases/tag/v2.4.1"]
 
 [engine.from_source]
 tarball_sha256 = "7777777777777777777777777777777777777777777777777777777777777777"

@@ -24,7 +24,12 @@ linkage = "linked"
 acquisition = "prebuilt"
 purl = "pkg:generic/lame@3.100"
 sha256 = "1010101010101010101010101010101010101010101010101010101010101010"
-corroboration_url = "https://lame.sourceforge.io/download.php"
+asset_sha256 = "cccc0000cccc0000cccc0000cccc0000cccc0000cccc0000cccc0000cccc0000"
+prebuilt_corroboration = "mirrors"
+corroboration_urls = [
+  "https://lame.sourceforge.io/download.php",
+  "https://sources.debian.org/src/lame/3.100-6/",
+]
 
 [[engine]]
 id = "libmp3lame"
@@ -38,7 +43,7 @@ linkage = "linked"
 acquisition = "from-source"
 purl = "pkg:generic/lame@3.100"
 sha256 = "2020202020202020202020202020202020202020202020202020202020202020"
-corroboration_url = "https://lame.sourceforge.io/download.php"
+corroboration_urls = ["https://lame.sourceforge.io/download.php"]
 
 [engine.from_source]
 tarball_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -58,7 +63,7 @@ linkage = "linked"
 acquisition = "from-source"
 purl = "pkg:generic/lame@3.100"
 sha256 = "4040404040404040404040404040404040404040404040404040404040404040"
-corroboration_url = "https://lame.sourceforge.io/download.php"
+corroboration_urls = ["https://lame.sourceforge.io/download.php"]
 
 [engine.from_source]
 tarball_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

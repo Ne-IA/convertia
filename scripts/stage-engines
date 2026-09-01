@@ -2,7 +2,7 @@
 """stage-engines - the §3.3.2/§6.1.3 build-time engine-assembly script (P4.27).
 
 Runs BEFORE `tauri build` and turns the restored, checksum-verified engine-asset cache
-(§6.1.3, keyed `<engine>-<version>-<triple>`) into the two physical bundling shapes §3.3.1
+(§6.1.3, keyed `<cache_engine>-<cache_version>-<triple>`) into the two physical bundling shapes §3.3.1
 `[DECIDED]`:
 
   * `bundle.externalBin` SIDECARS -> `src-tauri/binaries/<name>-<target-triple>[.exe]`, the
@@ -21,12 +21,16 @@ column is a RECORDED NO-OP for this script: the `.app` is assembled by `tauri bu
 same two destinations, the fat-Mach-O merge that precedes it is P4.29 and the install_name
 relocation P4.30 - staging itself places identical per-arch bytes on all three platforms.
 
-It NEVER touches the network. It reads only the restored cache directory; the cache restore and
-its checksum-verified pinned-URL populate path are P4.28, and the SHA-256 verify against
-`engines.lock` that must precede staging is G37's, run by the workflow ahead of this script.
+It NEVER touches the network. It reads only the restored cache directory. Its counterpart is
+`scripts/fetch-engine-assets` (P4.28), the checksum-verified pinned-URL POPULATE path that runs
+only on a cache miss and is the one script at package time permitted to open a socket; the
+SHA-pinned `actions/cache` restore wiring around both is P4.28's L(-1) workflow half, and the
+SHA-256 verify against `engines.lock` that must precede staging is G37's, run by the workflow
+ahead of this script.
 The restored cache legitimately carries entries this script does NOT stage - the P4.34 ruling
 (2026-07-22) restores the imgworker's per-triple LINK INPUTS (headers + static libs) under the
-same `<lib>-<version>-<triple>` key scheme, and a header can never ship - so an entry no row
+same key scheme (`<cache_engine>-<cache_version>-<triple>`, defaulted to each lib's own
+id/version), and a header can never ship - so an entry no row
 claims is reported, never an error.
 
 SCOPE (P4.27 - the generic skeleton). `STAGED_ENGINES` is the declarative per-engine row set and
@@ -71,6 +75,7 @@ import platform
 import shutil
 import stat
 import sys
+import tomllib
 import tempfile
 from enum import Enum
 from pathlib import Path
@@ -86,6 +91,9 @@ RESOURCES_REL = "src-tauri/resources"
 # The restored engine-asset cache (§6.1.3). P4.28 wires the `actions/cache` restore into this
 # path; a local build populates it the same way. Gitignored, like `.gate-tools/`.
 DEFAULT_CACHE_REL = ".engine-cache"
+
+# The §3.7.2 manifest the staging rows are bound against (the (A′) binder).
+LOCK_REL = "src-tauri/engines.lock"
 
 # §3.3.1's `bundle.resources` map fixes the SOURCE keys, so this set is closed: a resource row
 # naming anything else would stage a tree Tauri never bundles. P5-P7 fill rows INTO these three,
@@ -132,7 +140,11 @@ class StagingKind(Enum):
 class EngineStaging(NamedTuple):
     """One declared per-engine staging row (§3.3.2 step 2 / step 3).
 
-    cache_engine: the `<engine>` token of the §6.1.3 cache key `<engine>-<version>-<triple>`.
+    cache_engine: the `<cache_engine>` token of the §6.1.3 cache key
+                  `<cache_engine>-<cache_version>-<triple>`. It names the ENTRY, not the artifact:
+                  `engines.lock` rows declare the same token when they ship out of one download
+                  (the (A′) ruling), which is exactly why `member` below can address `ffprobe`
+                  INSIDE the `ffmpeg` entry.
     kind:         which of the two §3.3.1 bundling mechanisms this row uses.
     dest:         SIDECAR -> the BARE binary name (§3.3.3's EngineId->binary-name table, e.g.
                   "ffmpeg"); RESOURCE_TREE -> the RESOURCE_SUBDIRS member to stage into.
@@ -227,9 +239,9 @@ def resource_dest(root: Path, subdir: str) -> Path:
 
 
 def cache_entry_matches(name: str, cache_engine: str, triple: str) -> bool:
-    """Does this cache dir name parse as `<cache_engine>-<version>-<triple>` with a real version?
+    """Does this cache dir name parse as `<cache_engine>-<cache_version>-<triple>`?
 
-    The `<version>` is matched by exclusion rather than by a version grammar: both the engine
+    The `<cache_version>` is matched by exclusion rather than by a version grammar: both the engine
     name (`convertia-imgworker`) and a version (`7.1-full_build`) can carry dashes, so anchoring
     on the two ends and requiring a non-empty middle is the only unambiguous parse.
     """
@@ -266,7 +278,7 @@ def unclaimed_cache_entries(
 
     Deliberately not an error. The P4.34 ruling (2026-07-22) restores the imgworker's per-triple
     LINK INPUTS (headers + static libs for libheif/libde265/librsvg/cgif/libimagequant) from this
-    same cache under the same `<lib>-<version>-<triple>` key scheme; those are compile inputs that
+    same cache under the same key scheme (defaulted to each lib's own id/version); those are compile inputs that
     must never be staged, so "every restored entry has a staging row" is simply false. Surfacing
     them under -v keeps a genuinely forgotten row visible without inventing a rule the plan
     contradicts. Entries for OTHER triples are none of this run's business and are skipped.
@@ -301,6 +313,72 @@ def ambiguous_engine_entries(
         if len(claimants) > 1:
             collisions.append((d.name, claimants))
     return collisions
+
+
+def manifest_cache_engines(lock_path: Path) -> set[str] | None:
+    """The `cache_engine` group tokens §3.7.2's manifest declares, or None when it declares no rows.
+
+    None is the FAIL-OPEN signal, and it is the honest one: `src-tauri/engines.lock` is L(-1)-caged
+    and still an empty skeleton, so there is nothing to bind against until the P5-P7 staging boxes
+    land their rows. The moment the first row lands the binder below fails CLOSED.
+
+    A deliberately minimal read: `crate::engines::lock` is the authoritative validator and
+    `scripts/fetch-engine-assets` the populate-side reader. This one looks at exactly two keys.
+    """
+    if not lock_path.is_file():
+        return None
+    try:
+        doc = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise StagingError(f"{lock_path}: not valid TOML - {exc}") from exc
+    rows = doc.get("engine", [])
+    if not isinstance(rows, list):
+        # Fail CLOSED on a mis-typed key: "no rows yet" and "the rows are unreadable" are
+        # different situations, and only the first one is safe to wave through.
+        raise StagingError(f"{lock_path}: `engine` must be an array of tables")
+    if not rows:
+        return None
+    tokens: set[str] = set()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise StagingError(f"{lock_path}: `engine[{index}]` is not a table")
+        declared = row.get("cache_engine")
+        if declared is not None and (not isinstance(declared, str) or not declared.strip()):
+            raise StagingError(
+                f"{lock_path}: `engine[{index}]`: `cache_engine` is declared but unusable"
+            )
+        token = declared if declared is not None else row.get("id")
+        if not isinstance(token, str) or not token.strip():
+            raise StagingError(
+                f"{lock_path}: `engine[{index}]` names no cache entry - it declares neither"
+                f" a usable `cache_engine` nor a usable `id`"
+            )
+        tokens.add(token.strip())
+    # "declares no rows" and "declares rows I cannot read" are different situations, and only
+    # the first is safe to wave through: a blanked `id` on the only row would otherwise DISARM
+    # the binder, which is the very typo class it exists to catch. The sibling reader
+    # (`scripts/fetch-engine-assets.parse_lock`) refuses THESE shapes too; it is additionally
+    # stricter on token GRAMMAR, on field PRESENCE (`kind`, `acquisition`, `triples`,
+    # `asset_sha256`-iff-prebuilt) and on §3.4.5 TRIPLE MEMBERSHIP - none of which this minimal
+    # read models, and all of which can only widen fail-open on a manifest both it and the
+    # Rust validator already reject.
+    return tokens
+
+
+def unbound_staging_rows(
+    rows: tuple[EngineStaging, ...], lock_path: Path
+) -> list[str]:
+    """Staging rows whose cache entry NO `engines.lock` group declares.
+
+    The two sides of §6.1.3 are written in different files by different boxes: a P5-P7 staging box
+    adds an `EngineStaging` row here, and the owner adds the matching `engines.lock` row as an
+    L(-1) act. Nothing mechanical held them together, so a typo in either token would surface as an
+    empty cache lookup at package time rather than as a failing check. This is that binder.
+    """
+    declared = manifest_cache_engines(lock_path)
+    if declared is None:
+        return []
+    return sorted({row.cache_engine for row in rows} - declared)
 
 
 def _set_exec_bit(path: Path) -> None:
@@ -464,6 +542,22 @@ def assert_no_escaping_links(src: Path, row: EngineStaging) -> None:
                 stack.append(path)
 
 
+def assert_rows_bound_to_manifest(rows: tuple[EngineStaging, ...], lock_path: Path) -> None:
+    """Fail if a staging row names a cache entry the manifest does not declare.
+
+    Called from `stage_all`, not only from the self-test: a binder nothing invokes at package time
+    is documentation, not a check. Fail-OPEN while `engines.lock` declares no rows (there is
+    nothing to bind against yet) and fail-CLOSED the moment the first row lands.
+    """
+    unbound = unbound_staging_rows(rows, lock_path)
+    if unbound:
+        raise StagingError(
+            f"staging row(s) {', '.join(unbound)} name a §6.1.3 cache entry no `engines.lock` "
+            f"row declares (checked against {lock_path}). One of the two sides has a typo: the "
+            "`cache_engine` token here, or the manifest row the owner added."
+        )
+
+
 def stage_all(
     root: Path,
     cache_root: Path,
@@ -471,6 +565,7 @@ def stage_all(
     rows: tuple[EngineStaging, ...] = STAGED_ENGINES,
     *,
     write: bool = True,
+    lock_path: Path | None = None,
 ) -> list[StagedResult]:
     """Stage every declared row for `triple` from `cache_root` into `root`.
 
@@ -478,6 +573,9 @@ def stage_all(
     member, an ambiguous pin, an entry two declared engines both claim all still fail), nothing is
     copied. An entry no row claims is informational, not a failure - see unclaimed_cache_entries.
     """
+    if lock_path is not None:
+        assert_rows_bound_to_manifest(rows, lock_path)
+
     if not cache_root.is_dir():
         raise StagingError(
             f"engine-asset cache root {cache_root} does not exist - it is restored by the "
@@ -487,7 +585,7 @@ def stage_all(
     for name, claimants in ambiguous_engine_entries(cache_root, rows, triple):
         raise StagingError(
             f"restored cache entry '{name}' parses as belonging to more than one declared engine "
-            f"({', '.join(claimants)}) - the `<engine>-<version>-<triple>` key must identify "
+            f"({', '.join(claimants)}) - the `<cache_engine>-<cache_version>-<triple>` key must identify "
             "exactly one engine (§6.1.3)"
         )
     clear_resource_destinations(root, rows, write=write)
@@ -544,12 +642,27 @@ def _record(name: str, ok: bool) -> None:
     print(f"[{'PASS' if ok else 'FAIL'}] {name}")
 
 
-def _raises(fn) -> bool:
+def _raises(fn, needle: str) -> bool:
+    """Did `fn` fail with a StagingError whose message contains `needle`?
+
+    The needle is REQUIRED, deliberately. Several distinct violations share this one exception
+    type, so a type-only assertion can be satisfied by a different arm than the leg names - which
+    is exactly how the binder-integration leg below passed while the binder was disconnected (a
+    stale sibling fixture made `stage_all` raise from the member-resolution arm instead). Making
+    the needle mandatory closes the CLASS rather than that one leg: an arm-blind leg cannot be
+    written any more.
+    """
     try:
         fn()
-    except StagingError:
-        return True
+    except StagingError as exc:
+        return needle in str(exc)
     return False
+
+
+def _write(path: Path, text: str) -> Path:
+    """Write a fixture file and hand its path straight back, for one-line self-test legs."""
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def _fixture_tree(base: Path) -> tuple[Path, Path]:
@@ -591,13 +704,13 @@ def selftest() -> int:
 
     # (2) target resolution, incl. the deliberate universal refusal (the P4.29 boundary).
     _record("target: explicit v1 triple accepted", resolve_target(_LINUX) == _LINUX)
-    _record("target: universal-apple-darwin refused (P4.29)", _raises(lambda: resolve_target(UNIVERSAL_TRIPLE)))
-    _record("target: unknown triple refused", _raises(lambda: resolve_target("mips-unknown-linux-gnu")))
+    _record("target: universal-apple-darwin refused (P4.29)", _raises(lambda: resolve_target(UNIVERSAL_TRIPLE), "needs both per-arch slices"))
+    _record("target: unknown triple refused", _raises(lambda: resolve_target("mips-unknown-linux-gnu"), "unknown target triple"))
     # A host outside _HOST_TRIPLES (Linux aarch64, Windows ARM64) must REPORT, not traceback.
     host = host_target_triple()
     _record(
         "target: host resolution agrees with the table",
-        resolve_target(None) == host if host is not None else _raises(lambda: resolve_target(None)),
+        resolve_target(None) == host if host is not None else _raises(lambda: resolve_target(None), "no §3.4.5 v1 target triple for this host"),
     )
 
     # (3) cache-key parsing: dashes in both the engine name and the version must still parse.
@@ -611,7 +724,7 @@ def selftest() -> int:
     )
     _record(
         "cache key: empty version rejected",
-        not cache_entry_matches("ffmpeg-" + _LINUX, "ffmpeg", _LINUX),
+        not cache_entry_matches("ffmpeg--" + _LINUX, "ffmpeg", _LINUX),
     )
     _record(
         "cache key: other triple rejected",
@@ -711,7 +824,10 @@ def selftest() -> int:
             escape.symlink_to(outside)
             _record(
                 "fail-closed: a staged symlink resolving outside the staged tree",
-                _raises(lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS)),
+                _raises(
+                    lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS),
+                    "is a link resolving outside the staged tree",
+                ),
             )
             escape.unlink()
             # An ABSOLUTE link pointing INSIDE its own entry passes containment, yet `copytree`
@@ -721,7 +837,10 @@ def selftest() -> int:
             absolute.symlink_to(program / "soffice.bin")
             _record(
                 "fail-closed: an absolute symlink, even one pointing inside its own entry",
-                _raises(lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS)),
+                _raises(
+                    lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS),
+                    "is an ABSOLUTE symlink",
+                ),
             )
             absolute.unlink()
             inner.unlink()
@@ -745,7 +864,10 @@ def selftest() -> int:
             if made.returncode == 0:
                 _record(
                     "fail-closed: a Windows directory junction resolving outside the tree",
-                    _raises(lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS, write=False)),
+                    _raises(
+                        lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS, write=False),
+                        "is a link resolving outside the staged tree",
+                    ),
                 )
                 junction.rmdir()  # removes the junction, never the target
                 # The ALLOW direction, which the refuse leg alone cannot see: `os.readlink`
@@ -784,7 +906,10 @@ def selftest() -> int:
                 if made3.returncode == 0:
                     _record(
                         "fail-closed: a junction pointing at its own ancestor (the copy would loop)",
-                        _raises(lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS, write=False)),
+                        _raises(
+                            lambda: stage_all(root, cache, _LINUX, _FIXTURE_ROWS, write=False),
+                            "is a junction pointing at its own ancestor",
+                        ),
                     )
                     cycle.rmdir()
                 else:
@@ -823,7 +948,10 @@ def selftest() -> int:
         # (8) the fail-closed legs.
         _record(
             "fail-closed: a resource subdir outside the §3.3.1 key set",
-            _raises(lambda: resource_dest(root, "ghostscript")),
+            _raises(
+                lambda: resource_dest(root, "ghostscript"),
+                "is not a §3.3.1 `bundle.resources` source key",
+            ),
         )
         # An entry no row claims is a build/link input (the P4.34 ruling), NOT a staging error.
         stage_all(root, cache, _LINUX, _FIXTURE_ROWS[:2], write=False)
@@ -840,13 +968,17 @@ def selftest() -> int:
                     root, cache, _LINUX,
                     _FIXTURE_ROWS + (EngineStaging("ffmpeg-7.1", StagingKind.SIDECAR, "x"),),
                     write=False,
-                )
+                ),
+                "parses as belonging to more than one declared engine",
             ),
         )
         (cache / f"ffmpeg-7.0-{_LINUX}").mkdir()
         _record(
             "fail-closed: two pinned versions of one engine restored",
-            _raises(lambda: select_cache_entry(cache, "ffmpeg", _LINUX)),
+            _raises(
+                lambda: select_cache_entry(cache, "ffmpeg", _LINUX),
+                "ambiguous engine-asset cache",
+            ),
         )
         shutil.rmtree(cache / f"ffmpeg-7.0-{_LINUX}")
         _record(
@@ -856,16 +988,198 @@ def selftest() -> int:
                     root, cache, _LINUX,
                     _FIXTURE_ROWS + (EngineStaging("libreoffice", StagingKind.SIDECAR, "soffice"),),
                     write=False,
-                )
+                ),
+                # `stage_sidecar`'s own prefix: "is missing from the restored cache entry"
+                # alone is shared with the resource-tree arm, which the same call can reach.
+                "sidecar 'soffice'",
+            ),
+        )
+        _record(
+            "fail-closed: a declared resource SUBTREE missing from its cache entry",
+            _raises(
+                lambda: stage_all(
+                    root,
+                    cache,
+                    _LINUX,
+                    (EngineStaging("libreoffice", StagingKind.RESOURCE_TREE, "libreoffice", "absent"),),
+                    write=False,
+                ),
+                "a `bundle.resources` row stages a DIRECTORY",
             ),
         )
         _record(
             "fail-closed: a member path escaping its cache entry",
-            _raises(lambda: _member_path(cache / f"libreoffice-24.8-{_LINUX}", "../ffmpeg-7.1-full_build-" + _LINUX)),
+            _raises(
+                lambda: _member_path(
+                    cache / f"libreoffice-24.8-{_LINUX}", "../ffmpeg-7.1-full_build-" + _LINUX
+                ),
+                "escapes its entry",
+            ),
         )
         _record(
             "fail-closed: an absent cache root",
-            _raises(lambda: stage_all(root, base / "no-such-cache", _LINUX, _FIXTURE_ROWS, write=False)),
+            _raises(
+                lambda: stage_all(
+                    root, base / "no-such-cache", _LINUX, _FIXTURE_ROWS, write=False
+                ),
+                "does not exist",
+            ),
+        )
+
+        # --- the STAGED_ENGINES <-> engines.lock binder (the (A′) ruling) --------------------
+        lock = base / "engines.lock"
+        lock.write_bytes(b"# no rows yet\n")
+        _record(
+            "binder: an EMPTY manifest binds nothing - fail-open until the first row lands",
+            manifest_cache_engines(lock) is None
+            and unbound_staging_rows(_FIXTURE_ROWS, lock) == [],
+        )
+        _record(
+            "binder: an ABSENT manifest is fail-open too",
+            manifest_cache_engines(base / "no-such.lock") is None,
+        )
+        # The declared token must DIFFER from the id, or the "declared wins" half proves nothing:
+        # with `id == cache_engine` the leg stays green even if `cache_engine` is ignored entirely.
+        lock.write_text(
+            '[[engine]]\nid = "ffprobe"\ncache_engine = "ffmpeg"\n\n'
+            '[[engine]]\nid = "libreoffice"\n',
+            encoding="utf-8",
+        )
+        _record(
+            "binder: a declared cache_engine wins over the id",
+            manifest_cache_engines(lock) == {"ffmpeg", "libreoffice"}
+            and "ffprobe" not in manifest_cache_engines(lock),
+        )
+        _record(
+            "binder: an UNdeclared cache_engine falls back to the id",
+            manifest_cache_engines(lock) is not None
+            and "libreoffice" in manifest_cache_engines(lock),
+        )
+        _record(
+            "binder: malformed manifest TOML is an error, not a silent fail-open",
+            _raises(
+                lambda: manifest_cache_engines(_write(base / "broken.lock", "[[engine]\n")),
+                "not valid TOML",
+            ),
+        )
+        _record(
+            "binder: a staging row naming an entry no manifest row declares is reported",
+            unbound_staging_rows(
+                (*_FIXTURE_ROWS, EngineStaging("libheif", StagingKind.SIDECAR, "libheif")), lock
+            )
+            == ["libheif"],
+        )
+        _record(
+            "binder: staging rows whose entries ARE declared are not reported",
+            unbound_staging_rows(_FIXTURE_ROWS, lock) == [],
+        )
+        _record(
+            "binder: the real repo manifest EXISTS and currently binds nothing",
+            (ROOT / "src-tauri" / "engines.lock").is_file()
+            and manifest_cache_engines(ROOT / "src-tauri" / "engines.lock") is None,
+        )
+        # A FRESH cache root, and the arm named: the shared `cache` fixture already carries a
+        # half-populated libheif entry from an earlier leg, so `stage_all` would raise from the
+        # member-resolution arm whether or not the binder ran - which is how this leg first shipped
+        # green with the binder disconnected.
+        binder_cache = base / "cache-binder"
+        binder_cache.mkdir()
+        _record(
+            "binder: stage_all REFUSES an unbound row (the check runs on the real path)",
+            _raises(
+                lambda: stage_all(
+                    root,
+                    binder_cache,
+                    _LINUX,
+                    (EngineStaging("libheif", StagingKind.SIDECAR, "libheif"),),
+                    write=False,
+                    lock_path=lock,
+                ),
+                "name a §6.1.3 cache entry no `engines.lock`",
+            ),
+        )
+        # Fail-OPEN with a NON-empty row set: `rows=()` would make this true however the empty-
+        # manifest branch behaved, which is no assertion at all.
+        # The PACKAGE-TIME path: `main()` is where `lock_path` is actually wired, and a
+        # ROOT-correct mutation showed that dropping it survived the whole suite - the binder was
+        # pinned inside `stage_all` but nothing pinned that `main()` passes it. Driving `main()`
+        # with a patched STAGED_ENGINES covers the wiring AND `report()` in one go.
+        main_base = base / "main-path"
+        main_root, main_cache = _fixture_tree(main_base)
+        (main_root / "src-tauri").mkdir(parents=True, exist_ok=True)
+        main_lock = main_root / LOCK_REL
+        argv = [
+            "--root", str(main_root),
+            "--cache-root", str(main_cache),
+            "--target", _LINUX,
+            "--check",
+            "-v",
+        ]
+        declared = globals()["STAGED_ENGINES"]
+        globals()["STAGED_ENGINES"] = _FIXTURE_ROWS
+        try:
+            main_lock.write_text(
+                '[[engine]]\nid = "ffmpeg"\n\n[[engine]]\nid = "libreoffice"\n', encoding="utf-8"
+            )
+            bound_rc = main([*argv])
+            main_lock.write_text('[[engine]]\nid = "ffmpeg"\n', encoding="utf-8")
+            unbound_rc = main([*argv])
+            main_lock.write_bytes(b"# no rows yet\n")
+            open_rc = main([*argv])
+        finally:
+            globals()["STAGED_ENGINES"] = declared
+        _record("main(): a fully bound row set stages cleanly", bound_rc == 0)
+        _record(
+            "main(): an UNbound row set is refused at package time (the wiring is live)",
+            unbound_rc == 1,
+        )
+        _record("main(): an empty manifest is fail-OPEN at package time too", open_rc == 0)
+
+        _record(
+            "binder: a row that names NO cache entry fails CLOSED, not fail-open",
+            _raises(
+                lambda: manifest_cache_engines(
+                    _write(base / "blank-id.lock", '[[engine]]\nid = "   "\n')
+                ),
+                "names no cache entry",
+            ),
+        )
+        _record(
+            "binder: a DECLARED-but-unusable cache_engine is refused, not read as the id",
+            _raises(
+                lambda: manifest_cache_engines(
+                    _write(base / "typed-token.lock", '[[engine]]\nid = "ffmpeg"\ncache_engine = []\n')
+                ),
+                "declared but unusable",
+            ),
+        )
+        _record(
+            "binder: a non-table engine entry fails CLOSED too",
+            _raises(
+                lambda: manifest_cache_engines(_write(base / "scalar.lock", "engine = [1]\n")),
+                "is not a table",
+            ),
+        )
+        _record(
+            "binder: a mis-typed `engine` key fails CLOSED, unlike an absent one",
+            _raises(
+                lambda: manifest_cache_engines(
+                    _write(base / "typed.lock", 'engine = "not an array"\n')
+                ),
+                "must be an array of tables",
+            ),
+        )
+        _record(
+            "binder: stage_all is fail-OPEN while the manifest declares no rows",
+            stage_all(
+                root,
+                binder_cache,
+                _LINUX,
+                _FIXTURE_ROWS,
+                write=False,
+                lock_path=_write(base / "empty2.lock", "# none\n"),
+            )
+            == [StagedResult(row, None, None) for row in _FIXTURE_ROWS],
         )
 
     failed = [n for n, ok in _results if not ok]
@@ -902,7 +1216,14 @@ def main(argv: list[str]) -> int:
         if not STAGED_ENGINES:
             report([], triple, write=write, verbose=args.verbose)
             return 0
-        results = stage_all(root, cache_root, triple, STAGED_ENGINES, write=write)
+        results = stage_all(
+            root,
+            cache_root,
+            triple,
+            STAGED_ENGINES,
+            write=write,
+            lock_path=root / LOCK_REL,
+        )
         unclaimed = unclaimed_cache_entries(cache_root, STAGED_ENGINES, triple)
     except StagingError as e:
         fail(str(e))
