@@ -55,8 +55,11 @@
 //!   second truth.
 //! * **§6.3.1 / P4.56.2** — `cargo xtask sbom` merges these rows into the CycloneDX component set,
 //!   which is why [`EngineRow::purl`] is mandatory: G17b/G37 need a named key, not an implied one.
-//! * **§3.8 / P4.56.3** — the engine-source allow-list gate reads [`EngineRow::upstream_url`] and
-//!   [`EngineRow::corroboration_urls`] and fails on an off-allow-list or same-origin pair. It keys its
+//! * **§3.8 / P4.56.3** — the engine-source allow-list gate reads [`EngineRow::upstream_url`],
+//!   [`EngineRow::corroboration_urls`] and [`FromSourceAnchor::signature_url`] (P4.28.1 — a
+//!   from-source row's signature is an egress target like any other, and the one URL field a gate
+//!   written to the pre-P4.28.1 field list would miss) and fails on an off-allow-list or
+//!   same-origin pair. It keys its
 //!   per-engine origin set on [`EngineRow::cache_engine`] (the GROUP), not on `id`: one downloaded
 //!   entry has one origin, and `ffprobe` has no origin of its own.
 //! * **§6.1.3 / P4.28** — `scripts/fetch-engine-assets` populates the cache on a miss, keyed by
@@ -181,6 +184,13 @@ pub enum VerificationTool {
 pub struct FromSourceAnchor {
     /// SHA-256 of the signed SOURCE tarball — distinct from the row's artifact/anchor hash.
     pub tarball_sha256: String,
+    /// Where the DETACHED signature over that tarball lives. Recorded rather than derived from
+    /// `upstream_url` for the same reason `signing_key_fingerprint` is recorded rather than
+    /// implied: an upstream publishes `.asc` or `.sig` by its own convention, and a guessed URL
+    /// is a guess on the one path whose whole job is to not guess. Its host is constrained by the
+    /// §3.8 engine-source allow-list exactly like `upstream_url`.
+    /// [Build-Session-Entscheidung: P4.28.1]
+    pub signature_url: String,
     /// The upstream signing key pinned in-repo. A change here is the same hard escalation as a SHA
     /// edit (§3.8), which is why it is recorded rather than implied.
     pub signing_key_fingerprint: String,
@@ -914,12 +924,24 @@ impl EnginesLock {
                     });
                 }
             }
-            for (field, url) in std::iter::once(("upstream_url", &entry.upstream_url)).chain(
-                entry
-                    .corroboration_urls
-                    .iter()
-                    .map(|url| ("corroboration_urls", url)),
-            ) {
+            // THREE url fields, not two: `from_source.signature_url` is an egress target like
+            // any other, and the P4.56.3 allow-list gate this check is the precondition for reads
+            // it (see the module header). Sweeping it in with its siblings is what keeps the two
+            // from drifting. [Build-Session-Entscheidung: P4.28.1]
+            for (field, url) in std::iter::once(("upstream_url", &entry.upstream_url))
+                .chain(
+                    entry
+                        .corroboration_urls
+                        .iter()
+                        .map(|url| ("corroboration_urls", url)),
+                )
+                .chain(
+                    entry
+                        .from_source
+                        .iter()
+                        .map(|anchor| ("from_source.signature_url", &anchor.signature_url)),
+                )
+            {
                 if !url.trim().is_empty() && !url_has_scheme(url) {
                     problems.push(LockViolation::SchemelessUrl {
                         row,
@@ -990,6 +1012,11 @@ impl EnginesLock {
                                 &mine.signing_key_fingerprint,
                                 &theirs.signing_key_fingerprint,
                             ),
+                            (
+                                "from_source.signature_url",
+                                &mine.signature_url,
+                                &theirs.signature_url,
+                            ),
                         ] {
                             if a.trim() != b.trim() {
                                 problems.push(LockViolation::IdFieldMismatch {
@@ -1019,6 +1046,7 @@ impl EnginesLock {
                             &anchor.signing_key_fingerprint,
                         ),
                         ("from_source.toolchain_digest", &anchor.toolchain_digest),
+                        ("from_source.signature_url", &anchor.signature_url),
                     ] {
                         if value.trim().is_empty() {
                             problems.push(LockViolation::EmptyField {
@@ -1398,10 +1426,12 @@ sha256 = \"3333",
     fn a_from_source_anchor_that_forks_between_sibling_rows_is_a_violation() {
         let drifted = mutate(
             "tarball_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"
+signature_url = \"https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc\"
 signing_key_fingerprint = \"AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555\"
 verified_with = \"gpg\"
 toolchain_digest = \"sha256:4444",
             "tarball_sha256 = \"2222222222222222222222222222222222222222222222222222222222222222\"
+signature_url = \"https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc\"
 signing_key_fingerprint = \"AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555\"
 verified_with = \"gpg\"
 toolchain_digest = \"sha256:4444",
@@ -1693,7 +1723,7 @@ toolchain_digest = \"sha256:4444",
     /// P4.56.3 compares ORIGINS, so a scheme-less URL has nothing to compare. Both URL fields are
     /// driven, since each is read by a different half of that gate.
     #[test]
-    fn a_schemeless_url_is_a_violation_on_both_url_fields() {
+    fn a_schemeless_url_is_a_violation_on_every_url_field() {
         assert!(url_has_scheme("https://ffmpeg.org/x"));
         assert!(!url_has_scheme("ffmpeg.org/x"));
         assert!(!url_has_scheme("://ffmpeg.org"));
@@ -1707,6 +1737,14 @@ toolchain_digest = \"sha256:4444",
                 "upstream_url",
                 "upstream_url = \"https://github.com/lovell/libimagequant\"",
                 "upstream_url = \"github.com/lovell/libimagequant\"",
+            ),
+            // The third one. Added with the field itself rather than one round on: the two
+            // siblings above are exactly what a gate written to the pre-P4.28.1 field list
+            // would cover, and this is the field it would miss.
+            (
+                "from_source.signature_url",
+                "signature_url = \"https://github.com/lovell/libimagequant.asc\"",
+                "signature_url = \"github.com/lovell/libimagequant.asc\"",
             ),
         ] {
             assert!(
@@ -2417,6 +2455,7 @@ toolchain_digest = \"sha256:4444",
                 "signing_key_fingerprint = \"   \"",
             ),
             ("from_source.toolchain_digest", "toolchain_digest = \"   \""),
+            ("from_source.signature_url", "signature_url = \"   \""),
         ] {
             let plain = field.trim_start_matches("from_source.");
             let forked = fork_second_row(plain, blanked);
@@ -2469,6 +2508,74 @@ toolchain_digest = \"sha256:4444",
                 .iter()
                 .any(|v| matches!(v, LockViolation::IdFieldMismatch { .. })),
             "the pristine fixture must be sibling-clean"
+        );
+    }
+
+    /// The URL-keyed from-source anchor comparison is a three-leg loop; this is its closure.
+    #[test]
+    fn every_leg_of_the_from_source_anchor_comparison_is_exercised() {
+        // CLASS CLOSURE, the same shape and the same reason as the row-level table above: a leg
+        // nothing forks is a leg whose deletion the suite would not notice, which is the
+        // arm-blind shape wearing a different hat. This loop needs its OWN fixture - it fires
+        // only where two rows pin ONE `upstream_url`, which `VALID` does not do - so it forks the
+        // shared-source split fixture instead of going through `fork_second_row`.
+        // `toolchain_digest` is deliberately NOT a row here: it is triple-VARIANT, and the
+        // fixture's two rows carry two DIFFERENT digests precisely to prove it is not compared.
+        let fork = |field: &str, replacement: &str| -> String {
+            let blocks: Vec<&str> = SUBCOMPONENT_SPLIT.split("[[engine]]").collect();
+            let target = blocks[2];
+            // An IDENTITY guard, not an arity one - the same trap `fork_second_row` documents.
+            assert!(
+                target.contains("toolchain_digest = \"sha256:9999"),
+                "blocks[2] must be the split fixture's SECOND row; the fixture was reshaped"
+            );
+            let needle = format!("\n{field} = ");
+            let start = target
+                .find(&needle)
+                .expect("the forked field must exist in that row")
+                + 1;
+            let end = start + target[start..].find('\n').expect("the line must end");
+            let mut parts: Vec<String> = blocks.iter().map(|b| (*b).to_string()).collect();
+            parts[2] = format!("{}{replacement}{}", &target[..start], &target[end..]);
+            parts.join("[[engine]]")
+        };
+
+        for (field, replacement) in [
+            (
+                "from_source.tarball_sha256",
+                "tarball_sha256 = \"6666666666666666666666666666666666666666666666666666666666666666\"",
+            ),
+            (
+                "from_source.signing_key_fingerprint",
+                "signing_key_fingerprint = \"1111222233334444555566667777888899990000\"",
+            ),
+            (
+                "from_source.signature_url",
+                "signature_url = \"https://github.com/lovell/libimagequant.sig\"",
+            ),
+        ] {
+            let plain = field.trim_start_matches("from_source.");
+            let forked = fork(plain, replacement);
+            assert_ne!(
+                forked, SUBCOMPONENT_SPLIT,
+                "the {field} fork must actually apply"
+            );
+            assert!(
+                violations(&forked).iter().any(|v| matches!(
+                    v,
+                    LockViolation::IdFieldMismatch { field: reported, .. } if *reported == field
+                )),
+                "the `{field}` leg of the anchor comparison must report its own field"
+            );
+        }
+
+        // Non-vacuity: the pristine shared-source fixture reports none of them, so each violation
+        // above is the fork's doing rather than a defect the fixture already carried.
+        assert!(
+            !problems_of(SUBCOMPONENT_SPLIT)
+                .iter()
+                .any(|v| matches!(v, LockViolation::IdFieldMismatch { .. })),
+            "the pristine split fixture must be anchor-clean"
         );
     }
 
@@ -2556,7 +2663,8 @@ toolchain_digest = \"sha256:4444",
 
     #[test]
     fn a_from_source_group_may_span_several_signed_tarballs() {
-        // The shape the ruling exists to make writable, and the one P4.28.1 will actually produce:
+        // The shape the ruling exists to make writable, and the one P4.28.1's harness
+        // produces:
         // `ffmpeg` compiled from ffmpeg.org's tarball beside `libmp3lame.so` from LAME's, both
         // staged out of ONE compiled entry. Before the re-scoping this VALIDATED nowhere.
         let compiled = mutate_all(&[

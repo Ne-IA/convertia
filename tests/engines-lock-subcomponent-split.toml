@@ -30,6 +30,7 @@ corroboration_urls = ["https://github.com/lovell/libimagequant/releases/tag/v2.4
 
 [engine.from_source]
 tarball_sha256 = "7777777777777777777777777777777777777777777777777777777777777777"
+signature_url = "https://github.com/lovell/libimagequant.asc"
 signing_key_fingerprint = "FFFF9999EEEE8888DDDD7777CCCC6666BBBB5555"
 verified_with = "sq"
 toolchain_digest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
@@ -50,6 +51,7 @@ corroboration_urls = ["https://github.com/lovell/libimagequant/releases/tag/v2.4
 
 [engine.from_source]
 tarball_sha256 = "7777777777777777777777777777777777777777777777777777777777777777"
+signature_url = "https://github.com/lovell/libimagequant.asc"
 signing_key_fingerprint = "FFFF9999EEEE8888DDDD7777CCCC6666BBBB5555"
 verified_with = "sq"
 toolchain_digest = "sha256:9999999999999999999999999999999999999999999999999999999999999999"

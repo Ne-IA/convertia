@@ -48,6 +48,7 @@ available = true
 
 [engine.from_source]
 tarball_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+signature_url = "https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc"
 signing_key_fingerprint = "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555"
 verified_with = "gpg"
 toolchain_digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
@@ -69,6 +70,7 @@ available = false
 
 [engine.from_source]
 tarball_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+signature_url = "https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz.asc"
 signing_key_fingerprint = "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555"
 verified_with = "gpg"
 toolchain_digest = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
@@ -113,6 +115,7 @@ corroboration_urls = ["https://github.com/lovell/libimagequant/releases/tag/v2.4
 
 [engine.from_source]
 tarball_sha256 = "7777777777777777777777777777777777777777777777777777777777777777"
+signature_url = "https://github.com/lovell/libimagequant.asc"
 signing_key_fingerprint = "FFFF9999EEEE8888DDDD7777CCCC6666BBBB5555"
 verified_with = "sq"
 toolchain_digest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"

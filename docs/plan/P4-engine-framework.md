@@ -299,8 +299,222 @@
     > states the unscoped form") was re-pointed to the completed state — the described-the-old-way
     > twin (G68) of the class this tail closes, caught by grepping the interim sentences repo-wide
     > BEFORE editing rather than after. Outstanding on this box, untouched by this tail: the
-    > compile harness + the per-engine configure-flag seam (the Loop's remaining share) and the
-    > batched `.github/**` workflow tail. (Reading note: the present-tense clause quotes above —
+    > batched `.github/**` workflow tail. **[Loop share DELIVERED]** the compile harness is
+    > `scripts/compile-engine-asset` (re-hash every RESTORED source against its
+    > `from_source.tarball_sha256` — a cache is not a trust boundary, the same restore-re-verify
+    > G37 runs — then verify each detached signature against the pinned fingerprint with the tool
+    > the row NAMES, local `configure`/`m4` regeneration per the xz/liblzma lesson, each source
+    > configured by its own declared line into ONE shared `--prefix`, build, install, atomic
+    > publish of that prefix under the §6.1.3 key; every subprocess behind ONE injected seam, so
+    > its 208-leg `--selftest` needs no compiler, no `gpg` and no network), and the configure-flag
+    > seam is `src-tauri/engine-configure.toml`, declaring `<cache_engine>.configure.flags` as a
+    > table keyed on the `engines.lock` row `id` each line configures. The source tarballs arrive
+    > through a new `scripts/fetch-engine-assets --source` mode rather than a second downloader,
+    > so the §6.1.3 one-socket claim stays true and the scheme pin, origin allow-list and per-hop
+    > redirect re-check keep ONE home. **The seam is NOT `engines.lock`**: that file is L(-1), and
+    > the boxes that FILL the seam (P5.1.1, P5.5.1, P5.9.1, P6.1.1, P7.17.1) are Loop `[BUILD]`
+    > boxes, so a caged home would turn each of them into an owner act; the enforcement is the
+    > §6.1.3 assertion on the produced ARTIFACT (P4.51/P5.2/P6.6), not the writability of its
+    > input. **Schema addition, Loop-editable and named here so it is not discovered later:**
+    > `from_source.signature_url` — the anchor could not LOCATE the signature it rests on, so the
+    > §3.8 check the whole box exists for could never run. Recorded rather than derived from
+    > `upstream_url`, for the reason `signing_key_fingerprint` is recorded rather than implied;
+    > scalar, so the caged `engines.lock` header's "TWO fields are plural" clause is untouched.
+    > **[Dual review, r1 — both reviewers NOGO, three P0s; the findings and the re-cut they
+    > forced are recorded because the SHAPE of the miss is the reusable lesson]:** the first cut
+    > tested each half only against fixtures the OTHER half could not produce, so 194 green legs
+    > sat on top of a `--source` path that published an UNPACKED tree (the compile step needs raw
+    > archives — a signature is over the archive as shipped) and keyed every source of a group
+    > under ONE entry name, where the second `os.replace` lost to the first and was REPORTED as a
+    > benign concurrent race at exit 0. One of the eight source legs asserted that collision as
+    > the contract. The re-cut makes the source plan per-GROUP with N raw sources inside it,
+    > fetches each `signature_url` beside its tarball, pairs rows to files by DECLARED name
+    > instead of `sorted()` order, filters on `triples`, and binds the two halves with an
+    > exact-contents assertion; the leg both reviewers named as the one that would have caught all
+    > three — `fetch --source` and `compile_entry` against ONE cache — now exists and drives the
+    > real sibling. 40 mutations were run over the result; all 40 red, including the two that
+    > exposed arm-blind legs of my own (the argv leg passed with `--source` DROPPED, because both
+    > modes exit 0 under `--check` — it now asserts the REPORT; and `filter="data"` had no
+    > discriminating case until the sibling's device-node leg was ported).
+    > **[Dual review, r2 — both reviewers NOGO again on the re-cut; recorded because the second
+    > round found a DIFFERENT class than the first]:** r1's misses were two halves never run
+    > together; r2's were invariants each half states about itself that nothing exercised.
+    > **(1)** the two halves still contradicted each other on the shape §3.8's URL-keyed anchor
+    > rule exists FOR: `fetch --source` deduped rows sharing one tarball (`ffmpeg` + `ffprobe` out
+    > of one signed archive — `lock.rs`'s own worked example) while `plan_compiles` iterated rows
+    > and refused the same manifest as a filename collision. Planning is now keyed on the SOURCE:
+    > one tarball is one build that records every row id it produces, and exactly one of those rows
+    > carries the line configuring it. **(2)** the from-source filename derivation had re-spelled
+    > `assert_confined_member`'s grammar and lost its Windows drive-relative rule, so a
+    > `.../D:evil.tar.gz` tail escaped the cache root with UNVERIFIED signature bytes at exit 0 —
+    > closed at the class, not the instance: within each script every URL-derived path component
+    > now goes through that script's ONE confinement grammar, so a rule added there protects every
+    > caller in it. The two scripts still carry a copy each — they are independent stdlib tools
+    > with no shared module — and what binds them is `resolve_inputs`' exact-contents assertion,
+    > which fails loudly if either side ever derives a different name. **(3)** an empty prefix published as a permanent cache
+    > hit, and the seam refused only `--prefix=` while `DESTDIR=`/`-DCMAKE_INSTALL_PREFIX`/an
+    > absolute `--libdir` redirected the install out of the staging tree just as effectively.
+    > **(4)** the harness hardcoded autotools, which four of the five engines its own seam names
+    > cannot use — FFmpeg ships a handwritten `configure` with no `configure.ac` for `autoreconf`
+    > to work from, libvips is Meson, x265 and poppler are CMake — so the build system is now
+    > DECLARED per source (`<engine>.configure.system`) off a table the driver set derives from.
+    > **(5)** a Windows/POSIX split verified empirically during the review: `os.replace(dir →
+    > existing FILE)` raises `ENOTDIR` on POSIX but SUCCEEDS on Windows, so both publish paths'
+    > `if not destination.is_dir(): raise` was unreachable on Windows and a stray file at an entry
+    > path was silently clobbered; both now refuse a non-directory before the move, identically on
+    > every platform. **Two of my own legs were unfalsifiable** — `tuple(sorted(_VERIFY_ARGV)) ==
+    > VERIFICATION_TOOLS` compares an expression to its own definition, and I wrote a second one
+    > of exactly that shape for the build-system table in the round that found the first; both are
+    > replaced by legs that DRIVE every table entry.
+    > **[Dual review, r3 — both reviewers NOGO; the class was my own two r2 fixes never meeting]:**
+    > **(1)** the round that added Meson and CMake did not extend the install-redirect guard the
+    > same round's sibling finding had written, so `-Dprefix=` and `-DCMAKE_INSTALL_LIBDIR=` walked
+    > past a guard that knew only `--libdir=` — and CMake's last-`-D`-wins makes the second an
+    > OVERRIDE, not the ambiguity the guard's own message claims. It now normalises the option NAME
+    > across all four spellings before looking anything up, and refuses the split two-token form
+    > whose value a per-token guard cannot see. **(2)** a multi-source group could not name its own
+    > shared prefix — it is a `mkdtemp` path invented at run time, so `--extra-ldflags=-L<prefix>/lib`
+    > was unspellable and P6.1.1 (FFmpeg + libmp3lame), the exact shape the (A′) ruling and the r2
+    > re-cut exist for, could not have been built at all. A `{prefix}` placeholder is substituted at
+    > build time, any other placeholder is refused rather than passed through, and manifest order is
+    > documented as load-bearing. **(3)** `<engine>.configure.source_dir`: x265 keeps its
+    > `CMakeLists.txt` in `source/`, so the build root is not always the tree root.
+    > **(4)** `produces` was written and pinned by two legs but read by nothing, so a two-row build
+    > still reported one row; `--check` counted cache hits as work still to do. **(5)** the fetch
+    > docstring claimed `compile-engine-asset` "shells out to this one" — it does not, and the
+    > `.github/**` tail is authored from these docstrings, so an owner following it would have wired
+    > one step where two are needed.
+    > **[Dual review, r4 — both reviewers NOGO; the class was a VALUE never checked as a path]:**
+    > the r3 install-redirect guard checked the option NAME across four spellings but the VALUE
+    > only for "is it absolute", which was three holes at once — CMake's own typed spelling
+    > (`-DCMAKE_INSTALL_PREFIX:PATH=`, the one `CMakeCache.txt` uses), a plain relative
+    > `--libdir=../../../../etc/evil`, and `--libdir={prefix}/../../escape` whose escape only
+    > appears AFTER substitution. All three are closed by one line: the value now goes through
+    > `_assert_confined`, the same grammar every other path-shaped thing in the script uses, so
+    > absolute / `..`-traversing / drive-relative / interior-NUL land on one rule and `{prefix}`
+    > survives as a plain first segment because it anchors AT the prefix. Also: the prefix reached
+    > POSIX build tooling in NATIVE spelling (`--prefix=C:\` with backslashes into a `./configure`
+    > shell word) and the leg meant to cover it built its expectation from the implementation's own
+    > `str(prefix)`, so it could not fail on Windows — `as_posix()` at all four sites, and the leg
+    > now asserts the PROPERTY. `${ORIGIN}` was over-refused as an unknown placeholder when it is
+    > the linker's token, not this script's. Three test-honesty gaps closed with it: the runner
+    > never recorded the `cwd`, so `build_root` AND `source_dir` could both be computed and
+    > discarded green; the shared-prefix invariant — the entire point of the r3 `{prefix}` fix —
+    > was asserted only as step LABELS; and r3's `--check` summary-arithmetic fix was applied to
+    > the instance and not swept to the sibling's two identical loops, which is the owner's
+    > root-cause rule failing on my own fix.
+    > **[Dual review, r5 — REVIEWERS SPLIT (Opus GO, Sonnet NOGO); adjudicated to the NOGO on
+    > evidence]:** Sonnet found a FOURTH member of r4's class, and it is the one that matters: the
+    > install value is validated BEFORE `{prefix}` is substituted, so a placeholder GLUED to
+    > something else hides that something from the guard and then supplies the missing separator
+    > itself — `--libdir=..{prefix}` becomes `../<abs prefix>`, `--libdir={prefix}..` becomes a
+    > sibling of the prefix, and both walked past the per-segment `..` check. Verified directly
+    > against the shipped function before acting, because Opus reached GO without testing the glued
+    > form: a split is adjudicated on evidence, not on the count. Closed at the root rather than by
+    > patching the placeholder's position: `{prefix}` must now OWN the leading segment (`{prefix}`
+    > alone, or `{prefix}/<confined relative>`), and what is confinement-checked is the remainder —
+    > exactly the part substitution does not touch. Riding the same act: `--install-prefix` (CMake
+    > ≥ 3.21, which OVERRIDES the cache variable and is appended AFTER this script's own), the
+    > substitution re-cut through the same `_PLACEHOLDER` pattern that validated it so `${prefix}`
+    > is no longer rewritten by a rule that documents leaving it alone, the dead `_is_absolute` the
+    > r4 refactor orphaned, the unwrapped `mkdtemp` the sibling wraps, an equivalent-mutant ternary,
+    > the pre-r4 "refused when ABSOLUTE" wording still standing in the seam header AND in the
+    > docstring of the function r4 had just changed, `signature_url` wired into P4.56.3's
+    > allow-list obligation (the spec asserted a gate that no box was scoped to build), and a
+    > relocatability warning for the five fill boxes — the shared prefix is a temp dir that does
+    > not survive publish, so an absolute RPATH baked into an artifact points at nothing.
+    > Tallies after r5: 165 + 173 legs, 62 mutations, all red.
+    > **[Dual review, r6 — both reviewers NOGO, CONVERGING on the same diagnosis]:** the guard was
+    > still an ENUMERATION of option names, and an enumeration can only ever close the names
+    > somebody thought of. Between them the reviewers found seven more it did not have — FFmpeg's
+    > own `--shlibdir` / `--incdir` / `--pkgconfigdir` (and `--shlibdir` is exactly what P6.1.1 will
+    > reach for, since ConvertIA ships `libmp3lame.so` beside the binary) plus autoconf 2.70's
+    > `runstatedir` / `dvidir` / `pdfdir` / `psdir`. Three rounds had now patched the same function
+    > by adding names, so the fix is the INVERSION: the rule matches the SHAPE of the normalised
+    > name — ends in `prefix` ⇒ sets the prefix, refused outright; ends in `dir` ⇒ names an
+    > install directory, value checked — with a documented, driven escape hatch for a `*dir` option
+    > that names a path the build READS. A shape fails closed on the next name nobody has thought
+    > of; that is what the owner's root-cause rule asks for and what three name-additions were not.
+    > Riding the same act, Opus's second P1: a `$` in an install-directory value (`${HOME}/evil`,
+    > `${exec_prefix}/lib64`) passed the confinement grammar as an ordinary relative path and was
+    > then expanded by the build system long after any check here could see it — autoconf even
+    > treats a `$`-leading value as already-absolute. `$` is refused in install directories only;
+    > `-Wl,-rpath,${ORIGIN}` is still the linker's business. Also closed: an empty value, a repeated
+    > `{prefix}`, and `lstrip("/")` eating more than the one separator the rule required. Documented
+    > with it, because the five fill boxes read the seam header and not this note: which spelling
+    > belongs to which build system (a BARE relative `--libdir=lib64` is fine for Meson/CMake but
+    > autoconf rejects it itself, so `autotools`/`configure` sources want `{prefix}/lib64`), and
+    > that build settings must not be imported from a file (`cmake -C`, `--preset`,
+    > `-DCMAKE_TOOLCHAIN_FILE=`, meson `--native-file=`) since a file can reset the prefix out from
+    > under the declared line.
+    > **[Dual review, r7 — both reviewers GO; the round converged]:** the shape inversion held
+    > against everything either reviewer threw at the option NAME; what they found was its VALUE
+    > half and its neighbours, all fail-closed behind `stage-engines`' member check, all fixed here
+    > rather than deferred because each was a few lines. **(1)** `_assert_confined` is an
+    > ARCHIVE-MEMBER grammar being reused on a command-line VALUE: a leading space is a legal
+    > filename character there, so `--libdir= /usr/lib64` read as relative and `make` stripped the
+    > space back off — a value that is not lexically inert is now refused before a path grammar is
+    > asked about it. **(2)** `{prefix}` may appear in ANY flag, and the seam's own documented
+    > FFmpeg pattern (`--extra-cflags=-I{prefix}/include`) has no `dir`/`prefix`-shaped name at
+    > all, so a `..` in such a flag went unchecked; a flag anchored at the prefix now may not walk
+    > up from it, whatever the option is called. **(3)** file-import options (`cmake -C`,
+    > `--preset`, `-DCMAKE_TOOLCHAIN_FILE=`, meson `--native-file=`/`--cross-file=`) fit NEITHER
+    > shape and can reset the prefix from a file; enumerated, because there is no shape to match.
+    > **(4)** `_gpg_validsig` compared only VALIDSIG's first field — the signing SUBKEY — while
+    > upstreams publish the PRIMARY fingerprint, so a correct manifest would have been rejected
+    > with a message pointing away from the cause; both fields are accepted now. **(5)**
+    > `_sq_names_key` substring-matched over output containing the argv paths this script passed
+    > in, which are derived from the row's own url — the module names that unsoundness in
+    > `_gpg_validsig`'s docstring and then shipped it in the sibling; the echoed paths are stripped
+    > first. **(6)** a missing `gpg`/`sq` escaped as a traceback past the documented exit contract.
+    > **(7)** the built tree was never checked for symlinks leaving it — `unpack_source` guards the
+    > way IN, and `assert_self_contained` now guards the way OUT, with the classification extracted
+    > as a pure predicate so it is asserted on every platform and not only where a symlink can be
+    > created. Swept with them: `from_source.signature_url` into `lock.rs`'s scheme check (the
+    > sibling sweep the field's own commit had missed), the cache-key hazard (the configure line is
+    > not in the entry key, so editing a flag does not invalidate a restored entry — recorded at
+    > the seam, since the key is spec-`[DECIDED]`), and a forward-note on P5.1.1 for the read-path
+    > escape hatch, which is empty by design in a script this box proposes to cage.
+    > Tallies after r7: 165 + 208 legs, 78 mutations across four batteries, all red.
+    > **[PRE-DECLARED owner-acked tail, per the standing new-file rule — announced with the box,
+    > not escalated after]:** SIX items, all owner acts, all batched with this box's `.github/**`
+    > workflow tail. **(a)** `src-tauri/engine-configure.toml` is a new file in a directory whose
+    > contents §0.7's physical tree ENUMERATES (it lists `engines.lock` at its side), so §0.7
+    > needs a row for it — and §0.7 is fingerprint-bound (`scripts/doc-fingerprints.toml`), which
+    > makes the row plus its re-bless one owner act. **(b)** `g24-fetch-engine-assets.py`'s tally
+    > pin 125 → 165: this box adds 40 `--selftest` legs to `fetch-engine-assets`, and the canary
+    > is caged. P4.28's own note pre-declared exactly this coupling; **the canary is RED on this
+    > commit and `lefthook.yml` runs it at pre-push over any `scripts/` change, so this tail is
+    > not a follow-up — the push is blocked until it lands.** **(c)** a sibling
+    > `scripts/gate-selftests/g24-compile-engine-asset.py`: P4.28's note branches on exactly this
+    > case ("P4.28.1 IF its from-source harness extends this script rather than shipping its own —
+    > in the latter case that box ships its own sibling g24 canary"), and this box triggers BOTH
+    > arms. `run-gate-selftests` discovers only `scripts/gate-selftests/*.py`, which is caged, so
+    > until (c) lands the harness's 208 legs execute in NO gate and NO workflow — the precise
+    > situation the P4.27 coupling convention exists to prevent. **(d)** the CAGE RULING for
+    > `scripts/compile-engine-asset`, the exact counterpart of the one P4.28 already defers for
+    > `scripts/fetch-engine-assets`: the script is deliberately not cage-homed at authoring, and the
+    > owner rules its L(-1) membership at this same act. It decides what counts as a verified
+    > signature, so leaving its membership implicit would be the one omission this note exists to
+    > prevent. **(e)** `src-tauri/engines.lock`'s header still says "`scripts/fetch-engine-assets`
+    > acquires PREBUILT rows only" — true when it was written, false since this box's `--source`
+    > mode, and the file is caged so the Loop cannot correct it. The Loop-editable twin of that
+    > sentence (`refusal_reason`) IS corrected in this commit; this is its mirrored copy. Found by
+    > the r4 review, and worth naming as its own miss: item (a) above reasoned about this very
+    > header ("scalar, so the 'TWO fields are plural' clause is untouched") — it checked one clause
+    > and missed the one three lines away, which is exactly the per-clause hand-off loss the (A′)
+    > tail note itself records. Suggested wording: "`scripts/fetch-engine-assets` acquires prebuilt
+    > ENTRIES, and under `--source` the signed source inputs a from-source entry is compiled from".
+    > **(f)** the CAGE RULING for `src-tauri/engine-configure.toml` itself. Its header ARGUES the
+    > answer — a caged home would turn each of the five fill boxes into an owner act — and that
+    > argument matches the repo's input-vs-enforcement split, but owner decision D1 makes cage
+    > membership the owner's call and not the Loop's, and this is the file that decides whether the
+    > shipped FFmpeg carries `--disable-network`. Declared even though the expected ruling is "not
+    > caged", because the Loop arguing its way to a D1 answer is what D1 forbids.
+    > [Raised by the r5 review.] Until it lands, §0.7's `src-tauri/` listing is one file short; no gate reaches it
+    > (G69 asserts DIRECTORIES, and check 25 fires on §0.7's text changing, not on a file
+    > appearing beside it) — which is exactly why it is declared here rather than left to be
+    > noticed. (Reading note: the present-tense clause quotes above —
     > and this note's own pre-tail STATUS sentences, "STILL OPEN, by design" and "Until the tail
     > lands, those two artifacts of one commit disagree" — describe the PRE-tail state this
     > appendix resolves; kept verbatim per the P4.27 convention.)
@@ -442,7 +656,7 @@
   - [ ] **P4.56.2** [BUILD] Build the `cargo xtask sbom` two-layer merge scaffold (app dep-graph + bundled-engine layers, `--spec-version 1.5`, abort-on-mismatch) · §6.3.1 §3.7.1 · G35 G35a
     needs: P4.56.1
     > the `cargo xtask sbom` executable tool: merge the app dep-graph layer (`cargo cyclonedx` + `@cyclonedx/cdxgen`) with the bundled-engine layer, pinned `--spec-version 1.5` on every input, abort-on-mismatch; the DERIVED static-link closure (G35a) + the SBOM-diff (G35b) hooks. An executable tool that fails on a malformed SBOM merge / version mismatch — a different failure mode from the schema. **Dep/pin tail (dep↔floor split, the P2.95 precedent):** `cargo-cyclonedx@<ver>` + `@cyclonedx/cdxgen@<ver>` are NEW pinned tools this box introduces — the §3.8 SBOM-tool pin rows land in the SAME commit (§6.3.1 "the §3.8-pinned cargo-cyclonedx" / G68 doc-sync; discharge §6.3.1's `[DEFER: verify]` there by recording the pinned tool's real default specVersion at pin time), and the `scripts/gate-tools.toml` manifest row (G35: the manifest names the CRATE `cargo-cyclonedx@<ver>`, distinct from the `cargo cyclonedx` invocation) + `scripts/install-gate-tools` + any ci.yml install step are owner-acked L(-1) siblings; a cdxgen devDependency additionally carries its `PINNED_FLOORS_JS` floor row ([!extern], Co-Pilot). Sequence the owner-ack tail BEFORE the fill so the L(-1) edits are acked acts, not a mid-box hard-stop.
-  - [ ] **P4.56.3** [GATE] Build the committed engine-source allow-list gate — every `engines.lock` pin-URL + corroboration-checksum-URL ∈ an allow-listed per-engine origin, the two on independent origins · §3.8 §3.7.2 · G37 G24
+  - [ ] **P4.56.3** [GATE] Build the committed engine-source allow-list gate — every `engines.lock` pin-URL + corroboration-checksum-URL + `from_source.signature_url` (P4.28.1) ∈ an allow-listed per-engine origin, the pin and corroboration on independent origins · §3.8 §3.7.2 · G37 G24
     needs: P4.56.1, P0.7.3
     > **[Forward-note — compare the HOST, not the netloc; raised by the P4.28 dual review]** an
     > origin check written against a URL's `netloc` is bypassable: `netloc` carries userinfo and

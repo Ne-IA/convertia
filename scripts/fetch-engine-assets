@@ -9,6 +9,19 @@ shape `stage-engines.select_cache_entry` looks for. It is the ONLY sanctioned ne
 package time (§6.1.3's "never the live network at package time" binds `stage-engines`, not this
 populate path), and it runs only on a miss.
 
+TWO MODES, ONE EGRESS SURFACE. The default mode populates a PREBUILT group's entry, verified
+against `asset_sha256`. `--source` populates the SIGNED SOURCE tarballs a FROM-SOURCE group
+compiles from, verified against each row's `from_source.tarball_sha256` - a different pin for
+different bytes, per the (A′) mode-scoping ruling. The second mode lives HERE rather than in
+`scripts/compile-engine-asset` on purpose: that script would otherwise have to open sockets too,
+and the scheme pin, the origin allow-list and the per-hop redirect re-check would have two homes
+that could drift. `compile-engine-asset` CONSUMES the entry this mode publishes and does the parts
+that are not a download - signature verification against `signing_key_fingerprint`, the local
+configure regeneration, and the compile itself. It never opens a socket and never invokes this
+script: the two are separate steps, `--source` first. `--source` publishes the RAW tarball under a `.src`-suffixed
+key, which `stage-engines` structurally cannot pick up: its `cache_entry_matches` anchors on a
+trailing `-<triple>`, and `-<triple>.src` does not satisfy it.
+
 A CACHE ENTRY IS A GROUP, NOT A ROW `[DECIDED - owner adjudication 2026-09-01, the (A') ruling
 on the P4.28 escalation]`. `ffmpeg`, `ffprobe` and `libmp3lame.so` are three §3.7.2 rows with
 three ids, three versions and three staged-byte hashes - and ONE download. So the key is built
@@ -75,9 +88,10 @@ the Co-Pilot-landed owner-acked tail this box declares), the independent armed c
 `scripts/gate-selftests/g24-fetch-engine-assets.py` which plants the off-`engines.lock`-URL
 positive from OUTSIDE this file (`scripts/gate-selftests/**`, L(-1), same tail), the G37
 restore-re-verify step the G56 workflow-lint sub-rule requires between the restore and
-`stage-engines`, and the from-source CI-compile populate path, which is P4.28.1's distinct box
-(this script handles `acquisition = "prebuilt"` rows only and REFUSES the rest, rather than
-silently treating a build-output pin as a download).
+`stage-engines`, and the from-source CI-compile itself, which is P4.28.1's distinct box: this script's DEFAULT
+mode handles `acquisition = "prebuilt"` rows only and refuses the rest, rather than silently
+treating a build-output pin as a download - and its `--source` mode (below) acquires the signed
+SOURCES a from-source group compiles from, never the compile's output.
 
 [Build-Session-Entscheidung: P4.28] --selftest lives IN this file, for the P4.27 reason recorded
 verbatim in `stage-engines`: the repo's only Python-test runner is `run-gate-selftests` over the
@@ -94,6 +108,7 @@ stay importable without the registration.
 
 Usage:
   fetch-engine-assets --target TRIPLE (--engine GROUP | --all) [--cache-root DIR] [--root DIR]
+  fetch-engine-assets --source [...]     # populate the SIGNED SOURCES of the from-source groups
   fetch-engine-assets --check [...]      # report what WOULD be fetched, write nothing
   fetch-engine-assets --selftest         # the tool's own fixture-driven regression suite
 
@@ -103,6 +118,7 @@ stdlib-only. Exit: 0 = populated (or nothing to do); 1 = a fetch/verify/unpack v
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import http.client
 import io
@@ -213,6 +229,47 @@ class LockRow(NamedTuple):
     cache_engine: str
     cache_version: str
     corroboration_urls: tuple[str, ...]
+    tarball_sha256: str
+    signature_url: str
+    signing_key_fingerprint: str
+    verified_with: str
+
+
+class SourceFetch(NamedTuple):
+    """ONE signed source tarball of a from-source group, plus the detached signature over it.
+
+    The signature carries no hash pin, and that is not an omission: its authenticity is what
+    `compile-engine-asset` establishes by verifying it against the row's pinned
+    `signing_key_fingerprint`. A tampered signature fails that check; a substituted one fails the
+    fingerprint half of it. Pinning its hash too would only pin a value that changes whenever the
+    upstream re-signs.
+    """
+
+    row_id: str
+    upstream_url: str
+    tarball_sha256: str
+    signature_url: str
+    archive_name: str
+    signature_name: str
+
+
+class SourcePlan(NamedTuple):
+    """ONE from-source cache entry: every signed source the group compiles from.
+
+    A prebuilt group is one download, so `FetchPlan` carries one URL. A compiled group is a
+    COMPILE and legitimately consumes SEVERAL signed tarballs (the (A′) mode-scoping ruling), so
+    the source plan is per-GROUP with N sources inside it - one cache key, one `actions/cache`
+    restore, every input the compile needs. Keying per SOURCE instead would give one group N cache
+    entries; keying the ENTRY per source and publishing N times over one name would silently keep
+    only the last, which is the shape the P4.28.1 dual review caught.
+    """
+
+    entry_name: str
+    triple: str
+    cache_engine: str
+    sources: tuple[SourceFetch, ...]
+    allowed_hosts: frozenset[str]
+    cached: bool
 
 
 class FetchPlan(NamedTuple):
@@ -344,6 +401,12 @@ def parse_lock(text: str, *, where: str = LOCK_REL) -> tuple[LockRow, ...]:
         asset = ""
         if acquisition == "prebuilt":
             asset = _require_str(raw, "asset_sha256", seat)
+        # The from-source anchor set. Read only for `--source`, so a prebuilt row is never asked
+        # for it; the authoritative required-iff rule is `crate::engines::lock`'s.
+        anchor = raw.get("from_source")
+        if anchor is not None and not isinstance(anchor, dict):
+            raise StructuralError(f"{seat}: `from_source` must be a table")
+        anchor = anchor or {}
         rows.append(
             LockRow(
                 id=identity,
@@ -359,6 +422,10 @@ def parse_lock(text: str, *, where: str = LOCK_REL) -> tuple[LockRow, ...]:
                 corroboration_urls=tuple(
                     url.strip() for url in corroboration if isinstance(url, str) and url.strip()
                 ),
+                tarball_sha256=str(anchor.get("tarball_sha256", "")).strip(),
+                signature_url=str(anchor.get("signature_url", "")).strip(),
+                signing_key_fingerprint=str(anchor.get("signing_key_fingerprint", "")).strip(),
+                verified_with=str(anchor.get("verified_with", "")).strip(),
             )
         )
     return tuple(rows)
@@ -389,7 +456,8 @@ def refusal_reason(row: LockRow) -> str:
         )
     return (
         f"acquisition '{row.acquisition}' is not 'prebuilt' - a from-source pin is verified "
-        "against our own CI build output (§3.8), and its populate path is P4.28.1's compile"
+        "against our own CI build output (§3.8), and its ENTRY is produced by P4.28.1's compile "
+        "(this script's `--source` mode populates that compile's inputs, not its output)"
     )
 
 
@@ -466,14 +534,134 @@ def group_plans(
     return plans
 
 
+def _source_filename(url: str, *, role: str, row_id: str) -> str:
+    """The name a source file takes INSIDE the cache entry, refused if it is not a plain name.
+
+    Delegates to `assert_confined_member` - the ONE guard every URL-derived path component in this
+    script goes through - and then additionally requires a SINGLE component, because the entry is a
+    flat directory the compile step reads back by name. Spelling a second, weaker grammar here is
+    exactly how this function first shipped WITHOUT the Windows drive-relative rule, so a
+    `.../D:evil.tar.gz` tail collapsed the join and wrote outside the cache root. There is now one
+    grammar, and adding a rule to it protects both callers.
+    """
+    tail = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1]
+    try:
+        assert_confined_member(tail, archive=f"{row_id} {role} url")
+        if "/" in tail.replace("\\", "/"):
+            raise FetchError(f"refusing a multi-segment name {tail!r}")
+    except FetchError as exc:
+        raise StructuralError(
+            f"{row_id}: the {role} URL {url!r} has no usable filename ({exc}) - a from-source "
+            "entry is read back by name, so the tail of the URL has to be a plain one"
+        ) from exc
+    return tail
+
+
+def source_plans(rows: tuple[LockRow, ...], triple: str, cache_root: Path) -> list[SourcePlan]:
+    """The FROM-SOURCE half of §6.1.3: ONE plan per compiled GROUP, holding all of its sources.
+
+    Each source is verified against its own row's `from_source.tarball_sha256` - NOT `asset_sha256`,
+    which a from-source row does not carry, and NOT `sha256`, which is of the STAGED bytes. Both
+    the tarball and its detached signature are published RAW under a `.src` suffix: raw because the
+    signature is over the archive as shipped, so unpacking it here would destroy the very bytes
+    `compile-engine-asset` has to verify; `.src` because `stage-engines` must never mistake a
+    source tree for a staged one - its `cache_entry_matches` anchors on a trailing `-<triple>`,
+    which `-<triple>.src` does not satisfy.
+    """
+    ordered: list[str] = []
+    by_group: dict[str, list[LockRow]] = {}
+    for row in rows:
+        if triple not in row.triples or row.acquisition != "from-source":
+            continue
+        if row.kind != "staged-artifact":
+            continue
+        if row.cache_engine not in by_group:
+            by_group[row.cache_engine] = []
+            ordered.append(row.cache_engine)
+        by_group[row.cache_engine].append(row)
+
+    plans: list[SourcePlan] = []
+    for group in ordered:
+        members = by_group[group]
+        name = f"{cache_entry_name(members[0], triple)}.src"
+        hosts: set[str] = set()
+        sources: list[SourceFetch] = []
+        seen_urls: list[str] = []
+        taken: dict[str, str] = {}
+        for row in members:
+            if f"{cache_entry_name(row, triple)}.src" != name:
+                raise StructuralError(
+                    f"group '{group}' resolves to two source entry names ({name} and "
+                    f"{cache_entry_name(row, triple)}.src) at {triple} - one compile is one "
+                    "entry (§3.7.2 group invariant)"
+                )
+            if not row.tarball_sha256:
+                raise StructuralError(
+                    f"{row.id} @ {triple}: a from-source row must carry "
+                    "`from_source.tarball_sha256` - there is nothing to verify the source against "
+                    "(§3.8; `crate::engines::lock` is the authoritative required-iff check)"
+                )
+            if not row.signature_url:
+                raise StructuralError(
+                    f"{row.id} @ {triple}: a from-source row must carry "
+                    "`from_source.signature_url` - the signature is the §3.8 provenance anchor, "
+                    "and one that cannot be located cannot be checked"
+                )
+            # The dedupe comes AFTER the per-row checks on purpose: a second row sharing a
+            # url still has to carry its own anchors, and skipping first would let a blank one
+            # through unnoticed here.
+            if row.upstream_url in seen_urls:
+                continue
+            seen_urls.append(row.upstream_url)
+            archive = _source_filename(row.upstream_url, role="source", row_id=row.id)
+            signature = _source_filename(row.signature_url, role="signature", row_id=row.id)
+            for filename in (archive, signature):
+                if filename in taken:
+                    raise StructuralError(
+                        f"group '{group}' @ {triple}: {row.id} and {taken[filename]} both publish "
+                        f"a file named {filename!r} into one entry - the second would overwrite "
+                        "the first, so the collision is refused instead"
+                    )
+                taken[filename] = row.id
+            hosts.add(urllib.parse.urlsplit(row.upstream_url).netloc)
+            hosts.add(urllib.parse.urlsplit(row.signature_url).netloc)
+            hosts.update(urllib.parse.urlsplit(url).netloc for url in row.corroboration_urls)
+            sources.append(
+                SourceFetch(
+                    row_id=row.id,
+                    upstream_url=row.upstream_url,
+                    tarball_sha256=row.tarball_sha256,
+                    signature_url=row.signature_url,
+                    archive_name=archive,
+                    signature_name=signature,
+                )
+            )
+        plans.append(
+            SourcePlan(
+                entry_name=name,
+                triple=triple,
+                cache_engine=group,
+                sources=tuple(sources),
+                allowed_hosts=frozenset(host for host in hosts if host),
+                cached=(cache_root / name).is_dir(),
+            )
+        )
+    return plans
+
+
 def select_plans(
     rows: tuple[LockRow, ...],
     engine: str | None,
     triple: str,
     cache_root: Path,
     skipped: list[str] | None = None,
-) -> list[FetchPlan]:
-    plans = group_plans(rows, triple, cache_root, skipped)
+    sources: bool = False,
+) -> list[FetchPlan] | list[SourcePlan]:
+    plans = (
+        source_plans(rows, triple, cache_root)
+        if sources
+        else group_plans(rows, triple, cache_root, skipped)
+    )
     if engine is None:
         return plans
     chosen = [plan for plan in plans if plan.cache_engine == engine]
@@ -595,12 +783,20 @@ def fetch_asset(
     return data
 
 
-def verify_sha256(data: bytes, expected: str, *, url: str) -> str:
-    """Verify BEFORE anything is written. Returns the actual digest for the caller to report."""
+def verify_sha256(
+    data: bytes, expected: str, *, url: str, field: str = "asset_sha256"
+) -> str:
+    """Verify BEFORE anything is written. Returns the actual digest for the caller to report.
+
+    `field` is the manifest key the pin came from, because the two modes pin different bytes with
+    different keys: a prebuilt entry's `asset_sha256` and a from-source entry's
+    `from_source.tarball_sha256`. Naming the wrong one in the failure sends whoever reads it to
+    the wrong line of the manifest.
+    """
     want = expected.strip().lower()
     if len(want) != _SHA256_HEX_LEN or any(c not in "0123456789abcdef" for c in want):
         raise FetchError(
-            f"malformed `asset_sha256` pin {expected!r} - a §3.7.2 row carries 64 lowercase hex "
+            f"malformed `{field}` pin {expected!r} - a §3.7.2 row carries 64 lowercase hex "
             "characters"
         )
     actual = hashlib.sha256(data).hexdigest()
@@ -764,6 +960,100 @@ def populate(plan: FetchPlan, cache_root: Path, *, opener: Callable[..., bytes])
     return digest
 
 
+def populate_sources(
+    plan: SourcePlan, cache_root: Path, *, opener: Callable[..., bytes]
+) -> str:
+    """Fetch, verify and publish ONE from-source entry atomically. Returns the source-set digest.
+
+    Same ordering discipline as `populate`, and deliberately NOT the same body: EVERY source is
+    fetched and hashed while still in memory, only then are all of them written RAW into a private
+    staging directory, and the last act is a single `os.replace`. Nothing is unpacked - the
+    signature is over the archive as shipped, so the archive is what the entry has to hold.
+    """
+    # EVERY source is fetched and verified before ANY of them is written: staging lives under
+    # the cache root, so writing source 1 while source 2 is still unverified would put unverified-
+    # adjacent bytes there and falsify this module's own headline invariant. The cost is holding
+    # the group's tarballs in memory at once, which `read_capped` already bounds.
+    fetched: list[tuple[SourceFetch, bytes, bytes]] = []
+    digests: list[str] = []
+    for source in plan.sources:
+        data = fetch_asset(source.upstream_url, opener=opener, allowed_hosts=plan.allowed_hosts)
+        digests.append(
+            verify_sha256(
+                data,
+                source.tarball_sha256,
+                url=source.upstream_url,
+                field="from_source.tarball_sha256",
+            )
+        )
+        # The detached signature carries no hash pin of its own - `compile-engine-asset` is what
+        # establishes its authenticity, against the row's pinned key - but it IS bound by the same
+        # allow-list, so a row cannot pull its "signature" from anywhere it likes.
+        signature = fetch_asset(
+            source.signature_url, opener=opener, allowed_hosts=plan.allowed_hosts
+        )
+        fetched.append((source, data, signature))
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    try:
+        staging = Path(tempfile.mkdtemp(dir=cache_root, prefix=f".{plan.entry_name}."))
+    except OSError as exc:
+        raise FetchError(
+            f"{plan.entry_name}: could not create a staging directory - {exc}"
+        ) from exc
+    try:
+        for source, data, signature in fetched:
+            (staging / source.archive_name).write_bytes(data)
+            (staging / source.signature_name).write_bytes(signature)
+        # The entry the compile step reads back is asserted HERE too, not only there: the two
+        # scripts derive these names independently, and a divergence that only the consumer
+        # notices would already have written the bytes.
+        expected = sorted(
+            name
+            for source in plan.sources
+            for name in (source.archive_name, source.signature_name)
+        )
+        landed = sorted(child.name for child in staging.iterdir())
+        if landed != expected:
+            raise FetchError(
+                f"{plan.entry_name}: staged {landed} but the plan declares {expected} - refusing "
+                "to publish an entry that is not what it says it is"
+            )
+        summary = hashlib.sha256("".join(digests).encode("ascii")).hexdigest()
+        destination = cache_root / plan.entry_name
+        # A stray NON-directory at the entry path is refused BEFORE the move, on every platform.
+        # This is a check-then-act, so it narrows the window rather than closing it: only this
+        # script ever writes a directory here, and a stray FILE appearing inside the window means
+        # something outside the harness is writing into the cache. Named as a mitigation so it is
+        # not read as a closure.
+        # `os.replace(dir -> existing FILE)` diverges: POSIX raises ENOTDIR, Windows SUCCEEDS and
+        # silently replaces the file with the directory - so the `except OSError` handler below
+        # never sees that case on Windows and the two platforms would report different outcomes
+        # for the identical cache. Verified empirically on a Windows host during the P4.28.1
+        # dual review. [Build-Session-Entscheidung: P4.28.1]
+        if destination.exists() and not destination.is_dir():
+            raise FetchError(
+                f"{plan.entry_name}: a non-directory already occupies the entry path - refusing "
+                "to replace it; a cache entry is a directory, so this is a broken cache, not a race"
+            )
+        try:
+            os.replace(staging, destination)
+        except OSError:
+            # Same reading as `populate`: a concurrent populate winning is benign - its sources
+            # verified against the SAME pins.
+            if not destination.is_dir():
+                raise
+            shutil.rmtree(staging, ignore_errors=True)
+            raise _AlreadyPublished(summary)
+    except FetchError:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise FetchError(f"{plan.entry_name}: could not publish the entry - {exc}") from exc
+    return summary
+
+
 def run(
     *,
     lock_path: Path,
@@ -773,6 +1063,7 @@ def run(
     check_only: bool,
     verbose: bool,
     opener: Callable[..., bytes],
+    sources: bool = False,
 ) -> int:
     rows = load_lock(lock_path)
     if not rows:
@@ -783,13 +1074,18 @@ def run(
         return 0
 
     skipped: list[str] = []
-    plans = select_plans(rows, engine, triple, cache_root, skipped)
+    plans = select_plans(rows, engine, triple, cache_root, skipped, sources)
     if verbose:
         for reason in skipped:
             note(f"not this path's to fetch - {reason}")
     if not plans:
-        note(f"no prebuilt `engines.lock` row targets {triple} - nothing to populate")
+        kind = "from-source" if sources else "prebuilt"
+        note(f"no {kind} `engines.lock` row targets {triple} - nothing to populate")
         return 0
+
+    if sources:
+        return _run_sources(plans, cache_root, check_only=check_only, verbose=verbose,
+                            opener=opener, triple=triple)
 
     hits = 0
     for plan in plans:
@@ -816,6 +1112,50 @@ def run(
             f"from {plan.upstream_url}"
         )
 
+    verb = "would populate" if check_only else "populated"
+    note(f"{triple}: {hits} cache hit(s), {verb} {len(plans) - hits} entr(ies)")
+    return 0
+
+
+def _run_sources(
+    plans: list[SourcePlan],
+    cache_root: Path,
+    *,
+    check_only: bool,
+    verbose: bool,
+    opener: Callable[..., bytes],
+    triple: str,
+) -> int:
+    """The `--source` reporting loop. Its own function because a source plan is N downloads under
+    one key, so a per-plan `upstream_url` - what the prebuilt loop reports - does not exist here."""
+    hits = 0
+    for plan in plans:
+        # `row_id` is the FIRST row of a shared source; a group where `ffmpeg` and `ffprobe` come
+        # out of one tarball has one fetch and two rows behind it, so the report names the source
+        # it fetched rather than pretending to enumerate the rows.
+        members = ", ".join(source.row_id for source in plan.sources)
+        if plan.cached:
+            hits += 1
+            if verbose:
+                note(f"cache hit: {plan.entry_name} ({members})")
+            continue
+        if check_only:
+            urls = ", ".join(source.upstream_url for source in plan.sources)
+            note(f"would populate: {plan.entry_name} [{members}] <- {urls}")
+            continue
+        try:
+            summary = populate_sources(plan, cache_root, opener=opener)
+        except _AlreadyPublished as won:
+            hits += 1
+            note(
+                f"{plan.entry_name} [{members}] was published by a concurrent run "
+                f"(source-set digest {won.digest[:16]}...) - ours discarded"
+            )
+            continue
+        note(
+            f"populated {plan.entry_name} [{members}] with {len(plan.sources)} signed source(s) "
+            f"(source-set digest {summary[:16]}...)"
+        )
     verb = "would populate" if check_only else "populated"
     note(f"{triple}: {hits} cache hit(s), {verb} {len(plans) - hits} entr(ies)")
     return 0
@@ -867,6 +1207,10 @@ _HOST = "example.invalid"
 # A DISTINCT host, so an allow-list leg can tell "this row's hosts" apart from "the upstream
 # host only" and from "every host in the manifest".
 _CORROB_HOST = "mirror.invalid"
+# The signature host is its own, for the same reason: an upstream may publish the detached
+# signature somewhere other than the tarball, and a fixture that collapses the two cannot tell
+# "the signature's host is allow-listed" from "the tarball's host is".
+_SIG_HOST = "signatures.invalid"
 
 
 def _row_toml(
@@ -1567,6 +1911,454 @@ def _legs() -> None:
             )[0].allowed_hosts,
         )
 
+        # ---- the FROM-SOURCE path (--source) -----------------------------------------------
+        def _report(call) -> str:
+            """What a call PRINTS. Several branches here are reporting-only, and an exit code
+            cannot tell them apart."""
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                call()
+            return buffer.getvalue()
+
+        # [Test-Change: P4.28.1 - old-obsolete+new-correct, §6.1.3] the first cut of these legs
+        # asserted `all(p.entry_name == "ffmpeg-7.1-<triple>.src")` across TWO plans - i.e. it
+        # asserted the very name COLLISION that made the second source's publish lose an
+        # os.replace race against the first and be reported as a benign concurrent run. The
+        # expectation is obsolete because the planner is now per-GROUP with N sources inside one
+        # entry; the new expectations are verified by reading the published entry back off disk
+        # below, not by re-stating the planner's own arithmetic.
+        ff_url = f"https://{_HOST}/ffmpeg-7.1.tar.gz"
+        lame_url = f"https://{_HOST}/lame-3.100.tar.gz"
+        ff_sig_url = f"https://{_SIG_HOST}/ffmpeg-7.1.tar.gz.asc"
+        lame_sig_url = f"https://{_SIG_HOST}/lame-3.100.tar.gz.asc"
+        ff_src, lame_src = b"ffmpeg source archive", b"lame source archive"
+        ff_sig, lame_sig = b"-----BEGIN PGP SIGNATURE----- ff", b"-----BEGIN PGP SIG lame"
+
+        def _src_row(ident, version, url, payload, *, triples=f'["{_LINUX}"]', sig=None):
+            return _row_toml(
+                ident=ident,
+                version=version,
+                url=url,
+                triples=triples,
+                acquisition="from-source",
+                extra=group_extra
+                + "[engine.from_source]\n"
+                + f'tarball_sha256 = "{hashlib.sha256(payload).hexdigest()}"\n'
+                + f'signature_url = "{sig}"\n'
+                + 'signing_key_fingerprint = "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555"\n'
+                + 'verified_with = "gpg"\n'
+                + f'toolchain_digest = "sha256:{"1" * 64}"\n',
+            )
+
+        compiled_src = _src_row(
+            "ffmpeg", "7.1", ff_url, ff_src, sig=ff_sig_url
+        ) + _src_row("libmp3lame.so", "3.100", lame_url, lame_src, sig=lame_sig_url)
+        compiled_rows = parse_lock(compiled_src)
+        src_cache = base / "cache-src"
+        src = source_plans(compiled_rows, _LINUX, src_cache)
+        _record(
+            "a compiled group is ONE plan holding every source, not one plan per source",
+            len(src) == 1 and len(src[0].sources) == 2,
+        )
+        _record(
+            "the entry is `.src`-keyed, which stage-engines structurally cannot match",
+            src[0].entry_name == f"ffmpeg-7.1-{_LINUX}.src"
+            # `stage-engines.cache_entry_matches` anchors on a TRAILING `-<triple>`; asserting
+            # that property directly keeps this suite free of a cross-script import.
+            and not src[0].entry_name.endswith(f"-{_LINUX}"),
+        )
+        _record(
+            "each source is verified against its OWN from_source.tarball_sha256",
+            sorted(s.tarball_sha256 for s in src[0].sources)
+            == sorted(hashlib.sha256(b).hexdigest() for b in (ff_src, lame_src)),
+        )
+        _record(
+            "each source carries the detached signature url its row declares",
+            sorted(s.signature_url for s in src[0].sources)
+            == sorted([ff_sig_url, lame_sig_url]),
+        )
+        _record(
+            "the two sources are the two DIFFERENT urls of the one compiled group",
+            sorted(s.upstream_url for s in src[0].sources) == sorted([ff_url, lame_url]),
+        )
+        _record(
+            "the plan's allow-list carries the row's own hosts - upstream, signature AND corroboration",
+            src[0].allowed_hosts == frozenset({_HOST, _SIG_HOST, _CORROB_HOST}),
+        )
+        _record(
+            "a from-source row is invisible to the PREBUILT planner",
+            group_plans(compiled_rows, _LINUX, src_cache) == [],
+        )
+        _record(
+            "a PREBUILT row is invisible to the SOURCE planner",
+            source_plans(group_rows, _LINUX, src_cache) == [],
+        )
+        _record(
+            "a from-source row this triple does not target yields no source plan",
+            source_plans(compiled_rows, _WIN, src_cache) == [],
+        )
+        _record(
+            "a from-source SUB-COMPONENT is not a source plan - only staged artifacts compile",
+            source_plans(
+                parse_lock(
+                    _row_toml(acquisition="from-source", kind="sub-component", extra=group_extra)
+                ),
+                _LINUX,
+                src_cache,
+            )
+            == [],
+        )
+        _record(
+            "two rows sharing ONE source fetch it once",
+            len(source_plans(parse_lock(compiled_src.replace(lame_url, ff_url)), _LINUX,
+                             src_cache)[0].sources)
+            == 1,
+        )
+        _record(
+            "a from-source row with no tarball anchor is refused, not silently skipped",
+            _raises_saying(
+                lambda: source_plans(
+                    parse_lock(_row_toml(acquisition="from-source", extra=group_extra)),
+                    _LINUX,
+                    src_cache,
+                ),
+                "from_source.tarball_sha256",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a from-source row that cannot LOCATE its signature is refused",
+            _raises_saying(
+                lambda: source_plans(
+                    parse_lock(compiled_src.replace(f'signature_url = "{ff_sig_url}"\n', "")),
+                    _LINUX,
+                    src_cache,
+                ),
+                "from_source.signature_url",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a `from_source` that is not a table is refused, not read as an empty one",
+            _raises_saying(
+                lambda: parse_lock(
+                    _row_toml(acquisition="from-source", extra="from_source = 7\n")
+                ),
+                "must be a table",
+                StructuralError,
+            ),
+        )
+        _record(
+            "two sources whose urls share a filename are refused, not silently overwritten",
+            _raises_saying(
+                lambda: source_plans(
+                    parse_lock(
+                        _src_row("ffmpeg", "7.1", f"https://{_HOST}/a/src.tar.gz", ff_src)
+                        + _src_row("libmp3lame.so", "3.100", f"https://{_HOST}/b/src.tar.gz",
+                                   lame_src)
+                    ),
+                    _LINUX,
+                    src_cache,
+                ),
+                "both publish a file named",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a source url with no usable filename is refused",
+            _raises_saying(
+                lambda: source_plans(
+                    parse_lock(_src_row("ffmpeg", "7.1", f"https://{_HOST}/", ff_src)),
+                    _LINUX,
+                    src_cache,
+                ),
+                "no usable filename",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a group resolving to two source entry names fails closed",
+            _raises_saying(
+                lambda: source_plans(
+                    parse_lock(
+                        compiled_src.replace(
+                            'cache_version = "7.1"', 'cache_version = "9.9"', 1
+                        )
+                    ),
+                    _LINUX,
+                    src_cache,
+                ),
+                "two source entry names",
+                StructuralError,
+            ),
+        )
+
+        # ---- --source: the RAW, per-source publish -----------------------------------------
+        src_net = {
+            ff_url: ff_src,
+            lame_url: lame_src,
+            ff_sig_url: ff_sig,
+            lame_sig_url: lame_sig,
+        }
+        pub_cache = base / "cache-src-pub"
+        populate_sources(src[0], pub_cache, opener=_opener_for(src_net))
+        published = pub_cache / f"ffmpeg-7.1-{_LINUX}.src"
+        _record(
+            "the entry holds the RAW archive bytes - the signature is over the archive as shipped, "
+            "so nothing is unpacked",
+            (published / "ffmpeg-7.1.tar.gz").read_bytes() == ff_src,
+        )
+        _record(
+            "a multi-source group publishes EVERY source; none is discarded",
+            (published / "lame-3.100.tar.gz").read_bytes() == lame_src,
+        )
+        _record(
+            "each detached signature is published beside its own archive",
+            (published / "ffmpeg-7.1.tar.gz.asc").read_bytes() == ff_sig
+            and (published / "lame-3.100.tar.gz.asc").read_bytes() == lame_sig,
+        )
+        _record(
+            "the entry holds exactly the declared sources and their signatures, nothing else",
+            sorted(child.name for child in published.iterdir())
+            == sorted(
+                ["ffmpeg-7.1.tar.gz", "ffmpeg-7.1.tar.gz.asc",
+                 "lame-3.100.tar.gz", "lame-3.100.tar.gz.asc"]
+            ),
+        )
+        miss_cache = base / "cache-src-miss"
+        _record(
+            "a source whose bytes miss the pin is refused, and NOTHING is published",
+            _raises_saying(
+                lambda: populate_sources(
+                    src[0], miss_cache, opener=_opener_for({**src_net, lame_url: b"tampered"})
+                ),
+                "SHA-256 mismatch",
+                FetchError,
+            )
+            # NOT just "the entry is absent": the claim is that no byte reaches the cache root
+            # before EVERY source has verified, so the whole root must be untouched.
+            and not (miss_cache.exists() and any(miss_cache.iterdir())),
+        )
+        _record(
+            "a malformed SOURCE pin names the from-source key, not the prebuilt one",
+            _raises_saying(
+                lambda: populate_sources(
+                    src[0]._replace(
+                        sources=(src[0].sources[0]._replace(tarball_sha256="nope"),)
+                    ),
+                    base / "cache-src-pin",
+                    opener=_opener_for(src_net),
+                ),
+                "malformed `from_source.tarball_sha256` pin",
+                FetchError,
+            ),
+        )
+        _record(
+            "the source fetch is bound by the plan's OWN allow-list",
+            _raises_saying(
+                lambda: populate_sources(
+                    src[0]._replace(allowed_hosts=frozenset({"elsewhere.invalid"})),
+                    base / "cache-src-host",
+                    opener=_opener_for(src_net),
+                ),
+                "allow-list",
+                FetchError,
+            ),
+        )
+        _record(
+            "the SIGNATURE fetch is bound by the allow-list too, not only the tarball fetch",
+            # The archive's host stays allow-listed, so the archive fetch SUCCEEDS and only the
+            # signature is refused. Dropping the pin from the signature call alone survived a
+            # 155-leg suite because the leg below raises on the ARCHIVE before ever reaching it.
+            _raises_saying(
+                lambda: populate_sources(
+                    src[0]._replace(allowed_hosts=frozenset({_HOST, _CORROB_HOST})),
+                    base / "cache-src-sighost",
+                    opener=_opener_for(src_net),
+                ),
+                "allow-list",
+                FetchError,
+            ),
+        )
+        _record(
+            "a source url whose tail is drive-relative is refused - it would escape the entry",
+            _raises_saying(
+                lambda: source_plans(
+                    parse_lock(
+                        _src_row("ffmpeg", "7.1", f"https://{_HOST}/D:evil.tar.gz", ff_src,
+                                 sig=ff_sig_url)
+                    ),
+                    _LINUX,
+                    src_cache,
+                ),
+                "drive-relative",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a url tail that is a multi-SEGMENT name is refused",
+            # `rsplit("/")` means a `/` can never survive; a literal backslash can, and on
+            # Windows it is a separator. This is the only input that reaches that guard.
+            _raises_saying(
+                lambda: _source_filename("https://h/a" + chr(92) + "b.tar", role="source",
+                                         row_id="x"),
+                "no usable filename",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a SIGNATURE url whose tail is drive-relative is refused on the same grammar",
+            _raises_saying(
+                lambda: source_plans(
+                    parse_lock(
+                        _src_row("ffmpeg", "7.1", ff_url, ff_src,
+                                 sig=f"https://{_SIG_HOST}/C:evil.asc")
+                    ),
+                    _LINUX,
+                    src_cache,
+                ),
+                "drive-relative",
+                StructuralError,
+            ),
+        )
+        _record(
+            "the publish refuses to hand over an entry that is not what the plan declares",
+            # Constructed directly, because plan-time refusal makes this unreachable through
+            # `source_plans` - which is the point: the post-condition is the backstop for a
+            # future derivation change, and a backstop nothing exercises is not one.
+            _raises_saying(
+                lambda: populate_sources(
+                    src[0]._replace(
+                        sources=(
+                            src[0].sources[0],
+                            src[0].sources[1]._replace(
+                                archive_name=src[0].sources[0].archive_name,
+                                signature_name=src[0].sources[0].signature_name,
+                            ),
+                        )
+                    ),
+                    base / "cache-src-shape",
+                    opener=_opener_for(src_net),
+                ),
+                "refusing to publish an entry that is not what it says it is",
+                FetchError,
+            ),
+        )
+        stray = base / "cache-src-stray"
+        stray.mkdir(parents=True)
+        (stray / f"ffmpeg-7.1-{_LINUX}.src").write_bytes(b"not a directory")
+        _record(
+            "a stray NON-directory at the entry path is never mistaken for a benign race",
+            _raises_saying(
+                lambda: populate_sources(src[0], stray, opener=_opener_for(src_net)),
+                "a non-directory already occupies the entry path",
+                FetchError,
+            ),
+        )
+        _record(
+            "a concurrent publish is counted as a HIT in the --source summary",
+            "1 cache hit(s), populated 0 entr(ies)" in _report(
+                lambda: _run_sources(
+                    source_plans(compiled_rows, _LINUX, base / "cache-src-clash"),
+                    pub_cache, check_only=False, verbose=False,
+                    opener=_opener_for(src_net), triple=_LINUX,
+                )
+            ),
+        )
+        _record(
+            "a concurrently-published entry reports THAT, not a fabricated populate",
+            _raises(
+                lambda: populate_sources(src[0], pub_cache, opener=_opener_for(src_net)),
+                _AlreadyPublished,
+            ),
+        )
+
+        # ---- --source: the wiring, end to end ----------------------------------------------
+        wired = base / "cache-src-wired"
+        src_lock = base / "src-lock.toml"
+        src_lock.write_text(compiled_src, encoding="utf-8")
+        run(lock_path=src_lock, cache_root=wired, triple=_LINUX, engine=None, check_only=False,
+            verbose=False, opener=_opener_for(src_net), sources=True)
+        _record(
+            "run(sources=True) reaches the SOURCE path - a `.src` entry, not a prebuilt one",
+            (wired / f"ffmpeg-7.1-{_LINUX}.src" / "lame-3.100.tar.gz").read_bytes() == lame_src,
+        )
+        _record(
+            "run() WITHOUT --source populates nothing here - the two modes are disjoint",
+            run(lock_path=src_lock, cache_root=base / "cache-src-off", triple=_LINUX, engine=None,
+                check_only=False, verbose=False, opener=_opener_for(src_net), sources=False) == 0
+            and not (base / "cache-src-off").exists(),
+        )
+        # The argv surface, driven against a FAKE root rather than the real repo - the
+        # `g24-*` target-absent lesson: a leg that reaches the checked-in manifest asserts the
+        # repo's current contents, not this script's behaviour.
+        argv_root = base / "argv-root"
+        (argv_root / "src-tauri").mkdir(parents=True)
+        (argv_root / LOCK_REL).write_text(compiled_src, encoding="utf-8")
+        argv_cache = base / "cache-src-argv"
+
+        def _argv_report(*extra: str) -> str:
+            """What `main` REPORTS, not merely what it returns.
+
+            Both modes exit 0 over a from-source-only manifest under `--check`, so an exit-code
+            assertion here is arm-blind: dropping `--source` on the way to `run` left it green.
+            The report is what actually differs.
+            """
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = main([*extra, "--all", "--root", str(argv_root), "--cache-root",
+                             str(argv_cache), "--target", _LINUX, "--check"])
+            return f"exit={code}\n{buffer.getvalue()}"
+
+        _record(
+            "main --source threads the mode through to the SOURCE path",
+            f"would populate: ffmpeg-7.1-{_LINUX}.src" in _argv_report("--source")
+            and not argv_cache.exists(),
+        )
+        _record(
+            "main WITHOUT --source finds no PREBUILT row in the same manifest",
+            "no prebuilt `engines.lock` row targets" in _argv_report()
+            and not argv_cache.exists(),
+        )
+        _record(
+            "a from-source cache HIT is reported under -v",
+            _report(
+                lambda: _run_sources(
+                    source_plans(compiled_rows, _LINUX, wired), wired, check_only=False,
+                    verbose=True, opener=_opener_for({}), triple=_LINUX,
+                )
+            ).count(f"cache hit: ffmpeg-7.1-{_LINUX}.src")
+            == 1,
+        )
+        _record(
+            "the --source summary counts a HIT as a hit, not as work still to do",
+            "1 cache hit(s), populated 0 entr(ies)" in _report(
+                lambda: _run_sources(
+                    source_plans(compiled_rows, _LINUX, wired), wired, check_only=False,
+                    verbose=False, opener=_opener_for({}), triple=_LINUX,
+                )
+            ),
+        )
+        prebuilt_lock = base / "prebuilt.lock"
+        prebuilt_lock.write_text(group_src, encoding="utf-8")
+        hit_cache = base / "cache-hit-probe"
+        (hit_cache / f"ffmpeg-7.1-{_LINUX}").mkdir(parents=True)
+        _record(
+            "the PREBUILT summary counts a HIT the same way - the arithmetic is one class",
+            "1 cache hit(s), populated 0 entr(ies)" in _report(
+                lambda: run(lock_path=prebuilt_lock, cache_root=hit_cache, triple=_LINUX,
+                            engine=None, check_only=False, verbose=False,
+                            opener=_opener_for({}))
+            ),
+        )
+        _record(
+            "a populated source entry is a cache HIT, not a second download",
+            source_plans(compiled_rows, _LINUX, wired)[0].cached
+            and run(lock_path=src_lock, cache_root=wired, triple=_LINUX, engine=None,
+                    check_only=False, verbose=False,
+                    opener=_opener_for({}), sources=True) == 0,
+        )
+
         # ---- populate: the atomic publish ------------------------------------------------
         cache = base / "cache"
         cache.mkdir()
@@ -1832,7 +2624,15 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--target", default=None, help="target triple (default: this host's)")
     ap.add_argument("--engine", default=None, help="populate only this `engines.lock` cache group")
     ap.add_argument(
-        "--all", action="store_true", help="populate every prebuilt entry for the target triple"
+        "--all",
+        action="store_true",
+        help="populate every entry for the target triple - prebuilt, or from-source with --source",
+    )
+    ap.add_argument(
+        "--source",
+        action="store_true",
+        help="populate the SIGNED SOURCE tarballs of the from-source groups (P4.28.1's compile "
+        "path consumes these; signature verification is `compile-engine-asset`'s)",
     )
     ap.add_argument(
         "--check", action="store_true", help="report what would be fetched; write nothing"
@@ -1863,6 +2663,7 @@ def main(argv: list[str]) -> int:
             check_only=args.check,
             verbose=args.verbose,
             opener=http_opener,
+            sources=args.source,
         )
     except StructuralError as exc:
         fail(str(exc))

@@ -1,0 +1,3068 @@
+#!/usr/bin/env python3
+"""compile-engine-asset - the §6.1.3 FROM-SOURCE populate path (P4.28.1).
+
+`scripts/fetch-engine-assets` populates a PREBUILT cache entry by downloading it. This is the
+other acquisition mode §3.8 names: for the engines whose load-bearing §3.5.1/§3.6.1 properties
+only a build ConvertIA configures has - FFmpeg's `--disable-network`, libvips without a GPL/AGPL
+PDF loader, a trimmed ImageMagick - the entry is COMPILED, and this script drives that compile
+deterministically enough to be checked.
+
+WHY THE PREBUILT BRANCH CANNOT SUBSTITUTE. The prebuilts §3 names ship the opposite properties:
+the gyan.dev/BtbN FFmpeg builds enable the network protocol family, and a distro libvips commonly
+enables the poppler-glib PDF loader (libvips#2222), which makes the whole build effectively GPL.
+So P6.6's `--disable-network` floor and P5.2's no-copyleft-loader assertion are not preferences
+that a prebuilt might happen to satisfy - they are properties only a configured build can have.
+
+IT OPENS NO SOCKET. The signed source tarballs arrive through
+`scripts/fetch-engine-assets --source`, which verifies each against its row's
+`from_source.tarball_sha256` and publishes it under a `.src`-suffixed key. Keeping the download
+there rather than here is deliberate: the scheme pin, the origin allow-list and the per-hop
+redirect re-check would otherwise have two homes that could drift apart, and the §6.1.3 claim
+that exactly ONE script may open a socket at package time would stop being true.
+[Build-Session-Entscheidung: P4.28.1]
+
+WHAT IT VERIFIES BEFORE IT BUILDS. §3.8's from-source anchor is not the artifact hash - that is
+"a build-output stability check, NOT a provenance anchor" - it is the SIGNED SOURCE plus a
+digest-pinned toolchain. So the order here is: the tarball's SHA-256 (already checked by the
+fetch), then its SIGNATURE against the pinned `signing_key_fingerprint` using the tool the row
+NAMES (`gpg` or `sq`), then the local regeneration of `configure`/`m4` (the xz/liblzma lesson: a
+validly-signed tarball whose generated files differ from the upstream git tree), and only then the
+configure line. A failure at any step publishes nothing.
+
+THE CONFIGURE LINE IS DATA. `src-tauri/engine-configure.toml` declares
+`<cache_engine>.configure.flags` per engine, filled by the named compile boxes (P5.1.1, P5.5.1,
+P5.9.1, P6.1.1, P7.17.1). A group with no table is REFUSED rather than built with a default line:
+"no flags declared" and "these flags" are different situations, and only one of them is safe to
+build from. The flags are passed as an argv LIST, never joined into a shell string, so a value
+containing a space or a metacharacter configures one flag rather than injecting a command.
+
+WHAT IS NOT HERE, by the box's own split: the digest-pinned per-OS/triple BUILD CONTAINER and the
+workflow wiring that invokes this script are `.github/**`, the Co-Pilot-landed owner-acked L(-1)
+tail. This script is the part that can be read, tested and mutated without a runner.
+
+SCOPE. `engines.lock` declares no rows and `engine-configure.toml` no tables, so a real run is a
+target-absent no-op that says so - the same skip-with-notice posture its two siblings hold. The
+MECHANISM is live and exercised by --selftest, which injects every subprocess: no compiler, no
+`gpg`, no network is required to run it.
+
+Usage:
+  compile-engine-asset --target TRIPLE (--engine GROUP | --all) [--cache-root DIR] [--root DIR]
+  compile-engine-asset --check [...]     # resolve + validate + bind the two manifests; build nothing
+  compile-engine-asset --selftest        # the tool's own fixture-driven regression suite
+
+stdlib-only. Exit: 0 = compiled (or nothing to do); 1 = a verification/build violation;
+2 = a structural prerequisite is unusable (missing manifest, unresolvable target).
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import hashlib
+import importlib.machinery
+import importlib.util
+import io
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import tomllib
+import urllib.parse
+import zipfile
+from pathlib import Path
+from typing import Callable, NamedTuple
+
+ROOT = Path(__file__).resolve().parents[1]
+
+LOCK_REL = "src-tauri/engines.lock"
+CONFIGURE_REL = "src-tauri/engine-configure.toml"
+DEFAULT_CACHE_REL = ".engine-cache"
+
+# §3.4.5's v1 target triples. The FOURTH copy of this set (`src-tauri/src/engines/lock.rs` holds
+# the schema-side one, `scripts/stage-engines` the staging-side one, `scripts/fetch-engine-assets`
+# the populate-side one) with no mechanical drift catcher; the box that widens §3.4.5 widens all
+# four.
+V1_TARGET_TRIPLES = (
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+)
+
+# The §3.8 verification tools a row may NAME. Not a policy knob: a row naming anything else has no
+# checkable provenance, and silently accepting it would launder exactly what the anchor exists to
+# prove. `crate::engines::lock`'s `VerificationTool` is the authoritative enum; this is its
+# build-side mirror.
+# The §3.8 verification tools. The argv builder IS the allow-list - `VERIFICATION_TOOLS` is
+# derived from it rather than written beside it, so a tool can never be listed as accepted while
+# the dispatch quietly hands it to a different verifier. [Build-Session-Entscheidung: P4.28.1]
+def _gpg_validsig(output: str, fingerprint: str) -> bool:
+    """gpg's MACHINE-READABLE verdict, not a substring of whatever it echoed.
+
+    `--status-fd=1` emits `[GNUPG:] VALIDSIG <FPR> ...`. Searching the raw output for the
+    fingerprint instead would also be satisfied by gpg echoing back a PATH that contains it -
+    and the paths come from the manifest, so the check would be reading its own input.
+    """
+    want = fingerprint.upper()
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "[GNUPG:]" and parts[1] == "VALIDSIG":
+            # Field 1 is the fingerprint of the key that MADE the signature - a signing subkey -
+            # while the LAST field is the primary key's. Upstreams publish the primary (FFmpeg's
+            # release key is advertised that way), so pinning the published fingerprint has to
+            # match here or a correct manifest would be rejected with "not against the pinned
+            # key" pointing away from the cause. [Build-Session-Entscheidung: P4.28.1]
+            if want in (parts[2].upper(), parts[-1].upper()):
+                return True
+    return False
+
+
+def _sq_names_key(output: str, fingerprint: str, *, echoed: tuple[str, ...] = ()) -> bool:
+    """`sq` has no `--status-fd` equivalent here, so this stays a spacing-insensitive match over
+    its human output - narrower than gpg's, and named as such rather than pretending otherwise.
+
+    The paths this script passed IN are removed first. `sq` echoes them back, and they are derived
+    from the row's own `upstream_url`, so a tarball whose filename contained the pinned
+    fingerprint would satisfy the match no matter which key signed - the check reading its own
+    input, which is the exact unsoundness `_gpg_validsig`'s docstring names.
+    """
+    text = output
+    for path in echoed:
+        text = text.replace(path, " ")
+    return fingerprint.upper() in text.upper().replace(" ", "")
+
+
+# The §3.8 verification tools. The argv builder + verdict matcher IS the allow-list -
+# `VERIFICATION_TOOLS` is derived from it rather than written beside it, so a tool can never be
+# listed as accepted while the dispatch quietly hands it to a different verifier.
+# [Build-Session-Entscheidung: P4.28.1]
+_VERIFY_ARGV = {
+    "gpg": (
+        lambda signature, tarball: [
+            "gpg",
+            "--status-fd=1",
+            "--verify",
+            str(signature),
+            str(tarball),
+        ],
+        _gpg_validsig,
+    ),
+    "sq": (
+        lambda signature, tarball: [
+            "sq",
+            "verify",
+            "--signature-file",
+            str(signature),
+            str(tarball),
+        ],
+        _sq_names_key,
+    ),
+}
+VERIFICATION_TOOLS = tuple(sorted(_VERIFY_ARGV))
+
+
+def _posix(path: Path) -> str:
+    """A path as the build tooling will read it.
+
+    `./configure` is a POSIX shell script and `-L`/`-I` values are read by POSIX tools, so on
+    Windows - where the harness runs under MSYS2/Cygwin - a native `C:\\x\\y` spelling puts
+    backslashes into a shell word. `as_posix()` is a no-op on POSIX and the right answer on
+    Windows. [Build-Session-Entscheidung: P4.28.1]
+    """
+    return path.as_posix()
+
+
+def _autotools_steps(prefix, flags, *, regenerate):
+    """`./configure` + `make`. `regenerate` is the xz/liblzma step - see `build_source`."""
+    steps = []
+    if regenerate:
+        steps.append(("autoreconf", ["autoreconf", "--force", "--install"]))
+    steps.append(("./configure", ["./configure", f"--prefix={_posix(prefix)}", *flags]))
+    steps.append(("make", ["make"]))
+    steps.append(("make install", ["make", "install"]))
+    return steps
+
+
+# How each declared build system is driven. Derived the same way as `_VERIFY_ARGV`, so
+# `BUILD_SYSTEMS` cannot list a system the dispatch does not know how to run.
+#
+# `autotools` vs `configure` is not a nicety: FFmpeg ships a HANDWRITTEN `configure` and carries no
+# `configure.ac`, so `autoreconf --force --install` fails outright on it - while libvips (Meson
+# since 8.13), x265 and poppler (CMake) have no `./configure` at all. A harness that hardcoded
+# autotools could not build four of the five engines its own seam names. [Build-Session-
+# Entscheidung: P4.28.1]
+_BUILD_SYSTEMS = {
+    "autotools": lambda prefix, flags: _autotools_steps(prefix, flags, regenerate=True),
+    "configure": lambda prefix, flags: _autotools_steps(prefix, flags, regenerate=False),
+    "meson": lambda prefix, flags: [
+        ("meson setup", ["meson", "setup", "_build", f"--prefix={_posix(prefix)}", *flags]),
+        ("meson compile", ["meson", "compile", "-C", "_build"]),
+        ("meson install", ["meson", "install", "-C", "_build"]),
+    ],
+    "cmake": lambda prefix, flags: [
+        ("cmake configure", ["cmake", "-S", ".", "-B", "_build",
+                             f"-DCMAKE_INSTALL_PREFIX={_posix(prefix)}", *flags]),
+        ("cmake build", ["cmake", "--build", "_build"]),
+        ("cmake install", ["cmake", "--install", "_build"]),
+    ],
+}
+BUILD_SYSTEMS = tuple(sorted(_BUILD_SYSTEMS))
+
+# Install-path options, matched by the option NAME with every build system's prefix stripped.
+#
+# Matched by SHAPE, not by enumeration, because a list of names can only ever close the names
+# someone thought of - and three review rounds proved that empirically on this exact function.
+# r3 knew only autotools' `--libdir=` and let Meson's `-Dlibdir=` and CMake's
+# `-DCMAKE_INSTALL_LIBDIR=` past; r6 then found that even a 16-name GNU list still missed
+# FFmpeg's `--shlibdir` / `--incdir` / `--pkgconfigdir` and autoconf 2.70's `runstatedir`,
+# `dvidir`, `pdfdir`, `psdir`. What every one of them has in common is the SHAPE of the name -
+# it ends in `prefix` or in `dir` - and a shape fails CLOSED on the next one nobody has thought
+# of yet. [Build-Session-Entscheidung: P4.28.1]
+#
+# Names are normalised first (`_install_option_name`: leading `--`/`-D` stripped, any `:TYPE`
+# suffix dropped, lower-cased), which is what lets one rule cover `--prefix`, `-Dprefix` and
+# `-DCMAKE_INSTALL_PREFIX:PATH` at once.
+#
+# The one name that IS a prefix without ending in `prefix`:
+_PREFIX_OPTIONS = ("destdir",)
+# The inversion needs an escape hatch, and this is it: an option ending in `dir` that names a
+# path the build READS rather than installs into. Empty today; a fill box that genuinely needs
+# one adds it here with its reason - a decision someone makes, rather than a hole nobody notices.
+_READ_PATH_DIR_OPTIONS: tuple[str, ...] = ()
+# Options that import build settings from a FILE. They fit neither shape - no `dir`, no `prefix` -
+# and a file can reset the install prefix, the compiler, or anything else out from under the
+# declared line the §6.1.3 assertions cross-check. Enumerated because there is no shape to match:
+# the set is small, closed, and each member is a named build-system feature.
+_IMPORTED_SETTINGS_OPTIONS = (
+    "c", "preset", "cmake_toolchain_file", "native-file", "cross-file",
+)
+
+# A 40-hex OpenPGP v4 fingerprint. `engines.lock`'s schema does not constrain the shape, so the
+# check lives where the value is USED - handing an unshaped string to `gpg` is how a typo becomes
+# "no signature required" rather than an error.
+_FINGERPRINT = re.compile(r"^[0-9A-Fa-f]{40}$")
+
+# `{prefix}` is the ONE substitution a configure line may use. A multi-source group compiles a
+# library beside the tool that links it, and the second build has to be told where the first
+# installed - but the prefix is a `mkdtemp` path invented at run time, so no manifest and no
+# workflow can spell it. Without this, the very shape the (A′) ruling exists for could not build.
+# [Build-Session-Entscheidung: P4.28.1]
+# `$`-prefixed braces belong to the linker (`-Wl,-rpath,${ORIGIN}`), which is standard for
+# beside-the-binary engine libraries - so they are NOT this script's placeholders and are left
+# alone. Anything else in braces is refused rather than passed through as a literal.
+_PLACEHOLDER = re.compile(r"(?<!\$)\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+_HOST_TRIPLES = {
+    ("Windows", "AMD64"): "x86_64-pc-windows-msvc",
+    ("Windows", "x86_64"): "x86_64-pc-windows-msvc",
+    ("Darwin", "arm64"): "aarch64-apple-darwin",
+    ("Darwin", "x86_64"): "x86_64-apple-darwin",
+    ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+}
+
+
+class CompileError(Exception):
+    """A verification or build violation - exit 1."""
+
+
+class StructuralError(Exception):
+    """A prerequisite that makes the run impossible - exit 2."""
+
+
+class _AlreadyBuilt(Exception):
+    """Not a failure: a concurrent compile published this entry first, so ours was discarded.
+
+    Carried as a control-flow signal rather than a bare return so the caller REPORTS the distinct
+    outcome - the same convention `fetch-engine-assets._AlreadyPublished` uses for the same race.
+    """
+
+    def __init__(self, entry_name: str) -> None:
+        super().__init__(entry_name)
+        self.entry_name = entry_name
+
+
+class SourceRow(NamedTuple):
+    """One from-source `engines.lock` row, reduced to what the compile path acts on."""
+
+    id: str
+    triples: tuple[str, ...]
+    cache_engine: str
+    cache_version: str
+    upstream_url: str
+    tarball_sha256: str
+    signature_url: str
+    signing_key_fingerprint: str
+    verified_with: str
+    toolchain_digest: str
+
+
+class CompileSource(NamedTuple):
+    """One SOURCE TARBALL of a compiled entry: one download, one build, one configure line.
+
+    The unit is the tarball, not the row. `ffmpeg` and `ffprobe` are two §3.7.2 rows out of ONE
+    signed archive - which is exactly the shape §3.8's URL-keyed anchor rule exists for ("rows with
+    the same `upstream_url` carry identical `from_source` anchors") - so `produces` carries every
+    row id this one build yields, and `row` is the member whose declared line configures it. Keying
+    this per ROW instead made the two halves contradict each other: `fetch --source` fetched the
+    shared tarball once while this script refused the same manifest as a filename collision.
+
+    The filenames are DERIVED from the row's own URLs, exactly as `fetch-engine-assets --source`
+    derives them when it publishes. That is the whole reason this script does not scan the entry
+    directory and sort what it finds: sorted-filename order is not manifest order, so a group whose
+    archives sort differently from its rows would verify each tarball against the WRONG pinned key
+    - a check that fails closed on a CORRECT manifest, which is its own kind of defect.
+    """
+
+    row: SourceRow
+    produces: tuple[str, ...]
+    system: str
+    flags: tuple[str, ...]
+    source_dir: str
+    archive_name: str
+    signature_name: str
+
+
+class CompilePlan(NamedTuple):
+    """One compiled cache ENTRY: its sources, in manifest order, and its destination."""
+
+    entry_name: str
+    triple: str
+    cache_engine: str
+    sources: tuple[CompileSource, ...]
+    cached: bool
+
+
+def fail(msg: str) -> None:
+    print(f"[compile-engine-asset] FAIL: {msg}", file=sys.stderr)
+
+
+def note(msg: str) -> None:
+    print(f"[compile-engine-asset] {msg}")
+
+
+def host_target_triple() -> str | None:
+    return _HOST_TRIPLES.get((platform.system(), platform.machine()))
+
+
+def resolve_target(explicit: str | None) -> str:
+    if explicit is not None:
+        if explicit not in V1_TARGET_TRIPLES:
+            raise StructuralError(
+                f"unknown target triple '{explicit}' - §3.4.5 declares exactly "
+                f"{', '.join(V1_TARGET_TRIPLES)}"
+            )
+        return explicit
+    host = host_target_triple()
+    if host is None:
+        raise StructuralError(
+            f"cannot resolve a target triple for this host "
+            f"({platform.system()}/{platform.machine()}) - pass --target explicitly"
+        )
+    return host
+
+
+# --------------------------------------------------------------------------------------------
+# The two manifests.
+# --------------------------------------------------------------------------------------------
+
+
+def parse_lock(text: str, *, where: str = LOCK_REL) -> tuple[SourceRow, ...]:
+    """The from-source rows, reduced. `crate::engines::lock` is the authoritative validator; this
+    reader re-checks only what it is about to ACT on, and fails closed on each of those."""
+    try:
+        doc = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise StructuralError(f"{where}: not valid TOML - {exc}") from exc
+    raw_rows = doc.get("engine", [])
+    if not isinstance(raw_rows, list):
+        raise StructuralError(f"{where}: `engine` must be an array of tables")
+
+    rows: list[SourceRow] = []
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, dict):
+            raise StructuralError(f"{where}: `engine[{index}]` is not a table")
+        if raw.get("acquisition") != "from-source":
+            continue
+        if raw.get("kind") != "staged-artifact":
+            continue
+        seat = f"{where}: engine[{index}]"
+        anchor = raw.get("from_source")
+        if not isinstance(anchor, dict):
+            raise StructuralError(
+                f"{seat}: a from-source row must carry a `from_source` anchor table (§3.8)"
+            )
+        triples = raw.get("triples")
+        if not isinstance(triples, list) or not triples:
+            raise StructuralError(f"{seat}: `triples` must be a non-empty array (§3.4.5)")
+        for triple in triples:
+            if not isinstance(triple, str) or not triple.strip():
+                raise StructuralError(f"{seat}: `triples` must hold non-empty strings")
+        identity = _text(raw, "id", seat)
+        version = _text(raw, "version", seat)
+        rows.append(
+            SourceRow(
+                id=identity,
+                triples=tuple(str(triple).strip() for triple in triples),
+                cache_engine=_optional(raw, "cache_engine", identity, seat),
+                cache_version=_optional(raw, "cache_version", version, seat),
+                upstream_url=_text(raw, "upstream_url", seat),
+                tarball_sha256=_text(anchor, "tarball_sha256", f"{seat}.from_source"),
+                signature_url=_text(anchor, "signature_url", f"{seat}.from_source"),
+                signing_key_fingerprint=_text(
+                    anchor, "signing_key_fingerprint", f"{seat}.from_source"
+                ),
+                verified_with=_text(anchor, "verified_with", f"{seat}.from_source"),
+                toolchain_digest=_text(anchor, "toolchain_digest", f"{seat}.from_source"),
+            )
+        )
+    return tuple(rows)
+
+
+def _text(raw: dict, field: str, where: str) -> str:
+    value = raw.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise StructuralError(f"{where}: `{field}` is missing or not a non-empty string")
+    return value.strip()
+
+
+def _optional(raw: dict, field: str, fallback: str, where: str) -> str:
+    if field not in raw:
+        return fallback
+    value = raw[field]
+    if not isinstance(value, str) or not value.strip():
+        raise StructuralError(f"{where}: `{field}` is declared but blank")
+    return value.strip()
+
+
+def source_filename(url: str, *, role: str, row_id: str) -> str:
+    """The name a source file takes inside the entry. Mirrors `fetch-engine-assets`' derivation.
+
+    The two scripts derive this independently because they are independent stdlib tools, so the
+    binding between them is not a shared import but the exact-contents assertion in
+    `resolve_inputs`: if either side ever renames a file, the compile fails loudly instead of
+    building from whatever it happened to find.
+    """
+    tail = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1]
+    try:
+        _assert_confined(tail, f"{row_id} {role} url")
+        if "/" in tail.replace("\\", "/"):
+            raise CompileError(f"refusing a multi-segment name {tail!r}")
+    except CompileError as exc:
+        raise StructuralError(
+            f"{row_id}: the {role} URL {url!r} has no usable filename ({exc}) - a from-source "
+            "entry is read back by name, so the tail of the URL has to be a plain one"
+        ) from exc
+    return tail
+
+
+def _install_option_name(token: str) -> str:
+    """The bare option name, whatever build system spelled it.
+
+    `--libdir`, `-Dlibdir` and `-DCMAKE_INSTALL_LIBDIR` are one option under three spellings, so
+    the guard normalises before it looks anything up rather than carrying a row per spelling.
+    """
+    name = token.partition("=")[0].strip()
+    for lead in ("--", "-D", "-"):
+        if name.startswith(lead):
+            name = name[len(lead):]
+            break
+    # `-D<var>:<type>=<value>` is CMake's own cache spelling - the one `CMakeCache.txt` uses, so
+    # the one people copy - and the type suffix would otherwise hide the variable behind it.
+    name = name.partition(":")[0].strip().lower()
+    if name.startswith("cmake_install_") and name.endswith("dir"):
+        # CMake's GNUInstallDirs family: CMAKE_INSTALL_LIBDIR -> libdir.
+        return name[len("cmake_install_"):]
+    return name
+
+
+def _names_a_prefix(name: str) -> bool:
+    """Does this option SET the install prefix? Matched by shape - see the tables above."""
+    return name in _PREFIX_OPTIONS or name.endswith("prefix")
+
+
+def _names_an_install_dir(name: str) -> bool:
+    """Does this option name a directory the build INSTALLS into? Matched by shape."""
+    if name in _READ_PATH_DIR_OPTIONS:
+        return False
+    return name.endswith("dir")
+
+
+def _refuse_install_redirect(flag: str, where: str) -> None:
+    """A configure line may not relocate its own install tree.
+
+    The prefix is this script's - it is what makes the build land inside the staging directory
+    that is published atomically - so an option that IS the prefix is refused outright, and one
+    that names a sub-directory has its VALUE checked by the same confinement grammar every other
+    path in this script goes through: absolute, `..`-traversing, drive-relative, interior-NUL and
+    `$`-carrying values are all refused. `--libdir=lib64` and `--libdir={prefix}/lib64` are
+    allowed; `--libdir=/usr/lib64`, `--libdir=../../escape` and `--libdir=${HOME}/x` are not.
+    (A BARE relative value is accepted here but rejected by autoconf itself, so an `autotools` or
+    `configure` source wants the `{prefix}/...` spelling - the seam file's header says so where
+    the fill boxes will read it.)
+
+    A SPLIT option (`["--libdir", "/usr/lib64"]` - the two-token form autoconf accepts) is refused
+    on the name alone: the value is the next array element, which this per-token guard cannot see,
+    so allowing the bare form would be allowing the value it cannot check.
+    """
+    token = flag.strip()
+    # `{prefix}` may appear in ANY flag, not only an install-directory one - the seam's own
+    # documented FFmpeg pattern is `--extra-cflags=-I{prefix}/include`, whose option name has no
+    # `dir`/`prefix` shape at all. A flag that anchors at the prefix never needs to walk UP from
+    # it, so a `..` segment anywhere in such a flag is refused. Without this, the shape rule
+    # covered the option NAME half and left the value half of every other option open.
+    # [Build-Session-Entscheidung: P4.28.1]
+    if "{prefix}" in token:
+        segments = token.replace("\\", "/").split("/")
+        if any(segment == ".." for segment in segments):
+            raise StructuralError(
+                f"{where} walks UP from `{{prefix}}` in {token!r}. A flag that anchors at the "
+                "prefix has no reason to leave it, and the `..` is checked here because "
+                "substitution turns it into a real path afterwards"
+            )
+    name = _install_option_name(token)
+    # CMake's `-C<file>` attaches its value with no `=`, so the normaliser reads the whole thing
+    # as one option name. None of the four build systems this harness drives has another `-C`.
+    if token.startswith("-C") and not token.startswith("-CMAKE"):
+        name = "c"
+    if name in _IMPORTED_SETTINGS_OPTIONS:
+        raise StructuralError(
+            f"{where} imports build settings from a file with `{token.partition('=')[0]}`. The "
+            "flags here are the declared line the §6.1.3 assertions cross-check, and a file can "
+            "reset the prefix - or anything else - out from under them"
+        )
+    if _names_a_prefix(name):
+        raise StructuralError(
+            f"{where} declares its own `{token.partition('=')[0]}`. The install prefix is this "
+            "script's - it is what makes the build land inside the staging tree - so a second one "
+            "is an ambiguity, not an override"
+        )
+    if _names_an_install_dir(name):
+        if "=" not in token:
+            raise StructuralError(
+                f"{where} declares `{token}` with its value in the NEXT array element. Spell an "
+                "install directory as one `name=value` token, so the value can be checked against "
+                "the prefix this script publishes"
+            )
+        # The VALUE is a path, so it goes through the same grammar every other path-shaped
+        # thing in this script does - absolute, `..`-traversing, drive-relative and interior-NUL
+        # all land on one rule.
+        #
+        # The subtlety is that `{prefix}` is substituted AFTER this runs, so the string checked is
+        # not the string the build receives. `..{prefix}` is ONE opaque segment here and becomes
+        # `../<abs prefix>` after substitution; `{prefix}..` becomes a sibling of the prefix. Both
+        # walked past a per-segment `..` check. So the placeholder is required to OWN the leading
+        # segment - `{prefix}` alone, or `{prefix}/<confined relative>` - and what is confinement-
+        # checked is the remainder, which is exactly the part substitution does not touch.
+        # [Build-Session-Entscheidung: P4.28.1]
+        option = token.partition("=")[0]
+        value = token.partition("=")[2]
+        if not value:
+            raise StructuralError(
+                f"{where} declares `{option}` with an empty value, which no build system reads as "
+                "'the default' - spell the directory, or drop the option"
+            )
+        if "$" in value:
+            # `${HOME}`, `${DESTDIR}`, `${exec_prefix}` are expanded by the build system long
+            # after this script's last look at the value, and autoconf treats a `$`-leading value
+            # as already-absolute. `{prefix}` covers every legitimate need to name the shared
+            # prefix, so a `$` in an INSTALL DIRECTORY is refused rather than guessed at.
+            # (`$`-braced tokens are still left alone elsewhere: `-Wl,-rpath,${ORIGIN}` is the
+            # linker's business, not an install path.)
+            raise StructuralError(
+                f"{where} puts a build/shell variable in `{option}`'s value {value!r}. It would "
+                "be expanded after every check this script can make - name the shared prefix "
+                "with `{prefix}` instead"
+            )
+        if value != value.strip() or value[0] in "'\"`~":
+            # `_assert_confined` is an ARCHIVE-MEMBER grammar: a leading space is a legitimate
+            # filename character there, so ` /usr/lib64` reads as relative. As a configure VALUE
+            # the space is stripped by a later layer and the path is absolute again. Anything not
+            # lexically inert is refused before a path grammar is asked about it.
+            raise StructuralError(
+                f"{where} gives `{option}` the value {value!r}, which is not a plain path - "
+                "leading whitespace, a quote or a `~` is resolved by a layer below this check, so "
+                "what is checked here would not be what the build installs into"
+            )
+        checked = value
+        if "{prefix}" in value:
+            if not value.startswith("{prefix}"):
+                raise StructuralError(
+                    f"{where} puts `{{prefix}}` inside the value {value!r} of `{option}`. The "
+                    "placeholder is substituted AFTER this check, so it has to START the value - "
+                    "glued to anything else it hides whatever precedes it from the guard"
+                )
+            rest = value[len("{prefix}"):]
+            if "{prefix}" in rest:
+                raise StructuralError(
+                    f"{where} repeats `{{prefix}}` in `{option}`'s value {value!r}. One value "
+                    "anchors at one place; a second placeholder is a typo, not a path"
+                )
+            if rest and not rest.startswith("/"):
+                raise StructuralError(
+                    f"{where} continues `{{prefix}}` with {rest!r} in `{option}`. A path segment "
+                    "after the placeholder has to begin with `/`, or the value names a SIBLING of "
+                    "the prefix rather than something inside it"
+                )
+            # Exactly the ONE separator the check above required, not every leading slash:
+            # stripping them all would hide a `//host/share` continuation from
+            # `_assert_confined`'s own absolute/UNC rule.
+            checked = rest[1:] if rest else ""
+        if checked:
+            try:
+                _assert_confined(checked, f"{where}: `{option}`")
+            except CompileError as exc:
+                raise StructuralError(
+                    f"{where} points `{option}` at {value!r}, which does not stay under the "
+                    f"prefix this script publishes ({exc}) - a plain relative value does"
+                ) from exc
+
+
+class ConfigureLine(NamedTuple):
+    """One source's declared build: which system drives it, from where, and with which flags."""
+
+    system: str
+    flags: tuple[str, ...]
+    source_dir: str
+
+
+def parse_configure(text: str, *, where: str = CONFIGURE_REL) -> dict[str, dict[str, ConfigureLine]]:
+    """The `<cache_engine>.configure.flags` + `.system` seam: one declared build PER SOURCE.
+
+    Both tables are keyed on the `engines.lock` row `id` rather than being one value for the
+    group, because a compiled group legitimately spans several tarballs (the (A′) mode-scoping
+    ruling) and FFmpeg's configure line is not LAME's - nor is FFmpeg's build system libvips's. An
+    empty file is a valid container - the P5-P7 compile boxes fill it - but a table that is present
+    and malformed is an error, because "nothing declared" and "this" are different situations and
+    only the first is safe to refuse politely. [Build-Session-Entscheidung: P4.28.1]
+    """
+    try:
+        doc = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise StructuralError(f"{where}: not valid TOML - {exc}") from exc
+    seam: dict[str, dict[str, ConfigureLine]] = {}
+    for engine, table in doc.items():
+        if not isinstance(table, dict):
+            raise StructuralError(f"{where}: `{engine}` must be a table")
+        configure = table.get("configure")
+        if configure is None:
+            raise StructuralError(f"{where}: `{engine}` declares no `configure` table")
+        if not isinstance(configure, dict):
+            raise StructuralError(f"{where}: `{engine}.configure` must be a table")
+        flags = configure.get("flags")
+        if not isinstance(flags, dict) or not flags:
+            raise StructuralError(
+                f"{where}: `{engine}.configure.flags` must be a non-empty table keyed on the "
+                "`engines.lock` row id each line configures - an engine listed here with no "
+                "lines declares nothing"
+            )
+        source_dirs = configure.get("source_dir", {})
+        if not isinstance(source_dirs, dict):
+            raise StructuralError(
+                f"{where}: `{engine}.configure.source_dir` must be a table keyed the same way as "
+                "`flags`, naming the subdirectory each source's build system lives in"
+            )
+        systems = configure.get("system")
+        if not isinstance(systems, dict) or not systems:
+            raise StructuralError(
+                f"{where}: `{engine}.configure.system` must be a non-empty table keyed the same "
+                f"way as `flags`, naming one of {', '.join(BUILD_SYSTEMS)} per source - a default "
+                "build system is a guess, and a guessed one fails at the first `autoreconf`"
+            )
+        for table_name, mapping in (("system", systems), ("source_dir", source_dirs)):
+            extra = sorted(set(mapping) - set(flags))
+            if extra:
+                raise StructuralError(
+                    f"{where}: `{engine}.configure.{table_name}` names {', '.join(extra)}, which "
+                    f"`{engine}.configure.flags` does not - the tables describe the same sources"
+                )
+        lines: dict[str, ConfigureLine] = {}
+        for row_id, line in flags.items():
+            seat = f"`{engine}.configure.flags.{row_id}`"
+            if not isinstance(line, list) or not line:
+                raise StructuralError(f"{where}: {seat} must be a non-empty array")
+            for flag in line:
+                if not isinstance(flag, str) or not flag.strip():
+                    raise StructuralError(f"{where}: {seat} must hold non-empty strings")
+                _refuse_install_redirect(str(flag), f"{where}: {seat}")
+                unknown = [
+                    name for name in _PLACEHOLDER.findall(str(flag)) if name != "prefix"
+                ]
+                if unknown:
+                    raise StructuralError(
+                        f"{where}: {seat} uses the placeholder(s) "
+                        f"{', '.join('{' + name + '}' for name in unknown)}, which this script "
+                        "does not substitute - only `{prefix}` is, and an unsubstituted brace "
+                        "would reach the build system verbatim"
+                    )
+            system = systems.get(row_id)
+            if system not in BUILD_SYSTEMS:
+                raise StructuralError(
+                    f"{where}: `{engine}.configure.system.{row_id}` is {system!r}, not one of "
+                    f"{', '.join(BUILD_SYSTEMS)} - the build system is declared, never guessed"
+                )
+            subdir = source_dirs.get(row_id, ".")
+            if not isinstance(subdir, str) or not subdir.strip():
+                raise StructuralError(
+                    f"{where}: `{engine}.configure.source_dir.{row_id}` must be a non-empty string"
+                )
+            if subdir.strip() != ".":
+                # A build subdirectory is a path this script joins onto the unpacked tree, so it
+                # goes through the same confinement grammar every other derived path does.
+                _assert_confined(subdir.strip(), f"{where}: {engine}.configure.source_dir")
+            lines[str(row_id)] = ConfigureLine(
+                system=str(system),
+                flags=tuple(str(flag) for flag in line),
+                source_dir=subdir.strip(),
+            )
+        seam[engine] = lines
+    return seam
+
+
+def unbound_configure_tables(
+    seam: dict[str, dict[str, ConfigureLine]], rows: tuple[SourceRow, ...]
+) -> list[str]:
+    """Configure entries naming something `engines.lock` does not declare from source.
+
+    The binder's second direction, and the one a typo actually lands in: a flag set for `libvps`
+    sits there looking authoritative while the real `libvips` compile silently has none. Both
+    grains are checked - a GROUP no row declares, and a row id no member of that group carries -
+    because a typo in either half hides a line that never runs. The first direction (a source with
+    no line) is refused at plan time.
+    """
+    declared: dict[str, set[str]] = {}
+    for row in rows:
+        declared.setdefault(row.cache_engine, set()).add(row.id)
+    unbound: list[str] = []
+    for engine, lines in seam.items():
+        if engine not in declared:
+            unbound.append(engine)
+            continue
+        unbound.extend(
+            f"{engine}.configure.flags.{row_id}"
+            for row_id in lines
+            if row_id not in declared[engine]
+        )
+    return sorted(unbound)
+
+
+# ------------------------------------------------------------------------------------------
+# Planning.
+# ------------------------------------------------------------------------------------------
+
+
+def entry_name(row: SourceRow, triple: str) -> str:
+    """The §6.1.3 GROUP key - the same string `stage-engines` parses back out."""
+    return f"{row.cache_engine}-{row.cache_version}-{triple}"
+
+
+def plan_compiles(
+    rows: tuple[SourceRow, ...],
+    seam: dict[str, dict[str, ConfigureLine]],
+    triple: str,
+    cache_root: Path,
+) -> list[CompilePlan]:
+    """Group this triple's from-source rows into entries and attach each source's configure line."""
+    ordered: list[str] = []
+    by_group: dict[str, list[SourceRow]] = {}
+    for row in rows:
+        if triple not in row.triples:
+            continue
+        if row.cache_engine not in by_group:
+            by_group[row.cache_engine] = []
+            ordered.append(row.cache_engine)
+        by_group[row.cache_engine].append(row)
+
+    plans: list[CompilePlan] = []
+    for group in ordered:
+        members = by_group[group]
+        name = entry_name(members[0], triple)
+        if group not in seam:
+            raise CompileError(
+                f"group '{group}' has no `{group}.configure.flags` table in {CONFIGURE_REL} - "
+                "refusing to compile with an undeclared configure line. The curated properties "
+                "§6.1.3 asserts are exactly the ones a default line would not have."
+            )
+        by_url: dict[str, list[SourceRow]] = {}
+        url_order: list[str] = []
+        for row in members:
+            if entry_name(row, triple) != name:
+                raise CompileError(
+                    f"group '{group}' resolves to two entry names ({name} and "
+                    f"{entry_name(row, triple)}) - one compile is one entry (§3.7.2 group "
+                    "invariant)"
+                )
+            if row.upstream_url not in by_url:
+                by_url[row.upstream_url] = []
+                url_order.append(row.upstream_url)
+            by_url[row.upstream_url].append(row)
+
+        sources: list[CompileSource] = []
+        taken: dict[str, str] = {}
+        for url in url_order:
+            sharing = by_url[url]
+            declared = [row for row in sharing if row.id in seam[group]]
+            produced = ", ".join(row.id for row in sharing)
+            if not declared:
+                raise CompileError(
+                    f"none of {produced} declares a `{group}.configure.flags.<id>` line in "
+                    f"{CONFIGURE_REL} - every source of a compiled group is configured by a "
+                    "declared line, never by a default one"
+                )
+            if len(declared) > 1:
+                raise CompileError(
+                    f"{', '.join(row.id for row in declared)} all declare a "
+                    f"`{group}.configure.flags.<id>` line for the SAME source {url} - one tarball "
+                    "is one build, so exactly one of the rows it produces carries the line that "
+                    "configures it"
+                )
+            primary = declared[0]
+            archive = source_filename(url, role="source", row_id=primary.id)
+            signature = source_filename(primary.signature_url, role="signature",
+                                        row_id=primary.id)
+            for filename in (archive, signature):
+                if filename in taken:
+                    raise CompileError(
+                        f"group '{group}': {primary.id} and {taken[filename]} name two DIFFERENT "
+                        f"sources that both land as {filename!r} in one entry - the collision is "
+                        "refused, not resolved"
+                    )
+                taken[filename] = primary.id
+            line = seam[group][primary.id]
+            sources.append(
+                CompileSource(
+                    row=primary,
+                    produces=tuple(row.id for row in sharing),
+                    system=line.system,
+                    flags=line.flags,
+                    source_dir=line.source_dir,
+                    archive_name=archive,
+                    signature_name=signature,
+                )
+            )
+        plans.append(
+            CompilePlan(
+                entry_name=name,
+                triple=triple,
+                cache_engine=group,
+                sources=tuple(sources),
+                cached=(cache_root / name).is_dir(),
+            )
+        )
+    return plans
+
+
+# --------------------------------------------------------------------------------------------
+# Verification + build. Every subprocess goes through ONE seam, so --selftest needs no toolchain.
+# --------------------------------------------------------------------------------------------
+
+
+def run_tool(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    """The real subprocess seam. Replaced wholesale by the fixtures.
+
+    `shell=False` and an argv LIST, always: a configure flag is data from a manifest, and joining
+    it into a shell line is how a value with a space becomes two flags - or worse.
+    """
+    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+
+
+def _names_key(matcher, output: str, fingerprint: str, echoed: tuple[str, ...]) -> bool:
+    """Call a verdict matcher, passing the echoed argv paths to the ones that want them."""
+    try:
+        return matcher(output, fingerprint, echoed=echoed)
+    except TypeError:
+        return matcher(output, fingerprint)
+
+
+def verify_signature(
+    row: SourceRow,
+    tarball: Path,
+    signature: Path,
+    *,
+    runner: Callable[[list[str], Path], object],
+) -> None:
+    """§3.8's real provenance anchor: the tarball is SIGNED by the pinned key.
+
+    Runs BEFORE any regeneration or build step. The tool is the one the ROW names - accepting an
+    unnamed or unknown tool would mean "verified" with nothing behind it - and the signature file
+    is the one the row's `signature_url` named, not a filename guessed from the tarball's.
+    """
+    dispatch = _VERIFY_ARGV.get(row.verified_with)
+    if dispatch is None:
+        raise CompileError(
+            f"{row.id}: `verified_with = '{row.verified_with}'` is not a §3.8 verification tool "
+            f"({', '.join(VERIFICATION_TOOLS)}) - a row must name the tool that checked it"
+        )
+    if not _FINGERPRINT.match(row.signing_key_fingerprint):
+        raise CompileError(
+            f"{row.id}: `signing_key_fingerprint` is not a 40-hex OpenPGP fingerprint - an "
+            "unshaped value handed to the verifier is how a typo becomes an unchecked signature"
+        )
+    builder, names_the_key = dispatch
+    argv = builder(signature, tarball)
+    try:
+        result = runner(argv, tarball.parent)
+    except OSError as exc:
+        # A runner without the tool is a missing PREREQUISITE, not a failed verification - the
+        # module's exit contract calls that 2, and an unwrapped `FileNotFoundError` would leave
+        # as a traceback instead.
+        raise StructuralError(
+            f"{row.id}: could not run `{row.verified_with}` - {exc}. The from-source path needs "
+            f"{', '.join(VERIFICATION_TOOLS)} on PATH; this is a build-environment prerequisite, "
+            "not a signature failure"
+        ) from exc
+    code = getattr(result, "returncode", 1)
+    output = f"{getattr(result, 'stdout', '')}\n{getattr(result, 'stderr', '')}"
+    if code != 0:
+        raise CompileError(
+            f"{row.id}: the source tarball's signature did not verify with "
+            f"{row.verified_with} - this is the xz/liblzma-class check, so nothing is built:\n"
+            f"{output.strip()}"
+        )
+    echoed = tuple(token for token in argv if token in (str(signature), str(tarball)))
+    if not _names_key(names_the_key, output, row.signing_key_fingerprint, echoed):
+        raise CompileError(
+            f"{row.id}: the signature verified, but not against the pinned key "
+            f"{row.signing_key_fingerprint} - a valid signature by the WRONG key is the whole "
+            "shape the fingerprint pin exists to reject"
+        )
+
+
+def source_entry(cache_root: Path, plan: CompilePlan) -> Path:
+    """Where `fetch-engine-assets --source` published this entry's tarballs."""
+    return cache_root / f"{plan.entry_name}.src"
+
+
+def resolve_inputs(plan: CompilePlan, sources: Path) -> None:
+    """Assert the restored entry is EXACTLY this plan's inputs, and that its bytes are the pinned ones.
+
+    The `.src` entry comes back from `actions/cache`, which is writable from other refs, so the
+    restore is not trusted: every archive is re-hashed against its row's `from_source.tarball_sha256`
+    before a signature is checked or a byte is unpacked. This is the same restore-re-verify
+    discipline `stage-engines` runs under G37, for the same reason - a pin that is only checked at
+    download time protects the download, not the build.
+
+    The exact-contents check is also the binding between this script and the sibling that fills the
+    entry: if either side ever renames a file, this fails loudly instead of compiling whatever it
+    happened to find.
+    """
+    if not sources.is_dir():
+        raise StructuralError(
+            f"{plan.entry_name}: no verified sources at {sources} - run "
+            f"`scripts/fetch-engine-assets --source --engine {plan.cache_engine}` first; this "
+            "script never downloads"
+        )
+    expected = sorted(
+        name
+        for source in plan.sources
+        for name in (source.archive_name, source.signature_name)
+    )
+    actual = sorted(child.name for child in sources.iterdir() if child.is_file())
+    if actual != expected:
+        raise StructuralError(
+            f"{plan.entry_name}: the restored source entry holds the files {actual} but this "
+            f"compile needs exactly {expected} - the entry is incomplete, or it was filled by "
+            "something other than `fetch-engine-assets --source` (only FILES count: a directory "
+            "wearing an archive's name would otherwise reach `read_bytes` as a raw traceback)"
+        )
+    for source in plan.sources:
+        archive = sources / source.archive_name
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        if digest != source.row.tarball_sha256.strip().lower():
+            raise CompileError(
+                f"{source.row.id}: the RESTORED {source.archive_name} is not the pinned source\n"
+                f"  pinned:   {source.row.tarball_sha256.strip().lower()}\n"
+                f"  restored: {digest}\n"
+                "A cache is not a trust boundary (§3.8), so nothing is verified or built from it."
+            )
+
+
+def build_root(unpacked: Path) -> Path:
+    """Where the build system actually is: a source tarball unpacks to ONE top-level directory.
+
+    Running `./configure` in the directory the archive was extracted INTO rather than in the tree
+    it extracted would configure nothing and fail on a missing script - so the single top-level
+    entry, when there is exactly one, is the build root. A flat archive keeps the directory itself.
+    """
+    # The COUNT is what decides, never the order: with exactly one entry there is nothing to
+    # order, and with more the tree root is kept regardless. Sorting here would read as a
+    # determinism guarantee while changing no outcome - an unobservable line, which is the shape
+    # this box's own review keeps finding. [Build-Session-Entscheidung: P4.28.1]
+    children = list(unpacked.iterdir())
+    if len(children) == 1 and children[0].is_dir():
+        return children[0]
+    return unpacked
+
+
+def build_source(
+    source: CompileSource,
+    workdir: Path,
+    prefix: Path,
+    *,
+    runner: Callable[[list[str], Path], object],
+) -> None:
+    """Drive the DECLARED build system: regenerate where that applies, configure, build, install.
+
+    For an autotools source the regeneration is not tidiness: the xz/liblzma backdoor rode a
+    validly-signed tarball whose generated files differed from the upstream git tree, so P0.7.3
+    requires the generated build system to come from the source we verified rather than from the
+    tarball's shipped copy. A `configure`-system source (FFmpeg's handwritten `configure`, with no
+    `configure.ac` to regenerate FROM) skips only that step; Meson and CMake generate their build
+    directory from the verified tree on every run by construction.
+
+    The install prefix is THIS script's, never the manifest's (`parse_configure` refuses a
+    declared one): every source of a group installs into one shared prefix, which is what makes a
+    group of several tarballs - a library beside the tool that links it - produce ONE entry. The
+    second build is told where the first installed through the `{prefix}` placeholder, which is
+    substituted here: the prefix is a run-time `mkdtemp` path, so a manifest that could not name
+    it could not express `--extra-ldflags=-L{prefix}/lib` and the linking source could never find
+    the library beside it. Sources build in MANIFEST ORDER for the same reason - a dependency is
+    declared before the tool that consumes it.
+    """
+    # Substituted through the SAME pattern that validated it: a blind `str.replace` would also
+    # rewrite `${prefix}`, which `parse_configure` deliberately leaves to the linker/autotools -
+    # the two halves of one rule have to read the value the same way.
+    flags = tuple(
+        _PLACEHOLDER.sub(lambda m: _posix(prefix) if m.group(1) == "prefix" else m.group(0), flag)
+        for flag in source.flags
+    )
+    for label, argv in _BUILD_SYSTEMS[source.system](prefix, flags):
+        result = runner(argv, workdir)
+        if getattr(result, "returncode", 1) != 0:
+            raise CompileError(
+                f"{source.row.id}: `{label}` failed:\n"
+                f"{getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}".strip()
+            )
+
+
+def unpack_source(archive: Path, dest: Path) -> None:
+    """Unpack ONE verified source tarball, confined the way the fetch path confines an asset."""
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        if zipfile.is_zipfile(archive):
+            with zipfile.ZipFile(archive) as zf:
+                for name in zf.namelist():
+                    _assert_confined(name, archive.name)
+                zf.extractall(dest)
+        else:
+            with tarfile.open(archive) as tf:
+                for member in tf.getmembers():
+                    _assert_confined(member.name, archive.name)
+                    if member.islnk() or member.issym():
+                        _assert_confined(member.linkname, archive.name)
+                tf.extractall(dest, filter="data")
+    except (tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
+        raise CompileError(f"{archive.name}: unusable source archive - {exc}") from exc
+
+
+def _assert_confined(name: str, archive: str) -> None:
+    if not name or name in (".", ".."):
+        raise CompileError(f"{archive}: refusing empty or dot member path {name!r}")
+    if "\x00" in name:
+        raise CompileError(f"{archive}: refusing member path with an interior NUL: {name!r}")
+    normalised = name.replace("\\", "/")
+    if normalised.startswith("/"):
+        raise CompileError(f"{archive}: refusing absolute member path {name!r}")
+    parts = [part for part in normalised.split("/") if part]
+    if not parts or any(part == ".." for part in parts):
+        raise CompileError(f"{archive}: refusing traversing member path {name!r}")
+    if len(parts[0]) >= 2 and parts[0][1] == ":":
+        raise CompileError(f"{archive}: refusing drive-relative member path {name!r}")
+
+
+def link_target_escapes(target: str) -> bool:
+    """Does a symlink target leave the tree it lives in?
+
+    A pure predicate so the decision is testable without the privilege a real symlink needs on
+    Windows - the classification is what matters, and it is the same absolute / `..` /
+    drive-relative grammar every other path in this script is judged by.
+    """
+    normalised = str(target).replace("\\", "/")
+    if normalised.startswith("/"):
+        return True
+    if ".." in [segment for segment in normalised.split("/") if segment]:
+        return True
+    first = normalised.split("/", 1)[0]
+    return len(first) >= 2 and first[1] == ":"
+
+
+def assert_self_contained(prefix: Path, entry_name: str) -> None:
+    """Refuse a built tree that points OUT of itself.
+
+    The build's output is as untrusted as its input: an absolute or traversing symlink in the
+    published entry resolves against the HOST when `stage-engines` reads it later, which is the
+    same no-harm boundary `unpack_source` guards on the way in. Guarded on the way out too.
+    [Build-Session-Entscheidung: P4.28.1]
+    """
+    for installed in prefix.rglob("*"):
+        if not installed.is_symlink():
+            continue
+        target = os.readlink(installed)
+        if link_target_escapes(str(target)):
+            raise CompileError(
+                f"{entry_name}: the build installed a symlink {installed.name!r} pointing at "
+                f"{target!r}, which leaves the entry - a published entry has to be self-contained"
+            )
+
+
+def compile_entry(
+    plan: CompilePlan, cache_root: Path, *, runner: Callable[[list[str], Path], object]
+) -> Path:
+    """Verify, regenerate, build and publish ONE entry atomically. Returns the published path.
+
+    The ordering is the contract: the restored bytes are re-hashed, then EVERY source's signature
+    is checked, and only then is anything unpacked or run. The build happens in a private temp
+    tree and the last act is one `os.replace`, so a failure at any step leaves the cache exactly
+    as it was.
+    """
+    sources = source_entry(cache_root, plan)
+    resolve_inputs(plan, sources)
+    for source in plan.sources:
+        verify_signature(
+            source.row,
+            sources / source.archive_name,
+            sources / source.signature_name,
+            runner=runner,
+        )
+
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(dir=cache_root, prefix=f".{plan.entry_name}."))
+    except OSError as exc:
+        raise StructuralError(
+            f"{plan.entry_name}: could not create a staging directory - {exc}"
+        ) from exc
+    try:
+        prefix = staging / "prefix"
+        prefix.mkdir()
+        for index, source in enumerate(plan.sources):
+            unpacked = staging / "build" / f"src{index:02d}"
+            unpack_source(sources / source.archive_name, unpacked)
+            workdir = build_root(unpacked)
+            if source.source_dir != ".":
+                workdir = workdir / source.source_dir
+                if not workdir.is_dir():
+                    raise CompileError(
+                        f"{source.row.id}: the declared source_dir "
+                        f"{source.source_dir!r} is not a directory in the unpacked tree"
+                    )
+            build_source(source, workdir, prefix, runner=runner)
+        assert_self_contained(prefix, plan.entry_name)
+        if not any(prefix.iterdir()):
+            # The sibling refuses an empty entry for the same reason: one that stages nothing
+            # would read as a silent success on every subsequent run, because `cached` is
+            # `is_dir()`. A build whose install landed elsewhere fails HERE, not three boxes later.
+            raise CompileError(
+                f"{plan.entry_name}: the build installed nothing into the prefix - refusing to "
+                "publish an empty entry, which would become a permanent cache hit that stages "
+                "nothing"
+            )
+        destination = cache_root / plan.entry_name
+        # A stray NON-directory at the entry path is refused BEFORE the move, on every platform.
+        # This is a check-then-act, so it narrows the window rather than closing it: only this
+        # script ever writes a directory here, and a stray FILE appearing inside the window means
+        # something outside the harness is writing into the cache. Named as a mitigation so it is
+        # not read as a closure.
+        # `os.replace(dir -> existing FILE)` diverges: POSIX raises ENOTDIR, Windows SUCCEEDS and
+        # silently replaces the file with the directory - so the `except OSError` handler below
+        # never sees that case on Windows and the two platforms would report different outcomes
+        # for the identical cache. Verified empirically on a Windows host during the P4.28.1
+        # dual review. [Build-Session-Entscheidung: P4.28.1]
+        if destination.exists() and not destination.is_dir():
+            raise CompileError(
+                f"{plan.entry_name}: a non-directory already occupies the entry path - refusing "
+                "to replace it; a cache entry is a directory, so this is a broken cache, not a race"
+            )
+        try:
+            os.replace(prefix, destination)
+        except OSError:
+            # The sibling's reading, for the same mechanism: a concurrent compile winning the
+            # race is benign - it built from the SAME verified sources under the same pins -
+            # while a stray FILE at that path is a permanent failure wearing its clothes.
+            if not destination.is_dir():
+                raise
+            raise _AlreadyBuilt(plan.entry_name)
+        return destination
+    except (CompileError, StructuralError, _AlreadyBuilt):
+        raise
+    except OSError as exc:
+        raise CompileError(f"{plan.entry_name}: could not publish the entry - {exc}") from exc
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def run(
+    *,
+    lock_path: Path,
+    configure_path: Path,
+    cache_root: Path,
+    triple: str,
+    engine: str | None,
+    check_only: bool,
+    verbose: bool,
+    runner: Callable[[list[str], Path], object],
+) -> int:
+    if not lock_path.is_file():
+        raise StructuralError(f"missing engine manifest: {lock_path} (§3.7.2)")
+    if not configure_path.is_file():
+        raise StructuralError(f"missing configure-flag manifest: {configure_path} (§6.1.3)")
+    rows = parse_lock(lock_path.read_text(encoding="utf-8"), where=str(lock_path))
+    seam = parse_configure(configure_path.read_text(encoding="utf-8"), where=str(configure_path))
+
+    unbound = unbound_configure_tables(seam, rows)
+    if unbound:
+        raise StructuralError(
+            f"{configure_path}: {', '.join(unbound)} name no from-source `engines.lock` group "
+            "or row - one of the two manifests has a typo, and a configure line nothing binds to "
+            "is a line that never runs"
+        )
+
+    targeted = tuple(row for row in rows if row.cache_engine == engine) if engine else rows
+    if engine and not targeted:
+        raise StructuralError(
+            f"no from-source `engines.lock` group '{engine}' - this script compiles only what "
+            "the manifest pins"
+        )
+    if not targeted:
+        note(
+            f"{lock_path.name} declares no from-source rows yet - nothing to compile for {triple} "
+            "(each P5-P7 compile box adds its own row and fills its configure seam)"
+        )
+        return 0
+    if not any(triple in row.triples for row in targeted):
+        note(f"no from-source `engines.lock` row targets {triple} - nothing to compile")
+        return 0
+
+    plans = plan_compiles(targeted, seam, triple, cache_root)
+    built = 0
+    hits = 0
+    for plan in plans:
+        # Every row the entry yields, not just the ones that declared a configure line: `ffmpeg`
+        # and `ffprobe` come out of one build, and a report naming only `ffmpeg` is wrong about
+        # what was produced.
+        members = ", ".join(
+            row_id for source in plan.sources for row_id in source.produces
+        )
+        if plan.cached:
+            hits += 1
+            if verbose:
+                note(f"cache hit: {plan.entry_name} ({members})")
+            continue
+        if check_only:
+            note(
+                f"would compile: {plan.entry_name} [{members}] with "
+                f"{len(plan.sources)} declared configure line(s)"
+            )
+            continue
+        try:
+            compile_entry(plan, cache_root, runner=runner)
+        except _AlreadyBuilt:
+            hits += 1
+            note(
+                f"{plan.entry_name} [{members}] was published by a concurrent compile "
+                "- ours discarded"
+            )
+            continue
+        built += 1
+        note(f"compiled {plan.entry_name} [{members}] from {len(plan.sources)} verified source(s)")
+
+    verb = "would compile" if check_only else "compiled"
+    # `built` and `len(plans) - hits` are equal on the non-check path, so the ternary was an
+    # equivalent mutant - the sibling uses the unconditional form and so does this now.
+    note(f"{triple}: {hits} cache hit(s), {verb} {len(plans) - hits} entr(ies)")
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# --selftest: the fixture-driven regression suite (the P4.27 pattern its two siblings record).
+# --------------------------------------------------------------------------------------------
+
+_results: list[tuple[str, bool]] = []
+
+
+def _record(name: str, ok: bool) -> None:
+    _results.append((name, ok))
+
+
+def _raises(fn, needle: str, kind: type[Exception] = Exception) -> bool:
+    """The needle is REQUIRED, for the reason `stage-engines` records: several distinct violations
+    share one exception type, so a type-only assertion can be satisfied by a different arm than the
+    leg names. An arm-blind leg cannot be written here."""
+    try:
+        fn()
+    except kind as exc:
+        return needle in str(exc)
+    except Exception:
+        return False
+    return False
+
+
+_LINUX = "x86_64-unknown-linux-gnu"
+_WIN = "x86_64-pc-windows-msvc"
+_FPR = "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555"
+_FF_URL = "https://example.invalid/ffmpeg-7.1.tar.xz"
+_LAME_URL = "https://example.invalid/lame-3.100.tar.gz"
+
+
+def _tar_bytes(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, payload in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+    return buffer.getvalue()
+
+
+def _tar_device_bytes() -> bytes:
+    """A tar carrying a CHARACTER-DEVICE member.
+
+    `_assert_confined` checks NAMES; it does not model device nodes - the stdlib `data` filter
+    does. This is the leg that makes `filter="data"` checkable rather than merely asserted: with
+    it dropped, the confinement legs above all stay green, which is how the sibling's review found
+    the same hole here.
+    """
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        info = tarfile.TarInfo("dev/null")
+        info.type = tarfile.CHRTYPE
+        info.devmajor = 1
+        info.devminor = 3
+        archive.addfile(info)
+    return buffer.getvalue()
+
+
+def _tar_with(name: str, *, linkname: str | None = None, symlink: bool = False) -> bytes:
+    """A tar carrying ONE hostile member, built with the low-level API so the name survives."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        info = tarfile.TarInfo(name)
+        if linkname is not None:
+            info.type = tarfile.SYMTYPE if symlink else tarfile.LNKTYPE
+            info.linkname = linkname
+            archive.addfile(info)
+        else:
+            info.size = 1
+            archive.addfile(info, io.BytesIO(b"x"))
+    return buffer.getvalue()
+
+
+_FF_SRC = _tar_bytes({"ffmpeg-7.1/configure.ac": b"AC_INIT([ffmpeg])"})
+_LAME_SRC = _tar_bytes({"lame-3.100/configure.ac": b"AC_INIT([lame])"})
+_FF_SIG = b"-----BEGIN PGP SIGNATURE----- ff\n"
+_LAME_SIG = b"-----BEGIN PGP SIGNATURE----- lame\n"
+
+
+def _row(
+    *,
+    ident: str = "ffmpeg",
+    version: str = "7.1",
+    group: str = "ffmpeg",
+    url: str = _FF_URL,
+    payload: bytes = _FF_SRC,
+    tarball: str | None = None,
+    signature: str | None = None,
+    fingerprint: str = _FPR,
+    tool: str = "gpg",
+    acquisition: str = "from-source",
+    kind: str = "staged-artifact",
+    triples: str | None = None,
+) -> str:
+    anchor = (
+        "\n[engine.from_source]\n"
+        f'tarball_sha256 = "{tarball or hashlib.sha256(payload).hexdigest()}"\n'
+        f'signature_url = "{signature or url + ".asc"}"\n'
+        f'signing_key_fingerprint = "{fingerprint}"\n'
+        f'verified_with = "{tool}"\n'
+        f'toolchain_digest = "sha256:{"1" * 64}"\n'
+    )
+    return (
+        "[[engine]]\n"
+        f'id = "{ident}"\n'
+        f'version = "{version}"\n'
+        f'cache_engine = "{group}"\n'
+        'cache_version = "7.1"\n'
+        f"triples = {triples or f'[\"{_LINUX}\"]'}\n"
+        f'kind = "{kind}"\n'
+        f'acquisition = "{acquisition}"\n'
+        f'upstream_url = "{url}"\n' + (anchor if acquisition == "from-source" else "")
+    )
+
+
+def _seam(group: str = "ffmpeg", system: str = "autotools", systems: dict | None = None,
+          **lines: str) -> str:
+    body = lines or {"ffmpeg": '["--disable-network"]'}
+    flags = "".join(f'"{row_id}" = {line}\n' for row_id, line in body.items())
+    chosen = systems if systems is not None else {row_id: system for row_id in body}
+    declared = "".join(f'"{row_id}" = "{value}"\n' for row_id, value in chosen.items())
+    return f"[{group}.configure.flags]\n{flags}\n[{group}.configure.system]\n{declared}"
+
+
+class _Runner:
+    """A recording, scriptable stand-in for every subprocess this script would spawn."""
+
+    def __init__(self, *, fail_on: str | None = None, output: str | None = None,
+                 installs: bool = True) -> None:
+        self.calls: list[list[str]] = []
+        self.cwds: list[Path] = []
+        self._fail_on = fail_on
+        # The default output satisfies BOTH verdict readers: gpg's machine-readable status line
+        # and sq's spacing-insensitive human output.
+        self._output = output if output is not None else f"[GNUPG:] VALIDSIG {_FPR} 0 0\n{_FPR}"
+        self._installs = installs
+        self._prefix: Path | None = None
+
+    @staticmethod
+    def label_of(argv: list[str]) -> str:
+        if argv[0] in ("make", "meson", "cmake"):
+            head = " ".join(argv[:2])
+            return "cmake configure" if argv[0] == "cmake" and argv[1] == "-S" else head
+        return argv[0]
+
+    def steps(self) -> list[str]:
+        """The step LABELS, so a leg can assert ordering without restating whole argvs."""
+        return [self.label_of(argv) for argv in self.calls]
+
+    def __call__(self, argv: list[str], cwd: Path):
+        self.calls.append(list(argv))
+        # The cwd is half of what a build step IS: `build_root` and `source_dir` decide it, and
+        # both could be computed and discarded with every argv assertion still green.
+        self.cwds.append(Path(cwd))
+        for token in argv:
+            for marker in ("--prefix=", "-DCMAKE_INSTALL_PREFIX="):
+                if token.startswith(marker):
+                    self._prefix = Path(token[len(marker):])
+        label = self.label_of(argv)
+        rc = 1 if self._fail_on is not None and label == self._fail_on else 0
+        # A real `install` step puts files in the prefix. The fixture does too, so that the
+        # "an empty prefix is refused" leg has something to discriminate AGAINST.
+        if rc == 0 and self._installs and self._prefix is not None and "install" in label:
+            (self._prefix / "lib").mkdir(parents=True, exist_ok=True)
+            (self._prefix / "lib" / f"built{len(self.calls)}.so").write_bytes(b"x")
+        output = self._output
+
+        class _Result:
+            returncode = rc
+            stdout = output
+            stderr = ""
+
+        return _Result()
+
+
+class _SymlinkingRunner(_Runner):
+    """A runner whose `make install` drops an ESCAPING symlink into the prefix.
+
+    A build's output is not a fixture we control in production, so the guard has to be exercised
+    where it actually runs. Driving `assert_self_contained` directly proves the classification;
+    only this proves `compile_entry` still calls it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.linked = False
+
+    def __call__(self, argv: list[str], cwd: Path):
+        result = super().__call__(argv, cwd)
+        if self.label_of(argv) == "make install" and self._prefix is not None and not self.linked:
+            try:
+                (self._prefix / "lib" / "escape.so").symlink_to(Path("/etc/passwd"))
+                self.linked = True
+            except OSError:
+                pass
+        return result
+
+
+class _RacingRunner(_Runner):
+    """A runner that publishes the destination mid-build, the way a concurrent compile would.
+
+    `plan.cached` catches an entry that exists at PLAN time, so the only way into the
+    `_AlreadyBuilt` arm is for the entry to appear while this build is still running. Nothing
+    else can reach it, which is why the arm - and the cache-hit accounting behind it - sat
+    unexercised through three review rounds.
+    """
+
+    def __init__(self, destination: Path) -> None:
+        super().__init__()
+        self._destination = destination
+
+    def __call__(self, argv: list[str], cwd: Path):
+        result = super().__call__(argv, cwd)
+        if self.label_of(argv) == "make install":
+            self._destination.mkdir(parents=True, exist_ok=True)
+            (self._destination / "raced.so").write_bytes(b"x")
+        return result
+
+
+def _entry(cache_root: Path, name: str, files: dict[str, bytes]) -> Path:
+    """Materialise a `.src` entry exactly as `fetch-engine-assets --source` publishes one."""
+    entry = cache_root / f"{name}.src"
+    entry.mkdir(parents=True, exist_ok=True)
+    for filename, payload in files.items():
+        (entry / filename).write_bytes(payload)
+    return entry
+
+
+_GOOD_ENTRY = {
+    "ffmpeg-7.1.tar.xz": _FF_SRC,
+    "ffmpeg-7.1.tar.xz.asc": _FF_SIG,
+}
+_PAIR_ENTRY = {
+    **_GOOD_ENTRY,
+    "lame-3.100.tar.gz": _LAME_SRC,
+    "lame-3.100.tar.gz.asc": _LAME_SIG,
+}
+
+
+def _load_sibling(name: str):
+    """Import a hyphenated sibling SCRIPT by path.
+
+    `scripts/` holds tools, not a package - the filenames carry no `.py` and no dots - so there is
+    nothing to `import`. Loading it explicitly is what lets one suite drive both halves of the
+    §6.1.3 from-source path against a single cache.
+    """
+    loader = importlib.machinery.SourceFileLoader(
+        name.replace("-", "_"), str(ROOT / "scripts" / name)
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _shared_row(ident: str, version: str, url: str, payload: bytes) -> str:
+    """A row satisfying BOTH readers.
+
+    `fetch-engine-assets` requires `sha256` (of the STAGED artifact) on every row; this script does
+    not read it. Spelling the intersection once, here, is what keeps the end-to-end leg honest -
+    a fixture only one half accepts would prove nothing about the two working together.
+    """
+    return (
+        "[[engine]]\n"
+        f'id = "{ident}"\n'
+        f'version = "{version}"\n'
+        'cache_engine = "ffmpeg"\n'
+        'cache_version = "7.1"\n'
+        f'triples = ["{_LINUX}"]\n'
+        'kind = "staged-artifact"\n'
+        'acquisition = "from-source"\n'
+        f'upstream_url = "{url}"\n'
+        f'sha256 = "{"0" * 64}"\n'
+        "[engine.from_source]\n"
+        f'tarball_sha256 = "{hashlib.sha256(payload).hexdigest()}"\n'
+        f'signature_url = "{url}.asc"\n'
+        f'signing_key_fingerprint = "{_FPR}"\n'
+        'verified_with = "gpg"\n'
+        f'toolchain_digest = "sha256:{"1" * 64}"\n'
+    )
+
+
+def _report(call) -> str:
+    """What a call PRINTS. Several branches here are reporting-only, and an exit code cannot tell
+    them apart - the `-v` cache-hit note has no other observable effect at all."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        call()
+    return buffer.getvalue()
+
+
+def _install_read_path_probe(name: str) -> bool:
+    """Drive `_names_an_install_dir` with `name` declared read-only, then restore the table.
+
+    The escape hatch is empty by design, so the only way to assert it WORKS is to fill it for one
+    call - otherwise the leg would be asserting an empty tuple, which is not a mechanism.
+    """
+    global _READ_PATH_DIR_OPTIONS
+    saved = _READ_PATH_DIR_OPTIONS
+    try:
+        _READ_PATH_DIR_OPTIONS = (name,)
+        return not _names_an_install_dir(name)
+    finally:
+        _READ_PATH_DIR_OPTIONS = saved
+
+
+def _legs() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        one = _row()
+        pair = one + _row(ident="libmp3lame.so", version="3.100", url=_LAME_URL,
+                          payload=_LAME_SRC)
+        seam_one = parse_configure(_seam(), where="fixture")
+        seam_pair = parse_configure(
+            _seam(ffmpeg='["--disable-network"]', **{"libmp3lame.so": '["--disable-frontend"]'}),
+            where="fixture",
+        )
+
+        # ---- parse_lock -------------------------------------------------------------------
+        rows = parse_lock(one, where="fixture")
+        _record("a from-source row is read with its anchor", len(rows) == 1)
+        _record(
+            "the row carries the triples it targets",
+            rows[0].triples == (_LINUX,),
+        )
+        _record(
+            "the row carries the url its signature lives at",
+            rows[0].signature_url == f"{_FF_URL}.asc",
+        )
+        _record(
+            "a PREBUILT row is not this script's",
+            parse_lock(_row(acquisition="prebuilt"), where="fixture") == (),
+        )
+        _record(
+            "a SUB-COMPONENT row is not this script's",
+            parse_lock(_row(kind="sub-component"), where="fixture") == (),
+        )
+        _record(
+            "a from-source row with no anchor table is refused",
+            _raises(
+                lambda: parse_lock(
+                    one.replace("[engine.from_source]", "[engine.other]"), where="fixture"
+                ),
+                "must carry a `from_source` anchor",
+                StructuralError,
+            ),
+        )
+        for field in ("tarball_sha256", "signature_url", "signing_key_fingerprint",
+                      "verified_with", "toolchain_digest"):
+            _record(
+                f"a from-source row missing `{field}` is refused",
+                _raises(
+                    lambda field=field: parse_lock(
+                        "\n".join(
+                            line for line in one.splitlines() if not line.startswith(f"{field} =")
+                        ),
+                        where="fixture",
+                    ),
+                    f"`{field}` is missing",
+                    StructuralError,
+                ),
+            )
+        _record(
+            "a row with no `triples` is refused - a compile has to know what it targets",
+            _raises(
+                lambda: parse_lock(
+                    "\n".join(l for l in one.splitlines() if not l.startswith("triples =")),
+                    where="fixture",
+                ),
+                "`triples` must be a non-empty array",
+                StructuralError,
+            ),
+        )
+        _record(
+            "an EMPTY `triples` is refused",
+            _raises(
+                lambda: parse_lock(one.replace(f'["{_LINUX}"]', "[]"), where="fixture"),
+                "`triples` must be a non-empty array",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a non-string triple is refused",
+            _raises(
+                lambda: parse_lock(one.replace(f'["{_LINUX}"]', "[7]"), where="fixture"),
+                "`triples` must hold non-empty strings",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a manifest that is not TOML is refused",
+            _raises(lambda: parse_lock("=nope", where="fixture"), "not valid TOML",
+                    StructuralError),
+        )
+        _record(
+            "`engine` that is not an array of tables is refused",
+            _raises(lambda: parse_lock("engine = 7", where="fixture"),
+                    "must be an array of tables", StructuralError),
+        )
+        _record(
+            "a blank declared `cache_engine` is refused, not silently defaulted",
+            _raises(
+                lambda: parse_lock(one.replace('cache_engine = "ffmpeg"',
+                                               'cache_engine = "  "'), where="fixture"),
+                "is declared but blank",
+                StructuralError,
+            ),
+        )
+        _record(
+            "an absent `cache_engine` falls back to the row id",
+            parse_lock(
+                "\n".join(l for l in one.splitlines() if not l.startswith("cache_engine =")),
+                where="fixture",
+            )[0].cache_engine
+            == "ffmpeg",
+        )
+
+        # ---- the configure seam ------------------------------------------------------------
+        _record(
+            "the seam is one configure LINE per source, keyed on the row id",
+            seam_pair["ffmpeg"]["libmp3lame.so"].flags == ("--disable-frontend",),
+        )
+        _record("an empty seam file is a valid container", parse_configure("", where="f") == {})
+        _record(
+            "a seam entry that is not a table is refused",
+            _raises(lambda: parse_configure("ffmpeg = 7", where="f"), "must be a table",
+                    StructuralError),
+        )
+        _record(
+            "a seam entry with no `configure` table is refused",
+            _raises(lambda: parse_configure("[ffmpeg]\nx = 1\n", where="f"),
+                    "declares no `configure` table", StructuralError),
+        )
+        _record(
+            "a `configure` that is not a table is refused",
+            _raises(lambda: parse_configure("[ffmpeg]\nconfigure = 7\n", where="f"),
+                    "`ffmpeg.configure` must be a table", StructuralError),
+        )
+        _record(
+            "`flags` that is not a per-row table is refused",
+            _raises(lambda: parse_configure("[ffmpeg.configure]\nflags = []\n", where="f"),
+                    "must be a non-empty table keyed on the `engines.lock` row id",
+                    StructuralError),
+        )
+        _record(
+            "an empty configure LINE is refused",
+            _raises(lambda: parse_configure(_seam(ffmpeg="[]"), where="f"),
+                    "must be a non-empty array", StructuralError),
+        )
+        _record(
+            "a blank flag is refused",
+            _raises(lambda: parse_configure(_seam(ffmpeg='["  "]'), where="f"),
+                    "must hold non-empty strings", StructuralError),
+        )
+        # The install-path family, not just `--prefix=`: each of these moves the build OUT of
+        # the staging tree that gets published, which is how an empty entry reaches the cache
+        # reporting success.
+        # ONE option, FOUR spellings. The round that added Meson and CMake did not extend the
+        # guard the previous round wrote, so `-Dprefix=` and `-DCMAKE_INSTALL_LIBDIR=` walked
+        # past it - and CMake's last-`-D`-wins means the second was an OVERRIDE, not an
+        # ambiguity. Every spelling of every option gets a row here.
+        for flag, needle in (
+            ('"--prefix=/tmp/x"', "declares its own"),
+            ('"--prefix"', "declares its own"),
+            ('"--exec-prefix=/tmp/x"', "declares its own"),
+            ('"DESTDIR=/tmp/x"', "declares its own"),
+            ('"-DCMAKE_INSTALL_PREFIX=/tmp/x"', "declares its own"),
+            ('"-DCMAKE_STAGING_PREFIX=/tmp/x"', "declares its own"),
+            ('"-Dprefix=/tmp/x"', "declares its own"),
+            ('"--libdir=/usr/lib64"', "does not stay under the prefix"),
+            ('"--bindir=C:/somewhere"', "does not stay under the prefix"),
+            ('"-Dlibdir=/usr/lib64"', "does not stay under the prefix"),
+            ('"-DCMAKE_INSTALL_LIBDIR=/usr/lib64"', "does not stay under the prefix"),
+            ('"--docdir=/tmp/docs"', "does not stay under the prefix"),
+            ('"--localstatedir=/var"', "does not stay under the prefix"),
+            ('"--libdir"', "value in the NEXT array element"),
+            # r4: the value is a PATH, and only "is it absolute" was checked.
+            ('"--libdir=../../../../etc/evil"', "does not stay under the prefix"),
+            ('"-Dlibdir=../../outside"', "does not stay under the prefix"),
+            # now refused one step earlier, and more precisely: a flag anchored at the prefix
+            # has no reason to walk up from it, whatever the option is called.
+            ('"--libdir={prefix}/../../escape"', "walks UP from `{prefix}`"),
+            ('"--extra-cflags=-I{prefix}/../../../../etc"', "walks UP from `{prefix}`"),
+            ('"--extra-ldflags=-L{prefix}/../../tmp/evil"', "walks UP from `{prefix}`"),
+            # file-import options fit neither shape, so they are named rather than matched
+            ('"-DCMAKE_TOOLCHAIN_FILE=/tmp/evil.cmake"', "imports build settings from a file"),
+            ('"--native-file=/tmp/evil.ini"', "imports build settings from a file"),
+            ('"--cross-file=/tmp/evil.ini"', "imports build settings from a file"),
+            ('"--preset=evil"', "imports build settings from a file"),
+            ('"-C/tmp/evil.cmake"', "imports build settings from a file"),
+            # a value a lower layer re-reads is not a path this grammar can judge
+            ('"--libdir= /usr/lib64"', "not a plain path"),
+            ('"--datadir=' + chr(39) + "/usr/share" + chr(39) + '"', "not a plain path"),
+            ('"--includedir=~/evil"', "not a plain path"),
+            ('"-DCMAKE_INSTALL_PREFIX:PATH=/opt/out"', "declares its own"),
+            ('"-DCMAKE_STAGING_PREFIX:PATH=/opt/out"', "declares its own"),
+            ('"-DCMAKE_INSTALL_LIBDIR:PATH=/usr/lib64"', "does not stay under the prefix"),
+            # r5: the value is checked BEFORE `{prefix}` is substituted, so a placeholder GLUED
+            # to anything else hides that anything from the guard and reappears as a path
+            # separator afterwards. `..{prefix}` became `../<abs prefix>`; `{prefix}..` became a
+            # sibling of the prefix. Both walked past a per-segment `..` check.
+            ('"--libdir=..{prefix}"', "has to START the value"),
+            ('"--libdir=x{prefix}/lib"', "has to START the value"),
+            ('"--libdir={prefix}.."', "names a SIBLING of the prefix"),
+            ('"--libdir={prefix}lib"', "names a SIBLING of the prefix"),
+            # CMake >= 3.21's top-level option, which OVERRIDES the cache variable and is
+            # appended after this script's own `-DCMAKE_INSTALL_PREFIX=`.
+            ('"--install-prefix=/opt/evil"', "declares its own"),
+            # r6: a NAME table can only close the names someone thought of. These are the ones
+            # two reviewers found missing from a 16-name GNU list - FFmpeg's own install
+            # options and autoconf 2.70's later additions - and they are covered now because
+            # the rule matches the SHAPE of the name, not its membership.
+            ('"--shlibdir=/usr/lib"', "does not stay under the prefix"),
+            ('"--incdir=/usr/include"', "does not stay under the prefix"),
+            ('"--pkgconfigdir=/usr/lib/pkgconfig"', "does not stay under the prefix"),
+            ('"--runstatedir=/run"', "does not stay under the prefix"),
+            ('"-DCMAKE_INSTALL_RUNSTATEDIR=/etc/cron.d"', "does not stay under the prefix"),
+            ('"--dvidir=/abs"', "does not stay under the prefix"),
+            ('"-DLIB_INSTALL_DIR=/usr/lib64"', "does not stay under the prefix"),
+            # ...and an option ending in `prefix` that no table names.
+            ('"--sysroot-prefix=/opt/evil"', "declares its own"),
+            # A `$` in an install directory is expanded by the BUILD, after every check this
+            # script can make - autoconf even treats a `$`-leading value as already-absolute.
+            ('"--libdir=${HOME}/evil"', "build/shell variable"),
+            ('"--libdir=${exec_prefix}/lib64"', "build/shell variable"),
+            ('"-DCMAKE_INSTALL_LIBDIR=${DESTDIR}/evil"', "build/shell variable"),
+            ('"--libdir="', "empty value"),
+            ('"--libdir={prefix}/x{prefix}"', "repeats `{prefix}`"),
+            # Exactly ONE separator is consumed: `lstrip("/")` would eat the second slash too and
+            # hand `_assert_confined` a relative-looking `host/share` where the value actually
+            # continues as a UNC/absolute path.
+            ('"--libdir={prefix}//host/share"', "does not stay under the prefix"),
+        ):
+            _record(
+                f"a configure line declaring {flag} is refused",
+                _raises(lambda flag=flag: parse_configure(_seam(ffmpeg=f"[{flag}]"), where="f"),
+                        needle, StructuralError),
+            )
+        _record(
+            "the four spellings of one install option normalise to one name",
+            [_install_option_name(token) for token in
+             ("--libdir=lib", "-Dlibdir=lib", "-DCMAKE_INSTALL_LIBDIR=lib", "--libdir")]
+            == ["libdir"] * 4,
+        )
+        _record(
+            "a RELATIVE install dir stays inside the prefix and is allowed",
+            parse_configure(_seam(ffmpeg='["--libdir=lib64"]'), where="f")["ffmpeg"]["ffmpeg"]
+            .flags
+            == ("--libdir=lib64",),
+        )
+        _record(
+            "a RELATIVE install dir is allowed in every spelling - the guard does not over-refuse",
+            all(
+                parse_configure(_seam(ffmpeg=f'["{flag}"]'), where="f")["ffmpeg"]["ffmpeg"].flags
+                == (flag,)
+                for flag in ("--libdir=lib64", "-Dlibdir=lib64",
+                             "-DCMAKE_INSTALL_LIBDIR=lib64",
+                             "-DCMAKE_INSTALL_LIBDIR:PATH=lib64",
+                             "--libdir={prefix}/lib64",
+                             # the placeholder ALONE is the prefix itself, which is inside it
+                             "--libdir={prefix}")
+            ),
+        )
+        _record(
+            "the shape rule is what covers a name no table lists",
+            _names_an_install_dir("shlibdir")
+            and _names_an_install_dir("some_future_dir")
+            and _names_a_prefix("install-prefix")
+            and not _names_an_install_dir("enable-shared")
+            and not _names_a_prefix("with-sysroot"),
+        )
+        _record(
+            "the read-path escape hatch takes a name back OUT of the install-dir rule",
+            # The inversion's release valve, driven so it is a working mechanism rather than an
+            # empty tuple nobody has exercised: the SAME name is an install dir by shape, and is
+            # not one once the hatch names it.
+            _names_an_install_dir("testdatadir")
+            and _install_read_path_probe("testdatadir")
+            and _names_an_install_dir("testdatadir"),
+        )
+        _record(
+            "a flag that merely CONTAINS an option name is not refused",
+            parse_configure(
+                _seam(ffmpeg='["--enable-libdir-probe", "--with-sysroot=/opt/x"]'), where="f"
+            )["ffmpeg"]["ffmpeg"].flags
+            == ("--enable-libdir-probe", "--with-sysroot=/opt/x"),
+        )
+        _record(
+            "a configure line may name the shared prefix with `{prefix}`",
+            parse_configure(
+                _seam(ffmpeg='["--extra-ldflags=-L{prefix}/lib"]'), where="f"
+            )["ffmpeg"]["ffmpeg"].flags
+            == ("--extra-ldflags=-L{prefix}/lib",),
+        )
+        _record(
+            "a placeholder this script does not substitute is refused, not passed through",
+            _raises(
+                lambda: parse_configure(_seam(ffmpeg='["--sysroot={sysroot}"]'), where="f"),
+                "which this script does not substitute",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a `$`-braced linker token is left alone - `${ORIGIN}` is not this script's placeholder",
+            parse_configure(
+                _seam(ffmpeg='["--extra-ldflags=-Wl,-rpath,${ORIGIN}/../lib"]'), where="f"
+            )["ffmpeg"]["ffmpeg"].flags
+            == ("--extra-ldflags=-Wl,-rpath,${ORIGIN}/../lib",),
+        )
+        _record(
+            "a source may declare the SUBDIRECTORY its build system lives in",
+            parse_configure(
+                _seam(ffmpeg='["--x"]', systems={"ffmpeg": "cmake"}) + '\n[ffmpeg.configure.source_dir]\n"ffmpeg" = "source"\n',
+                where="f",
+            )["ffmpeg"]["ffmpeg"].source_dir
+            == "source",
+        )
+        _record(
+            "a source that declares none builds at the tree root",
+            parse_configure(_seam(), where="f")["ffmpeg"]["ffmpeg"].source_dir == ".",
+        )
+        _record(
+            "a TRAVERSING source_dir is refused on the same grammar as every derived path",
+            _raises(
+                lambda: parse_configure(
+                    _seam() + '\n[ffmpeg.configure.source_dir]\n"ffmpeg" = "../escape"\n',
+                    where="f",
+                ),
+                "refusing traversing",
+                CompileError,
+            ),
+        )
+        _record(
+            "a source_dir naming a source with no flags is refused",
+            _raises(
+                lambda: parse_configure(
+                    _seam() + '\n[ffmpeg.configure.source_dir]\n"ghost" = "source"\n',
+                    where="f",
+                ),
+                "which `ffmpeg.configure.flags` does not",
+                StructuralError,
+            ),
+        )
+        _record(
+            "the build system is DECLARED, never guessed",
+            _raises(
+                lambda: parse_configure("[ffmpeg.configure.flags]\n\"ffmpeg\" = [\"--x\"]\n",
+                                        where="f"),
+                "`ffmpeg.configure.system` must be a non-empty table",
+                StructuralError,
+            ),
+        )
+        _record(
+            "an unknown build system is refused, not defaulted",
+            _raises(lambda: parse_configure(_seam(system="autoconf-ish"), where="f"),
+                    "the build system is declared, never guessed", StructuralError),
+        )
+        _record(
+            "a `system` entry naming a source with no flags is refused",
+            _raises(
+                lambda: parse_configure(
+                    _seam(systems={"ffmpeg": "autotools", "ghost": "cmake"}), where="f"
+                ),
+                "which `ffmpeg.configure.flags` does not",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a source with flags but NO declared system is refused",
+            _raises(
+                lambda: parse_configure(
+                    _seam(ffmpeg='["--x"]', **{"libmp3lame.so": '["--y"]'},
+                          systems={"ffmpeg": "autotools"}),
+                    where="f",
+                ),
+                "the build system is declared, never guessed",
+                StructuralError,
+            ),
+        )
+
+        # ---- the two-manifest binder, both grains ------------------------------------------
+        _record(
+            "a seam table naming no from-source GROUP is unbound",
+            unbound_configure_tables(parse_configure(_seam("libvps"), where="f"),
+                                     parse_lock(one, where="fixture")) == ["libvps"],
+        )
+        _record(
+            "a seam LINE naming no row of its group is unbound",
+            unbound_configure_tables(
+                parse_configure(_seam(ffmpeg='["--x"]', ffmpg='["--y"]'), where="f"),
+                parse_lock(one, where="fixture"),
+            )
+            == ["ffmpeg.configure.flags.ffmpg"],
+        )
+        _record(
+            "a fully bound seam is not reported",
+            unbound_configure_tables(seam_pair, parse_lock(pair, where="fixture")) == [],
+        )
+
+        # ---- planning ----------------------------------------------------------------------
+        cache = base / "cache"
+        plans = plan_compiles(parse_lock(pair, where="fixture"), seam_pair, _LINUX, cache)
+        _record("a group of two sources is ONE entry", len(plans) == 1)
+        _record(
+            "the entry is keyed the way stage-engines parses it back",
+            plans[0].entry_name == f"ffmpeg-7.1-{_LINUX}",
+        )
+        _record(
+            "each source carries its OWN configure line, in manifest order",
+            [source.flags for source in plans[0].sources]
+            == [("--disable-network",), ("--disable-frontend",)],
+        )
+        _record(
+            "each source's filenames are derived from its own urls",
+            [(s.archive_name, s.signature_name) for s in plans[0].sources]
+            == [
+                ("ffmpeg-7.1.tar.xz", "ffmpeg-7.1.tar.xz.asc"),
+                ("lame-3.100.tar.gz", "lame-3.100.tar.gz.asc"),
+            ],
+        )
+        # `ffmpeg` + `ffprobe` out of ONE signed archive is the shape §3.8's URL-keyed anchor
+        # rule exists for, and the shape the two halves first contradicted each other on: the
+        # fetch side deduped the shared tarball while this side refused the same manifest as a
+        # filename collision. It is now ONE build that produces both ids.
+        shared_src = _row(ident="ffmpeg") + _row(ident="ffprobe")
+        shared_seam = parse_configure(_seam(ffmpeg='["--disable-network"]'), where="f")
+        shared = plan_compiles(parse_lock(shared_src, where="fixture"), shared_seam, _LINUX,
+                               cache)
+        _record(
+            "two rows out of ONE tarball are ONE build, not two",
+            len(shared) == 1 and len(shared[0].sources) == 1,
+        )
+        _record(
+            "that one build records every row id it produces",
+            shared[0].sources[0].produces == ("ffmpeg", "ffprobe"),
+        )
+        _record(
+            "the row that declares the line is the one that configures the build",
+            shared[0].sources[0].row.id == "ffmpeg"
+            and shared[0].sources[0].flags == ("--disable-network",),
+        )
+        _record(
+            "a tarball whose rows declare NO line is refused",
+            _raises(
+                lambda: plan_compiles(
+                    parse_lock(shared_src, where="fixture"),
+                    parse_configure(_seam(**{"unrelated": '["--x"]'}), where="f"),
+                    _LINUX, cache,
+                ),
+                "none of ffmpeg, ffprobe declares",
+                CompileError,
+            ),
+        )
+        _record(
+            "a tarball whose rows declare TWO lines is an ambiguity, not a merge",
+            _raises(
+                lambda: plan_compiles(
+                    parse_lock(shared_src, where="fixture"),
+                    parse_configure(
+                        _seam(ffmpeg='["--x"]', **{"ffprobe": '["--y"]'}), where="f"
+                    ),
+                    _LINUX, cache,
+                ),
+                "one tarball is one build",
+                CompileError,
+            ),
+        )
+        _record(
+            "a triple no row targets plans nothing",
+            plan_compiles(parse_lock(pair, where="fixture"), seam_pair, _WIN, cache) == [],
+        )
+        _record(
+            "a row targeting ANOTHER triple is not planned here",
+            plan_compiles(
+                parse_lock(_row(triples=f'["{_WIN}"]'), where="fixture"), seam_one, _LINUX, cache
+            )
+            == [],
+        )
+        _record(
+            "a group with no configure table refuses to compile, rather than using a default line",
+            _raises(
+                lambda: plan_compiles(parse_lock(one, where="fixture"),
+                                      parse_configure(_seam("other"), where="f"), _LINUX, cache),
+                "refusing to compile with an undeclared configure line",
+                CompileError,
+            ),
+        )
+        _record(
+            "a SOURCE with no configure line refuses to compile",
+            _raises(
+                lambda: plan_compiles(parse_lock(pair, where="fixture"), seam_one, _LINUX, cache),
+                "none of libmp3lame.so declares a `ffmpeg.configure.flags.<id>` line",
+                CompileError,
+            ),
+        )
+        _record(
+            "a group resolving to two entry names fails closed",
+            _raises(
+                lambda: plan_compiles(
+                    parse_lock(pair.replace('cache_version = "7.1"', 'cache_version = "9.9"', 1),
+                               where="fixture"),
+                    seam_pair, _LINUX, cache,
+                ),
+                "resolves to two entry names",
+                CompileError,
+            ),
+        )
+        _record(
+            "two sources naming one filename fail closed instead of overwriting",
+            _raises(
+                lambda: plan_compiles(
+                    parse_lock(
+                        _row(url="https://example.invalid/a/src.tar")
+                        + _row(ident="libmp3lame.so", url="https://example.invalid/b/src.tar",
+                               payload=_LAME_SRC),
+                        where="fixture",
+                    ),
+                    parse_configure(
+                        _seam(ffmpeg='["--x"]', **{"libmp3lame.so": '["--y"]'}), where="f"
+                    ),
+                    _LINUX, cache,
+                ),
+                "both land as",
+                CompileError,
+            ),
+        )
+        _record(
+            "a url with no usable filename fails closed",
+            _raises(
+                lambda: plan_compiles(
+                    parse_lock(_row(url="https://example.invalid/"), where="fixture"),
+                    seam_one, _LINUX, cache,
+                ),
+                "no usable filename",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a published entry plans as a HIT",
+            (cache / f"ffmpeg-7.1-{_LINUX}").mkdir(parents=True) is None
+            and plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX, cache)[0].cached,
+        )
+
+        # ---- resolve_inputs: the restore is not trusted -------------------------------------
+        work = base / "w1"
+        plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX, work)[0]
+        _record(
+            "an absent source entry names the sibling that fills it",
+            _raises(lambda: resolve_inputs(plan, source_entry(work, plan)),
+                    "--source --engine ffmpeg", StructuralError),
+        )
+        _entry(work, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _record("a complete, pinned entry resolves", resolve_inputs(plan, source_entry(work, plan))
+                is None)
+        tampered = base / "w2"
+        _entry(tampered, f"ffmpeg-7.1-{_LINUX}",
+               {**_GOOD_ENTRY, "ffmpeg-7.1.tar.xz": _tar_bytes({"evil": b"x"})})
+        _record(
+            "a RESTORED archive that is not the pinned bytes is refused - a cache is not a trust "
+            "boundary",
+            _raises(
+                lambda: resolve_inputs(plan, source_entry(tampered, plan)),
+                "is not the pinned source",
+                CompileError,
+            ),
+        )
+        short = base / "w3"
+        _entry(short, f"ffmpeg-7.1-{_LINUX}", {"ffmpeg-7.1.tar.xz": _FF_SRC})
+        _record(
+            "an entry missing the signature is refused, not built from",
+            _raises(lambda: resolve_inputs(plan, source_entry(short, plan)),
+                    "needs exactly", StructuralError),
+        )
+        shaped = base / "w3b"
+        _entry(shaped, f"ffmpeg-7.1-{_LINUX}", {"ffmpeg-7.1.tar.xz.asc": _FF_SIG})
+        (source_entry(shaped, plan) / "ffmpeg-7.1.tar.xz").mkdir()
+        _record(
+            "a DIRECTORY wearing an archive's name is refused, not read as bytes",
+            # Only files count. Without that, the contents check passes and `read_bytes` raises a
+            # raw OSError out of a path this script's own contract calls untrusted.
+            _raises(lambda: resolve_inputs(plan, source_entry(shaped, plan)),
+                    "needs exactly", StructuralError),
+        )
+        extra = base / "w4"
+        _entry(extra, f"ffmpeg-7.1-{_LINUX}", {**_GOOD_ENTRY, "surprise.tar": b"x"})
+        _record(
+            "an entry holding an UNDECLARED file is refused - the contents are the contract",
+            _raises(lambda: resolve_inputs(plan, source_entry(extra, plan)),
+                    "needs exactly", StructuralError),
+        )
+
+        # ---- verify_signature ---------------------------------------------------------------
+        entry = source_entry(work, plan)
+        tar, sig = entry / "ffmpeg-7.1.tar.xz", entry / "ffmpeg-7.1.tar.xz.asc"
+        row = plan.sources[0].row
+        runner = _Runner()
+        verify_signature(row, tar, sig, runner=runner)
+        _record(
+            "a gpg row runs gpg over the DECLARED signature file",
+            runner.calls == [["gpg", "--status-fd=1", "--verify", str(sig), str(tar)]],
+        )
+        sq_runner = _Runner()
+        verify_signature(row._replace(verified_with="sq"), tar, sig, runner=sq_runner)
+        _record(
+            "an `sq` row runs sq - the tool the ROW names, not a default",
+            sq_runner.calls == [["sq", "verify", "--signature-file", str(sig), str(tar)]],
+        )
+        # NOT `tuple(sorted(_VERIFY_ARGV)) == VERIFICATION_TOOLS`: that compares an expression
+        # to its own definition and cannot fail for any content of the table. Drive every
+        # accepted tool instead - a tool listed with no working dispatch fails HERE.
+        _record(
+            "every accepted verification tool is actually driveable, and runs as itself",
+            all(
+                (lambda probe: verify_signature(row._replace(verified_with=tool), tar, sig,
+                                                runner=probe) is None
+                 and probe.calls[0][0] == tool)(_Runner())
+                for tool in VERIFICATION_TOOLS
+            ),
+        )
+        _record(
+            "an unnamed verification tool is refused",
+            _raises(
+                lambda: verify_signature(row._replace(verified_with="eyeball"), tar, sig,
+                                         runner=_Runner()),
+                "is not a §3.8 verification tool",
+                CompileError,
+            ),
+        )
+        blind = _Runner()
+        _record(
+            "a mis-shaped fingerprint is refused BEFORE the verifier is even run",
+            _raises(
+                lambda: verify_signature(row._replace(signing_key_fingerprint="FFFF"), tar, sig,
+                                         runner=blind),
+                "not a 40-hex OpenPGP fingerprint",
+                CompileError,
+            )
+            and blind.calls == [],
+        )
+        _record(
+            "a signature that does not verify stops the build",
+            _raises(
+                lambda: verify_signature(row, tar, sig, runner=_Runner(fail_on="gpg")),
+                "did not verify",
+                CompileError,
+            ),
+        )
+        _record(
+            "a VALID signature by the WRONG key is refused",
+            _raises(
+                lambda: verify_signature(row, tar, sig,
+                                         runner=_Runner(output="0000111122223333444455556666777788889999")),
+                "not against the pinned key",
+                CompileError,
+            ),
+        )
+        _record(
+            "`sq`'s human output is matched with spacing removed",
+            verify_signature(
+                row._replace(verified_with="sq"),
+                tar,
+                sig,
+                runner=_Runner(output="AAAA 1111 BBBB 2222 CCCC 3333 DDDD 4444 EEEE 5555"),
+            )
+            is None,
+        )
+        _record(
+            "gpg needs its MACHINE-READABLE verdict - the bare fingerprint in the output is not one",
+            # gpg echoes the paths it was handed, and those come from the manifest; a substring
+            # match would let a FILENAME stand in for a verdict.
+            _raises(
+                lambda: verify_signature(row, tar, sig, runner=_Runner(output=_FPR)),
+                "not against the pinned key",
+                CompileError,
+            ),
+        )
+        _fpr_named = entry / f"{_FPR}.tar"
+        _fpr_named.write_bytes(b"x")
+        _record(
+            "the PRIMARY key fingerprint in VALIDSIG's last field counts too",
+            # gpg puts the SIGNING SUBKEY in field 1 and the primary key last; upstreams publish
+            # the primary, so a row pinning the published fingerprint has to verify.
+            verify_signature(
+                row, tar, sig,
+                runner=_Runner(output=f"[GNUPG:] VALIDSIG 1111222233334444555566667777888899990000 "
+                                      f"2026-01-01 0 0 4 0 1 10 00 {_FPR}"),
+            )
+            is None,
+        )
+        _record(
+            "`sq`'s match does not read back the PATHS this script passed in",
+            # The paths are derived from the row's own url, so a tarball whose filename contained
+            # the pinned fingerprint would otherwise satisfy the check whatever key signed - the
+            # unsoundness `_gpg_validsig`'s docstring names, in the sibling that lacked it.
+            # The tarball is NAMED for the fingerprint here, which is what makes the echo carry
+            # it: that name comes from the row's own `upstream_url`, i.e. from the manifest the
+            # check is supposed to be judging.
+            _raises(
+                lambda: verify_signature(
+                    row._replace(verified_with="sq"), _fpr_named, sig,
+                    runner=_Runner(output=f"verifying {_fpr_named}: unknown key"),
+                ),
+                "not against the pinned key",
+                CompileError,
+            ),
+        )
+        _record(
+            "a verification tool that is not installed is a PREREQUISITE failure, not a bad signature",
+            _raises(
+                lambda: verify_signature(
+                    row, tar, sig,
+                    runner=lambda argv, cwd: (_ for _ in ()).throw(
+                        FileNotFoundError(2, "no such file")
+                    ),
+                ),
+                "build-environment prerequisite",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a VALIDSIG line for a DIFFERENT key is refused",
+            _raises(
+                lambda: verify_signature(
+                    row, tar, sig,
+                    runner=_Runner(output="[GNUPG:] VALIDSIG 0000111122223333444455556666777788889999 0 0"),
+                ),
+                "not against the pinned key",
+                CompileError,
+            ),
+        )
+
+        # ---- unpacking, confined ------------------------------------------------------------
+        dest = base / "unpack"
+        for name, member in (
+            ("a traversing member", "../escape"),
+            ("an absolute member", "/etc/passwd"),
+            ("a drive-relative member", "C:evil"),
+            ("a dot member", ".."),
+        ):
+            archive = base / f"hostile-{abs(hash(member))}.tar"
+            archive.write_bytes(_tar_with(member))
+            _record(
+                f"{name} is refused",
+                _raises(lambda a=archive: unpack_source(a, dest), "refusing", CompileError),
+            )
+        # Driven against the guard rather than through a tar: the format stores member names in
+        # a NUL-padded fixed field, so writing "ok/\x00evil" produces the member "ok/" and the
+        # fixture could not express the input the leg is about.
+        _record(
+            "a member path with an interior NUL is refused",
+            _raises(lambda: _assert_confined("ok/\x00evil", "x.tar"), "interior NUL",
+                    CompileError),
+        )
+        back = base / "back.tar"
+        back.write_bytes(_tar_with("..\\evil"))
+        _record(
+            "a BACKSLASH-spelled traversal is refused - the separator is not the platform's",
+            _raises(lambda: unpack_source(back, dest), "refusing traversing", CompileError),
+        )
+        link = base / "link.tar"
+        link.write_bytes(_tar_with("inside", linkname="../../outside", symlink=True))
+        _record(
+            "a symlink whose TARGET traverses is refused",
+            _raises(lambda: unpack_source(link, dest), "refusing traversing", CompileError),
+        )
+        hard = base / "hard.tar"
+        hard.write_bytes(_tar_with("inside", linkname="/etc/shadow"))
+        _record(
+            "a hardlink whose TARGET is absolute is refused",
+            _raises(lambda: unpack_source(hard, dest), "refusing absolute", CompileError),
+        )
+        zip_ok = base / "ok.zip"
+        zip_ok.write_bytes(_zip_bytes({"tree/configure.ac": b"AC_INIT"}))
+        zip_dest = base / "unzip"
+        unpack_source(zip_ok, zip_dest)
+        _record(
+            "a ZIP source unpacks through the same path",
+            (zip_dest / "tree" / "configure.ac").is_file(),
+        )
+        zip_bad = base / "bad.zip"
+        zip_bad.write_bytes(_zip_bytes({"../escape": b"x"}))
+        _record(
+            "a traversing ZIP member is refused too",
+            _raises(lambda: unpack_source(zip_bad, base / "unzip2"), "refusing", CompileError),
+        )
+        device = base / "device.tar"
+        device.write_bytes(_tar_device_bytes())
+        _record(
+            "the stdlib data filter is applied - a device-node member is refused",
+            # `tarfile.SpecialFileError`'s own words. The generic "unusable source archive" needle
+            # would ALSO be satisfied by the unprivileged `os.mknod` PermissionError an unfiltered
+            # extract raises on a CI runner - so an arm-blind needle here would have stayed green
+            # on exactly the platform that runs this first.
+            _raises(lambda: unpack_source(device, base / "dev-out"), "is a special file",
+                    CompileError),
+        )
+        broken = base / "broken.tar"
+        broken.write_bytes(b"not an archive at all")
+        _record(
+            "an unusable archive is a clear refusal, not a traceback",
+            _raises(lambda: unpack_source(broken, dest), "unusable source archive", CompileError),
+        )
+
+        # ---- the build root -------------------------------------------------------------------
+        nested = base / "nested"
+        (nested / "ffmpeg-7.1").mkdir(parents=True)
+        _record(
+            "the build root is the archive's single top-level directory",
+            build_root(nested).name == "ffmpeg-7.1",
+        )
+        flat = base / "flat"
+        flat.mkdir()
+        (flat / "configure.ac").write_bytes(b"x")
+        _record("a FLAT archive keeps the directory itself", build_root(flat) == flat)
+        stray = base / "stray"
+        # TWO DIRECTORIES, not a directory beside a file: `Path.iterdir()` order is
+        # filesystem-dependent, so a fixture that relies on the directory coming first only
+        # discriminates on filesystems that happen to sort. With both entries directories,
+        # `children[0].is_dir()` is true whichever one comes first, so a `len(children) == 1`
+        # -> `children and ...` weakening changes the answer on EVERY platform.
+        (stray / "pkg-1.0").mkdir(parents=True)
+        (stray / "docs").mkdir()
+        _record(
+            "TWO top-level entries are not a single root - the unpack directory itself is kept",
+            build_root(stray) == stray,
+        )
+
+        # ---- the build steps --------------------------------------------------------------
+        prefix = base / "prefix"
+        source = plan.sources[0]
+        builder = _Runner()
+        build_source(source, flat, prefix, runner=builder)
+        _record(
+            "an autotools source regenerates, configures, makes and installs - in that order",
+            builder.steps() == ["autoreconf", "./configure", "make", "make install"],
+        )
+        _record(
+            "configure is handed THIS script's prefix, then the declared line",
+            builder.calls[1] == ["./configure", f"--prefix={prefix.as_posix()}",
+                                 "--disable-network"],
+        )
+        _record(
+            "the prefix reaches POSIX build tooling in POSIX spelling",
+            # Asserted as a PROPERTY, not by re-running the implementation's own expression: a
+            # leg built from `str(prefix)` renders identical backslashes on Windows and cannot
+            # fail there, which is the whole class this leg exists to catch.
+            "\\" not in builder.calls[1][1] and _posix(Path("C:/a/b")) == "C:/a/b",
+        )
+        spaced = _Runner()
+        build_source(source._replace(flags=("--extra-cflags=-O2 -g",)), flat, prefix,
+                     runner=spaced)
+        _record(
+            "a flag containing a space stays ONE argument",
+            spaced.calls[1][-1] == "--extra-cflags=-O2 -g",
+        )
+        # Every declared build system drives its OWN steps. A harness that hardcoded autotools
+        # could not build FFmpeg (handwritten `configure`, no `configure.ac` for `autoreconf` to
+        # work from) or libvips/x265/poppler (Meson/CMake, no `./configure` at all).
+        for system, expected in (
+            ("autotools", ["autoreconf", "./configure", "make", "make install"]),
+            ("configure", ["./configure", "make", "make install"]),
+            ("meson", ["meson setup", "meson compile", "meson install"]),
+            ("cmake", ["cmake configure", "cmake --build", "cmake --install"]),
+        ):
+            probe = _Runner()
+            build_source(source._replace(system=system), flat, prefix, runner=probe)
+            _record(
+                f"a `{system}` source is driven by its own build system, not autotools",
+                probe.steps() == expected,
+            )
+        # Same reasoning as the verification table above: drive every declarable system rather
+        # than restate its definition.
+        _record(
+            "every declarable build system actually drives steps, into THIS script's prefix",
+            all(
+                (lambda probe: (build_source(source._replace(system=system), flat, prefix,
+                                             runner=probe) is None
+                                and len(probe.calls) >= 2
+                                and any(prefix.as_posix() in token
+                                        for call in probe.calls for token in call)))(
+                    _Runner()
+                )
+                for system in BUILD_SYSTEMS
+            ),
+        )
+        prefixed = _Runner()
+        build_source(source._replace(system="cmake"), flat, prefix, runner=prefixed)
+        _record(
+            "cmake is handed the prefix in ITS spelling, not autotools'",
+            f"-DCMAKE_INSTALL_PREFIX={prefix.as_posix()}" in prefixed.calls[0],
+        )
+        substituted = _Runner()
+        build_source(source._replace(flags=("--extra-ldflags=-L{prefix}/lib",)), flat, prefix,
+                     runner=substituted)
+        _record(
+            "`{prefix}` is substituted before the build sees it - a run-time path no manifest "
+            "could spell",
+            substituted.calls[1][-1] == f"--extra-ldflags=-L{prefix.as_posix()}/lib"
+            and "{prefix}" not in " ".join(substituted.calls[1])
+            and "\\" not in substituted.calls[1][-1],
+        )
+        _record(
+            "a flag with no placeholder is passed through byte-for-byte",
+            (lambda probe: (build_source(source, flat, prefix, runner=probe) is None
+                            and probe.calls[1][-1] == "--disable-network"))(_Runner()),
+        )
+        _record(
+            "`${prefix}` survives SUBSTITUTION too, not only validation",
+            # A blind `str.replace` would rewrite the linker/autotools token the validator
+            # deliberately leaves alone - the two halves of one rule reading the value
+            # differently is how a documented guarantee becomes false in the body.
+            (lambda probe: (build_source(
+                source._replace(flags=("--x=${prefix}/lib", "--y={prefix}/lib")),
+                flat, prefix, runner=probe) is None
+                and probe.calls[1][-2] == "--x=${prefix}/lib"
+                and probe.calls[1][-1] == f"--y={prefix.as_posix()}/lib"))(_Runner()),
+        )
+        for step in ("autoreconf", "./configure", "make", "make install"):
+            _record(
+                f"a failing `{step}` names THAT step and stops the build",
+                _raises(
+                    lambda step=step: build_source(source, flat, prefix,
+                                                   runner=_Runner(fail_on=step)),
+                    f"`{step}` failed",
+                    CompileError,
+                ),
+            )
+
+        # ---- compile_entry, end to end ------------------------------------------------------
+        full = base / "full"
+        full_plan = plan_compiles(parse_lock(pair, where="fixture"), seam_pair, _LINUX, full)[0]
+        _entry(full, f"ffmpeg-7.1-{_LINUX}", _PAIR_ENTRY)
+        end = _Runner()
+        published = compile_entry(full_plan, full, runner=end)
+        _record(
+            "EVERY signature is verified BEFORE anything is unpacked or run",
+            end.steps()[:2] == ["gpg", "gpg"],
+        )
+        _record(
+            "each source is then built in its own root, into one shared prefix",
+            end.steps()[2:]
+            == ["autoreconf", "./configure", "make", "make install"] * 2
+            # ONE prefix across both sources - the invariant the whole shared-prefix design rests
+            # on, and the one a step-LABEL assertion cannot see.
+            and len({token.split("=", 1)[1] for call in end.calls for token in call
+                     if token.startswith("--prefix=")}) == 1
+            # ...and each in its OWN unpacked root. Keyed on the CONFIGURE steps: the signature
+            # checks run in the `.src` entry directory, whose name also starts with the group
+            # token, so an unfiltered scan would count three roots and pass for the wrong reason.
+            and len({cwd for call, cwd in zip(end.calls, end.cwds)
+                     if call[0] == "./configure"}) == 2,
+        )
+        _record(
+            "the two sources are configured by their OWN lines",
+            [call[-1] for call in end.calls if call[0] == "./configure"]
+            == ["--disable-network", "--disable-frontend"],
+        )
+        _record(
+            "the entry is published under the §6.1.3 key",
+            published == full / f"ffmpeg-7.1-{_LINUX}" and published.is_dir(),
+        )
+        _record(
+            "no staging residue survives a success",
+            sorted(child.name for child in full.iterdir())
+            == sorted([f"ffmpeg-7.1-{_LINUX}", f"ffmpeg-7.1-{_LINUX}.src"]),
+        )
+        _record(
+            "a second compile over a published entry reports the race, it does not overwrite",
+            _raises(lambda: compile_entry(full_plan, full, runner=_Runner()), f"ffmpeg-7.1-{_LINUX}",
+                    _AlreadyBuilt),
+        )
+        _record(
+            "the two archives are verified against their OWN signature files, not swapped",
+            [call[-2:] for call in end.calls if call[0] == "gpg"]
+            == [
+                [str(full / f"ffmpeg-7.1-{_LINUX}.src" / "ffmpeg-7.1.tar.xz.asc"),
+                 str(full / f"ffmpeg-7.1-{_LINUX}.src" / "ffmpeg-7.1.tar.xz")],
+                [str(full / f"ffmpeg-7.1-{_LINUX}.src" / "lame-3.100.tar.gz.asc"),
+                 str(full / f"ffmpeg-7.1-{_LINUX}.src" / "lame-3.100.tar.gz")],
+            ],
+        )
+        hollow = base / "hollow"
+        hollow_plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX, hollow)[0]
+        _entry(hollow, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _record(
+            "a build that installs NOTHING is refused - an empty entry is a permanent cache hit",
+            _raises(
+                lambda: compile_entry(hollow_plan, hollow, runner=_Runner(installs=False)),
+                "refusing to publish an empty entry",
+                CompileError,
+            )
+            and [c.name for c in hollow.iterdir()] == [f"ffmpeg-7.1-{_LINUX}.src"],
+        )
+        _record(
+            "a url tail that is a multi-SEGMENT name is refused",
+            # `rsplit("/")` means a `/` can never survive; a literal backslash can, and on
+            # Windows it is a separator. This is the only input that reaches that guard.
+            _raises(
+                lambda: source_filename("https://h/a\\b.tar", role="source", row_id="x"),
+                "no usable filename",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a source url whose tail is drive-relative is refused here too",
+            _raises(
+                lambda: plan_compiles(
+                    parse_lock(_row(url="https://example.invalid/D:evil.tar"), where="fixture"),
+                    seam_one, _LINUX, cache,
+                ),
+                "drive-relative",
+                StructuralError,
+            ),
+        )
+        # x265's release tarball keeps its `CMakeLists.txt` in `source/`, so the build root is
+        # not always the tree root the archive unpacks to.
+        subdir_cache = base / "subdir"
+        subdir_seam = parse_configure(
+            _seam(ffmpeg='["--x"]', systems={"ffmpeg": "cmake"})
+            + '\n[ffmpeg.configure.source_dir]\n"ffmpeg" = "source"\n',
+            where="f",
+        )
+        nested_src = _tar_bytes({"ffmpeg-7.1/source/CMakeLists.txt": b"project(x)"})
+        nested_row = _row(payload=nested_src)
+        subdir_plan = plan_compiles(parse_lock(nested_row, where="fixture"), subdir_seam,
+                                    _LINUX, subdir_cache)[0]
+        _entry(subdir_cache, f"ffmpeg-7.1-{_LINUX}",
+               {"ffmpeg-7.1.tar.xz": nested_src, "ffmpeg-7.1.tar.xz.asc": _FF_SIG})
+        subdir_runner = _Runner()
+        compile_entry(subdir_plan, subdir_cache, runner=subdir_runner)
+        _record(
+            "the build runs in the DECLARED source subdirectory, not the tree root",
+            # The cwd, not the argv: `["cmake", "-S"]` is the head of EVERY cmake configure
+            # step whatever the directory, so asserting it says nothing about where it ran.
+            subdir_runner.cwds[-1].name == "source"
+            and subdir_runner.cwds[-1].parent.name == "ffmpeg-7.1",
+        )
+        missing_cache = base / "subdir-missing"
+        missing_plan = plan_compiles(parse_lock(_row(), where="fixture"), subdir_seam, _LINUX,
+                                     missing_cache)[0]
+        _entry(missing_cache, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _record(
+            "a source_dir the unpacked tree does not have is a clear refusal, not a build in ''",
+            _raises(
+                lambda: compile_entry(missing_plan, missing_cache, runner=_Runner()),
+                "is not a directory in the unpacked tree",
+                CompileError,
+            ),
+        )
+        _record(
+            "a symlink target that leaves the tree is classified as an escape",
+            all(link_target_escapes(target) for target in
+                ("/etc/passwd", "../outside", "a/../../outside", "C:/windows", "\\\\host\\share"))
+            and not any(link_target_escapes(target) for target in
+                        ("lib/libz.so", "./libz.so", "sub/dir/x.so")),
+        )
+        contained = base / "contained"
+        (contained / "lib").mkdir(parents=True)
+        (contained / "lib" / "real.so").write_bytes(b"x")
+        _record(
+            "a tree with no symlinks at all is self-contained",
+            assert_self_contained(contained, "probe") is None,
+        )
+        try:
+            (contained / "lib" / "escape.so").symlink_to(Path("..") / ".." / ".." / "outside.so")
+            _linkable = True
+        except OSError:
+            # Creating a symlink needs a privilege Windows does not grant by default; the
+            # classification above is asserted unconditionally either way, so the platform can
+            # only cost the end-to-end half of this leg, never the decision itself.
+            _linkable = False
+        _record(
+            "an escaping symlink in the BUILT tree is refused before publish"
+            + ("" if _linkable else " (skipped: symlink creation is unprivileged here)"),
+            _raises(lambda: assert_self_contained(contained, "probe"), "has to be self-contained",
+                    CompileError)
+            if _linkable
+            else True,
+        )
+        linked_cache = base / "linked"
+        linked_plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX,
+                                    linked_cache)[0]
+        _entry(linked_cache, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _symlinker = _SymlinkingRunner()
+        _linked_refused = _raises(
+            lambda: compile_entry(linked_plan, linked_cache, runner=_symlinker),
+            "has to be self-contained",
+            CompileError,
+        )
+        _record(
+            "compile_entry REFUSES to publish a tree the build pointed out of"
+            + ("" if _symlinker.linked else " (skipped: symlink creation is unprivileged here)"),
+            _linked_refused if _symlinker.linked else True,
+        )
+        _record(
+            "...and publishes nothing when it does"
+            + ("" if _symlinker.linked else " (skipped: symlink creation is unprivileged here)"),
+            [c.name for c in linked_cache.iterdir()] == [f"ffmpeg-7.1-{_LINUX}.src"]
+            if _symlinker.linked
+            else True,
+        )
+        # ...and a PORTABLE leg for the call itself. The two legs above need a real symlink,
+        # which Windows will not create without a privilege the CI runner may not have - so on
+        # this host they skip, and REMOVING the call from `compile_entry` would go unnoticed. This
+        # one observes the call rather than its effect, so the wiring is pinned everywhere and the
+        # privilege only ever costs the end-to-end half.
+        called: list[Path] = []
+        call_cache = base / "callsite"
+        call_plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX,
+                                  call_cache)[0]
+        _entry(call_cache, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _real_guard = assert_self_contained
+        try:
+            globals()["assert_self_contained"] = lambda prefix, entry: called.append(Path(prefix))
+            compile_entry(call_plan, call_cache, runner=_Runner())
+        finally:
+            globals()["assert_self_contained"] = _real_guard
+        _record(
+            "compile_entry runs the self-containment check over the PREFIX before publishing",
+            len(called) == 1 and called[0].name == "prefix",
+        )
+
+        raced = base / "raced"
+        raced_plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX, raced)[0]
+        _entry(raced, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _record(
+            "a compile that loses the publish race reports THAT, and overwrites nothing",
+            _raises(
+                lambda: compile_entry(
+                    raced_plan, raced, runner=_RacingRunner(raced / f"ffmpeg-7.1-{_LINUX}")
+                ),
+                f"ffmpeg-7.1-{_LINUX}",
+                _AlreadyBuilt,
+            )
+            and (raced / f"ffmpeg-7.1-{_LINUX}" / "raced.so").is_file(),
+        )
+        raced_run = base / "raced-run"
+        _entry(raced_run, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        raced_lock, raced_seam = base / "raced.lock", base / "raced-seam.toml"
+        raced_lock.write_text(one, encoding="utf-8")
+        raced_seam.write_text(_seam(), encoding="utf-8")
+        _record(
+            "and run() counts that race as a cache HIT, the way the sibling counts one",
+            "1 cache hit(s), compiled 0 entr(ies)" in _report(
+                lambda: run(lock_path=raced_lock, configure_path=raced_seam,
+                            cache_root=raced_run, triple=_LINUX, engine=None, check_only=False,
+                            verbose=False,
+                            runner=_RacingRunner(raced_run / f"ffmpeg-7.1-{_LINUX}"))
+            ),
+        )
+        stray_c = base / "stray-compile"
+        stray_plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX, stray_c)[0]
+        _entry(stray_c, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        (stray_c / f"ffmpeg-7.1-{_LINUX}").write_bytes(b"not a directory")
+        _record(
+            "a stray NON-directory at the entry path is never mistaken for a benign race",
+            _raises(
+                lambda: compile_entry(stray_plan, stray_c, runner=_Runner()),
+                "a non-directory already occupies the entry path",
+                CompileError,
+            ),
+        )
+        broke = base / "broke"
+        broke_plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX, broke)[0]
+        _entry(broke, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _record(
+            "a failed build publishes NOTHING and leaves no residue",
+            _raises(lambda: compile_entry(broke_plan, broke, runner=_Runner(fail_on="make")),
+                    "`make` failed", CompileError)
+            and [c.name for c in broke.iterdir()] == [f"ffmpeg-7.1-{_LINUX}.src"],
+        )
+        unsigned = base / "unsigned"
+        unsigned_plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX,
+                                      unsigned)[0]
+        _entry(unsigned, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _record(
+            "a bad signature stops the build before a single step runs",
+            _raises(
+                lambda: compile_entry(unsigned_plan, unsigned, runner=_Runner(fail_on="gpg")),
+                "did not verify", CompileError,
+            )
+            and [c.name for c in unsigned.iterdir()] == [f"ffmpeg-7.1-{_LINUX}.src"],
+        )
+
+        # ---- run() and the argv surface -----------------------------------------------------
+        lock_file, seam_file = base / "engines.lock", base / "engine-configure.toml"
+        lock_file.write_text(pair, encoding="utf-8")
+        seam_file.write_text(
+            _seam(ffmpeg='["--disable-network"]', **{"libmp3lame.so": '["--disable-frontend"]'}),
+            encoding="utf-8",
+        )
+        run_cache = base / "runcache"
+        _entry(run_cache, f"ffmpeg-7.1-{_LINUX}", _PAIR_ENTRY)
+        runner2 = _Runner()
+        _record(
+            "run() compiles the manifest's groups",
+            run(lock_path=lock_file, configure_path=seam_file, cache_root=run_cache,
+                triple=_LINUX, engine=None, check_only=False, verbose=False, runner=runner2) == 0
+            and (run_cache / f"ffmpeg-7.1-{_LINUX}").is_dir(),
+        )
+        _record(
+            "a cache HIT is reported under -v, naming the entry",
+            _report(
+                lambda: run(lock_path=lock_file, configure_path=seam_file, cache_root=run_cache,
+                            triple=_LINUX, engine=None, check_only=False, verbose=True,
+                            runner=_Runner())
+            ).count(f"cache hit: ffmpeg-7.1-{_LINUX}")
+            == 1,
+        )
+        shared_lock_run = base / "shared.lock"
+        shared_lock_run.write_text(_row(ident="ffmpeg") + _row(ident="ffprobe"), encoding="utf-8")
+        shared_seam_file = base / "shared-seam.toml"
+        shared_seam_file.write_text(_seam(ffmpeg='["--disable-network"]'), encoding="utf-8")
+        shared_run_cache = base / "sharedrun"
+        _entry(shared_run_cache, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _record(
+            "the report names EVERY row the build produces, not only the declaring one",
+            "[ffmpeg, ffprobe]" in _report(
+                lambda: run(lock_path=shared_lock_run, configure_path=shared_seam_file,
+                            cache_root=shared_run_cache, triple=_LINUX, engine=None,
+                            check_only=False, verbose=False, runner=_Runner())
+            ),
+        )
+        _record(
+            "--check counts a cache HIT as a hit, not as work still to do",
+            "1 cache hit(s), would compile 0 entr(ies)" in _report(
+                lambda: run(lock_path=lock_file, configure_path=seam_file, cache_root=run_cache,
+                            triple=_LINUX, engine=None, check_only=True, verbose=False,
+                            runner=_Runner())
+            ),
+        )
+        _record(
+            "run() is a no-op on a triple no row targets",
+            run(lock_path=lock_file, configure_path=seam_file, cache_root=base / "empty",
+                triple=_WIN, engine=None, check_only=False, verbose=False,
+                runner=_Runner()) == 0
+            and not (base / "empty").exists(),
+        )
+        _record(
+            "--check writes nothing",
+            run(lock_path=lock_file, configure_path=seam_file, cache_root=base / "nocache",
+                triple=_LINUX, engine=None, check_only=True, verbose=False,
+                runner=_Runner()) == 0
+            and not (base / "nocache").exists(),
+        )
+        bad_seam = base / "bad.toml"
+        bad_seam.write_text(_seam("libvps"), encoding="utf-8")
+        _record(
+            "an unbound seam entry stops the run",
+            _raises(
+                lambda: run(lock_path=lock_file, configure_path=bad_seam,
+                            cache_root=base / "x", triple=_LINUX, engine=None, check_only=True,
+                            verbose=False, runner=_Runner()),
+                "name no from-source `engines.lock` group",
+                StructuralError,
+            ),
+        )
+        _record(
+            "--engine on an absent group is a structural error",
+            _raises(
+                lambda: run(lock_path=lock_file, configure_path=seam_file, cache_root=base / "x",
+                            triple=_LINUX, engine="nope", check_only=True, verbose=False,
+                            runner=_Runner()),
+                "no from-source `engines.lock` group 'nope'",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a missing manifest is a structural error, not a traceback",
+            _raises(
+                lambda: run(lock_path=base / "absent.lock", configure_path=seam_file,
+                            cache_root=base / "x", triple=_LINUX, engine=None, check_only=True,
+                            verbose=False, runner=_Runner()),
+                "missing engine manifest",
+                StructuralError,
+            ),
+        )
+        _record(
+            "a missing configure manifest is a structural error",
+            _raises(
+                lambda: run(lock_path=lock_file, configure_path=base / "absent.toml",
+                            cache_root=base / "x", triple=_LINUX, engine=None, check_only=True,
+                            verbose=False, runner=_Runner()),
+                "missing configure-flag manifest",
+                StructuralError,
+            ),
+        )
+        argv_root = base / "argv-root"
+        (argv_root / "src-tauri").mkdir(parents=True)
+        (argv_root / LOCK_REL).write_text(pair, encoding="utf-8")
+        (argv_root / CONFIGURE_REL).write_text(
+            _seam(ffmpeg='["--disable-network"]', **{"libmp3lame.so": '["--disable-frontend"]'}),
+            encoding="utf-8",
+        )
+        # A FAKE root, never the real repo - the `g24-*` target-absent lesson: a leg that reaches
+        # the checked-in manifest asserts the repo's contents, not this script's behaviour.
+        _record(
+            "main threads --root/--cache-root/--target through to the run",
+            main(["--all", "--root", str(argv_root), "--cache-root", str(base / "argvcache"),
+                  "--target", _LINUX, "--check"]) == 0
+            and not (base / "argvcache").exists(),
+        )
+        _record(
+            "main reports a structural error as exit 2",
+            main(["--all", "--root", str(base / "nowhere"), "--target", _LINUX, "--check"]) == 2,
+        )
+        _record(
+            "main refuses a run that names neither --engine nor --all",
+            main(["--root", str(argv_root), "--target", _LINUX, "--check"]) == 2,
+        )
+
+        # ---- the two halves, against ONE cache -----------------------------------------------
+        # THE leg the P4.28.1 dual review asked for. Both reviewers reproduced the same class:
+        # each half was exercised only against fixtures the OTHER half could not actually produce,
+        # so `--source` publishing an unpacked tree - and a two-source group silently keeping one -
+        # sat green under 194 passing legs. Nothing but running them end to end catches that, so
+        # this leg drives the real sibling, over a fake opener, into the cache this script reads.
+        fetch = _load_sibling("fetch-engine-assets")
+        e2e_lock = _shared_row("ffmpeg", "7.1", _FF_URL, _FF_SRC) + _shared_row(
+            "libmp3lame.so", "3.100", _LAME_URL, _LAME_SRC
+        )
+        e2e_root = base / "e2e"
+        e2e_lock_file = base / "e2e.lock"
+        e2e_lock_file.write_text(e2e_lock, encoding="utf-8")
+        served = {
+            _FF_URL: _FF_SRC,
+            f"{_FF_URL}.asc": _FF_SIG,
+            _LAME_URL: _LAME_SRC,
+            f"{_LAME_URL}.asc": _LAME_SIG,
+        }
+        fetch.run(
+            lock_path=e2e_lock_file,
+            cache_root=e2e_root,
+            triple=_LINUX,
+            engine=None,
+            check_only=False,
+            verbose=False,
+            opener=lambda url, allowed_hosts=None: served[url],
+            sources=True,
+        )
+        e2e_plan = plan_compiles(
+            parse_lock(e2e_lock, where="fixture"), seam_pair, _LINUX, e2e_root
+        )[0]
+        _record(
+            "what `fetch --source` publishes is exactly what this script's plan expects to read",
+            resolve_inputs(e2e_plan, source_entry(e2e_root, e2e_plan)) is None,
+        )
+        e2e_runner = _Runner()
+        compile_entry(e2e_plan, e2e_root, runner=e2e_runner)
+        _record(
+            "a group fetched from source compiles end to end, both sources built",
+            e2e_runner.steps()
+            == ["gpg", "gpg"] + ["autoreconf", "./configure", "make", "make install"] * 2
+            and (e2e_root / f"ffmpeg-7.1-{_LINUX}").is_dir(),
+        )
+        _record(
+            "the two halves derive the SAME filenames from the same manifest",
+            sorted(c.name for c in (e2e_root / f"ffmpeg-7.1-{_LINUX}.src").iterdir())
+            == sorted(_PAIR_ENTRY),
+        )
+
+        # ...and the SHARED-tarball shape, which is where the two halves first disagreed: the
+        # fetch side deduped one tarball behind two rows while this side refused the same manifest
+        # as a filename collision. An end-to-end leg that only exercises two DIFFERENT urls would
+        # have gone on passing through that, so it is the divergent shape that is pinned here.
+        shared_lock = (
+            _shared_row("ffmpeg", "7.1", _FF_URL, _FF_SRC)
+            + _shared_row("ffprobe", "7.1", _FF_URL, _FF_SRC)
+            + _shared_row("libmp3lame.so", "3.100", _LAME_URL, _LAME_SRC)
+        )
+        shared_root = base / "e2e-shared"
+        shared_lock_file = base / "e2e-shared.lock"
+        shared_lock_file.write_text(shared_lock, encoding="utf-8")
+        fetch.run(
+            lock_path=shared_lock_file, cache_root=shared_root, triple=_LINUX, engine=None,
+            check_only=False, verbose=False,
+            opener=lambda url, allowed_hosts=None: served[url], sources=True,
+        )
+        _record(
+            "one tarball behind TWO rows is fetched once and published once",
+            sorted(c.name for c in (shared_root / f"ffmpeg-7.1-{_LINUX}.src").iterdir())
+            == sorted(_PAIR_ENTRY),
+        )
+        shared_plan = plan_compiles(
+            parse_lock(shared_lock, where="fixture"), seam_pair, _LINUX, shared_root
+        )[0]
+        shared_runner = _Runner()
+        compile_entry(shared_plan, shared_root, runner=shared_runner)
+        _record(
+            "and it COMPILES - two rows out of one archive are one build, not a collision",
+            shared_runner.steps()
+            == ["gpg", "gpg"] + ["autoreconf", "./configure", "make", "make install"] * 2
+            and (shared_root / f"ffmpeg-7.1-{_LINUX}").is_dir(),
+        )
+        _record(
+            "the shared build records both row ids it produces",
+            shared_plan.sources[0].produces == ("ffmpeg", "ffprobe"),
+        )
+
+        # ---- the REAL subprocess seam --------------------------------------------------------
+        # Every leg above drives the injected runner, so `run_tool` itself - the one place a real
+        # process is spawned - would otherwise be unexercised: switching it to `shell=True` over a
+        # joined string passed the whole suite.
+        probe = run_tool(
+            [sys.executable, "-c", "import sys; sys.stdout.write(repr(sys.argv[1:]))", "one two"],
+            base,
+        )
+        _record(
+            "run_tool passes an argv LIST - a value with a space stays ONE argument",
+            probe.returncode == 0 and probe.stdout.strip() == "['one two']",
+        )
+        _record(
+            "run_tool reports a non-zero exit rather than raising",
+            run_tool([sys.executable, "-c", "raise SystemExit(3)"], base).returncode == 3,
+        )
+        _record(
+            "run_tool runs in the cwd it is given",
+            run_tool([sys.executable, "-c", "import os,sys; sys.stdout.write(os.getcwd())"], flat)
+            .stdout.strip()
+            .endswith("flat"),
+        )
+
+
+def selftest() -> int:
+    try:
+        _legs()
+    except Exception as exc:
+        # A dead tally is worse than a broad catch: an unhandled raise must surface as a NAMED
+        # failing leg rather than as a missing report.
+        _record(f"the suite raised before finishing: {type(exc).__name__}: {exc}", False)
+    failed = [name for name, ok in _results if not ok]
+    for name in failed:
+        fail(f"selftest leg failed: {name}")
+    print(f"\n[compile-engine-asset --selftest] {len(_results) - len(failed)}/{len(_results)} passed")
+    return 1 if failed else 0
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="compile-engine-asset", description=__doc__.splitlines()[0])
+    ap.add_argument("--root", default=None, help="repo root (default: this script's repo)")
+    ap.add_argument(
+        "--cache-root", default=None, help=f"cache to populate (default: <root>/{DEFAULT_CACHE_REL})"
+    )
+    ap.add_argument("--target", default=None, help="target triple (default: this host's)")
+    ap.add_argument("--engine", default=None, help="compile only this `engines.lock` cache group")
+    ap.add_argument("--all", action="store_true", help="compile every from-source group")
+    ap.add_argument(
+        "--check", action="store_true", help="resolve, validate and bind the manifests; build nothing"
+    )
+    ap.add_argument("-v", "--verbose", action="store_true", help="report cache hits too")
+    ap.add_argument("--selftest", action="store_true", help="run the fixture-driven regression suite")
+    args = ap.parse_args(argv)
+
+    if args.selftest:
+        return selftest()
+    if (args.engine is None) == (not args.all):
+        fail("pass exactly one of --engine <group> or --all")
+        return 2
+
+    root = Path(args.root).resolve() if args.root else ROOT
+    cache_root = Path(args.cache_root).resolve() if args.cache_root else root / DEFAULT_CACHE_REL
+    try:
+        return run(
+            lock_path=root / LOCK_REL,
+            configure_path=root / CONFIGURE_REL,
+            cache_root=cache_root,
+            triple=resolve_target(args.target),
+            engine=args.engine,
+            check_only=args.check,
+            verbose=args.verbose,
+            runner=run_tool,
+        )
+    except StructuralError as exc:
+        fail(str(exc))
+        return 2
+    except CompileError as exc:
+        fail(str(exc))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

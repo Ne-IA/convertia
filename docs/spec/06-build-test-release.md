@@ -117,7 +117,31 @@ build-time mechanics that realise them**:
   **not** committed raw into Git (avoids bloating the repo) and **not** built from
   source per-release (too slow). The **size budget** this implies is owned by §3.9.
   (Build-from-source remains a documented fallback if a pinned artifact becomes
-  unavailable.)
+  unavailable — and, for the engines whose load-bearing §3.5.1/§3.6.1 properties only a
+  ConvertIA-configured build has, the PRIMARY mode rather than a fallback. **Its actors are
+  `scripts/compile-engine-asset`** (P4.28.1: re-hash every RESTORED source against its
+  `from_source.tarball_sha256` — a cache is not a trust boundary — verify each one's detached
+  signature against the pinned `from_source.signing_key_fingerprint` with the tool the row NAMES,
+  regenerate `configure`/`m4` locally, configure each source with its declared line into ONE
+  shared `--prefix`, build, install, publish that prefix under the §6.1.3 key) **and
+  `scripts/fetch-engine-assets --source`**, which acquires each signed tarball AND its
+  `from_source.signature_url` and publishes them RAW — unpacked bytes cannot carry a signature —
+  under a `.src`-suffixed key that `stage-engines` structurally cannot match. The download stays
+  in the fetch script so exactly ONE script at package time opens a socket; the compile script
+  never does. The per-engine configure line is DATA — `src-tauri/engine-configure.toml` declares
+  `<cache_engine>.configure.flags` **and `.system`** (plus an optional `.source_dir` for a tree
+  whose build system lives one level down, and a `{prefix}` placeholder so a source can name the
+  shared install prefix the group's earlier sources installed into), keyed on the `engines.lock`
+  row `id` each line configures (a compiled group legitimately spans SEVERAL tarballs, and FFmpeg's
+  configure line is not LAME's — nor is FFmpeg's build system libvips's: FFmpeg ships a
+  handwritten `configure` with no `configure.ac`, libvips is Meson, x265 and poppler are CMake, so
+  the build system is declared per source and never guessed), filled by the named compile boxes
+  (P5.1.1, P5.5.1, P5.9.1, P6.1.1, P7.17.1) — so the §6.1.3 assertions cross-check the produced
+  artifact against the line that produced it, and a group or source with no declared line is
+  refused rather than built with a default one. **One tarball is one build:** rows sharing an
+  `upstream_url` (`ffmpeg` and `ffprobe`) are ONE compile that produces both, so exactly one of
+  them carries the line that configures it. The digest-pinned per-OS/triple
+  build CONTAINER those scripts run inside is the `.github/**` half.)
 - **Cache hosting mechanism `[DECIDED]`:** the engine-asset cache is **GitHub Actions
   cache** (`actions/cache`) keyed **`<cache_engine>-<cache_version>-<triple>`** (e.g.
   `ffmpeg-7.1-aarch64-apple-darwin`) — a **GROUP** key, not a row key: `ffmpeg`, `ffprobe` and

@@ -1,0 +1,115 @@
+# src-tauri/engine-configure.toml — the §6.1.3 per-engine CONFIGURE-FLAG manifest seam (P4.28.1).
+#
+# The curated build properties §3.5.1/§3.6.1 call LOAD-BEARING are ones only a build ConvertIA
+# configures has: FFmpeg's `--disable-network`, libvips without any GPL/AGPL PDF loader, a trimmed
+# ImageMagick. The prebuilts §3 names ship the opposite (the gyan.dev/BtbN FFmpeg builds enable the
+# network protocol family), so those properties cannot be inherited — they have to be configured,
+# and the configure line has to be DATA the §6.1.3 assertions can cross-check rather than a recipe
+# hand-typed into a workflow step. This file is that data.
+#
+# SHAPE. One table per engine, keyed on the `engines.lock` `cache_engine` GROUP token (not on a
+# row's `id`), holding ONE configure line PER SOURCE, keyed on the row `id` it configures:
+#
+#     [<cache_engine>.configure.flags]
+#     "ffmpeg" = ["--disable-everything", "--enable-decoder=hevc", ...]
+#     "libmp3lame.so" = ["--disable-frontend", ...]
+#
+#     [<cache_engine>.configure.system]
+#     "ffmpeg" = "configure"        # handwritten configure; nothing for autoreconf to work from
+#     "libmp3lame.so" = "autotools"
+#
+#     [<cache_engine>.configure.source_dir]   # OPTIONAL, defaults to "."
+#     "x265" = "source"             # x265 keeps its CMakeLists.txt one level down
+#
+# so the slot §6.1.3 names is `<engine>.configure.flags`, spelled exactly that way, with `.system`
+# keyed the same way beside it. Both are TABLES rather than one value for the group because a
+# compiled group legitimately spans several signed tarballs (the (A′) mode-scoping ruling —
+# `libmp3lame.so` compiled beside `ffmpeg` into one entry), and FFmpeg's configure line is not
+# LAME's. Every source of a group installs into ONE shared prefix, and that prefix IS the
+# published entry.
+#
+# ONE TARBALL IS ONE BUILD. Rows that share an `upstream_url` — `ffmpeg` and `ffprobe` come out of
+# a single signed archive — are one compile that produces both, so exactly ONE of them carries the
+# line that configures it. Two lines for one archive is an ambiguity and is refused; none is too.
+#
+# MANIFEST ORDER IS LOAD-BEARING. Every source of a group installs into ONE shared prefix, and they
+# build in the order their `engines.lock` rows appear — so a library is declared BEFORE the tool
+# that links it. The linking source is told where the library landed through the `{prefix}`
+# placeholder, which `scripts/compile-engine-asset` substitutes at build time:
+#
+#     "ffmpeg" = ["--enable-libmp3lame", "--extra-cflags=-I{prefix}/include",
+#                 "--extra-ldflags=-L{prefix}/lib"]
+#
+# `{prefix}` is the ONLY placeholder; any other is refused rather than passed through, because an
+# unsubstituted brace would reach the build system verbatim. The prefix itself is a temporary path
+# invented per run, so this placeholder is the only way a manifest can name it at all.
+#
+# THE BUILD SYSTEM IS DECLARED, NEVER GUESSED: `autotools` (regenerate with `autoreconf`, the
+# xz/liblzma step), `configure` (a handwritten `./configure` with no `configure.ac` — FFmpeg),
+# `meson` (libvips since 8.13) or `cmake` (x265, poppler). A harness that assumed autotools could
+# not build four of the five engines named below, and would fail at the first `autoreconf`.
+#
+# THE INSTALL PREFIX IS NOT YOURS TO DECLARE. `scripts/compile-engine-asset` supplies it — it is
+# what makes the build land inside the staging tree that is published atomically. The rule is
+# matched on the SHAPE of the option name, after stripping `--`/`-D` and any CMake `:TYPE` suffix,
+# so it holds for every build system's spelling of the same thing and for names nobody has thought
+# of yet:
+#
+#   * a name ending in `prefix` (plus `DESTDIR`) SETS the prefix       → refused outright
+#   * a name ending in `dir` names a directory the build installs into → its VALUE is checked
+#
+# The value goes through the same confinement grammar this script uses for archive members:
+# absolute, `..`-traversing, drive-relative and interior-NUL are refused, and so is a value
+# containing `$` — `${HOME}`, `${exec_prefix}` and friends are expanded by the build system long
+# after any check here can see them, and autoconf treats a `$`-leading value as already-absolute.
+#
+# WHICH SPELLING TO USE DEPENDS ON YOUR BUILD SYSTEM. `{prefix}/lib64` works everywhere and is the
+# safe default. A BARE relative value (`--libdir=lib64`) is fine for `meson` and `cmake`, but
+# autoconf rejects it itself ("expected an absolute directory name"), so `autotools` and
+# `configure` sources want `{prefix}/lib64`. `--libdir=/usr/lib64` and `--libdir=../../escape` are
+# refused everywhere.
+#
+# Do not import build settings from a FILE either (`cmake -C`, `--preset`,
+# `-DCMAKE_TOOLCHAIN_FILE=`, meson `--native-file=`/`--cross-file=`): the flags here are the
+# declared line the §6.1.3 assertions cross-check, and a file can reset the prefix out from under
+# them. A build that installs nothing into the prefix is refused too: an empty entry would become
+# a permanent cache hit that stages nothing.
+#
+# EDITING A LINE DOES NOT INVALIDATE THE CACHE. The §6.1.3 entry key is
+# `<cache_engine>-<cache_version>-<triple>` and a hit is "the directory exists" — the configure
+# line is not in the key, so changing a flag here does NOT cause a rebuild on a runner that still
+# has the old entry. The §6.1.3 artifact assertion catches the mismatch (that is the whole point
+# of asserting the OUTPUT), but it reads as "I fixed the flag and it still fails". When you change
+# a line whose effect the assertions check, bump that engine's `cache_version` in `engines.lock`
+# in the same act. [Build-Session-Entscheidung: P4.28.1 — the key is spec-`[DECIDED]`, so this is
+# a convention recorded where the line is edited, not a change to the key.]
+#
+# RELOCATABILITY IS YOUR PROBLEM, NOT THE PREFIX'S. The shared prefix is a temporary directory
+# that does not survive publication, so anything ABSOLUTE baked into a built artifact — an
+# RPATH/RUNPATH, a `.pc` file's `prefix=`, a libtool `.la` — will point at a directory that no
+# longer exists by the time the artifact is staged. Build relocatable: `${ORIGIN}`-relative rpaths
+# (left untouched by this script — `$`-braced tokens are the linker's, not its placeholders) and
+# no absolute paths recorded into the output.
+#
+# WHY IT IS NOT IN `engines.lock`, and why that is not a hole. `engines.lock` is L(-1): every edit
+# is an owner-acked act. The boxes that FILL this seam — P5.1.1 (libvips), P5.5.1 (ImageMagick),
+# P5.9.1 (x265), P6.1.1 (FFmpeg), P7.17.1 (poppler) — are Loop `[BUILD]` boxes, so a caged home
+# would make each of them an owner act instead. The enforcement does not live here in any case:
+# these flags are the build INPUT, and what actually gates the release is the §6.1.3 assertion on
+# the produced ARTIFACT (P4.51 runs `ffmpeg -protocols` on the staged binary and fails the build if
+# a network protocol is present; P5.2 asserts the staged libvips exposes no poppler/mupdf loader).
+# An input a careless edit can weaken, checked against an output that cannot be talked out of its
+# own symbol table — the same input-vs-enforcement split §3.8's pins and G37's re-verify already
+# use. [Build-Session-Entscheidung: P4.28.1]
+#
+# EMPTY BY DESIGN. A configure line is inseparable from the engine it configures and from the
+# curated property its box has to prove, so each entry is authored by the named, scheduled compile
+# box that owns it — never guessed ahead. `scripts/compile-engine-asset` reads this file; with no
+# table for a group, or no line for one of that group's sources, it refuses to compile rather than
+# falling back to a default line, because "no flags declared" and "these flags" are different
+# situations and only one of them is safe to build from.
+#
+# A group — or a row id inside one — named here that `engines.lock` does not declare from source is
+# an error, not a spare: the two manifests are bound in BOTH directions and at BOTH grains by
+# `compile-engine-asset --check`, the same STAGED_ENGINES↔manifest binder discipline
+# `scripts/stage-engines` carries. A typo in either half hides a line that never runs.

@@ -52,6 +52,7 @@ corroboration_urls = ["https://lame.sourceforge.io/download.php"]
 
 [engine.from_source]
 tarball_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+signature_url = "https://downloads.sourceforge.net/lame/lame-3.100.tar.gz.asc"
 signing_key_fingerprint = "1111222233334444555566667777888899990000"
 verified_with = "gpg"
 toolchain_digest = "sha256:3030303030303030303030303030303030303030303030303030303030303030"
@@ -72,6 +73,7 @@ corroboration_urls = ["https://lame.sourceforge.io/download.php"]
 
 [engine.from_source]
 tarball_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+signature_url = "https://downloads.sourceforge.net/lame/lame-3.100.tar.gz.asc"
 signing_key_fingerprint = "1111222233334444555566667777888899990000"
 verified_with = "gpg"
 toolchain_digest = "sha256:5050505050505050505050505050505050505050505050505050505050505050"

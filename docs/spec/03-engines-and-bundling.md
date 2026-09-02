@@ -1782,7 +1782,11 @@ blocker).
     (non-bit-reproducible, §6.2.5 best-effort) build output — it is a **build-output
     stability check, NOT a provenance anchor**. The real provenance anchor moves to **(a)**
     the **source tarball hash**, corroborated against the upstream's **signed release**
-    (GPG/minisign/SHA on the project's own site), recorded beside the pin, **and (b)** the
+    (GPG/minisign/SHA on the project's own site), recorded beside the pin — with the detached
+    signature's own location recorded there too, as `from_source.signature_url`, because an
+    upstream publishes `.asc` or `.sig` by its own convention and a signature URL *derived* from
+    the tarball's would be an egress target the engine-source allow-list never sees as data
+    (P4.28.1) — **and (b)** the
     **build toolchain + base image pinned by digest** (otherwise a poisoned toolchain is the
     unverified input). This is the preferred mode for engines whose upstream publishes a
     signed source release.
@@ -1803,7 +1807,11 @@ blocker).
     download (the failure the rule exists to prevent).
   - **FFmpeg specifically** (the flagship, worst-case engine): v1 corroboration is **either**
     a from-source CI build from the GPG-signed `ffmpeg.org` source release (anchor = signed
-    source tarball + digest-pinned build container) **or** a prebuilt cross-checked across ≥ 2
+    source tarball + digest-pinned build container; the anchor set carries
+    **`from_source.signature_url`** beside the fingerprint, because an upstream publishes `.asc`
+    or `.sig` by its own convention and a DERIVED signature URL would be a guess on the one path
+    whose job is not to guess — its host is allow-list-constrained exactly like `upstream_url`,
+    P4.28.1) **or** a prebuilt cross-checked across ≥ 2
     independent **mirrors serving the SAME artifact** (reconciled to the mirrors-only reading
     above in the same act — two build PROVIDERS produce two different binaries, so a
     provider cross-check cannot corroborate one hash); the chosen mode + corroboration URLs are recorded in `engines.lock`
