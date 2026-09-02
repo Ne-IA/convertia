@@ -10,7 +10,12 @@
 # which mode happens to appear first.
 #
 # So the anchor comparison is baselined on the first sibling that actually HAS an anchor, tracked
-# separately from the string-field baseline.
+# separately from the string-field baseline. Since the 2026-09-01 (A′) mode-scoping follow-up that
+# baseline is keyed on the SOURCE URL rather than on the cache group — same source ⇒ same anchors,
+# the one law that holds in both modes. This fixture still exercises it because all three rows name
+# ONE `upstream_url`; a from-source group spanning SEVERAL sources is covered in
+# `crate::engines::lock`'s test module instead (the module is the anchor - a `#[test] fn` name is
+# not a reference anything resolves, so it would rot silently on a rename).
 
 [[engine]]
 id = "libmp3lame"

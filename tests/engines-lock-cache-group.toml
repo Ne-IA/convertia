@@ -7,7 +7,13 @@
 # `version` would report `libmp3lame` 3.100 as an ambiguous entry inside FFmpeg 7.1.
 #
 # So each row declares the same `cache_engine`/`cache_version`, and the group invariant holds them to
-# one `upstream_url` and one `asset_sha256` — one entry is one download. What still DIFFERS per row is
+# one `upstream_url` and one `asset_sha256`. That half of the invariant is scoped to PREBUILT groups
+# (the 2026-09-01 (A′) mode-scoping follow-up), which is what every row here is — a from-source
+# group is a COMPILE and may consume several signed tarballs, held together by the URL-keyed anchor
+# rule instead. What IS mode-independent is one `cache_version` AND one `acquisition` per group;
+# `cache_version` is exercised on THIS fixture, while the `acquisition` half needs a mixed-mode pair
+# and is exercised on `engines-lock-valid.toml`, where a prebuilt and a from-source row can be
+# forced into one group in either order. What still DIFFERS per row is
 # everything artifact-shaped: `id`, `version`, `licence`, `purl`, and the staged-bytes `sha256`, which
 # is why `asset_sha256` has to be exempt from the duplicate-hash rule (all three carry it identically
 # by construction) while `sha256` stays subject to it.

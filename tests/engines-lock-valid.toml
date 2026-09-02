@@ -12,6 +12,13 @@
 #   3. a byte-identical platform-invariant artifact as ONE row over several triples (a bundled font),
 #   4. a sub-component row (§3.7.2 item 4) whose hash anchors the pinned SOURCE, not a staged file.
 #
+# The libimagequant row's `upstream_url` is a bare REPO ROOT, which `EngineRow::upstream_url`'s doc
+# asks a real pin not to be (since the (A′) follow-up that field is the KEY of the anchor rule, so a
+# landing page shared by two components pinned at different commits would force one anchor on both).
+# It is deliberate here: nothing enforces the shape yet, and this is the row the URL-keying tests
+# mutate precisely BECAUSE its source differs from its group siblings'. When a check for it lands,
+# this row is the first thing it will flag - by design.
+#
 # The prebuilt font row also carries the §3.8 PREBUILT anchor set the (A′) ruling added — `asset_sha256`
 # (of the DOWNLOAD, distinct from the staged `sha256`) plus `prebuilt_corroboration = "mirrors"` and the
 # two independent corroboration URLs that submode requires. Every other row here is from-source and so

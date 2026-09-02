@@ -32,11 +32,11 @@
 //!   ([`LockViolation::CacheGroupMismatch`]) rather than forcing it apart.
 //!   [`EngineRow::asset_sha256`] is likewise exempt from the duplicate-hash rule — siblings out of one
 //!   archive share it by construction. The 2026-09-01 mode-scoping follow-up (the P4.28.1
-//!   `[DECIDED]` plan note) scopes the `upstream_url`/`asset_sha256` equality to
-//!   `acquisition = "prebuilt"` and re-keys the from-source anchor consistency onto `upstream_url`,
-//!   with an explicit one-`acquisition`-per-group check; that re-scoping is P4.28.1's Loop-half
-//!   deliverable — the check HERE is still the stricter unconditional form, and no from-source
-//!   group may be written to the committed manifest until the re-scoping lands at P4.28.1.
+//!   `[DECIDED]` plan note) is **LANDED here**: the `upstream_url`/`asset_sha256` equality is
+//!   scoped to `acquisition = "prebuilt"`, the from-source anchor consistency is re-keyed onto
+//!   `upstream_url` (same source ⇒ same anchors, one law across both modes), and an explicit
+//!   one-`acquisition`-per-group check holds mode-independently beside `cache_version`. A
+//!   from-source group spanning several signed tarballs is therefore writable.
 //! * **The §6.1.3 cache key is a GROUP key, not the row key** `[DECIDED — owner adjudication
 //!   2026-09-01, the (A′) ruling on the P4.28 escalation]`: `(cache_engine, cache_version, triple)`,
 //!   defaulting to `(id, version, triple)` so an engine whose download IS its one artifact declares
@@ -258,6 +258,12 @@ pub struct EngineRow {
     pub kind: RowKind,
     /// The upstream URL the artifact (or its source) came from. §3.8's allow-list gate (P4.56.3)
     /// constrains WHICH origins are permitted; the schema only requires a usable URL.
+    ///
+    /// Since the (A′) mode-scoping follow-up this field is also the KEY of the from-source anchor
+    /// consistency rule, so it must name ONE pinned source or asset — not a project landing page.
+    /// Two components pinned at different commits under one repo-root URL would be required to
+    /// share one anchor, which is the ruling's own named hazard (an invariant that hard-fails a
+    /// correct manifest) arriving through the key rather than through the check.
     pub upstream_url: String,
     /// The SPDX licence id / expression. §6.3.3 + G36 validate it with a real SPDX parser; the schema
     /// only requires it to be declared, so a missing licence can never reach the NOTICE assembly.
@@ -452,10 +458,14 @@ pub enum LockViolation {
         sha256: String,
     },
     /// Two rows share a §6.1.3 cache-GROUP key `(cache_engine, triple)` but disagree about the ENTRY
-    /// they ship out of — its `cache_version`, `upstream_url` or `asset_sha256` forked.
+    /// they ship out of — its `cache_version` or `acquisition` forked (always checked), or, for a
+    /// PREBUILT group, its `upstream_url` or `asset_sha256` did.
     ///
-    /// One cache entry is ONE download, so a fork means the populate path would have to publish two
-    /// different trees under one key and the staging path would silently get whichever landed last.
+    /// One PREBUILT cache entry is ONE download, so a fork there means the populate path would have
+    /// to publish two different trees under one key and the staging path would silently get
+    /// whichever landed last. A from-source entry is a COMPILE and legitimately consumes several
+    /// signed source tarballs, so its download facts are deliberately NOT held equal — see
+    /// [`CacheGroupEntry`]; what holds it together instead is the URL-keyed anchor rule.
     /// This is the group-level analogue of [`LockViolation::DuplicateKey`]: that one guards the ARTIFACT
     /// identity, this one guards the DOWNLOAD identity. Keyed per triple, never on the row's own
     /// `version` — see the module's row law for why a version-keyed group would false-fail
@@ -546,26 +556,32 @@ pub enum LockViolation {
     ///
     /// Deliberately NOT in this set: `acquisition` and the URLs, because §3.8 decides prebuilt-vs
     /// -from-source **per engine PER PLATFORM**, so a component legitimately prebuilt on one triple and
-    /// compiled on another has different modes and different download/corroboration URLs. `upstream_url`
-    /// is not unchecked, though — it is held equal within a `(cache_engine, triple)` GROUP by
-    /// [`LockViolation::CacheGroupMismatch`], which is per-triple and so does not collide with §3.8's
-    /// per-platform freedom. `cpe` is out
+    /// compiled on another has different modes and different download/corroboration URLs.
+    /// `upstream_url` is not unchecked, though — it carries a DIFFERENT obligation in each mode
+    /// (the (A′) mode-scoping follow-up): in a PREBUILT group it is held equal by
+    /// [`LockViolation::CacheGroupMismatch`], which is per-triple and so does not collide with
+    /// §3.8's per-platform freedom; in a from-source group it is deliberately NOT held equal — one
+    /// compile may consume several signed tarballs — and serves instead as the KEY of the anchor
+    /// consistency rule (same source ⇒ same anchors), which is what this variant's `from_source.*`
+    /// sub-case reports. `cpe` is out
     /// too — it is optional by contract, so a present/absent pair is not evidence of drift. And `kind`
     /// is out DELIBERATELY, not by oversight: §6.1.3's carve-out iii lets a component be a separately
     /// staged object on one triple and absorbed by a static link on another, so it genuinely forks —
     /// which matters, because `kind` is what scopes the duplicate-hash rule. `from_source.verified_with`
     /// is out for its own reason: two siblings recording the same tarball hash and the same key under
     /// different tools mean the signature was checked twice at pin-establishment, which is not drift.
-    /// **One sub-case is keyed on the GROUP, not on the id** (the (A′) ruling): the
-    /// `from_source.*` anchor comparison runs over rows sharing a `cache_engine`, because one
-    /// compiled/downloaded entry has one source and `ffmpeg`/`ffprobe` are different ids out of one
-    /// tarball. So this variant can fire for two rows that do NOT share an `id`; the `id` below is
-    /// then the reporting row's own, not a shared one.
+    /// **One sub-case is keyed on the SOURCE URL, not on the id** (the (A′) mode-scoping
+    /// follow-up): the `from_source.*` anchor comparison runs over rows sharing an `upstream_url`,
+    /// because one signed tarball has one anchor and `ffmpeg`/`ffprobe` are different ids out of
+    /// one tarball. It is deliberately NOT keyed on the cache GROUP: a from-source group spans
+    /// several tarballs, so group-keying would report a correct compile as anchor drift. So this
+    /// variant can fire for two rows that do NOT share an `id`; the `id` below is then the
+    /// reporting row's own, not a shared one.
     IdFieldMismatch {
         /// 0-based index of the row that disagrees with the baseline row.
         row: usize,
         /// The reporting row's id (shared with the baseline for the field checks; NOT necessarily
-        /// shared for the group-keyed `from_source.*` sub-case above).
+        /// shared for the URL-keyed `from_source.*` sub-case above).
         id: String,
         /// The component-identifying field that differs.
         field: &'static str,
@@ -653,9 +669,26 @@ fn cache_token_is_safe(token: &str) -> bool {
 /// see the module's row law for why a version-keyed group false-fails a correct manifest.
 type CacheGroupKey = (String, String);
 
-/// The entry facts every row of one cache group must agree on: `(cache_version, upstream_url,
-/// asset_sha256)`. One entry is ONE download, so a fork here is unpublishable.
-type CacheGroupEntry = (String, String, String);
+/// The entry facts every row of one cache group must agree on:
+/// `(cache_version, acquisition, upstream_url, asset_sha256)`.
+///
+/// The first two are held equal **mode-INDEPENDENTLY** — an entry is one `cache_version` and ONE
+/// acquisition, because §3.8 decides prebuilt-vs-from-source per engine per platform, so a group
+/// mixing the two is a contradiction in terms rather than a fork to reconcile.
+///
+/// The last two are held equal **only for a PREBUILT group**, where one entry is one download. A
+/// from-source entry is a COMPILE, and a compile legitimately consumes SEVERAL signed source
+/// tarballs (`ffmpeg` from ffmpeg.org's beside `libmp3lame.so` from LAME's), so requiring one
+/// `upstream_url` there would hard-fail a CORRECT manifest — the mirror image of the version-keying
+/// hazard the row law already guards against. Their consistency law for from-source rows is the
+/// URL-keyed anchor rule instead: same source ⇒ same anchors, which holds across BOTH modes.
+/// `[DECIDED — owner adjudication 2026-09-01, the (A′) mode-scoping follow-up on P4.28.1]`
+struct CacheGroupEntry {
+    cache_version: String,
+    acquisition: Acquisition,
+    upstream_url: String,
+    asset_sha256: String,
+}
 
 impl EnginesLock {
     /// Check the manifest against the §3.7.2 contract + the §3.4.4a row law, collecting EVERY
@@ -677,7 +710,7 @@ impl EnginesLock {
         // another), so keying the anchor comparison off row 0 would silently skip it whenever row 0
         // happens to be the prebuilt one, letting the from-source siblings drift on the very field the
         // comparison exists to pin. [Build-Session-Entscheidung: P4.56.1 — raised by the dual review]
-        let mut first_anchor_by_group: Vec<(&str, &FromSourceAnchor)> = Vec::new();
+        let mut first_anchor_by_url: Vec<(&str, &FromSourceAnchor)> = Vec::new();
         // The FIRST row seen for each §6.1.3 cache group `(cache_engine, triple)`, with the entry facts
         // its siblings must agree on. Owned rather than borrowed because the group token is RESOLVED
         // (it may come from `id`), so there is no single field to borrow from.
@@ -772,36 +805,56 @@ impl EnginesLock {
                     keys.push(key);
                 }
 
-                // The §6.1.3 cache-GROUP invariant: (cache_engine, triple) ↦ exactly one
-                // (cache_version, upstream_url, asset_sha256). Several rows share one downloaded entry
-                // by design, so these fields are held EQUAL here instead of forcing a row split.
+                // The §6.1.3 cache-GROUP invariant, mode-scoped by the (A′) follow-up ruling:
+                // (cache_engine, triple) ↦ exactly one (cache_version, acquisition) ALWAYS, and
+                // ↦ exactly one (upstream_url, asset_sha256) when that acquisition is PREBUILT.
+                // Several rows share one entry by design, so these are held EQUAL rather than
+                // forcing a row split — see [`CacheGroupEntry`] for why the download facts stop
+                // at the prebuilt boundary.
                 let group = (entry.resolved_cache_engine().to_owned(), triple.clone());
-                let mine = (
-                    entry.resolved_cache_version().trim().to_owned(),
-                    entry.upstream_url.trim().to_owned(),
-                    entry
+                let mine = CacheGroupEntry {
+                    cache_version: entry.resolved_cache_version().trim().to_owned(),
+                    acquisition: entry.acquisition,
+                    upstream_url: entry.upstream_url.trim().to_owned(),
+                    asset_sha256: entry
                         .asset_sha256
                         .as_deref()
                         .unwrap_or_default()
                         .trim()
                         .to_owned(),
-                );
+                };
                 match groups.iter().find(|(seen, _)| *seen == group) {
                     None => groups.push((group, mine)),
                     Some((_, theirs)) => {
-                        for (field, a, b) in [
-                            ("cache_version", &mine.0, &theirs.0),
-                            ("upstream_url", &mine.1, &theirs.1),
-                            ("asset_sha256", &mine.2, &theirs.2),
-                        ] {
-                            if a != b {
-                                problems.push(LockViolation::CacheGroupMismatch {
-                                    row,
-                                    id: id.clone(),
-                                    cache_engine: group.0.clone(),
-                                    triple: triple.clone(),
-                                    field,
-                                });
+                        let mut mismatch = |field| {
+                            problems.push(LockViolation::CacheGroupMismatch {
+                                row,
+                                id: id.clone(),
+                                cache_engine: group.0.clone(),
+                                triple: triple.clone(),
+                                field,
+                            });
+                        };
+                        if mine.cache_version != theirs.cache_version {
+                            mismatch("cache_version");
+                        }
+                        if mine.acquisition != theirs.acquisition {
+                            // A mixed-mode group. The download facts below are not merely unequal
+                            // here, they are incomparable — one side has no download at all — so
+                            // reporting them too would bury the one defect that matters.
+                            // [Build-Session-Entscheidung: P4.28.1] The ruling fixes WHICH checks
+                            // run, not the REPORT shape; suppressing the incomparable pair on a
+                            // mode conflict is this box's own call, and the `else` is what makes it
+                            // so (a plain `if` would report all three).
+                            mismatch("acquisition");
+                        } else if mine.acquisition == Acquisition::Prebuilt {
+                            for (field, a, b) in [
+                                ("upstream_url", &mine.upstream_url, &theirs.upstream_url),
+                                ("asset_sha256", &mine.asset_sha256, &theirs.asset_sha256),
+                            ] {
+                                if a != b {
+                                    mismatch(field);
+                                }
                             }
                         }
                     }
@@ -911,21 +964,20 @@ impl EnginesLock {
             }
 
             // Same source entails the same signed tarball, hence the same tarball hash and the same
-            // signing key — the xz-class provenance anchor. Keyed on the §6.1.3 GROUP token rather than
-            // on `id` (the (A′) ruling): one downloaded/compiled entry has ONE source, and grouping is
-            // the broader net — `ffmpeg` and `ffprobe` are different ids out of one tarball, so an
-            // id-keyed check would never compare them. Baselined on the first sibling that HAS an
-            // anchor (see `first_anchor_by_group`), so a prebuilt row appearing first cannot skip
-            // the comparison. `verified_with` is deliberately NOT compared: two siblings recording the
+            // signing key — the xz-class provenance anchor. Keyed on the SOURCE URL (the (A′)
+            // mode-scoping follow-up), not on `id` and no longer on the cache group: `ffmpeg` and
+            // `ffprobe` are different ids out of ONE tarball, so an id-keyed check would never
+            // compare them — while a from-source GROUP legitimately spans several tarballs, so a
+            // group-keyed check would false-fail `libmp3lame.so` compiled beside `ffmpeg`. Keying
+            // on the URL says exactly what is true in BOTH modes: same source ⇒ same anchors. Rows
+            // with different sources carry their own per-component anchors by construction.
+            // `verified_with` is deliberately NOT compared: two siblings recording the
             // same tarball hash and key under different tools mean the signature was checked twice,
             // which is not drift.
             if let Some(mine) = &entry.from_source {
-                let group_token = entry.resolved_cache_engine();
-                match first_anchor_by_group
-                    .iter()
-                    .find(|(seen, _)| *seen == group_token)
-                {
-                    None => first_anchor_by_group.push((group_token, mine)),
+                let source = entry.upstream_url.trim();
+                match first_anchor_by_url.iter().find(|(seen, _)| *seen == source) {
+                    None => first_anchor_by_url.push((source, mine)),
                     Some((_, theirs)) => {
                         for (field, a, b) in [
                             (
@@ -1799,10 +1851,16 @@ toolchain_digest = \"sha256:4444",
     }
 
     #[test]
-    fn rows_of_one_cache_group_must_agree_on_the_entry() {
-        // Two rows with DIFFERENT upstream URLs, forced into one group on one triple. One entry is one
-        // download, so this is unpublishable: the populate path would have to put two trees under one
-        // key. Both rows already cover `x86_64-unknown-linux-gnu` in the pristine fixture.
+    fn a_group_mixing_acquisition_modes_is_reported_as_the_mode_conflict_it_is() {
+        // [Test-Change: P4.28.1 - old-obsolete+new-correct, the (A′) mode-scoping ruling on the
+        // P4.28.1 box] This fixture forces a PREBUILT font row and a FROM-SOURCE libimagequant row
+        // into one group. Before the ruling the leg asserted a `upstream_url` mismatch; that
+        // expectation is obsolete, because the ruling scopes the download-fact equality to prebuilt
+        // groups - two source tarballs in one COMPILE are legitimate, and comparing a download URL
+        // against a row that performs no download is incomparable, not unequal. The new expectation
+        // is the ruling's own mode-INDEPENDENT half: an entry is one download OR one compile, never
+        // both, so the defect here is the ACQUISITION conflict, and reporting the download facts too
+        // would bury it.
         let forked = mutate_all(&[
             (
                 "purl = \"pkg:generic/liberation-fonts@2.1.5\"",
@@ -1818,9 +1876,28 @@ toolchain_digest = \"sha256:4444",
             problems.iter().any(|v| matches!(
                 v,
                 LockViolation::CacheGroupMismatch { field, cache_engine, .. }
-                    if *field == "upstream_url" && cache_engine == "shared-entry"
+                    if *field == "acquisition" && cache_engine == "shared-entry"
             )),
-            "a forked entry URL inside one group must be reported, got: {problems:?}"
+            "a mixed-mode group must be reported as one, got: {problems:?}"
+        );
+        // The two rows also differ in `cache_version`, and that check is mode-INDEPENDENT: gating
+        // it behind a matching acquisition ("the mode conflict already flags the group") is a
+        // tempting simplification that would silently drop one of two genuine problems, against
+        // the module's own collect-EVERY-violation contract.
+        assert!(
+            problems.iter().any(|v| matches!(
+                v,
+                LockViolation::CacheGroupMismatch { field, .. } if *field == "cache_version"
+            )),
+            "the mode-independent cache_version check must still run under a mode conflict"
+        );
+        assert!(
+            !problems.iter().any(|v| matches!(
+                v,
+                LockViolation::CacheGroupMismatch { field, .. }
+                    if *field == "upstream_url" || *field == "asset_sha256"
+            )),
+            "the download facts are incomparable across modes and must not be piled on top"
         );
         // Non-vacuity: the pristine fixture has no group mismatch at all, so the mutation is what
         // produced it rather than the fixture carrying one already.
@@ -1829,6 +1906,98 @@ toolchain_digest = \"sha256:4444",
                 .iter()
                 .any(|v| matches!(v, LockViolation::CacheGroupMismatch { .. })),
             "the pristine fixture must be group-clean"
+        );
+    }
+
+    #[test]
+    fn a_mixed_mode_group_reports_the_same_way_whichever_row_comes_first() {
+        // The order the sibling leg CANNOT reach. There the baseline row is prebuilt and the
+        // comparing row from-source, so the prebuilt-gated branch is dead whatever the `else`
+        // does - which means that leg does not actually pin the suppression. Put the FROM-SOURCE
+        // row first (x265's linux row precedes the font row in the fixture) and the comparing row
+        // is prebuilt: with the `else` the download facts stay suppressed, with a plain `if` they
+        // would be reported on top of the mode conflict.
+        let forked = mutate_all(&[
+            (
+                "available = true",
+                "available = true\ncache_engine = \"mode-conflict\"\ncache_version = \"x\"",
+            ),
+            (
+                "purl = \"pkg:generic/liberation-fonts@2.1.5\"",
+                "purl = \"pkg:generic/liberation-fonts@2.1.5\"\ncache_engine = \"mode-conflict\"\ncache_version = \"x\"",
+            ),
+        ]);
+        let problems = violations(&forked);
+        // Non-vacuity: the two rows really are one group on one triple, and the FROM-SOURCE one is
+        // the baseline - otherwise this leg would be a second copy of its sibling.
+        let lock = parse(&forked);
+        let grouped: Vec<&EngineRow> = lock
+            .engine
+            .iter()
+            .filter(|row| {
+                row.resolved_cache_engine() == "mode-conflict"
+                    && row.triples.iter().any(|t| t == "x86_64-unknown-linux-gnu")
+            })
+            .collect();
+        assert_eq!(
+            grouped.len(),
+            2,
+            "the fixture must put two rows in one group"
+        );
+        assert_eq!(
+            grouped[0].acquisition,
+            Acquisition::FromSource,
+            "the BASELINE row must be the from-source one, or the `else` is unreachable again"
+        );
+        assert_eq!(grouped[1].acquisition, Acquisition::Prebuilt);
+        assert!(
+            problems.iter().any(|v| matches!(
+                v,
+                LockViolation::CacheGroupMismatch { field, .. } if *field == "acquisition"
+            )),
+            "the mode conflict must be reported in this order too, got: {problems:?}"
+        );
+        assert!(
+            !problems.iter().any(|v| matches!(
+                v,
+                LockViolation::CacheGroupMismatch { field, .. }
+                    if *field == "upstream_url" || *field == "asset_sha256"
+            )),
+            "the incomparable download facts must stay suppressed in this order too"
+        );
+    }
+
+    #[test]
+    fn rows_of_one_prebuilt_group_must_agree_on_the_download() {
+        // The prebuilt half of the scoped invariant, on the all-prebuilt group fixture: one entry
+        // is one download, so a forked `upstream_url` among siblings of one group is unpublishable.
+        //
+        // A ONE-LINE needle with an explicit multiplicity assert and `replacen(.., 1)` - the shape
+        // `mutate` documents. `str::replace` is global, so a long multi-field needle that a
+        // subsequent fixture row happens to repeat would fork TWO rows and the leg would assert
+        // something other than its name; merely proving the text changed shows >= 1 hit, never
+        // exactly one.
+        let url_line = "upstream_url = \"https://example.invalid/ffmpeg-7.1-linux64-gpl.tar.xz\"";
+        assert_eq!(
+            CACHE_GROUP.matches(url_line).count(),
+            3,
+            "all three siblings must share the entry URL, or this forks nothing"
+        );
+        let forked = CACHE_GROUP.replacen(
+            url_line,
+            "upstream_url = \"https://example.invalid/OTHER.tar.xz\"",
+            1,
+        );
+        assert!(
+            parse(&forked)
+                .validate()
+                .expect_err("one entry cannot be two downloads")
+                .iter()
+                .any(|v| matches!(
+                    v,
+                    LockViolation::CacheGroupMismatch { field, .. } if *field == "upstream_url"
+                )),
+            "a forked entry URL inside a PREBUILT group must still be reported"
         );
     }
 
@@ -2094,29 +2263,341 @@ toolchain_digest = \"sha256:4444",
     }
 
     #[test]
-    fn the_anchor_comparison_is_keyed_on_the_cache_group_not_the_id() {
-        // `ffmpeg` and `ffprobe` are different ids out of ONE tarball, so an id-keyed anchor check
-        // could never compare them. Model that here by pulling a DIFFERENT id into an existing
-        // group: its source anchor now has a sibling to disagree with.
-        let regrouped = mutate(
-            "purl = \"pkg:generic/libimagequant@2.4.1\"",
-            "purl = \"pkg:generic/libimagequant@2.4.1\"\ncache_engine = \"libheif-x265-plugin\"",
+    fn the_anchor_comparison_is_keyed_on_the_source_url_not_the_id_and_not_the_group() {
+        // [Test-Change: P4.28.1 - old-obsolete+new-correct, the (A′) mode-scoping ruling on the
+        // P4.28.1 box] The old leg asserted GROUP keying. That expectation is obsolete: a
+        // from-source group legitimately spans several signed tarballs, so group keying would
+        // false-fail `libmp3lame.so` compiled beside `ffmpeg`. The ruling re-keys the comparison
+        // onto the SOURCE URL - "same source implies same anchors" - which is the one law that
+        // holds in BOTH modes. Both directions are asserted, because a re-keying that only
+        // tightened or only loosened would be half-implemented.
+        //
+        // CATCHES ACROSS IDS: give a different id the SAME source URL, and its forked anchor is
+        // compared - the `ffmpeg`/`ffprobe`-out-of-one-tarball case an id-keyed check could never
+        // see.
+        let same_source = mutate(
+            "upstream_url = \"https://github.com/lovell/libimagequant\"",
+            "upstream_url = \"https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz\"",
         );
         assert!(
-            violations(&regrouped).iter().any(|v| matches!(
+            violations(&same_source).iter().any(|v| matches!(
                 v,
                 LockViolation::IdFieldMismatch { field, .. } if *field == "from_source.tarball_sha256"
             )),
-            "a group sibling with a forked source anchor must be caught across ids"
+            "two rows naming one source must carry one anchor, whatever their ids"
         );
-        // Non-vacuity: without the regrouping the very same rows are anchor-clean, so it is the GROUP
-        // key doing the work and not some pre-existing fork in the fixture.
+        // DOES NOT FALSE-FAIL ACROSS A GROUP: the same row pulled into another GROUP, keeping its
+        // OWN source, must NOT be compared - that is precisely the compile case the ruling frees.
+        let regrouped = mutate(
+            "purl = \"pkg:generic/libimagequant@2.4.1\"",
+            "purl = \"pkg:generic/libimagequant@2.4.1\"\ncache_engine = \"libheif-x265-plugin\"\ncache_version = \"3.6\"",
+        );
+        assert!(
+            !problems_of(&regrouped).iter().any(|v| matches!(
+                v,
+                LockViolation::IdFieldMismatch { field, .. } if *field == "from_source.tarball_sha256"
+            )),
+            "a compile consuming several tarballs must not be reported as anchor drift"
+        );
+        // Non-vacuity: the pristine fixture is anchor-clean, so the first mutation is what produced
+        // the violation rather than the fixture carrying one already.
         assert!(
             !problems_of(VALID).iter().any(|v| matches!(
                 v,
                 LockViolation::IdFieldMismatch { field, .. } if *field == "from_source.tarball_sha256"
             )),
             "the pristine fixture must be anchor-clean"
+        );
+    }
+
+    /// Fork ONE field on the SECOND `[[engine]]` block (x265's Windows row, the sibling of row 0).
+    ///
+    /// Block-keyed rather than needle-keyed: the sibling-comparison fields repeat across rows by
+    /// construction, so any needle long enough to be unique would span half a row - the shape the
+    /// unique-anchor discipline exists to avoid. Splitting on the row delimiter makes "exactly one
+    /// row is touched" true by construction instead of by assertion.
+    fn fork_second_row(field: &str, replacement: &str) -> String {
+        let blocks: Vec<&str> = VALID.split("[[engine]]").collect();
+        let target = blocks[2];
+        // An IDENTITY guard, not an arity one: `blocks.len() >= 3` still holds if a header line
+        // gains a `[[engine]]` mention, and `blocks[2]` then silently addresses row 0 instead -
+        // the doc comment above becomes false while the suite stays green. Assert what the
+        // comment claims.
+        assert!(
+            target.contains("triples = [\"x86_64-pc-windows-msvc\"]"),
+            "blocks[2] must be x265's Windows row; the fixture was reshaped under this helper"
+        );
+        let needle = format!("\n{field} = ");
+        let start = target
+            .find(&needle)
+            .expect("the sibling row must carry the field under test")
+            + 1;
+        let end = start
+            + target[start..]
+                .find('\n')
+                .expect("the field line must be terminated");
+        let mut owned: Vec<String> = blocks.iter().map(|b| (*b).to_owned()).collect();
+        owned[2] = format!("{}{replacement}{}", &target[..start], &target[end..]);
+        owned.join("[[engine]]")
+    }
+
+    #[test]
+    fn every_leg_of_the_blank_field_tables_is_exercised() {
+        // CLASS CLOSURE, at the right grain. The first pass closed the COMPARISON loops and
+        // stopped there; the review showed three more table loops in `validate()` with uncovered
+        // legs, and for three of them (`upstream_url`, `cache_version`, the anchor's
+        // `toolchain_digest`) the deleted leg was the SOLE report - the mutated manifest validated
+        // CLEAN. The rest still fail, just with a less precise report, because a second check
+        // backstops them. `from_source.signing_key_fingerprint` is the sharpest: its comparison
+        // leg was closed one round earlier while its PRESENCE leg stayed unguarded, so a blank
+        // xz-class anchor passed.
+        //
+        // One table per loop, in one test: a leg added to any of them without a row here is
+        // visibly uncovered, which is the property the previous per-loop closure did not have.
+        // The tables are split by WHERE each field lives in the fixture, not by loop: a field the
+        // sibling row does not declare cannot be blanked there.
+        for (field, blanked) in [
+            ("id", "id = \"   \""),
+            ("version", "version = \"   \""),
+            ("source_ref", "source_ref = \"   \""),
+            ("upstream_url", "upstream_url = \"   \""),
+            ("licence", "licence = \"   \""),
+            ("purl", "purl = \"   \""),
+            ("sha256", "sha256 = \"   \""),
+        ] {
+            let forked = fork_second_row(field, blanked);
+            assert_ne!(forked, VALID, "the {field} blanking must actually apply");
+            assert!(
+                violations(&forked).iter().any(|v| matches!(
+                    v,
+                    LockViolation::EmptyField { field: reported, .. } if *reported == field
+                )),
+                "a blank `{field}` must be reported by its OWN leg"
+            );
+        }
+
+        // The DECLARED-but-blank optional-token loop. `asset_sha256` is declared only on the
+        // PREBUILT font row, and `cache_version` nowhere at all - so this pair is forked by
+        // editing/inserting at that row's unique `purl` line rather than by the sibling helper.
+        let font_purl = "purl = \"pkg:generic/liberation-fonts@2.1.5\"";
+        assert_eq!(VALID.matches(font_purl).count(), 1);
+        for (field, injected) in [
+            ("cache_engine", "cache_engine = \"   \""),
+            ("cache_version", "cache_version = \"   \""),
+            ("asset_sha256", "asset_sha256 = \"   \""),
+        ] {
+            // Injecting a SECOND `asset_sha256` would be a duplicate key, so blank the existing
+            // one where there is one and inject where there is none.
+            let forked = if VALID.contains(&format!("{field} = ")) {
+                let needle = format!("{field} = ");
+                let start = VALID.find(&needle).expect("checked by the contains above");
+                let end = start + VALID[start..].find('\n').expect("the line must end");
+                format!("{}{injected}{}", &VALID[..start], &VALID[end..])
+            } else {
+                VALID.replace(font_purl, &format!("{font_purl}\n{injected}"))
+            };
+            assert_ne!(forked, VALID, "the {field} blanking must actually apply");
+            assert!(
+                violations(&forked).iter().any(|v| matches!(
+                    v,
+                    LockViolation::EmptyField { field: reported, .. } if *reported == field
+                )),
+                "a blank `{field}` must be reported by its OWN leg"
+            );
+        }
+
+        // The from-source anchor's own two presence legs. `fork_second_row` DOES reach them -
+        // splitting on `[[engine]]` keeps a row's `[engine.from_source]` sub-table inside its
+        // own block - so they go through the same identity-guarded helper as the FIRST table,
+        // rather than through a second, unguarded `find` over the whole fixture. Only the
+        // REPORTED field name carries the `from_source.` prefix; the TOML key does not.
+        for (field, blanked) in [
+            (
+                "from_source.signing_key_fingerprint",
+                "signing_key_fingerprint = \"   \"",
+            ),
+            ("from_source.toolchain_digest", "toolchain_digest = \"   \""),
+        ] {
+            let plain = field.trim_start_matches("from_source.");
+            let forked = fork_second_row(plain, blanked);
+            assert_ne!(forked, VALID, "the {field} blanking must actually apply");
+            assert!(
+                violations(&forked).iter().any(|v| matches!(
+                    v,
+                    LockViolation::EmptyField { field: reported, .. } if *reported == field
+                )),
+                "a blank `{field}` must be reported by its OWN leg"
+            );
+        }
+
+        assert!(
+            !problems_of(VALID)
+                .iter()
+                .any(|v| matches!(v, LockViolation::EmptyField { .. })),
+            "the pristine fixture must carry no blank field"
+        );
+    }
+
+    #[test]
+    fn every_leg_of_the_sibling_comparison_is_exercised() {
+        // CLASS CLOSURE. The sibling comparison is a five-leg loop, and only `version` and
+        // `linkage` had a test: deleting the `source_ref`, `licence` or `purl` leg left the whole
+        // suite green. A multi-leg loop where some legs are unexercised is the same shape as an
+        // arm-blind assertion - the check exists, and nothing would notice its removal. This table
+        // is the closure: a leg added to the loop without a row here is visibly uncovered.
+        for (field, replacement) in [
+            ("version", "version = \"9.9\""),
+            ("source_ref", "source_ref = \"deadbeef\""),
+            ("licence", "licence = \"MIT\""),
+            ("purl", "purl = \"pkg:generic/x265@3.6-forked\""),
+            ("linkage", "linkage = \"linked\""),
+        ] {
+            let forked = fork_second_row(field, replacement);
+            assert_ne!(forked, VALID, "the {field} fork must actually apply");
+            assert!(
+                violations(&forked).iter().any(|v| matches!(
+                    v,
+                    LockViolation::IdFieldMismatch { field: reported, .. } if *reported == field
+                )),
+                "the `{field}` leg of the sibling comparison must report its own field"
+            );
+        }
+        // Non-vacuity: the pristine fixture reports none of them, so each violation above is the
+        // fork's doing rather than a defect the fixture already carried.
+        assert!(
+            !problems_of(VALID)
+                .iter()
+                .any(|v| matches!(v, LockViolation::IdFieldMismatch { .. })),
+            "the pristine fixture must be sibling-clean"
+        );
+    }
+
+    #[test]
+    fn a_forked_signing_key_between_rows_of_one_source_is_a_violation() {
+        // The SECOND leg of the anchor comparison loop, which no test reached: every anchor-fork
+        // fixture forked `tarball_sha256` and held the fingerprint equal, so deleting this leg -
+        // or making it compare a row against itself - survived the whole suite. It is the more
+        // security-load-bearing of the two: one source, two signing keys means one row trusts a
+        // signer the other does not, which a matching tarball hash would not reveal.
+        let forked = mutate(
+            "signing_key_fingerprint = \"AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555\"\nverified_with = \"gpg\"\ntoolchain_digest = \"sha256:2222222222222222222222222222222222222222222222222222222222222222\"",
+            "signing_key_fingerprint = \"BBBB2222CCCC3333DDDD4444EEEE5555FFFF6666\"\nverified_with = \"gpg\"\ntoolchain_digest = \"sha256:2222222222222222222222222222222222222222222222222222222222222222\"",
+        );
+        let problems = violations(&forked);
+        assert!(
+            problems.iter().any(|v| matches!(
+                v,
+                LockViolation::IdFieldMismatch { field, .. }
+                    if *field == "from_source.signing_key_fingerprint"
+            )),
+            "one source must have one signing key, got: {problems:?}"
+        );
+        // Non-vacuity in the direction that matters: the TARBALL leg stays clean, so this leg is
+        // reported on its own rather than riding its sibling's violation.
+        assert!(
+            !problems.iter().any(|v| matches!(
+                v,
+                LockViolation::IdFieldMismatch { field, .. }
+                    if *field == "from_source.tarball_sha256"
+            )),
+            "the fingerprint fork must be reported by its OWN leg"
+        );
+    }
+
+    #[test]
+    fn a_padded_group_url_does_not_fork_a_prebuilt_entry() {
+        // The group entry's own `upstream_url.trim()`, which had no leg while its twin on the
+        // anchor key got one: without it, incidental whitespace on one sibling's URL would
+        // produce a spurious `CacheGroupMismatch` - hard-failing a CORRECT manifest, the
+        // mirror-image hazard the (A′) ruling keeps naming.
+        let url_line = "upstream_url = \"https://example.invalid/ffmpeg-7.1-linux64-gpl.tar.xz\"";
+        assert_eq!(CACHE_GROUP.matches(url_line).count(), 3);
+        let padded = CACHE_GROUP.replacen(
+            url_line,
+            "upstream_url = \"  https://example.invalid/ffmpeg-7.1-linux64-gpl.tar.xz  \"",
+            1,
+        );
+        assert!(
+            !problems_of(&padded)
+                .iter()
+                .any(|v| matches!(v, LockViolation::CacheGroupMismatch { .. })),
+            "whitespace is not a fork"
+        );
+    }
+
+    #[test]
+    fn a_padded_source_url_keys_to_the_same_anchor_group() {
+        // The anchor key is TRIMMED. Without that, a stray space around one row's `upstream_url`
+        // would mint a second source identity and silently disable the comparison for that row -
+        // the same trimmed-identity class the id-keyed checks already close, one key over.
+        let padded = mutate(
+            "upstream_url = \"https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz\"\nlicence = \"GPL-2.0-or-later\"\nlinkage = \"plugin-loaded\"\nacquisition = \"from-source\"\npurl = \"pkg:generic/x265@3.6\"\ncpe",
+            "upstream_url = \"  https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.6.tar.gz  \"\nlicence = \"GPL-2.0-or-later\"\nlinkage = \"plugin-loaded\"\nacquisition = \"from-source\"\npurl = \"pkg:generic/x265@3.6\"\ncpe",
+        );
+        // Its sibling x265 row keeps the unpadded URL and a DIFFERENT tarball hash, so the two are
+        // compared only if the padding is trimmed away.
+        // One-line needle, guarded and singular - the discipline the sibling test states. The
+        // toolchain digest is per-target, so it is what makes ONE row's anchor addressable.
+        let tarball_line = "toolchain_digest = \"sha256:2222222222222222222222222222222222222222222222222222222222222222\"";
+        assert_eq!(padded.matches(tarball_line).count(), 1);
+        let drifted = padded.replacen(
+            "tarball_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"",
+            "tarball_sha256 = \"9999999999999999999999999999999999999999999999999999999999999999\"",
+            1,
+        );
+        assert!(
+            problems_of(&drifted).iter().any(|v| matches!(
+                v,
+                LockViolation::IdFieldMismatch { field, .. } if *field == "from_source.tarball_sha256"
+            )),
+            "a padded URL must key to the same source, or the comparison silently switches off"
+        );
+    }
+
+    #[test]
+    fn a_from_source_group_may_span_several_signed_tarballs() {
+        // The shape the ruling exists to make writable, and the one P4.28.1 will actually produce:
+        // `ffmpeg` compiled from ffmpeg.org's tarball beside `libmp3lame.so` from LAME's, both
+        // staged out of ONE compiled entry. Before the re-scoping this VALIDATED nowhere.
+        let compiled = mutate_all(&[
+            (
+                "purl = \"pkg:generic/libimagequant@2.4.1\"",
+                "purl = \"pkg:generic/libimagequant@2.4.1\"\ncache_engine = \"libheif-x265-plugin\"\ncache_version = \"3.6\"",
+            ),
+            (
+                // Modelling, not assertion: a compiled ENTRY stages artifacts, so the row that
+                // joins the group is spelled as one. No leg depends on it - removing it leaves
+                // the suite green - and it is here so the fixture reads as the real shape.
+                "kind = \"sub-component\"",
+                "kind = \"staged-artifact\"",
+            ),
+        ]);
+        let problems = problems_of(&compiled);
+        assert!(
+            !problems
+                .iter()
+                .any(|v| matches!(v, LockViolation::CacheGroupMismatch { .. })),
+            "one compile may consume several sources, got: {problems:?}"
+        );
+        // Non-vacuity: the two rows really are in one group on one triple, and really do name
+        // different sources - otherwise the leg would pass for want of a subject.
+        let lock = parse(&compiled);
+        let grouped: Vec<&EngineRow> = lock
+            .engine
+            .iter()
+            .filter(|row| {
+                row.resolved_cache_engine() == "libheif-x265-plugin"
+                    && row.triples.iter().any(|t| t == "x86_64-unknown-linux-gnu")
+            })
+            .collect();
+        assert_eq!(
+            grouped.len(),
+            2,
+            "the fixture must put two rows in one group"
+        );
+        assert_ne!(
+            grouped[0].upstream_url, grouped[1].upstream_url,
+            "and they must name DIFFERENT sources, or the leg proves nothing"
         );
     }
 }

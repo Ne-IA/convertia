@@ -1681,14 +1681,10 @@ gate is **§6.3**. This section produces the *data* those consume.
        one-`acquisition`-per-group check (a mixed-mode group is a contradiction in terms —
        the check itself is mode-INDEPENDENT, stated here inside the from-source clause only
        because that is where it becomes load-bearing). `(cache_engine, triple)` ↦ one
-       `cache_version` AND ↦ one `acquisition` stay mode-independent. The validator
-       re-scoping is P4.28.1's Loop-half deliverable (that box also sweeps the interim
-       sentences this decision leaves behind — this passage, the lock.rs module doc, the plan
-       status paragraph, the `tests/engines-lock-cache-group.toml` and
-       `tests/engines-lock-anchor-baseline.toml` fixture headers (both state the unscoped
-       forms), and the L(-1) `engines.lock` header via its pre-declared owner tail); until it
-       lands at P4.28.1 the shipped check is stricter (unconditional) and no from-source group
-       may be written.
+       `cache_version` AND ↦ one `acquisition` stay mode-independent. **LANDED at P4.28.1**
+       (the Loop half): the validator applies exactly this scoping, and the interim sentences
+       the decision left behind are swept with it — only the L(-1) `engines.lock` header still
+       states the unscoped form, re-blessed by that box's pre-declared owner tail.
      - **`prebuilt_corroboration`** — which §3.8 prebuilt anchor the row rests on
        (`mirrors` | `signed-repo`), **required iff prebuilt**. Without it the corroboration
        URL *count* is uncheckable, which is how a single unsigned download could pass as
