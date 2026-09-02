@@ -4,8 +4,10 @@
 Two jobs, both from OUTSIDE the tool so a neutering edit to fetch-engine-assets cannot neuter its
 own check (the g24-stage-engines pattern; that file's COUPLING note is the model):
 
-1. RUN the tool's fixture-driven `--selftest` (125 legs at delivery, P4.28/17808aa) and PIN the
-   tally at 125 - the host-stable-count claim, CI-checked at L2 (diff-scoped canary) and L4 (3-OS).
+1. RUN the tool's fixture-driven `--selftest` (125 legs at delivery, P4.28/17808aa; 165 since the
+   P4.28.1 owner tail - the `--source` mode's 40 legs, the pre-declared coupling below executed)
+   and PIN the tally at 165 - the host-stable-count claim, CI-checked at L2 (diff-scoped canary)
+   and L4 (3-OS).
 
 2. The skip INVENTORY, in its strictest form: no leg of the fetch suite is OS-SKIPPED - every
    leg RUNS on every platform (one leg deliberately accepts two OS-divergent OUTCOMES, the
@@ -22,11 +24,12 @@ named FAIL), and the manifest->egress DERIVATION pair (allowed_hosts built from 
 URLs + an off-row URL refused under that derived list).
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop: this file is
-L(-1)-caged while fetch-engine-assets is not, and it PINS the tally (125), the empty-skip
+L(-1)-caged while fetch-engine-assets is not, and it PINS the tally (165), the empty-skip
 inventory, and its OWN leg count - any box that adds a `--selftest` leg to THIS tool (the P5-P7
-row boxes exercising real rows; P4.28.1 IF its from-source harness extends this script rather
-than shipping its own - in the latter case that box ships its own sibling g24 canary) carries
-the matching bump HERE as a pre-planned owner-acked L(-1) tail of that box.
+row boxes exercising real rows) carries the matching bump HERE as a pre-planned owner-acked
+L(-1) tail of that box. (P4.28.1 settled BOTH arms of the original either/or: its `--source`
+mode added 40 legs to this script - the 125 -> 165 bump above - AND its harness is its own
+script with its own sibling canary, g24-compile-engine-asset.py.)
 
 Run:  python3 scripts/gate-selftests/g24-fetch-engine-assets.py   Exit 0 = every assertion held.
 """
@@ -95,7 +98,7 @@ except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
     print(f"[g24-fetch-engine-assets] --selftest raised: {suite_crashed}")
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
-record("the leg tally is host-stable at 125 (the pinned count)", _probe(lambda: len(m._results) == 125))
+record("the leg tally is host-stable at 165 (the pinned count)", _probe(lambda: len(m._results) == 165))
 record(
     "skip-inventory (strict): every fetch-suite leg RUNS on every platform - NO leg may skip",
     _probe(lambda: not any("(skipped" in name for name, _ok in m._results)),
@@ -125,7 +128,7 @@ raised, msg = _refused(
 record("planted positive: an off-allow-list host REFUSES, naming the allow-list rule",
        raised and "not an origin this row names" in msg)
 # The redirect pin is one build_opener ARGUMENT (fetch-engine-assets' own factoring note): losing
-# it is a silent downgrade to urllib's default policy, and the suite tally (125) only catches a
+# it is a silent downgrade to urllib's default policy, and the suite tally (165) only catches a
 # DELETED leg, never one neutered in place — so the installation is asserted here independently.
 record("planted positive: the per-hop redirect pin is INSTALLED in the real opener",
        _probe(lambda: any(isinstance(h, m._PinnedRedirectHandler)

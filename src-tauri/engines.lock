@@ -17,8 +17,10 @@
 # group to one `cache_version` AND one `acquisition` in EITHER mode. A PREBUILT group is one
 # download, so `upstream_url` and `asset_sha256` are additionally held EQUAL across it; a
 # FROM-SOURCE group is a COMPILE that may consume several signed source tarballs
-# (schema-writable here since the P4.28.1 validator re-scoping; its populate path is P4.28.1's
-# CI compile — `scripts/fetch-engine-assets` acquires PREBUILT rows only), held together by
+# (schema-writable here since the P4.28.1 validator re-scoping; `scripts/fetch-engine-assets`
+# acquires prebuilt ENTRIES and, under `--source`, the signed source inputs a from-source entry
+# is compiled from — the compile itself is `scripts/compile-engine-asset`'s, driven by the row's
+# declared `engine-configure.toml` line), held together by
 # the URL-keyed anchor rule instead: rows with the same `upstream_url` carry identical
 # `from_source` anchors — same source ⇒ same anchors, one law across both modes. §3.7.2 item-4
 # sub-components (kind = "sub-component") follow the same law with the hash anchoring the pinned

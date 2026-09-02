@@ -107,10 +107,17 @@ fingerprint = "sha256:59cf428eea6d3c0ae12b6b2a02e153826f7d7002d174d2d2c5ac167178
 #     untouched; §1a re-verified: its src-tauri/ block lists DIRECTORIES only (no rows for files at
 #     the src-tauri/ root — Cargo.toml/tauri.conf.json are likewise unlisted there), so the
 #     projection holds unedited.
+#     Re-blessed 2026-09-02 (the P4.28.1 pre-declared tail (a)): §0.7's src-tauri/ file list gained
+#     the engine-configure.toml SEAM row beside engines.lock (the §6.1.3 per-engine configure-flag
+#     manifest, created by the P4.28.1 Loop half at 072a021 — the file predates its row by one
+#     commit, which the box's own tail note declares and no gate reaches: G69 asserts DIRECTORIES,
+#     check 25 fires on §0.7's text changing). A FILE row only — the G69 dir-set is untouched;
+#     §1a re-verified unedited per the P4.56.1-tail-(b) precedent (its src-tauri/ block lists
+#     DIRECTORIES only, so the projection holds).
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:39de2367239feed74d63bf2ec99d65ecab354b12621e3ad4a8a0384ac69c2c6f"
+fingerprint = "sha256:adec2e1228f6b5807f11eddf6a6b6bf469159b572f0c59727de87096360a1422"

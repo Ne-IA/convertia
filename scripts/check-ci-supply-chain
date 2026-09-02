@@ -69,6 +69,27 @@ Assertions (after the file is known to be in plain, statically-analysable block 
       section (a job-level env value embedding "cargo build" is not a phantom compile). Fail-open until
       the P10 signing job lands. Spec §6.7.2 makes the secret-bearing signing job sign-only + disjoint
       from the build job, so this binds only if that disjoint-job design is ever violated.
+  (9) container/service image digests (the G56 r6 image-digest sub-rule; its target arrived
+      with the P4.28.1 engine-asset-compile container) - every `container:` scalar and every
+      `image:` value must be the digest-pinned `<registry>/<image>[:tag]@sha256:<64-hex>`
+      form; a mutable tag, an expression, a flow-style `container: {...}`, a value-less
+      `image:` (next-line/block value) and a `container:` block with no resolvable `image:`
+      child all fail closed (zizmor G50 pins ACTION SHAs but not image digests). The scan is
+      deliberately WIDER than jobs.<job>.container/services: it matches ANY `image:`/
+      `container:` key at any depth, so a future legitimate non-container `image:` key (a
+      matrix dimension, a workflow_dispatch input) lands as a documented exemption, never a
+      silent pass. The r6 sentence's transitive-action-pin half (pinact OR the reserved G67
+      Scorecard leg) is a separate acquisition owned by its own box, not this line scan.
+ (10) the G37 restore-re-verify ordering (the G56 workflow-lint sub-rule the G37 row names) -
+      a JOB that restores an engine-asset cache (`actions/cache*` + a `.engine-cache` path)
+      may not also invoke `scripts/stage-engines`: no lint-recognizable SHA-256 re-verify
+      actor exists between them, so the pair fails CLOSED. Content is scanned over the RAW
+      (comment-stripped, NOT block-scalar-excised) job bodies - the check-(8) dual-view
+      precedent, because a `run: |` body is exactly where a stage-engines invocation lives.
+      The Lane-B box that wires staging extends this rule with the sanctioned verify step it
+      lands (and the planted-mismatch self-test the G37 row asks for). Restore-only jobs (the
+      populate/compile pair) and stage-engines-without-restore jobs (the check-mode pass) are
+      the sanctioned shapes.
 
 fail-closed: any violation -> exit 1. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
@@ -833,6 +854,84 @@ def check_secret_offline_build(name: str, lines: list[str], raw_lines: list[str]
     return problems
 
 
+# Requires a registry-qualified multi-segment name: a single-segment Docker Hub shorthand
+# (`debian@sha256:...`) fails DELIBERATELY - the explicit `docker.io/library/...` spelling is
+# the one whose resolution does not depend on the client's shorthand rules (a safe over-fail).
+# A registry with an explicit PORT (`host:5000/img@sha256:...`) also over-fails (the host part
+# admits no `:`); a repo image needing one lands as a deliberate widening of this regex then.
+_IMAGE_DIGEST = re.compile(
+    r"[a-z0-9.\-]+(?:/[A-Za-z0-9._\-]+)+(?::[A-Za-z0-9._\-]+)?@sha256:[0-9a-f]{64}"
+)
+
+
+def check_images_and_engine_cache(name: str, lines: list[str], raw_lines: list[str]) -> int:
+    """(9) image digests + (10) the G37 engine-cache restore/stage-engines ordering.
+
+    Two views, the check-(8) precedent: (9) scans the block-scalar-EXCISED structural lines
+    (an `image:`-shaped string inside a `run:` body must not false-fire), while (10) scans the
+    RAW (comment-stripped, NOT excised) job bodies - a `run: |` block is exactly where a
+    `scripts/stage-engines` invocation lives, so the excised view would be blind to the one
+    shape the repo actually writes."""
+    problems = 0
+    # (9) every `container:` scalar / `image:` value must be digest-pinned; a value this scan
+    # cannot resolve fails closed - including the empty/next-line form (the rule-(5) precedent).
+    for i, ln in enumerate(lines):
+        bare = re.match(r"^(\s*)['\"]?(image|container)['\"]?\s*:\s*$", ln)
+        if bare:
+            indent, key = len(bare.group(1)), bare.group(2)
+            if key == "image":
+                fail(f"{name}: `image:` with no value on the key's line - a next-line/block "
+                     "value is not statically resolvable, so it fails closed (G56 image-digest "
+                     "sub-rule)")
+                problems += 1
+            else:
+                # A bare `container:` is the legitimate block-opener IFF its child block carries
+                # an `image:` key (which the scans here then resolve); a child block WITHOUT one
+                # is a next-line scalar or an imageless mapping - unresolvable, fails closed.
+                child_has_image = False
+                for nxt in lines[i + 1:]:
+                    if not nxt.strip():
+                        continue
+                    if len(nxt) - len(nxt.lstrip()) <= indent:
+                        break
+                    if re.match(r"^\s*['\"]?image['\"]?\s*:", nxt):
+                        child_has_image = True
+                        break
+                if not child_has_image:
+                    fail(f"{name}: `container:` block with no resolvable `image:` child - "
+                         "unresolvable by this scan, so it fails closed (G56 image-digest "
+                         "sub-rule)")
+                    problems += 1
+            continue
+        m = re.match(r"^\s*['\"]?(image|container)['\"]?\s*:\s*(\S.*)$", ln)
+        if not m:
+            continue
+        value = unquote(m.group(2).strip())
+        if not _IMAGE_DIGEST.fullmatch(value):
+            fail(f"{name}: `{m.group(1)}: {value}` is not a digest-pinned "
+                 "`<registry>/<image>[:tag]@sha256:<64-hex>` image (the G56 image-digest "
+                 "sub-rule - a mutable tag, expression or flow form fails closed)")
+            problems += 1
+    # (10) a job restoring an engine-asset cache may not also run scripts/stage-engines: no
+    # lint-recognizable G37 re-verify actor exists between them, so the pair fails closed
+    # until the Lane-B staging box extends this rule with the verify step it lands. Job
+    # identity comes from the structural view; every content predicate runs over the RAW body.
+    raw_jobs = job_bodies(top_key(raw_lines, "jobs")[1])
+    for jid in job_bodies(top_key(lines, "jobs")[1]):
+        joined = "\n".join(raw_jobs.get(jid, []))
+        restores_engine_cache = (
+            re.search(r"uses\s*:\s*['\"]?actions/cache", joined)
+            and ".engine-cache" in joined
+        )
+        if restores_engine_cache and "scripts/stage-engines" in joined:
+            fail(f"{name}: job '{jid}' restores an engine-asset cache AND invokes "
+                 "`scripts/stage-engines` - the G37 restore-re-verify actor between them is "
+                 "not lint-recognizable, so the pair is refused; the Lane-B staging box "
+                 "extends this rule with the sanctioned verify step it lands")
+            problems += 1
+    return problems
+
+
 def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
     name = path.name
     raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -846,6 +945,7 @@ def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
     problems += check_runner_host(name, lines, stripped)
     problems += check_fuzz_pin(name, stripped, fuzz_pin)
     problems += check_secret_offline_build(name, lines, stripped)
+    problems += check_images_and_engine_cache(name, lines, stripped)
 
     # (5a) flow-style permissions anywhere (top-level OR per-job) cannot be statically
     # verified for contents-read / id-token - reject fail-closed. Empty `{}`/`{ }`

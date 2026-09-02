@@ -863,6 +863,71 @@ _PHANTOM = "\n".join(["jobs:", "  sign:", "    runs-on: ubuntu-22.04", "    time
 record("(8) a 'cargo build' embedded in a job-level env VALUE is NOT a phantom compile (clean)",
        rule8(_PHANTOM) == 0)
 
+# ---------------------------------------------------------------------------
+# (9) image digests + (10) engine-cache restore/stage ordering (the P4.28.1 tail's sub-rules)
+# ---------------------------------------------------------------------------
+def _container_wf(image_line: str, extra_steps: str = "      - run: echo hi\n") -> str:
+    return (
+        "name: ci\non:\n  push:\n    branches: [main]\n"
+        "permissions:\n  contents: read\n"
+        "concurrency:\n  group: ci-x\n  cancel-in-progress: true\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-22.04\n    timeout-minutes: 10\n"
+        + image_line
+        + "    steps:\n" + extra_steps
+    )
+
+
+leg("(9) a mutable-tag container image fails", "digest-pinned", workflows={
+    "ci.yml": _container_wf("    container:\n      image: debian:bookworm-slim\n"),
+    "release.yml": tag_wf()})
+leg("(9) a digest-pinned container image passes", "", workflows={
+    "ci.yml": _container_wf(
+        "    container:\n      image: docker.io/library/debian:bookworm-slim@sha256:" + "8" * 64 + "\n"),
+    "release.yml": tag_wf()})
+_RESTORE = ("      - uses: actions/cache/restore@" + "0" * 40 + "\n"
+            "        with:\n"
+            "          path: .engine-cache/x\n"
+            "          key: x\n")
+leg("(9) a value-less `image:` (next-line value) fails closed", "no value", workflows={
+    "ci.yml": _container_wf("    container:\n      image:\n        debian:bookworm-slim\n"),
+    "release.yml": tag_wf()})
+leg("(9) a `container:` block with NO resolvable image child fails closed", "no resolvable",
+    workflows={"ci.yml": _container_wf("    container:\n      options: --cpus 1\n"),
+               "release.yml": tag_wf()})
+leg("(9) a flow-style `container: {...}` fails closed", "not a digest-pinned", workflows={
+    "ci.yml": _container_wf("    container: { image: debian }\n"),
+    "release.yml": tag_wf()})
+leg("(9) an expression image fails closed", "not a digest-pinned", workflows={
+    "ci.yml": _container_wf("    container:\n      image: ${{ matrix.image }}\n"),
+    "release.yml": tag_wf()})
+leg("(10) an engine-cache restore + stage-engines in ONE job fails (no verify actor between)",
+    "restore-re-verify", workflows={
+        "ci.yml": _container_wf("", _RESTORE + "      - run: python3 scripts/stage-engines --check\n"),
+        "release.yml": tag_wf()})
+# The r2 review's P1: the rule must see through a BLOCK SCALAR - the repo's dominant idiom for
+# a multi-command step, and the one shape the excised structural view is blind to.
+leg("(10) the SAME pair with stage-engines inside a `run: |` block scalar STILL fails",
+    "restore-re-verify", workflows={
+        "ci.yml": _container_wf("", _RESTORE
+                                + "      - run: |\n"
+                                + "          echo populate\n"
+                                + "          python3 scripts/stage-engines --check\n"),
+        "release.yml": tag_wf()})
+leg("(10) a restore-only job (the populate shape) passes", "", workflows={
+    "ci.yml": _container_wf("", _RESTORE + "      - run: python3 scripts/fetch-engine-assets --all --check\n"),
+    "release.yml": tag_wf()})
+# Pins rule (10)'s SCOPE in the over-fire direction (the r3 review's unguarded-mutant finding):
+# a cache restore under a NON-engine path beside stage-engines must PASS - dropping the
+# `.engine-cache` conjunct would wrongly refuse e.g. a Cargo-cache-restoring staging job.
+_OTHER_RESTORE = ("      - uses: actions/cache/restore@" + "0" * 40 + "\n"
+                  "        with:\n"
+                  "          path: target/some-cache/x\n"
+                  "          key: x\n")
+leg("(10) a NON-engine cache restore beside stage-engines passes (the scope pin)", "",
+    workflows={"ci.yml": _container_wf("", _OTHER_RESTORE
+                                       + "      - run: python3 scripts/stage-engines --check\n"),
+               "release.yml": tag_wf()})
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-ci-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)

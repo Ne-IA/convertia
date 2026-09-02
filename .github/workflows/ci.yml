@@ -408,3 +408,216 @@ jobs:
         run: |
           pnpm build
           pnpm tauri build --debug --no-bundle
+
+  # ------------------------------------------------------------------------------------------------
+  # §6.1.3 engine-asset cache mechanism (P4.28 + P4.28.1 — the batched owner-acked workflow tail).
+  # Three jobs realise the [DECIDED] cache-hosting scheme: `engine-asset-plan` derives the per-entry
+  # matrix from the L(-1) `src-tauri/engines.lock` (the ONLY source of fetch targets — never argv)
+  # and runs every tool's --check mode against the committed manifests on every push;
+  # `engine-asset-populate` restores each `<cache_engine>-<cache_version>-<triple>` actions/cache
+  # entry and, on a miss, lets `scripts/fetch-engine-assets` (the ONLY socket-opening actor at
+  # package time) populate it — prebuilt entries verified against `asset_sha256`, `--source` inputs
+  # against `from_source.tarball_sha256`; `engine-asset-compile` builds each from-source entry from
+  # its restored `.src` inputs inside the digest-pinned build container (§6.1.3's "digest-pinned
+  # toolchain/base-image"; recorded for the §6.2.5 reproduce recipe). While `engines.lock` declares
+  # no rows both matrices are empty and the populate/compile jobs SKIP — the plan + check-mode legs
+  # still run, so the mechanism is exercised on every push. Lane B (P10) consumes the same cache in
+  # front of its `stage-engines` step, whose staged-byte verify against `engines.lock` is the G37
+  # restore-re-verify (an Actions cache is not integrity-protected); until that sanctioned verify
+  # step exists, G56 sub-rule (10) refuses any single job pairing an engine-cache restore with a
+  # `stage-engines` invocation. A from-source row declaring a triple with no compile leg here
+  # FAILS the plan loudly — the P5–P7 box adding such a row owns the matching runner/toolchain
+  # leg as its own pre-declared .github/** tail. TRUST BOUNDARY on pull_request: a fork PR's own
+  # manifests drive these jobs, so the fetched URLs/compiled sources are PR-controlled there —
+  # the same trust class as compile-sanity building a PR's build.rs (arbitrary code on PR-scoped
+  # compute); actions/cache writes from a PR are scoped to the PR's own ref, so main's engine
+  # cache cannot be poisoned from a fork.
+  engine-asset-plan:
+    name: engine-asset-plan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      fetch: ${{ steps.plan.outputs.fetch }}
+      compile: ${{ steps.plan.outputs.compile }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: '3.12'
+      # The check pass runs for the RUNNER'S host triple (x86_64-unknown-linux-gnu — `--all` is
+      # "every engine, ONE triple"); the derivation step below is what iterates EVERY declared
+      # triple, so cross-triple group invariants are exercised there, not here.
+      - name: '§6.1.3 check-mode pass — fetch / compile / stage validate the committed manifests (host triple), write nothing'
+        run: |
+          python3 scripts/fetch-engine-assets --all --check
+          python3 scripts/fetch-engine-assets --all --source --check
+          python3 scripts/compile-engine-asset --all --check
+          python3 scripts/stage-engines --check
+      # NB: this job must stay free of `actions/cache` steps — its run bodies name both
+      # `.engine-cache` and `scripts/stage-engines`, so adding a cache step here would trip the
+      # G56 rule-(10) pairing refusal (correctly: this job is the check/derive leg, not a consumer).
+      - name: 'derive the per-entry cache matrix from engines.lock (empty manifest → empty matrices, the jobs below skip)'
+        id: plan
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import importlib.machinery, importlib.util, json, sys
+          from pathlib import Path
+
+          loader = importlib.machinery.SourceFileLoader("fea", "scripts/fetch-engine-assets")
+          m = importlib.util.module_from_spec(importlib.util.spec_from_loader("fea", loader))
+          loader.exec_module(m)
+          rows = m.parse_lock(Path("src-tauri/engines.lock").read_text(encoding="utf-8"))
+          cache = Path(".engine-cache")
+          # The triples a compile leg exists for: the digest-pinned Linux container below. A
+          # from-source row declaring any OTHER triple fails HERE, loudly — the box adding that
+          # row owns the matching runner/toolchain leg (its pre-declared .github/** tail).
+          compile_triples = {"x86_64-unknown-linux-gnu"}
+          fetch, compiles = [], []
+          for triple in sorted({t for r in rows for t in r.triples}):
+              for p in m.group_plans(rows, triple, cache):
+                  fetch.append({"key": p.entry_name, "group": p.cache_engine,
+                                "triple": triple, "mode": "prebuilt"})
+              for s in m.source_plans(rows, triple, cache):
+                  fetch.append({"key": s.entry_name, "group": s.cache_engine,
+                                "triple": triple, "mode": "source"})
+                  if triple not in compile_triples:
+                      print(f"from-source group '{s.cache_engine}' declares triple '{triple}', "
+                            "which has no engine-asset-compile leg in ci.yml — the box adding "
+                            "that row lands the runner/toolchain leg first", file=sys.stderr)
+                      sys.exit(1)
+                  if not s.entry_name.endswith(".src"):
+                      print(f"source entry '{s.entry_name}' lacks the .src suffix contract",
+                            file=sys.stderr)
+                      sys.exit(1)
+                  compiles.append({"key": s.entry_name[: -len(".src")], "src_key": s.entry_name,
+                                   "group": s.cache_engine, "triple": triple})
+          # The populate/compile PAIRING is asserted, not incidental: every compile entry's
+          # source inputs must have a fetch entry, because a skipped engine-asset-populate
+          # silently skips engine-asset-compile too (the implicit success() on its `if`).
+          fetch_keys = {entry["key"] for entry in fetch}
+          for entry in compiles:
+              if entry["src_key"] not in fetch_keys:
+                  print(f"compile entry '{entry['key']}' has no paired source fetch entry "
+                        f"'{entry['src_key']}' - the populate/compile pairing broke",
+                        file=sys.stderr)
+                  sys.exit(1)
+          print("fetch=" + json.dumps(fetch))
+          print("compile=" + json.dumps(compiles))
+          PY
+
+  engine-asset-populate:
+    name: engine-asset-populate
+    needs: engine-asset-plan
+    if: needs.engine-asset-plan.outputs.fetch != '[]'
+    runs-on: ubuntu-22.04              # a fetch is a download + verify + unpack — OS-independent, so the cheapest runner serves every triple (G56 cost discipline)
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(needs.engine-asset-plan.outputs.fetch) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: 'restore the cache entry (§6.1.3 group key)'
+        id: restore
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .engine-cache/${{ matrix.entry.key }}
+          key: ${{ matrix.entry.key }}
+      # Matrix values reach the shell via env, never inline ${{ }} in run (the G50 template-
+      # injection discipline) — they derive from the caged engines.lock, but the pattern is uniform.
+      - name: 'populate on miss — fetch-engine-assets, the only socket-opening actor at package time'
+        if: steps.restore.outputs.cache-hit != 'true'
+        env:
+          ENTRY_GROUP: ${{ matrix.entry.group }}
+          ENTRY_TRIPLE: ${{ matrix.entry.triple }}
+          ENTRY_MODE: ${{ matrix.entry.mode }}
+        run: |
+          MODE_FLAG=""
+          [ "$ENTRY_MODE" = "source" ] && MODE_FLAG="--source"
+          python3 scripts/fetch-engine-assets --engine "$ENTRY_GROUP" --target "$ENTRY_TRIPLE" $MODE_FLAG
+      - name: 'save the populated entry under the same key'
+        if: steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .engine-cache/${{ matrix.entry.key }}
+          key: ${{ matrix.entry.key }}
+
+  engine-asset-compile:
+    name: engine-asset-compile
+    needs: [engine-asset-plan, engine-asset-populate]
+    if: needs.engine-asset-plan.outputs.compile != '[]'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    container:
+      # The §6.1.3 digest-pinned build container (the P4.28.1 .github/** half): base image pinned
+      # by manifest-list digest; the toolchain layer installs the four declared build systems
+      # (§ engine-configure.toml: autotools / configure / meson / cmake) through the image's own
+      # signed-repo apt chain. Recorded here so the §6.2.5 reproduce recipe can name it.
+      image: docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(needs.engine-asset-plan.outputs.compile) }}
+    steps:
+      # `zstd` is LOAD-BEARING, not a convenience: actions/cache folds the compression tool into
+      # the sha256 cache VERSION (dist getCompressionMethod → zstd CLI probe), so without it this
+      # container would compute gzip cache versions and structurally MISS every entry the
+      # ubuntu-runner jobs saved with zstd — and save entries those jobs cannot restore.
+      # (No `git` on purpose: actions/checkout falls back to the REST-API tarball download inside
+      # the container, which is all this job needs — nothing here reads `.git`.)
+      # NAMED RESIDUAL: the apt package VERSIONS float with the (signed) Debian repo — only the
+      # base image is digest-pinned. The pinned-toolchain half of §6.1.3's "digest-pinned
+      # toolchain/base-image", and the binding of `from_source.toolchain_digest` (an engines.lock
+      # schema field with no consumer while the manifest is empty) to this container, are owned
+      # by the FIRST compile box that fills the seam (P5.1.1 per the P4.34 pull-forward) — its
+      # own pre-declared .github/** tail, recorded on P4.28.1's [RESOLVED] appendix.
+      - name: 'build toolchain (the container is root; packages via the image-pinned signed apt repo)'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake libtool make gcc g++ pkg-config \
+            meson ninja-build cmake gnupg xz-utils tar zstd
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: 'restore the built entry (a hit ends the job — the entry is immutable under its key)'
+        id: restore
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .engine-cache/${{ matrix.entry.key }}
+          key: ${{ matrix.entry.key }}
+      - name: 'restore the signed source inputs (populated by engine-asset-populate)'
+        if: steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .engine-cache/${{ matrix.entry.src_key }}
+          key: ${{ matrix.entry.src_key }}
+          fail-on-cache-miss: true
+      - name: 'compile on miss — re-hash + signature-verify every restored source, then build (compile-engine-asset opens no socket)'
+        if: steps.restore.outputs.cache-hit != 'true'
+        env:
+          ENTRY_GROUP: ${{ matrix.entry.group }}
+          ENTRY_TRIPLE: ${{ matrix.entry.triple }}
+        run: python3 scripts/compile-engine-asset --engine "$ENTRY_GROUP" --target "$ENTRY_TRIPLE"
+      - name: 'save the compiled entry under the same key'
+        if: steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .engine-cache/${{ matrix.entry.key }}
+          key: ${{ matrix.entry.key }}

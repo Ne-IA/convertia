@@ -1406,6 +1406,7 @@ convertia/
 │  ├─ tauri.conf.json              # bundle, CSP, externalBin, minimum-OS (§0.10, §0.3.1, §3.3)
 │  ├─ build.rs                     # tauri-build; (optionally) tauri-specta gen hook
 │  ├─ engines.lock                 # the §3.7.2 build manifest — per-(artifact, target-triple) rows; L(-1)/G71 owner-acked edits only; schema/validator = src/engines/lock.rs (P4.56.1)
+│  ├─ engine-configure.toml        # the §6.1.3 per-engine configure-flag manifest seam — <cache_engine>.configure.flags/.system[/.source_dir] keyed on the engines.lock row id; read by scripts/compile-engine-asset; filled by the P5–P7 compile boxes (P4.28.1)
 │  ├─ icons/                       # bundled app-icon set: placeholder logo → per-platform PNG/ICO/ICNS + Windows Square* tiles; wired to bundle.icon (§3.3; §6.9.3 final art) [P1.19.2]
 │  ├─ capabilities/
 │  │  └─ main.json                 # the §0.10 capability allowlist (core, log, store — NO dialog, NO opener, NO shell-execute, NO fs; dialog/opener are Rust-side-only, not WebView grants, §3.3.3)
