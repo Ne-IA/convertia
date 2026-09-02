@@ -72,7 +72,7 @@ import tempfile
 import tomllib
 import urllib.parse
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1096,11 +1096,21 @@ def assert_self_contained(prefix: Path, entry_name: str) -> None:
     same no-harm boundary `unpack_source` guards on the way in. Guarded on the way out too.
     [Build-Session-Entscheidung: P4.28.1]
     """
+    # Read through the OBJECT rather than `os.readlink(...)`: verdict-identical, and it lets a
+    # leg drive this walk on a platform where creating a real symlink needs a privilege the runner
+    # does not have. Without that, this guard's BODY was covered on POSIX only - and the canary
+    # that makes the "not caged" ruling safe runs on Windows too. [Build-Session-Entscheidung:
+    # P4.28.1]
     for installed in prefix.rglob("*"):
         if not installed.is_symlink():
             continue
-        target = os.readlink(installed)
-        if link_target_escapes(str(target)):
+        # Rendered ONCE, in POSIX form. `Path.readlink()` returns a `Path`, so `{target!r}` had
+        # started printing `WindowsPath('/etc/passwd')` in a refusal a human reads, and plain
+        # `str()` renders native separators for a target the manifest wrote with forward slashes.
+        # `as_posix()` gives the SAME verdict - `link_target_escapes` normalises separators
+        # itself - and a message that reads like the path it names, on every platform.
+        target = installed.readlink().as_posix()
+        if link_target_escapes(target):
             raise CompileError(
                 f"{entry_name}: the build installed a symlink {installed.name!r} pointing at "
                 f"{target!r}, which leaves the entry - a published entry has to be self-contained"
@@ -1501,6 +1511,105 @@ class _RacingRunner(_Runner):
             self._destination.mkdir(parents=True, exist_ok=True)
             (self._destination / "raced.so").write_bytes(b"x")
         return result
+
+
+class _FakeLink:
+    """One symlink entry, without the OS privilege a real one needs.
+
+    `readlink()` returns a `Path`, matching what `Path.readlink()` hands the real walk - a stub
+    that returned `str` would exercise a shape production never sees.
+    """
+
+    def __init__(self, relpath: str, target: str) -> None:
+        self.relpath = relpath
+        self.name = relpath.rsplit("/", 1)[-1]
+        self._target = target
+
+    def __fspath__(self) -> str:
+        return self.relpath
+
+    def __str__(self) -> str:
+        return self.relpath
+
+    def is_symlink(self) -> bool:
+        return True
+
+    def readlink(self) -> Path:
+        return Path(self._target)
+
+
+class _FakeFile:
+    """A plain entry the walk must SKIP and keep going past.
+
+    Without one, every stand-in tree held a single symlink, so `if not installed.is_symlink():
+    continue` was never TAKEN - and turning that `continue` into `break` or `return` (the standard
+    control-flow mutation operators) left the whole suite green on a host where the real symlink
+    legs skip. The guard would then stop scanning at the first ordinary file and never reach the
+    escaping link behind it. [Build-Session-Entscheidung: P4.28.1]
+    """
+
+    def __init__(self, relpath: str) -> None:
+        self.relpath = relpath
+        self.name = relpath.rsplit("/", 1)[-1]
+
+    def __fspath__(self) -> str:
+        return self.relpath
+
+    def __str__(self) -> str:
+        return self.relpath
+
+    def is_symlink(self) -> bool:
+        return False
+
+
+class _FakeTree:
+    """A stand-in for the built prefix: a plain file, a benign symlink, then an escaping one.
+
+    `assert_self_contained` walks with `rglob` and reads through the entry object, so a tree can
+    be handed to it without touching the filesystem - which is what makes the guard's body
+    assertable on Windows, where creating a symlink is a privilege the runner may not have.
+
+    The walk's SELECTOR is asserted two ways, because one is not enough:
+
+    * `PurePosixPath.match` models what `rglob` actually does - `rglob(p)` is `glob("**/" + p)`,
+      i.e. `p` matches the TRAILING components. A first attempt used `fnmatch`, whose `*` crosses
+      `/` and which has no implicit `**/` anchor; it reported `bin/*` as matching
+      `bin/nested/ffmpeg` where real `rglob` does not, so a `bin/*` narrowing looked covered and
+      was not.
+    * `patterns` records what the production code ASKED for, so the leg can pin the literal `"*"`.
+      Semantics alone still let `rglob("*/*")` through - it matches this entry's trailing two
+      components, and on POSIX it also still matches the real `lib/escape.so` fixture, so every
+      platform stayed green while the guard had gone blind to a symlink at the prefix ROOT.
+
+    Deliberate OVER-pinning: a semantically equivalent rewrite (`rglob("**/*")`) reds this leg
+    too. That is the trade - the selector of a no-harm guard is not something to rewrite silently.
+    [Build-Session-Entscheidung: P4.28.1 - the sibling of the readlink fix, and then the sibling
+    of that, both raised by the two reviewers at the check-off.]
+    """
+
+    def __init__(self, relpath: str, target: str) -> None:
+        # THREE entries, each closing a different early exit. The plain file first: the walk has
+        # to take the `continue` and carry on. Then a BENIGN symlink: the walk has to carry past a
+        # link it has already JUDGED - a real `make install` ships versioned alias chains
+        # (`libz.so -> libz.so.1 -> libz.so.1.2.13`), so a `break` after the first benign link
+        # would satisfy itself on the alias and never read the escaping entry behind it. Every
+        # symlink fixture in this suite was a singleton until now, so that exit was dark on every
+        # platform. The benign link is a second assertion for free: an in-tree relative target
+        # must NOT be refused mid-walk. [Build-Session-Entscheidung: P4.28.1]
+        self._entries = [
+            _FakeFile("bin/readme.txt"),
+            _FakeLink("lib/libz.so.1", "libz.so.1.2.13"),
+            _FakeLink(relpath, target),
+        ]
+        self.patterns: list[str] = []
+
+    def rglob(self, pattern: str):
+        self.patterns.append(pattern)
+        return [
+            entry
+            for entry in self._entries
+            if PurePosixPath(entry.relpath).match(pattern)
+        ]
 
 
 def _entry(cache_root: Path, name: str, files: dict[str, bytes]) -> Path:
@@ -2636,7 +2745,10 @@ def _legs() -> None:
         _record(
             "a symlink target that leaves the tree is classified as an escape",
             all(link_target_escapes(target) for target in
-                ("/etc/passwd", "../outside", "a/../../outside", "C:/windows", "\\\\host\\share"))
+                ("/etc/passwd", "../outside", "a/../../outside", "C:/windows",
+                 # separator-LESS drive-relative too: `C:relative` resolves against the CWD on
+                 # drive C:, and only the separator-bearing form was fixtured.
+                 "C:relative", "\\\\host\\share"))
             and not any(link_target_escapes(target) for target in
                         ("lib/libz.so", "./libz.so", "sub/dir/x.so")),
         )
@@ -2690,20 +2802,86 @@ def _legs() -> None:
         # this host they skip, and REMOVING the call from `compile_entry` would go unnoticed. This
         # one observes the call rather than its effect, so the wiring is pinned everywhere and the
         # privilege only ever costs the end-to-end half.
-        called: list[Path] = []
+        # (path, the step labels that had already run) - the ORDER matters as much as the call:
+        # moving the guard above the build loop makes it inspect an empty prefix, where it can
+        # never see what the build installed, and that relocation was green on a host whose real
+        # symlink legs skip. A COUNT is not enough - the signature check runs through the same
+        # runner, so one call had already happened either way; the pin is on the INSTALL step.
+        called: list[tuple[Path, tuple[str, ...]]] = []
+        _walked = _FakeTree("bin/nested/ffmpeg", "lib/libz.so")
+        # Driven over the TWO-source group, not the one-source one: the guard runs once, AFTER
+        # the whole source loop, and a regression that scopes it to a single source (`if index ==
+        # 0:`) is invisible to a plan that only ever has one. A multi-source group - a library
+        # beside the tool that links it - is the shape this harness exists for, so the second
+        # source's install output is exactly what must not go uninspected.
         call_cache = base / "callsite"
-        call_plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX,
+        call_plan = plan_compiles(parse_lock(pair, where="fixture"), seam_pair, _LINUX,
                                   call_cache)[0]
-        _entry(call_cache, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+        _entry(call_cache, f"ffmpeg-7.1-{_LINUX}", _PAIR_ENTRY)
         _real_guard = assert_self_contained
+        _call_runner = _Runner()
         try:
-            globals()["assert_self_contained"] = lambda prefix, entry: called.append(Path(prefix))
-            compile_entry(call_plan, call_cache, runner=_Runner())
+            globals()["assert_self_contained"] = (
+                lambda prefix, entry: called.append(
+                    (Path(prefix), tuple(_call_runner.steps()))
+                )
+            )
+            compile_entry(call_plan, call_cache, runner=_call_runner)
         finally:
             globals()["assert_self_contained"] = _real_guard
+        # ...and the refusal has to PROPAGATE. Swallowing it at the call site keeps the call,
+        # the path and the ordering pin all intact while the escaping tree publishes anyway.
+        refuse_cache = base / "refuse"
+        refuse_plan = plan_compiles(parse_lock(one, where="fixture"), seam_one, _LINUX,
+                                    refuse_cache)[0]
+        _entry(refuse_cache, f"ffmpeg-7.1-{_LINUX}", _GOOD_ENTRY)
+
+        def _boom(_prefix, entry_name):
+            raise CompileError(f"{entry_name}: has to be self-contained")
+
+        try:
+            globals()["assert_self_contained"] = _boom
+            _propagates = _raises(
+                lambda: compile_entry(refuse_plan, refuse_cache, runner=_Runner()),
+                "has to be self-contained",
+                CompileError,
+            ) and [c.name for c in refuse_cache.iterdir()] == [f"ffmpeg-7.1-{_LINUX}.src"]
+        finally:
+            globals()["assert_self_contained"] = _real_guard
+
         _record(
-            "compile_entry runs the self-containment check over the PREFIX before publishing",
-            len(called) == 1 and called[0].name == "prefix",
+            "compile_entry runs the check over the PREFIX, the check WALKS, and its refusal "
+            "REACHES the caller",
+            # SEVEN assertions in one leg, deliberately: splitting them would move the tally off
+            # the caged canary's pin (208) and cost an owner act. The trade is diagnostic
+            # precision - a wiring regression and a walk regression print the same string - and it
+            # is taken knowingly, against this file's own message-discrimination habit.
+            # The monkeypatch above proves the CALL happens,
+            # but it also replaces the function - so on a host that cannot create a symlink,
+            # neutering the real body to `return` left the whole suite, and therefore the caged
+            # canary the "not caged" ruling leans on, green. The second half drives the real body
+            # over a stand-in tree, which needs no privilege at all.
+            len(called) == 1
+            and called[0][0].name == "prefix"
+            # AFTER EVERY install, not before, and not after only the first: an empty prefix
+            # has nothing to find, and a half-built one hides whatever the later sources put there.
+            and called[0][1].count("make install") == 2
+            # Nested, and NOT a `.so`: every real symlink fixture in this suite is `*.so`, so a
+            # name-narrowed selector would keep matching them and only this entry can see it.
+            and _raises(
+                lambda: assert_self_contained(
+                    _FakeTree("bin/nested/ffmpeg", "/usr/bin/ffmpeg"), "probe"
+                ),
+                "has to be self-contained",
+                CompileError,
+            )
+            and assert_self_contained(_walked, "probe") is None
+            # ...and the SELECTOR itself, pinned to the literal: a narrowing that still matches
+            # the fixtures (`*/*` does, on every platform) is invisible to any fixture-based
+            # assertion, however faithful the matcher.
+            and _walked.patterns == ["*"]
+            # ...and a refusal reaches the caller and publishes nothing.
+            and _propagates,
         )
 
         raced = base / "raced"
