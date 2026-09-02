@@ -5,19 +5,22 @@
 # "not hand-curated prose, so it can't drift from what actually ships" (spec §3.7.2).
 #
 # ROW LAW [DECIDED — owner adjudications 2026-08-31 (the row key) + 2026-09-01 (the cache group,
-# the (A′) ruling), spec §3.4.4a]: a row is keyed by (artifact, target-triple); (artifact, triple)
-# maps to exactly one row, and one row = one STAGED-BYTES `sha256`. Every field is platform-pure;
-# no field is a per-platform map ("scalar" admits a sub-table of scalars: [engine.from_source]).
-# TWO fields are plural: `triples` (a byte-identical platform-invariant artifact — a font,
-# policy.xml, the LibreOffice .xcu — is ONE row over several triples) and `corroboration_urls`
-# (a `mirrors` cross-check needs ≥ 2, §3.8-(i)). The moment an ARTIFACT-identifying field forks
-# across triples, the row splits; the §6.1.3 cache-GROUP fields (cache_engine / cache_version /
-# upstream_url / asset_sha256) are NOT artifact-identifying — several rows ship out of ONE
-# downloaded entry, so the validator holds them EQUAL across the group instead. (The 2026-09-01
-# mode-scoping follow-up on P4.28.1 scopes that upstream_url/asset_sha256 equality to
-# `acquisition = "prebuilt"` and re-keys the from-source anchor consistency onto upstream_url;
-# the validator re-scoping lands at P4.28.1, whose pre-declared owner tail also re-blesses this
-# header — until then, no from-source group may be written here.) §3.7.2 item-4
+# the (A′) ruling + its P4.28.1 mode-scoping follow-up), spec §3.4.4a]: a row is keyed by
+# (artifact, target-triple); (artifact, triple) maps to exactly one row, and one row = one
+# STAGED-BYTES `sha256`. Every field is platform-pure; no field is a per-platform map ("scalar"
+# admits a sub-table of scalars: [engine.from_source]). TWO fields are plural: `triples` (a
+# byte-identical platform-invariant artifact — a font, policy.xml, the LibreOffice .xcu — is ONE
+# row over several triples) and `corroboration_urls` (a `mirrors` cross-check needs ≥ 2,
+# §3.8-(i)). The moment an ARTIFACT-identifying field forks across triples, the row splits; the
+# §6.1.3 cache-GROUP fields (cache_engine / cache_version / upstream_url / asset_sha256) are NOT
+# artifact-identifying — several rows ship out of ONE cache entry — and the validator holds a
+# group to one `cache_version` AND one `acquisition` in EITHER mode. A PREBUILT group is one
+# download, so `upstream_url` and `asset_sha256` are additionally held EQUAL across it; a
+# FROM-SOURCE group is a COMPILE that may consume several signed source tarballs
+# (schema-writable here since the P4.28.1 validator re-scoping; its populate path is P4.28.1's
+# CI compile — `scripts/fetch-engine-assets` acquires PREBUILT rows only), held together by
+# the URL-keyed anchor rule instead: rows with the same `upstream_url` carry identical
+# `from_source` anchors — same source ⇒ same anchors, one law across both modes. §3.7.2 item-4
 # sub-components (kind = "sub-component") follow the same law with the hash anchoring the pinned
 # SOURCE.
 #
@@ -42,5 +45,5 @@
 # owner tail re-blesses this clause)).
 #
 # An empty manifest is VALID (`crate::engines::lock` and its empty-container test): the container
-# lands at P4.56.1 and each engine's rows land with its staging box (P5–P7); the reading gates
+# landed at P4.56.1 and each engine's rows land with its staging box (P5–P7); the reading gates
 # hold the fail-open-while-empty / fail-closed-on-first-row posture (the P4.56.3 gate semantics).

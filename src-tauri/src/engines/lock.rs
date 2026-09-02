@@ -28,7 +28,7 @@
 //!   ARTIFACT-identifying field forks across triples, the row splits. The §6.1.3 cache-GROUP fields
 //!   ([`EngineRow::cache_engine`], [`EngineRow::cache_version`], [`EngineRow::upstream_url`],
 //!   [`EngineRow::asset_sha256`]) are deliberately NOT artifact-identifying: several rows ship out of
-//!   ONE downloaded entry, so those fields are held EQUAL across a group
+//!   ONE cache entry, so those fields are held EQUAL across a group
 //!   ([`LockViolation::CacheGroupMismatch`]) rather than forcing it apart.
 //!   [`EngineRow::asset_sha256`] is likewise exempt from the duplicate-hash rule — siblings out of one
 //!   archive share it by construction. The 2026-09-01 mode-scoping follow-up (the P4.28.1
