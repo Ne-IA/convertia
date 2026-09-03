@@ -5,28 +5,35 @@ planned L(-1) hand-off, landed 2026-08-31; G37's staging half, G24 discipline).
 Two jobs, both from OUTSIDE the tool so a neutering edit to stage-engines cannot neuter its own
 check (the P4.27 box's hand-off note):
 
-1. RUN the tool's fixture-driven `--selftest` (its 53 legs now have a CI runner: this file is
+1. RUN the tool's fixture-driven `--selftest` (its 124 legs have a CI runner: this file is
    discovered by `run-gate-selftests`, so the suite executes at L2 (diff-scoped canary) and L4
-   (3-OS)) and PIN the tally at 53 - the host-stable-count claim, CI-checked. (35 at delivery,
-   P4.27; 53 since P4.28/17808aa - the STAGED_ENGINES<->manifest binder + restore-shape legs the
-   (A') ruling rode in; this bump is that box's pre-declared owner-acked tail.)
+   (3-OS)) and PIN the tally at 124 - the host-stable-count claim, CI-checked. (35 at delivery,
+   P4.27; 53 since P4.28/17808aa; 124 since P4.29/e9dcb14 - the universal lipo/merge legs; each
+   bump is that box's pre-declared owner-acked tail, and the number is READ from the committed
+   tree's own `--selftest` run, never carried from prose.)
 
 2. The per-OS skip INVENTORY (the 2026-08-31 owner ruling: no silent skips - every OS-gated leg
    is loud, pinned, and genuinely executes on at least one CI platform). stage-engines records an
    OS-impossible leg as a labeled `(skipped - ...)` PASS; this canary asserts the skipped-name set
-   per OS fail-closed: on POSIX exactly the junction trio is skipped and the symlink trio RAN; on
-   Windows the junction trio MUST run (`mklink /J` needs no privilege - a junction skip there is a
-   real failure, not an environment fact) and the symlink trio skips all-or-none (one privilege
-   probe gates the trio). Any leg name carrying `(skipped` outside the declared names FAILS - a
-   NEW silently-skipping leg cannot appear unnoticed. The 3-OS canary is what makes "every leg
-   executes somewhere" a CI fact: ubuntu/macos run the symlink trio, windows runs the junction trio.
+   per OS fail-closed: on POSIX exactly the junction trio is skipped and every symlink-gated leg
+   RAN; on Windows the junction trio MUST run (`mklink /J` needs no privilege - a junction skip
+   there is a real failure, not an environment fact), the symlink trio and the P4.29 universal
+   symlink QUARTET each skip all-or-none (a privilege probe gates each group), and the two
+   ANY-LINK legs MUST run (they plant a symlink where the host allows one and fall back to a
+   junction - they skip only on a host that can express NEITHER shape, which no CI platform is).
+   Any leg name carrying `(skipped` outside the declared names FAILS - a NEW silently-skipping
+   leg cannot appear unnoticed. The 3-OS canary is what makes "every leg executes somewhere" a
+   CI fact: ubuntu/macos run the symlink-gated legs, windows runs the junction-gated ones.
 
 Plus independent planted positives against the tool's guards (own fixtures, never the tool's
 `_fixture_tree`): the dash-prefix collision, the two-restored-versions refusal, the member-path
-escape, the non-3.3.1 resource subdir, the universal-triple refusal (asserted on the MESSAGE
-naming P4.29 - the generic unknown-triple arm also raises structural on the same input, so a
-type-only assert would stay green with the P4.29 guard deleted; the same masking class as the
-collision probe's first cut), the absent-cache-root refusal (structural), a missing member, the
+escape, the non-3.3.1 resource subdir, the ONE-slice universal refusal (P4.29 landed the
+universal path and retired the old universal-triple-refused positive; its equivalent-strength
+successor is asserted on the MESSAGE naming P4.29.1 + the absent slice - the near sibling
+raiser is the VERSION-MISMATCH arm, which raises the same StagingError type through the same
+stage_all call once both slices exist, so a type-only assert could pass on the wrong arm; an
+engine absent from BOTH slices raises nothing at all - it is reported as absent),
+the absent-cache-root refusal (structural), a missing member, the
 check-mode no-write guarantee, the per-destination replace-vs-accumulate clear (the policy.xml
 casualty class), the triple-keyed suffix + exec-bit properties, and the OS-conditional link
 probes (POSIX: a RELATIVE escaping symlink - relative on purpose, since an absolute escape
@@ -39,15 +46,19 @@ call AND the planted-positive section are both exception-guarded: an unhandled t
 either is a NAMED failing leg, never a dead canary.
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop (the P4.56.3 pattern):
-this file is L(-1)-caged while stage-engines is not, and it PINS the tally (53), the skip-name
-inventory, and its OWN leg count - so any box that adds a `--selftest` leg to stage-engines (P4.29 lipo, P4.30
+this file is L(-1)-caged while stage-engines is not, and it PINS the tally (124), the skip-name
+inventory, and its OWN leg count - so any box that adds a `--selftest` leg to stage-engines (P4.30
 relocation, P4.41 manifest, P4.51 assertions, the P5-P7 staging boxes) carries the matching
-tally/inventory bump HERE as a pre-planned owner-acked L(-1) tail of that box.
+tally/inventory bump HERE as a pre-planned owner-acked L(-1) tail of that box. It also carries
+the recorder-fidelity catcher (the 4a5f359-escalated _record force-green class - see section 3)
+plus the independent suite verdict re-derived from _results (section 1).
 
 Run:  python3 scripts/gate-selftests/g24-stage-engines.py   Exit 0 = every assertion held.
 """
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import os
 import subprocess
 import sys
@@ -108,19 +119,56 @@ WIN_JUNCTION_FALLBACK_SKIPS = {
     "junction allow leg (skipped - mklink unavailable)",
     "junction cycle leg (skipped - mklink unavailable)",
 }
-DECLARED_SKIP_NAMES = POSIX_JUNCTION_SKIPS | WIN_SYMLINK_SKIPS | WIN_JUNCTION_FALLBACK_SKIPS
+# The P4.29 universal symlink QUARTET: the same all-or-none shape as the trio (a symlink-privilege
+# probe gates the group) - never skipped on POSIX, all four skipped on an unprivileged Windows.
+WIN_UNIVERSAL_SYMLINK_SKIPS = {
+    "universal staging: symlink-vs-file leg (skipped - host cannot create symlinks)",
+    "universal staging: dir-vs-dirlink leg (skipped - host cannot create symlinks)",
+    "universal staging: symlink-disagreement leg (skipped - host cannot create symlinks)",
+    "universal staging: symlink-preserve leg (skipped - host cannot create symlinks)",
+}
+# The two ANY-LINK legs plant a symlink where the host allows one and fall back to a junction
+# where it does not - declared (name-legitimate) but MUST-RUN on both CI platforms, since they
+# skip only on a host that can express NEITHER link shape.
+ANY_LINK_SKIPS = {
+    "universal staging: escaping-link leg (skipped - host cannot create any link)",
+    "universal staging: tree-walk descent leg (skipped - host cannot create any link)",
+}
+DECLARED_SKIP_NAMES = (POSIX_JUNCTION_SKIPS | WIN_SYMLINK_SKIPS | WIN_JUNCTION_FALLBACK_SKIPS
+                       | WIN_UNIVERSAL_SYMLINK_SKIPS | ANY_LINK_SKIPS)
 
 # --- 1. the full suite, its tally, and the per-OS skip inventory --------------------------------
 print("[g24-stage-engines] running stage-engines --selftest ...")
+# The suite runs under a CAPTURED stdout: stage-engines' _record PRINTS each leg as it is
+# recorded, so the captured stream is PRODUCTION-TIME evidence a post-hoc in-place rewrite of
+# _results cannot forge (the r4 review's third force-green shape: `_results[:] = [(n, True)...]`
+# at the end of selftest() keeps the tally, rc=0 AND a green post-hoc read - only what was
+# already printed still carries the [FAIL]). The stream is replayed below so the log keeps it.
+_suite_out = io.StringIO()
 try:
-    rc = m.selftest()
+    with contextlib.redirect_stdout(_suite_out):
+        rc = m.selftest()
     suite_crashed = ""
 except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary, here as in _refused
     rc, suite_crashed = 1, f"{type(e).__name__}: {e}"
+print(_suite_out.getvalue(), end="")
+if suite_crashed:
     print(f"[g24-stage-engines] --selftest raised: {suite_crashed}")
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
-record("the leg tally is host-stable at 53 (the pinned count)", len(m._results) == 53)
+record("the leg tally is host-stable at 124 (the pinned count)", len(m._results) == 124)
+# The INDEPENDENT verdict, derived from the stored entries rather than the tool's own
+# aggregation: `rc` above comes from selftest()'s `return 1 if failed else 0`, which lives in
+# the same un-caged function - force-greening THAT is a one-line edit the recorder-fidelity
+# catcher below cannot see (it pins storage, not aggregation). This leg re-derives the verdict
+# from _results itself, so both halves of the reporting path are pinned from outside.
+record("independent verdict: every recorded suite leg is green (read from _results, never the "
+       "tool's own aggregation)", all(ok for _, ok in m._results))
+record(
+    "production-time evidence: the captured suite stream carries PASS lines and NO [FAIL] line "
+    "(what was printed at record time cannot be rewritten afterwards)",
+    "[PASS]" in _suite_out.getvalue() and "[FAIL]" not in _suite_out.getvalue(),
+)
 
 skipped = {name for name, ok in m._results if "(skipped" in name}
 record(
@@ -139,6 +187,16 @@ if os.name == "nt":
         "(one privilege probe gates the trio)",
         len(skipped & WIN_SYMLINK_SKIPS) in (0, 3),
     )
+    record(
+        "skip-inventory (Windows): the P4.29 universal symlink quartet skips all-or-none "
+        "(a privilege probe gates the group)",
+        len(skipped & WIN_UNIVERSAL_SYMLINK_SKIPS) in (0, 4),
+    )
+    record(
+        "skip-inventory (Windows): the two ANY-LINK legs RAN - a junction satisfies them, "
+        "so a skip on Windows is a failure",
+        not (skipped & ANY_LINK_SKIPS),
+    )
 else:
     record(
         "skip-inventory (POSIX): exactly the junction trio is skipped, nothing else",
@@ -147,6 +205,15 @@ else:
     record(
         "skip-inventory (POSIX): the symlink trio genuinely RAN",
         not (skipped & WIN_SYMLINK_SKIPS),
+    )
+    record(
+        "skip-inventory (POSIX): the P4.29 universal symlink quartet genuinely RAN",
+        not (skipped & WIN_UNIVERSAL_SYMLINK_SKIPS),
+    )
+    record(
+        "skip-inventory (POSIX): the two ANY-LINK legs RAN - a symlink satisfies them, "
+        "so a skip on POSIX is a failure",
+        not (skipped & ANY_LINK_SKIPS),
     )
 
 # --- 2. independent planted positives (own fixtures, public API) --------------------------------
@@ -255,14 +322,24 @@ try:
         raised, _, _ = _refused(lambda: m.resource_dest(root, "ghostscript"))
         record("planted: a resource subdir outside the closed 3.3.1 key set is refused", raised)
 
-        # Asserted on the MESSAGE, not the type: with the P4.29 guard deleted the generic
-        # unknown-triple arm raises StagingError(structural=True) on the SAME input, so a type-only
-        # assert stays green - the masking class again, proven by patching that revert.
-        raised, structural, msg = _refused(lambda: m.resolve_target(m.UNIVERSAL_TRIPLE))
+        # The P4.29 replacement for the obsolete universal-refused positive (P4.29 landed the
+        # universal path, removing that boundary): the equivalent-strength fail-closed edge is a
+        # cache holding ONE per-arch slice. Asserted on the MESSAGE because the SIBLING raiser is
+        # near: the VERSION-MISMATCH arm raises the same StagingError type through the same
+        # stage_all call once a second slice exists (one fixture edit away), so a type-only
+        # assert could pass on the wrong arm. P4.29.1 is the ARM-EXCLUSIVE needle (the mismatch
+        # message carries the triple too); the triple needle adds WHICH slice is absent. (An
+        # engine absent from BOTH slices raises nothing - it is REPORTED as absent - so that
+        # shape cannot mask anything; it would fail a raise-required leg outright.)
+        (cache / "pandoc-3.6-full-aarch64-apple-darwin").mkdir()
+        (cache / "pandoc-3.6-full-aarch64-apple-darwin" / "pandoc").write_bytes(b"arm64 bytes")
+        raised, _, msg = _refused(
+            lambda: m.stage_all(root, cache, m.UNIVERSAL_TRIPLE, rows[:1], write=False)
+        )
         record(
-            "planted: universal-apple-darwin is refused by the P4.29-boundary guard itself "
-            "(message-discriminated, structural)",
-            raised and structural and "P4.29" in msg,
+            "planted: a ONE-slice cache is refused for a universal stage, the message carrying "
+            "P4.29.1 + the absent slice's triple (message-discriminated)",
+            raised and "P4.29.1" in msg and "x86_64-apple-darwin" in msg,
         )
 
         raised, structural, _ = _refused(
@@ -355,7 +432,25 @@ except Exception as e:  # noqa: BLE001 - same rationale as the suite guard
     fixture_crashed = f"{type(e).__name__}: {e}"
     print(f"[g24-stage-engines] the planted-positive section raised: {fixture_crashed}")
 record("the planted-positive section completed without an unhandled exception", not fixture_crashed)
-record("the canary's own leg count is pinned (22 + this pin)", len(results) == 22)
+
+# --- 3. the recorder-fidelity catcher (the 4a5f359-escalated _record force-green class) ---------
+# Forcing the tool's _record green disarms the whole suite at a PRESERVED tally, and every leg
+# above reads _results, which would look healthy. Not closable from the un-caged tool; caged
+# here: feed the recorder a FAIL and assert it is stored faithfully - a coerced-True or
+# dropped-FAIL recorder reds this leg mechanically. (The [FAIL] line it prints is the probe's
+# own deliberate entry, not a suite failure - the name says so.)
+_PROBE_NAME = "g24 recorder-fidelity probe (a deliberate FAIL entry; not a suite failure)"
+try:
+    m._record(_PROBE_NAME, False)
+    _fidelity = m._results[-1] == (_PROBE_NAME, False)
+except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+    print(f"[g24-stage-engines] recorder probe raised: {type(e).__name__}: {e}")
+    _fidelity = False
+record("escalation catcher: the tool's recorder stores a FAIL faithfully "
+       "(a force-green _record reds here)", _fidelity)
+
+# --- 4. the canary's own leg count --------------------------------------------------------------
+record("the canary's own leg count is pinned (27 + this pin)", len(results) == 27)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-stage-engines] {len(results) - len(failed)}/{len(results)} assertions passed.")

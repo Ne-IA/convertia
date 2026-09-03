@@ -35,11 +35,16 @@ neutered in place) - the restored-source RE-HASH (`resolve_inputs` refuses bytes
 the pinned `tarball_sha256`; a cache is not a trust boundary) and the signature-verdict
 ENFORCEMENT pair (`verify_signature` with an injected runner: a clean tool exit whose output
 never names the pinned key REFUSES, and the same call ACCEPTS once it does - so the matcher is
-consumed, not decorative).
+consumed, not decorative). Plus the two 4a5f359-escalated catchers: the recorder-fidelity leg
+(a FAIL fed to the tool's `_record` must be stored faithfully - a force-green recorder reds
+this caged canary at a preserved tally) and the `assert_self_contained` stub probe (a
+duck-typed prefix whose walk yields an escaping symlink, no link privilege needed, with the
+walk pattern pinned at "*" - a third cage-ruling-leaning seam, driven from outside).
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop: this file is
 L(-1)-caged while compile-engine-asset is not, and it PINS the tally (208), the empty-skip
-inventory, and its OWN leg count - any box that adds a `--selftest` leg to the tool (the
+inventory, and its OWN leg count - any box that adds a `--selftest` leg to the tool (P4.34's
+pull-forward, the first seam fill per its 2026-09-03 attribution ruling, and the
 P5.1.1/P5.5.1/P5.9.1/P6.1.1/P7.17.1 compile boxes filling the configure seam) carries the
 matching bump HERE as a pre-planned owner-acked L(-1) tail of that box.
 
@@ -113,6 +118,16 @@ except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
 record("the leg tally is host-stable at 208 (the pinned count)", _probe(lambda: len(m._results) == 208))
+# The INDEPENDENT verdict from the stored entries: `rc` comes from selftest()'s own
+# aggregation, which lives in the same un-caged tool - force-greening it is a one-line edit
+# the recorder-fidelity catcher cannot see. Both reporting halves are pinned from outside.
+# KNOWN, RECORDED BOUND (the r4 review): a post-hoc in-place rewrite of _results at the END of
+# selftest() defeats every read-the-state-afterwards leg. This tool's recorder appends
+# SILENTLY, so no production-time stream exists to capture (the stage canary closes that shape
+# via its printed stream); the equivalent closure here requires a tool-side print - a Loop edit
+# at the next --selftest-touching box, made plan-visible by this comment and the P4.29 appendix.
+record("independent verdict: every recorded suite leg is green (read from _results, never the "
+       "tool's own aggregation)", _probe(lambda: all(ok for _, ok in m._results)))
 
 # The one declared skip set: the symlink trio, Windows-only, all-or-none on the single
 # privilege probe. The EXACT names are pinned so a renamed or added skip is a named FAIL.
@@ -275,7 +290,8 @@ raised, msg = _refused(
 record("planted positive: TWO declared lines for one shared tarball are refused as ambiguous",
        raised and "one tarball is one build" in msg)
 
-# --- 4. the two seams the cage rulings LEAN on, end-to-end (this act's r1 review finding:
+# --- 4. two of the three cage-ruling-leaning seams, end-to-end - the third,
+# assert_self_contained, is section 5's stub probe (this act's r1 review finding:
 # a suite tally cannot see a leg neutered in place, so the load-bearing seams get their own
 # outside-driven positives - the restored-source re-hash and the verdict ENFORCEMENT) ------------
 
@@ -319,11 +335,56 @@ record(
     ) is None),
 )
 
-# --- 5. the canary's own leg count --------------------------------------------------------------
+# --- 5. the two 4a5f359-escalated catchers: recorder fidelity + the assert_self_contained
+# stub probe. A forced-green _record disarms the whole suite at a PRESERVED tally; not closable
+# from the un-caged tool, so it is caged here - a FAIL fed to the recorder must be stored
+# faithfully. (This tool's recorder appends silently; only stage-engines' prints its entries.)
+_PROBE_NAME = "g24 recorder-fidelity probe (a deliberate FAIL entry; not a suite failure)"
+record(
+    "escalation catcher: the tool's recorder stores a FAIL faithfully "
+    "(a force-green _record reds here)",
+    _probe(lambda: (m._record(_PROBE_NAME, False) or True)
+           and m._results[-1] == (_PROBE_NAME, False)),
+)
+
+# The SECOND 4a5f359-escalated closure: `assert_self_contained` had no outside-driven probe (its
+# coverage lived in the tool's own suite, and the r7 call-site leg patches the function away).
+# 4a5f359 made the walk drivable through the entry OBJECT, so this stub needs no link privilege;
+# the `patterns` pin catches a narrowed walk (`rglob("*.so")`) that every real fixture would miss.
+
+
+class _EscapingEntry:
+    name = "escape.link"
+
+    def is_symlink(self) -> bool:
+        return True
+
+    def readlink(self) -> Path:
+        return Path("../../outside/evil")
+
+
+class _StubPrefix:
+    def __init__(self) -> None:
+        self.patterns: list[str] = []
+
+    def rglob(self, pattern: str):
+        self.patterns.append(pattern)
+        yield _EscapingEntry()
+
+
+_STUB = _StubPrefix()
+raised, msg = _refused(lambda: m.assert_self_contained(_STUB, "g24-canary-entry"), _COMPILE_ERROR)
+record(
+    "escalation catcher: an entry whose walk yields an ESCAPING symlink is refused as not "
+    "self-contained (stub-driven, no privilege needed; the walk pattern pinned at '*')",
+    raised and "has to be self-contained" in msg and _STUB.patterns == ["*"],
+)
+
+# --- 6. the canary's own leg count --------------------------------------------------------------
 # (No section-level exception guard: every raising seam runs inside _refused's try, every
 # tool-touching predicate inside _probe's, and a module-load failure tracebacks to exit 1 -
 # fail-closed either way; this canary builds no real trees.)
-record("the canary's own leg count is pinned (20 + this pin)", len(results) == 20)
+record("the canary's own leg count is pinned (23 + this pin)", len(results) == 23)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-compile-engine-asset] {len(results) - len(failed)}/{len(results)} assertions passed.")

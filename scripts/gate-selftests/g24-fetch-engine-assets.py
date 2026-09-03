@@ -20,8 +20,10 @@ Plus independent planted positives driven against the tool's PUBLIC seams with t
 probes (a sibling raiser cannot satisfy the leg), one STRUCTURAL assertion (the per-hop redirect
 pin installed in the real opener - no raiser exists there to discriminate), a FetchError-existence
 leg (the refusal type the probes discriminate on, resolved once at module scope so a rename is a
-named FAIL), and the manifest->egress DERIVATION pair (allowed_hosts built from the row's own
-URLs + an off-row URL refused under that derived list).
+named FAIL), the manifest->egress DERIVATION pair (allowed_hosts built from the row's own
+URLs + an off-row URL refused under that derived list), and the recorder-fidelity catcher (the
+4a5f359-escalated _record force-green class: a FAIL fed to the tool's recorder must be stored
+faithfully, so a coerced-True or dropped-FAIL recorder reds this caged canary).
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop: this file is
 L(-1)-caged while fetch-engine-assets is not, and it PINS the tally (165), the empty-skip
@@ -99,6 +101,16 @@ except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
 record("the leg tally is host-stable at 165 (the pinned count)", _probe(lambda: len(m._results) == 165))
+# The INDEPENDENT verdict from the stored entries: `rc` comes from selftest()'s own
+# aggregation, which lives in the same un-caged tool - force-greening it is a one-line edit
+# the recorder-fidelity catcher cannot see. Both reporting halves are pinned from outside.
+# KNOWN, RECORDED BOUND (the r4 review): a post-hoc in-place rewrite of _results at the END of
+# selftest() defeats every read-the-state-afterwards leg. This tool's recorder appends
+# SILENTLY, so no production-time stream exists to capture (the stage canary closes that shape
+# via its printed stream); the equivalent closure here requires a tool-side print - a Loop edit
+# at the next --selftest-touching box, made plan-visible by this comment and the P4.29 appendix.
+record("independent verdict: every recorded suite leg is green (read from _results, never the "
+       "tool's own aggregation)", _probe(lambda: all(ok for _, ok in m._results)))
 record(
     "skip-inventory (strict): every fetch-suite leg RUNS on every platform - NO leg may skip",
     _probe(lambda: not any("(skipped" in name for name, _ok in m._results)),
@@ -174,12 +186,24 @@ raised, msg = _refused(
 record("planted positive: an off-row URL is refused UNDER THE DERIVED allow-list, before any I/O",
        raised and "not an origin this row names" in msg)
 
-# --- 3. the canary's own leg count --------------------------------------------------------------
+# --- 3. the recorder-fidelity catcher (the 4a5f359-escalated _record force-green class): a
+# forced-green _record disarms the whole suite at a PRESERVED tally; not closable from the
+# un-caged tool, so it is caged here - a FAIL fed to the recorder must be stored faithfully.
+# (This tool's recorder appends silently; only stage-engines' prints its entries.)
+_PROBE_NAME = "g24 recorder-fidelity probe (a deliberate FAIL entry; not a suite failure)"
+record(
+    "escalation catcher: the tool's recorder stores a FAIL faithfully "
+    "(a force-green _record reds here)",
+    _probe(lambda: (m._record(_PROBE_NAME, False) or True)
+           and m._results[-1] == (_PROBE_NAME, False)),
+)
+
+# --- 4. the canary's own leg count --------------------------------------------------------------
 # (No section-level exception guard like g24-stage-engines' fixture block: every raising seam
 # runs inside _refused's try, every tool-touching record() predicate inside _probe's, and a
 # module-load failure tracebacks to exit 1 — fail-closed either way; the template's guard covers
 # a fixture SECTION that builds real trees, which this canary deliberately has none of.)
-record("the canary's own leg count is pinned (14 + this pin)", len(results) == 14)
+record("the canary's own leg count is pinned (16 + this pin)", len(results) == 16)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-fetch-engine-assets] {len(results) - len(failed)}/{len(results)} assertions passed.")

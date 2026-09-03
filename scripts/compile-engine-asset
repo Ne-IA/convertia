@@ -30,7 +30,7 @@ validly-signed tarball whose generated files differ from the upstream git tree),
 configure line. A failure at any step publishes nothing.
 
 THE CONFIGURE LINE IS DATA. `src-tauri/engine-configure.toml` declares
-`<cache_engine>.configure.flags` per engine, filled by the named compile boxes (P5.1.1, P5.5.1,
+`<cache_engine>.configure.flags` per engine, filled by the named compile boxes (P4.34's pull-forward first, then P5.1.1, P5.5.1,
 P5.9.1, P6.1.1, P7.17.1). A group with no table is REFUSED rather than built with a default line:
 "no flags declared" and "these flags" are different situations, and only one of them is safe to
 build from. The flags are passed as an argv LIST, never joined into a shell string, so a value

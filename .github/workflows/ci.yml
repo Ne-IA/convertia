@@ -580,8 +580,9 @@ jobs:
       # base image is digest-pinned. The pinned-toolchain half of §6.1.3's "digest-pinned
       # toolchain/base-image", and the binding of `from_source.toolchain_digest` (an engines.lock
       # schema field with no consumer while the manifest is empty) to this container, are owned
-      # by the FIRST compile box that fills the seam (P5.1.1 per the P4.34 pull-forward) — its
-      # own pre-declared .github/** tail, recorded on P4.28.1's [RESOLVED] appendix.
+      # by the first seam-filling box — P4.34, whose pull-forward ruling drives the harness
+      # before P5.1.1's P5 re-verification — as its own pre-declared .github/** tail, recorded
+      # on P4.28.1's [RESOLVED] appendix and P4.34's carry-list.
       - name: 'build toolchain (the container is root; packages via the image-pinned signed apt repo)'
         run: |
           apt-get update

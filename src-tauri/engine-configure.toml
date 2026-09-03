@@ -92,7 +92,8 @@
 # no absolute paths recorded into the output.
 #
 # WHY IT IS NOT IN `engines.lock`, and why that is not a hole. `engines.lock` is L(-1): every edit
-# is an owner-acked act. The boxes that FILL this seam — P5.1.1 (libvips), P5.5.1 (ImageMagick),
+# is an owner-acked act. The boxes that FILL this seam — P4.34's pull-forward first (libvips +
+# ImageMagick land in P4 per its 2026-07-22 ruling), then P5.1.1 (libvips), P5.5.1 (ImageMagick),
 # P5.9.1 (x265), P6.1.1 (FFmpeg), P7.17.1 (poppler) — are Loop `[BUILD]` boxes, so a caged home
 # would make each of them an owner act instead. The enforcement does not live here in any case:
 # these flags are the build INPUT, and what actually gates the release is the §6.1.3 assertion on

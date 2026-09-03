@@ -136,7 +136,8 @@ build-time mechanics that realise them**:
   configure line is not LAME's — nor is FFmpeg's build system libvips's: FFmpeg ships a
   handwritten `configure` with no `configure.ac`, libvips is Meson, x265 and poppler are CMake, so
   the build system is declared per source and never guessed), filled by the named compile boxes
-  (P5.1.1, P5.5.1, P5.9.1, P6.1.1, P7.17.1) — so the §6.1.3 assertions cross-check the produced
+  (P4.34's pull-forward first — libvips + ImageMagick land in P4 per its 2026-07-22 ruling —
+  then P5.1.1, P5.5.1, P5.9.1, P6.1.1, P7.17.1) — so the §6.1.3 assertions cross-check the produced
   artifact against the line that produced it, and a group or source with no declared line is
   refused rather than built with a default one. **One tarball is one build:** rows sharing an
   `upstream_url` (`ffmpeg` and `ffprobe`) are ONE compile that produces both, so exactly one of
