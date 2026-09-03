@@ -1240,6 +1240,9 @@ def _write_bytes(path: Path, payload: bytes) -> Path:
 
 def _fixture_tree(base: Path) -> tuple[Path, Path]:
     """A repo-shaped root + a cache root holding one sidecar entry and one resource entry."""
+    # RESOLVED for the same reason as _universal_fixture below: an expectation derived from an
+    # unresolved base diverges from the tool's resolved spellings on a resolution-variant TEMP.
+    base = base.resolve()
     root, cache = base / "repo", base / "cache"
     (root / BINARIES_REL).mkdir(parents=True)
     (root / RESOURCES_REL).mkdir(parents=True)
@@ -1316,6 +1319,21 @@ def _modes_at_rename(run) -> list[int]:
 
 def _universal_fixture(base: Path) -> tuple[Path, Path]:
     """A repo root + a cache holding BOTH per-arch slices of one sidecar and one resource tree."""
+    # RESOLVED once, deliberately: the tool hands `lipo` RESOLVED member paths (`_member_path`'s
+    # resolve-then-contain discipline), so an exact-argv expectation derived from an UNRESOLVED
+    # base diverges wherever the temp dir's spelling is not resolution-invariant - macOS
+    # (/var -> /private/var) and the CI Windows runner (an 8.3 RUNNER~1 component) both diverge,
+    # which is how the first Lane-A run reddened the exact-argv leg that was green on this dev
+    # host and ubuntu (the validate-on-CI-runtime class; reproduced locally via a junction TEMP).
+    # Resolving the BASE makes every expectation derived from these paths agree with the tool's
+    # spelling BY CONSTRUCTION. On resolution-invariant hosts resolve() is the identity; on a
+    # VARIANT host the pre-fix leg asserted the INVERSE of the tool's contract - it would have
+    # gone green had _member_path stopped resolving - so the change STRENGTHENS the assertion
+    # exactly where it was inverted. The old expectation encoded the host accident "temp is
+    # resolution-invariant"; the tool's resolution is the deliberate containment behaviour, so
+    # the expectation follows the tool, never the reverse.
+    # [Test-Change: P4.29 - old-obsolete+new-correct, §6.1.3]
+    base = base.resolve()
     root, cache = base / "repo", base / "cache"
     (root / BINARIES_REL).mkdir(parents=True)
     (root / RESOURCES_REL).mkdir(parents=True)
@@ -1389,7 +1407,7 @@ def selftest() -> int:
     _record("target: universal-apple-darwin accepted (P4.29)", resolve_target(UNIVERSAL_TRIPLE) == UNIVERSAL_TRIPLE)
     # (2a) the universal merge: the fat parse, the assertion, the lipo seam, the dual sourcing.
     with tempfile.TemporaryDirectory() as tmp:
-        ubase = Path(tmp)
+        ubase = Path(tmp).resolve()  # the exact-argv leg below needs the tool's spelling
         _record(
             "fat parse: a two-slice header reports both cputypes",
             fat_slice_cputypes(_write_bytes(ubase / "fat", _FAT_BOTH))

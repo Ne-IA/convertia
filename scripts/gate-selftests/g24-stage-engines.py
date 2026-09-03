@@ -449,8 +449,39 @@ except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
 record("escalation catcher: the tool's recorder stores a FAIL faithfully "
        "(a force-green _record reds here)", _fidelity)
 
+# The resolution-divergence catcher (the 6c732c0 red-main class): the tool hands `lipo`
+# RESOLVED member paths, so an exact-argv expectation derived from an UNRESOLVED fixture base
+# reds only where the temp dir's spelling is resolution-variant - macOS (/var is a symlink) and
+# the CI Windows runner (an 8.3 component) - while staying green on the dev host and ubuntu,
+# i.e. it is discovered by a red main. The fixture helpers therefore resolve their base; this
+# leg drives BOTH helpers through a LINK-shaped base (a junction on Windows - unprivileged - or
+# a symlink on POSIX), so deleting either `base.resolve()` reds on EVERY host, not on two of
+# three CI platforms.
+def _fixture_resolution_invariant() -> bool:
+    with tempfile.TemporaryDirectory() as tmp:
+        real = Path(tmp).resolve() / "real"
+        real.mkdir()
+        link = Path(tmp).resolve() / "link"
+        if os.name == "nt":
+            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real)],
+                                  capture_output=True, check=False)
+            if made.returncode != 0:
+                return False  # a junction needs no privilege - a failed plant is a FAIL, no skip
+        else:
+            link.symlink_to(real)
+        u_root, u_cache = m._universal_fixture(link / "u")
+        t_root, t_cache = m._fixture_tree(link / "t")
+        return all(p == p.resolve() for p in (u_root, u_cache, t_root, t_cache))
+
+
+record(
+    "resolution-divergence catcher: both fixture helpers return resolution-invariant paths "
+    "even through a link-shaped base (the 6c732c0 red-main class; reds on every host)",
+    _fixture_resolution_invariant(),
+)
+
 # --- 4. the canary's own leg count --------------------------------------------------------------
-record("the canary's own leg count is pinned (27 + this pin)", len(results) == 27)
+record("the canary's own leg count is pinned (28 + this pin)", len(results) == 28)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-stage-engines] {len(results) - len(failed)}/{len(results)} assertions passed.")
