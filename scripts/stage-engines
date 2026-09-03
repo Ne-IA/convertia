@@ -18,8 +18,11 @@ Per-OS layout (§3.4.5): a `-pc-windows-` triple gets the `.exe` suffix; every o
 the executable bit set on the staged sidecar (a dropped +x otherwise surfaces at runtime as a
 misleading startup "integrity failed" rather than a packaging error, G37). §3.4.5's macOS `.app`
 column is a RECORDED NO-OP for this script: the `.app` is assembled by `tauri build` out of these
-same two destinations, the fat-Mach-O merge that precedes it is P4.29 and the install_name
-relocation P4.30 - staging itself places identical per-arch bytes on all three platforms.
+same two destinations, and the install_name relocation that follows the merge is P4.30. The
+fat-Mach-O merge itself is HERE since P4.29: on a per-arch triple staging places the restored
+bytes unchanged, and on `universal-apple-darwin` it reads BOTH slices and `lipo -create`s them
+into one fat artifact - which is why `lipo` runs first and P4.30's relocation second (the merge
+re-emits the Mach-O and would clobber a rewrite applied to a slice).
 
 It NEVER touches the network. It reads only the restored cache directory. Its counterpart is
 `scripts/fetch-engine-assets` (P4.28), the checksum-verified pinned-URL POPULATE path that runs
@@ -42,9 +45,10 @@ launcher-as-externalBin vs launcher-in-resources split to that same §6.1 packag
 The MECHANISM below is live and exercised by --selftest; with no rows declared a run is a
 target-absent no-op that says so - the same skip-with-notice posture `check-build-matrix` (G30)
 holds for its sidecar slice assertion until a sidecar is staged. Each excluded piece is its own
-box: the macOS dual-arch `lipo -create` merge (P4.29), the rpath/install_name relocation
-(P4.30), the `tauri.conf.json` externalBin/resources wiring (P4.31), the in-bundle hash manifest
-(P4.41), the §6.1.3 build-assertion framework (P4.51).
+box: the rpath/install_name relocation (P4.30), the `tauri.conf.json` externalBin/resources
+wiring (P4.31), the in-bundle hash manifest (P4.41), the §6.1.3 build-assertion framework
+(P4.51). The macOS dual-arch `lipo -create` merge was on that list until P4.29 landed it here;
+its missing-x86_64-slice from-source fallback (P4.29.1) is still to come.
 
 [Build-Session-Entscheidung: P4.27] --selftest lives IN this file. The repo's only Python-test
 runner is `run-gate-selftests` over `scripts/gate-selftests/`, which is L(-1) (G71) and therefore
@@ -68,15 +72,20 @@ Usage:
   stage-engines --selftest         # the tool's own fixture-driven regression suite
 
 stdlib-only. Exit: 0 = staged (or nothing declared yet); 1 = a staging violation; 2 = a
-structural prerequisite is unusable (missing cache root, unresolvable target).
+structural prerequisite is unusable (missing cache root, unresolvable target, or - for the
+universal target - no `lipo` on PATH).
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import os
 import platform
 import shutil
 import stat
+import struct
+import subprocess
 import sys
 import tomllib
 import tempfile
@@ -113,6 +122,47 @@ V1_TARGET_TRIPLES = (
     "x86_64-unknown-linux-gnu",
 )
 UNIVERSAL_TRIPLE = "universal-apple-darwin"
+# The two per-arch triples a universal artifact is merged FROM. Ordered arm64-first because the
+# universal build runs on an arm64 runner (§6.1.3), so the native slice is the one a cache miss is
+# least likely to hit - the x86_64 slice is the documented hard case P4.29.1 falls back for.
+UNIVERSAL_SLICES = ("aarch64-apple-darwin", "x86_64-apple-darwin")
+
+# Mach-O FAT header, big-endian. Parsed here rather than shelled out to `lipo -info` for the same
+# reason `scripts/check-build-matrix` parses it (P0.4.10): `lipo` is macOS-only, while this
+# assertion has to be drivable from the suite on any runner. The MERGE genuinely needs `lipo` and
+# only ever runs on macOS; the CHECK does not, and a check that cannot run is not a check.
+# [Build-Session-Entscheidung: P4.29]
+_FAT_MAGIC = 0xCAFEBABE
+_FAT_MAGIC_64 = 0xCAFEBABF
+_CPU_TYPE_X86_64 = 0x01000007
+_CPU_TYPE_ARM64 = 0x0100000C
+_CPU_TYPE_NAMES = {_CPU_TYPE_X86_64: "x86_64", _CPU_TYPE_ARM64: "arm64"}
+# A non-Mach-O whose first four bytes happen to be `0xCAFEBABE` - a Java `.class` is the classic -
+# would otherwise be read as a fat binary with an absurd arch count. Bounded, fail-closed.
+# The value is the GATE's (`scripts/check-build-matrix`, P0.4.10), deliberately: producer and gate
+# answer the same question about the same bytes, and two different bounds would mean one of them
+# accepts a file the other refuses. A freeze leg pins the pair. [Build-Session-Entscheidung: P4.29]
+_MAX_FAT_ARCH = 64
+# Every fat-header constant above, mapped to its name in the G30 gate. A TABLE rather than one
+# pinned value per leg: pinning them one at a time is exactly how the next constant arrives
+# unpinned - the self-test asserts both that each pair agrees AND that this mapping covers every
+# such constant this module defines. [Build-Session-Entscheidung: P4.29]
+_GATE_PINNED_CONSTANTS = {
+    "FAT_MAGIC": "_FAT_MAGIC",
+    "FAT_MAGIC_64": "_FAT_MAGIC_64",
+    "CPU_TYPE_X86_64": "_CPU_TYPE_X86_64",
+    "CPU_TYPE_ARM64": "_CPU_TYPE_ARM64",
+    "_MAX_FAT_ARCH": "_MAX_FAT_ARCH",
+}
+# The read size `same_bytes` streams in. A module constant so a fixture can shrink it and drive
+# the loop ACROSS a chunk boundary: with a 1 MiB read every realistic test file arrives whole, so
+# a comparison that stopped after the first chunk would answer correctly on every fixture.
+# Homed BELOW the gate-pinned table, not above `_MAX_FAT_ARCH`: inserted there it sat between that
+# constant and the comment block explaining it, which then read as describing this one and was
+# false in every clause. G74 catches that splice in `.rs` only, so nothing mechanical sees the
+# Python form. [Build-Session-Entscheidung: P4.29]
+_COMPARE_CHUNK = 1 << 20
+
 # The §3.4.5 "Engine exe extension" row keys off the triple, never off the HOST: a cross-named
 # stage (e.g. --target for another platform in a self-test) must still get the right suffix.
 _WINDOWS_TRIPLE_MARKER = "-pc-windows-"
@@ -193,13 +243,10 @@ def host_target_triple() -> str | None:
 def resolve_target(explicit: str | None) -> str:
     """The triple to stage for: an explicit --target, else the host's. Raises StagingError."""
     if explicit == UNIVERSAL_TRIPLE:
-        raise StagingError(
-            f"target '{UNIVERSAL_TRIPLE}' needs both per-arch slices sourced from the cache and "
-            "merged with `lipo -create` into one fat Mach-O (§6.1.3 - Tauri does NOT lipo "
-            "sidecars); that dual-arch merge is box P4.29. This skeleton stages exactly one "
-            "per-arch triple: pass --target aarch64-apple-darwin or x86_64-apple-darwin.",
-            structural=True,
-        )
+        # Supported since P4.29: both per-arch slices are sourced from the cache and merged with
+        # `lipo -create` into one fat Mach-O, because Tauri does NOT lipo sidecars (§6.1.3,
+        # `[DECIDED - verified vs tauri#3355]`) - it reads the universal-named file as-is.
+        return UNIVERSAL_TRIPLE
     if explicit is not None:
         if explicit not in V1_TARGET_TRIPLES:
             raise StagingError(
@@ -216,6 +263,175 @@ def resolve_target(explicit: str | None) -> str:
             structural=True,
         )
     return host
+
+
+def fat_slice_cputypes(path: Path) -> tuple[int, ...]:
+    """The CPU types a fat Mach-O declares, or () for anything that is not one.
+
+    Reads the header only - the slices themselves are not parsed, because the question is which
+    architectures the file CLAIMS to carry, which is exactly what `lipo -info` reports.
+    """
+    with path.open("rb") as handle:
+        header = handle.read(8)
+        if len(header) < 8:
+            return ()
+        magic, count = struct.unpack(">II", header)
+        if magic not in (_FAT_MAGIC, _FAT_MAGIC_64):
+            return ()
+        if count == 0 or count > _MAX_FAT_ARCH:
+            return ()
+        width = 32 if magic == _FAT_MAGIC_64 else 20
+        table = handle.read(width * count)
+    if len(table) < width * count:
+        return ()
+    return tuple(
+        struct.unpack_from(">i", table, index * width)[0] for index in range(count)
+    )
+
+
+# The thin Mach-O magics, both byte orders. A universal artifact's INPUTS are thin; its output
+# is fat. Anything else in a tree (a font, a config, a data blob) is byte-compared instead.
+_MACHO_MAGICS = (
+    b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",  # MH_MAGIC_64 / MH_MAGIC, little-endian
+    b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",  # ...big-endian
+    b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf",  # already fat
+)
+
+
+def is_macho(path: Path) -> bool:
+    """Does this file carry a Mach-O magic? Decides lipo-vs-copy in a resource tree."""
+    if not path.is_file():
+        return False
+    with path.open("rb") as handle:
+        return handle.read(4) in _MACHO_MAGICS
+
+
+def assert_universal_fat(path: Path, label: str) -> None:
+    """Refuse a `*-universal-apple-darwin` artifact that is not fat with BOTH slices.
+
+    This is the staging-time half of G30. The gate (`scripts/check-build-matrix`) makes the same
+    assertion over the whole staged tree before `tauri build`; making it here too is not
+    redundancy for its own sake - it fails at the step that PRODUCED the file, naming the engine,
+    instead of at a later sweep that can only name a path. A single-arch binary carrying the
+    universal NAME is the silent case G30 exists for: Tauri bundles it without complaint and the
+    user on the other architecture gets an illegal-instruction crash.
+    """
+    cputypes = fat_slice_cputypes(path)
+    if not cputypes:
+        raise StagingError(
+            f"{label}: {path.name} is named for the universal target but is not a fat Mach-O - "
+            "Tauri bundles it as-is (it does not lipo sidecars, §6.1.3), so a thin binary here "
+            "ships a crash on the other architecture (G30)"
+        )
+    missing = [
+        _CPU_TYPE_NAMES[cpu]
+        for cpu in (_CPU_TYPE_ARM64, _CPU_TYPE_X86_64)
+        if cpu not in cputypes
+    ]
+    if missing:
+        present = ", ".join(_CPU_TYPE_NAMES.get(c, hex(c)) for c in cputypes) or "none"
+        raise StagingError(
+            f"{label}: {path.name} is fat but carries only [{present}] - both arm64 AND x86_64 "
+            f"are required for a universal artifact, missing [{', '.join(missing)}] (G30)"
+        )
+
+
+def run_lipo(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    """The real `lipo` seam. Replaced wholesale by the fixtures.
+
+    `shell=False` and an argv LIST: the paths are cache-entry and staging paths, and joining them
+    into a shell line is how a directory with a space becomes two arguments.
+
+    An ABSENT `lipo` is a missing prerequisite, not a staging violation: it surfaces as an
+    `OSError`, which `main` reports as exit 1 alongside genuine filesystem faults, and the two
+    read very differently to whoever is looking at a red macOS leg. Named and re-raised
+    structurally (exit 2), the way an absent cache root already is.
+    """
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+        )
+    except FileNotFoundError as absent:
+        raise StagingError(
+            f"`{argv[0]}` could not be run - it is not on PATH. The universal target merges the "
+            "two per-arch slices with Xcode's `lipo`, which ships with the macOS command line "
+            "tools (§6.1.3), so this target cannot be staged from a machine without them. "
+            "(A `lipo` that IS present and fails reports through its exit code instead.)",
+            structural=True,
+        ) from absent
+
+
+def same_bytes(a: Path, b: Path) -> bool:
+    """Do two files hold the same bytes? Streaming, and with no setting to get wrong.
+
+    NOT `filecmp.cmp`. Two reasons, and the second is why this function exists rather than a
+    careful call: it takes a `shallow` argument whose DEFAULT is the dangerous one - `shallow=True`
+    answers from `(size, mtime)` alone, so two DIFFERING same-size slices written in one timestamp
+    tick compare equal, the caller takes the already-universal copy path, and slice 0 ships
+    verbatim under the universal name. That is the half-universal class G30 exists for, reachable
+    by editing one keyword. It also caches on `(paths, size, mtime)`, which is safe here only
+    because each pair is compared once per run - safe by accident is not a property.
+
+    Streaming for the ordinary reason: this compares the two slices of members like LibreOffice's
+    `libmergedlo.dylib` (~150 MB), and reading both into memory to answer one bool holds 300 MB.
+
+    No size short-circuit. It would be a pure optimisation - the loop answers a size mismatch on
+    its own, because the shorter side runs out first and yields fewer bytes than the other for
+    that read - and an optimisation no leg can distinguish from its absence is a branch carried on
+    trust. What it could have saved is small: on the SIDECAR path both operands are Mach-O, so two
+    differing slices differ in the header's cputype field inside the first chunk; on the tree path
+    an arch-independent member (`shared.rdb` and its kind) can differ arbitrarily late, and there
+    the streaming read is what avoids holding both copies at once anyway.
+    [Build-Session-Entscheidung: P4.29]
+    """
+    with a.open("rb") as left, b.open("rb") as right:
+        while True:
+            chunk_a, chunk_b = left.read(_COMPARE_CHUNK), right.read(_COMPARE_CHUNK)
+            if chunk_a != chunk_b:
+                return False
+            if not chunk_a:
+                return True
+
+
+def merge_universal_binary(
+    sources: list[Path], dest: Path, label: str, *, runner, finalize=None
+) -> None:
+    """Merge per-arch slices into one fat Mach-O at `dest`, or leave `dest` untouched.
+
+    Tauri does NOT lipo sidecars (§6.1.3, `[DECIDED - verified vs tauri#3355]`) - it reads
+    `binaries/<name>-universal-apple-darwin` as-is - so this merge is entirely this script's job.
+
+    ATOMIC, in the §2.0 shape the rest of the repo uses: `lipo` writes a sibling temp, the G30
+    fatness assertion runs on THAT, and only a passing merge is moved into place. Merging straight
+    into `dest` and asserting afterwards left a refused - thin - binary sitting under the universal
+    name, where a later run whose engine is simply absent from the cache exits 0 and ships it.
+
+    `finalize` runs on the STAGING file, before the move, and both call sites use it for the same
+    thing: the merged file's MODE. `lipo -create` writes its own, so the sidecar has to add the
+    exec bit and a tree member has to inherit its slice's - and doing either AFTER the move leaves
+    a window, and an interrupted run, in which a fat but non-executable binary already wears the
+    final name. The mode is part of what is published, so it is published atomically with the
+    bytes. [Build-Session-Entscheidung: P4.29]
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = dest.with_name(f".{dest.name}.merging")
+    staging.unlink(missing_ok=True)
+    try:
+        argv = ["lipo", "-create", *[str(src) for src in sources], "-output", str(staging)]
+        result = runner(argv)
+        if getattr(result, "returncode", 1) != 0:
+            detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "")).strip()
+            raise StagingError(f"{label}: `lipo -create` failed:\n{detail}")
+        if not staging.is_file():
+            raise StagingError(
+                f"{label}: `lipo -create` reported success but wrote no {dest.name}"
+            )
+        assert_universal_fat(staging, label)
+        if finalize is not None:
+            finalize(staging)
+        os.replace(staging, dest)
+    finally:
+        staging.unlink(missing_ok=True)
 
 
 def exe_suffix(triple: str) -> str:
@@ -561,6 +777,328 @@ def assert_rows_bound_to_manifest(rows: tuple[EngineStaging, ...], lock_path: Pa
         )
 
 
+def _slice_entries(
+    cache_root: Path, row: EngineStaging
+) -> dict[str, Path] | None:
+    """The row's cache entry for EACH per-arch slice, or None when the engine is absent entirely.
+
+    A row present for one slice and absent for the other is NOT "absent" - it is the case that
+    silently ships a half-universal bundle, so it is a refusal that names the missing slice and
+    the box that exists to produce it.
+    """
+    found = {
+        slice_triple: select_cache_entry(cache_root, row.cache_engine, slice_triple)
+        for slice_triple in UNIVERSAL_SLICES
+    }
+    if all(entry is None for entry in found.values()):
+        return None
+    missing = [slice_triple for slice_triple, entry in found.items() if entry is None]
+    if missing:
+        raise StagingError(
+            f"engine '{row.cache_engine}': the restored cache has "
+            f"{', '.join(s for s in UNIVERSAL_SLICES if s not in missing)} but not "
+            f"{', '.join(missing)}. A universal artifact needs BOTH slices (§6.1.3 keys them "
+            "separately, one per triple) - `lipo` cannot merge a slice it does not have. The "
+            "documented fallback is to compile the missing slice from source (P4.29.1)."
+        )
+    # ONE engine is ONE pinned version. `select_cache_entry` is called once per slice and knows
+    # nothing about the other, so a stale or half-updated cache - a version bump that landed for
+    # one arch's job before the other, cache-key drift, manual cache surgery - would merge 7.1's
+    # arm64 slice with 9.9's x86_64 slice into a single file under one name. Nothing downstream
+    # can see it: a Mach-O fat header carries no source version, the SBOM lists one, and the two
+    # architectures would ship different codec and vulnerability profiles. This is the ONLY point
+    # in the pipeline where both version strings are in hand. [Build-Session-Entscheidung: P4.29]
+    versions = {
+        slice_triple: entry.name[len(row.cache_engine) + 1 : -(len(slice_triple) + 1)]
+        for slice_triple, entry in found.items()
+        if entry is not None
+    }
+    if len(set(versions.values())) > 1:
+        spelled = ", ".join(
+            f"{slice_triple}={version or '?'}" for slice_triple, version in versions.items()
+        )
+        raise StagingError(
+            f"engine '{row.cache_engine}': the restored slices pin DIFFERENT versions ({spelled}). "
+            "A universal artifact is one engine at one version on two architectures - merging "
+            "these would ship a different build to each, under one name, with one SBOM row and no "
+            "fat-header field that could ever record the difference."
+        )
+    return {slice_triple: entry for slice_triple, entry in found.items() if entry is not None}
+
+
+def merge_universal_tree(
+    sources: dict[str, Path], dest: Path, label: str, *, runner, write: bool
+) -> None:
+    """Merge two per-arch resource trees into one universal tree.
+
+    §6.1.3 says two slices per engine and P10.10 says `stage-engines` reads both restored slices
+    "per sidecar/lib" - a resource tree carries libraries too, and shipping one architecture's
+    tree in a universal bundle is the same silent crash a thin sidecar is. Every path must exist
+    in BOTH trees: a Mach-O pair is lipo'd, a byte-identical pair is copied, and anything else is
+    refused rather than guessed at, because a differing non-Mach-O means the two slices disagree
+    about something this step has no rule for. [Build-Session-Entscheidung: P4.29]
+    """
+    primary_root, secondary_root = (sources[s] for s in UNIVERSAL_SLICES)
+
+    def relatives(root_dir: Path) -> set[str]:
+        """Every path in the tree, DIRECTORIES included, descending exactly as `copytree` does.
+
+        Collecting only files would silently drop a directory both slices carry - an engine's
+        empty profile or plugin dir - which the per-arch path preserves via `copytree`. A macOS-
+        only asymmetry is exactly the kind nothing else would catch.
+
+        The descent rule is SPELLED here rather than inherited from `rglob`. `rglob` happens to
+        walk this way on 3.12 (`_iterate_directories` -> `Path.walk(follow_symlinks=False)`), but
+        it is an unstated stdlib default under a parameter that was still being reshaped at 3.13,
+        and this file's whole no-harm story rests on the rule: a SYMLINK is preserved, never
+        descended (`copytree(symlinks=True)` copies the link itself, so its subtree is not part of
+        this tree), while a JUNCTION is descended, because `copytree` keys on `is_symlink()` -
+        false for a junction - and MATERIALISES it. Both halves must mirror the per-arch path, or
+        the universal build ships a different tree from the three per-arch ones for a reason no
+        gate downstream could name. [Build-Session-Entscheidung: P4.29]
+        """
+        out: set[str] = set()
+        stack = [root_dir]
+        while stack:
+            for child in stack.pop().iterdir():
+                out.add(child.relative_to(root_dir).as_posix())
+                if child.is_dir() and not child.is_symlink():
+                    stack.append(child)
+        return out
+
+    only_primary = sorted(relatives(primary_root) - relatives(secondary_root))
+    only_secondary = sorted(relatives(secondary_root) - relatives(primary_root))
+    if only_primary or only_secondary:
+        raise StagingError(
+            f"{label}: the two per-arch trees do not carry the same paths - "
+            f"{UNIVERSAL_SLICES[0]} has {only_primary[:4] or 'none'} that "
+            f"{UNIVERSAL_SLICES[1]} lacks, and vice versa {only_secondary[:4] or 'none'}. A "
+            "universal tree is one tree with fat binaries in it, not two trees merged by guess."
+        )
+    # NOT `if not write: return` here. Every check below is a VERDICT on the restored cache,
+    # not a consequence of writing, and a --check that returned at the path-set diff validated
+    # strictly less than the real run: it passed trees carrying identical-thin Mach-Os,
+    # dir-vs-file and symlink-vs-file divergences and differing non-Mach-Os that the real run
+    # refuses. A dry run that is greener than the wet one is the one thing a check mode must
+    # never be, so every verdict runs unconditionally and `write` gates only the statements that
+    # CREATE something - the directories, and the ones that place content. Stated as the RULE
+    # rather than as a count: the count was wrong within one round of being written (r5's
+    # empty-tree `dest.mkdir` landed directly beneath it), which is the count-then-enumerate shape
+    # this commit closes elsewhere. The single verdict --check cannot reach is `lipo`'s own, which
+    # needs the tool.
+    # [Build-Session-Entscheidung: P4.29]
+    if write:
+        # The destination exists even when both slices are EMPTY. `copytree` on the per-arch path
+        # creates it unconditionally, and `relatives()`'s contract is that the universal tree does
+        # not differ from the three per-arch ones - a corner, but the corner that contract names.
+        dest.mkdir(parents=True, exist_ok=True)
+    for rel in sorted(relatives(primary_root)):
+        primary, secondary = primary_root / rel, secondary_root / rel
+        target = dest / rel
+        if write:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        # BOTH sides checked for a link: `is_dir()` follows a symlink, so a real directory in
+        # one slice and a symlink-to-directory in the other would take this branch and publish a
+        # plain empty directory, silently dropping the other slice's layout.
+        if (
+            primary.is_dir()
+            and secondary.is_dir()
+            and not primary.is_symlink()
+            and not secondary.is_symlink()
+        ):
+            if write:
+                target.mkdir(parents=True, exist_ok=True)
+            continue
+        if primary.is_dir() != secondary.is_dir():
+            raise StagingError(
+                f"{label}: '{rel}' is a directory in one slice and a file in the other"
+            )
+        if primary.is_symlink() or secondary.is_symlink():
+            if not (primary.is_symlink() and secondary.is_symlink()):
+                # Naming the other side's REAL type, because two different divergences reach this
+                # one guard - a symlink against a plain file, and a symlink against a real
+                # directory - and a shared message lets either leg pass on the other's input.
+                linked, plain = (
+                    (UNIVERSAL_SLICES[0], secondary)
+                    if primary.is_symlink()
+                    else (UNIVERSAL_SLICES[1], primary)
+                )
+                raise StagingError(
+                    f"{label}: '{rel}' is a symlink in {linked} and a real "
+                    f"{'directory' if plain.is_dir() else 'file'} in the other slice"
+                )
+            if os.readlink(primary) != os.readlink(secondary):
+                raise StagingError(
+                    f"{label}: the two slices point '{rel}' at different targets"
+                )
+            if write:
+                target.symlink_to(os.readlink(primary))
+        elif same_bytes(primary, secondary):
+            # Byte-identity FIRST: an already-universal member is byte-identical in both slices
+            # and carries a fat magic, so testing `is_macho` first would hand `lipo -create` two
+            # copies of the same fat binary - which it refuses for overlapping architectures.
+            #
+            # But identity is not evidence of FATNESS: two slices can carry the same THIN (or
+            # arm64-only fat) Mach-O - a copied `engines.lock` row, P4.29.1's cross-compile
+            # quietly emitting a native slice, a poisoned cache - and copying that verbatim ships
+            # a single-arch library that G30 cannot see, because it finds universal artifacts by
+            # NAME and a tree member is called `libfoo.dylib`. So a Mach-O is asserted even on the
+            # path that does not merge it. [Build-Session-Entscheidung: P4.29]
+            if is_macho(primary):
+                assert_universal_fat(primary, f"{label}: {rel}")
+            if write:
+                shutil.copy2(primary, target)
+        elif is_macho(primary) and is_macho(secondary):
+            if write:
+                merge_universal_binary(
+                    [primary, secondary],
+                    target,
+                    f"{label}: {rel}",
+                    runner=runner,
+                    # A tree carries libraries AND launchers (§3.3.1 stages LibreOffice's inside
+                    # `resources/`), so the merged member has to keep the mode its slice had -
+                    # otherwise the universal build alone ships a non-executable launcher. Applied
+                    # through `finalize`, i.e. on the staging file: see merge_universal_binary.
+                    finalize=lambda staged, src=primary: shutil.copystat(src, staged),
+                )
+        elif is_macho(primary) or is_macho(secondary):
+            # BOTH or neither. Handing `lipo` a Mach-O and a data file produces an unhelpful
+            # tool error for what is really a packaging divergence between the two slices, and
+            # `or` would have done exactly that.
+            macho_side = UNIVERSAL_SLICES[0] if is_macho(primary) else UNIVERSAL_SLICES[1]
+            raise StagingError(
+                f"{label}: '{rel}' is a Mach-O in {macho_side} and not in the other slice - the "
+                "two slices disagree about what this file IS, which is a packaging divergence, "
+                "not something to merge"
+            )
+        else:
+            raise StagingError(
+                f"{label}: '{rel}' differs between the two slices but is not a Mach-O, so there "
+                "is no merge rule for it - a universal tree cannot carry two versions of one file"
+            )
+
+
+def stage_universal(
+    root: Path,
+    cache_root: Path,
+    rows: tuple[EngineStaging, ...],
+    *,
+    write: bool,
+    runner,
+) -> list[StagedResult]:
+    """Stage every row for `universal-apple-darwin` by merging both per-arch slices.
+
+    Ordering note (§6.1.3 / the P4.29 box): `lipo` runs FIRST, the P4.30 install_name relocation
+    afterwards - `lipo -create` re-emits the Mach-O and rewrites its load commands, so a
+    relocation applied to a per-arch slice would be clobbered by the merge.
+    """
+    for slice_triple in UNIVERSAL_SLICES:
+        for name, claimants in ambiguous_engine_entries(cache_root, rows, slice_triple):
+            raise StagingError(
+                f"restored cache entry '{name}' parses as belonging to more than one declared "
+                f"engine ({', '.join(claimants)}) - the "
+                "`<cache_engine>-<cache_version>-<triple>` key must identify exactly one engine "
+                "(§6.1.3)"
+            )
+    clear_resource_destinations(root, rows, write=write)
+    results: list[StagedResult] = []
+    for row in rows:
+        entries = _slice_entries(cache_root, row)
+        if entries is None:
+            results.append(StagedResult(row, None, None))
+            continue
+        primary = entries[UNIVERSAL_SLICES[0]]
+        if row.kind is StagingKind.SIDECAR:
+            members = {}
+            for slice_triple, entry in entries.items():
+                src = _member_path(entry, row.member or row.dest)
+                if not src.is_file():
+                    raise StagingError(
+                        f"sidecar '{row.dest}': {src} is missing from the restored "
+                        f"{slice_triple} cache entry {entry.name}"
+                    )
+                members[slice_triple] = src
+            dest = sidecar_dest(root, row.dest, UNIVERSAL_TRIPLE)
+            slices = [members[s] for s in UNIVERSAL_SLICES]
+            # Structured like merge_universal_tree and for the same reason: every VERDICT below is
+            # a judgement on the restored cache, not a consequence of writing, so it runs in BOTH
+            # modes and only the byte-moving statements are gated on `write`. The sidecar was the
+            # sibling that rule was NOT applied to when the tree half was restructured - `--check`
+            # signed off a thin already-universal sidecar the real run refuses, the same
+            # dry-run-greener-than-the-wet-one defect one function down. `ci.yml`'s check pass
+            # runs `--check` for the RUNNER's host triple, so it does not reach this branch today;
+            # the universal target gets its live check consumer at P10.10, and a check mode that
+            # validates less than the run is a defect the moment it does.
+            # [Build-Session-Entscheidung: P4.29]
+            if same_bytes(slices[0], slices[1]):
+                # An upstream that already publishes a universal binary lands under BOTH slice
+                # keys, and `lipo -create` refuses two copies of one fat file. Handled the same
+                # way the tree path handles it, rather than dying on a raw tool error.
+                #
+                # Asserted UNCONDITIONALLY here, and deliberately not behind the `is_macho` test
+                # the tree path uses: a sidecar IS the executable Tauri slots into externalBin
+                # under the universal name, never an arch-independent data file the way a tree
+                # member can be - it is precisely the artifact G30 looks for BY that name
+                # (§6.1.3), so a non-Mach-O one is a defect wherever it came from.
+                assert_universal_fat(slices[0], f"sidecar '{row.dest}'")
+                if write:
+                    # Atomic for the same reason the merge is: a torn write under the
+                    # universal name survives a failed run, and a later run whose engine is
+                    # simply absent from the cache exits 0 with it still there.
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    staged_copy = dest.with_name(f".{dest.name}.merging")
+                    staged_copy.unlink(missing_ok=True)
+                    try:
+                        shutil.copy2(slices[0], staged_copy)
+                        _set_exec_bit(staged_copy)
+                        os.replace(staged_copy, dest)
+                    finally:
+                        staged_copy.unlink(missing_ok=True)
+            elif not (is_macho(slices[0]) and is_macho(slices[1])):
+                # The sidecar twin of the tree path's Mach-O-asymmetry refusal. `lipo -create`
+                # does fail on this input, but as a raw tool error naming neither the row nor the
+                # slice - and `--check`, which never runs `lipo`, passed it outright.
+                spelled = ", ".join(
+                    f"{slice_triple}={'Mach-O' if is_macho(member) else 'not a Mach-O'}"
+                    for slice_triple, member in zip(UNIVERSAL_SLICES, slices)
+                )
+                raise StagingError(
+                    f"sidecar '{row.dest}': the two slices differ but are not both Mach-O "
+                    f"({spelled}), so there is nothing for `lipo -create` to merge - a universal "
+                    "sidecar is one executable on two architectures (§6.1.3)"
+                )
+            elif write:
+                merge_universal_binary(
+                    slices,
+                    dest,
+                    f"sidecar '{row.dest}'",
+                    runner=runner,
+                    # On the STAGING file, not afterwards: `lipo -create` writes its own mode, and
+                    # a run interrupted between the move and a later chmod leaves a fat but
+                    # non-executable sidecar wearing the final name - which the next
+                    # engine-absent run keeps, the very scenario the staging sibling exists for.
+                    finalize=_set_exec_bit,
+                )
+        else:
+            trees = {}
+            for slice_triple, entry in entries.items():
+                src = _member_path(entry, row.member)
+                if not src.is_dir():
+                    raise StagingError(
+                        f"resource tree '{row.dest}': {src} is missing from the restored "
+                        f"{slice_triple} cache entry {entry.name} (a `bundle.resources` row "
+                        "stages a DIRECTORY, §3.3.1)"
+                    )
+                assert_no_escaping_links(src, row)
+                trees[slice_triple] = src
+            dest = resource_dest(root, row.dest)
+            merge_universal_tree(
+                trees, dest, f"resource tree '{row.dest}'", runner=runner, write=write
+            )
+        results.append(StagedResult(row, primary, dest))
+    return results
+
+
 def stage_all(
     root: Path,
     cache_root: Path,
@@ -569,6 +1107,7 @@ def stage_all(
     *,
     write: bool = True,
     lock_path: Path | None = None,
+    runner=None,
 ) -> list[StagedResult]:
     """Stage every declared row for `triple` from `cache_root` into `root`.
 
@@ -584,6 +1123,10 @@ def stage_all(
             f"engine-asset cache root {cache_root} does not exist - it is restored by the "
             "workflow's `actions/cache` step (P4.28) and is never fetched from the network here",
             structural=True,
+        )
+    if triple == UNIVERSAL_TRIPLE:
+        return stage_universal(
+            root, cache_root, rows, write=write, runner=runner or run_lipo
         )
     for name, claimants in ambiguous_engine_entries(cache_root, rows, triple):
         raise StagingError(
@@ -668,6 +1211,33 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+def _gate_constant(name: str) -> int | None:
+    """Read a named integer constant out of `scripts/check-build-matrix`.
+
+    The G30 gate parses the same fat headers this file does. Freezing the pair mechanically is
+    what keeps producer and gate from answering one question two ways - the drift is invisible
+    otherwise, because each file's own suite is internally consistent. Reading (not importing)
+    keeps this side of the L(-1) line: the gate is caged, its VALUE is not a secret.
+    """
+    gate = ROOT / "scripts" / "check-build-matrix"
+    if not gate.is_file():
+        return None
+    for line in gate.read_text(encoding="utf-8", errors="replace").splitlines():
+        head, sep, tail = line.partition("=")
+        if sep and head.strip() == name:
+            try:
+                return int(tail.split("#")[0].strip(), 0)
+            except ValueError:
+                return None
+    return None
+
+
+def _write_bytes(path: Path, payload: bytes) -> Path:
+    """Write a binary fixture and hand its path back, for one-line self-test legs."""
+    path.write_bytes(payload)
+    return path
+
+
 def _fixture_tree(base: Path) -> tuple[Path, Path]:
     """A repo-shaped root + a cache root holding one sidecar entry and one resource entry."""
     root, cache = base / "repo", base / "cache"
@@ -682,6 +1252,111 @@ def _fixture_tree(base: Path) -> tuple[Path, Path]:
     (tree_entry / "program" / "soffice.bin").write_bytes(b"launcher")
     return root, cache
 
+
+def _fat_bytes(cputypes: tuple[int, ...], *, magic: int = _FAT_MAGIC, count: int | None = None) -> bytes:
+    """A synthetic fat Mach-O HEADER. The slices themselves are never parsed, so the arch table is
+    the whole fixture - which is exactly what makes the assertion drivable off macOS."""
+    width = 32 if magic == _FAT_MAGIC_64 else 20
+    out = struct.pack(">II", magic, len(cputypes) if count is None else count)
+    for cpu in cputypes:
+        out += struct.pack(">i", cpu) + b"\x00" * (width - 4)
+    return out
+
+
+_THIN_MACHO = b"\xcf\xfa\xed\xfe" + b"\x00" * 28
+_FAT_BOTH = _fat_bytes((_CPU_TYPE_ARM64, _CPU_TYPE_X86_64))
+_FAT_ARM_ONLY = _fat_bytes((_CPU_TYPE_ARM64,))
+
+
+class _LipoRunner:
+    """A recording stand-in for `lipo`. Writes a fat header so the assertion has something real."""
+
+    def __init__(self, *, fails: bool = False, output: bytes = _FAT_BOTH,
+                 write_output: bool = True) -> None:
+        self.calls: list[list[str]] = []
+        self._fails = fails
+        self._output = output
+        self._write_output = write_output
+
+    def __call__(self, argv: list[str]):
+        self.calls.append(list(argv))
+        if not self._fails and self._write_output:
+            Path(argv[-1]).write_bytes(self._output)
+
+        class _Result:
+            returncode = 1 if self._fails else 0
+            stdout = ""
+            stderr = "fatal error: lipo: cannot open input file" if self._fails else ""
+
+        return _Result()
+
+
+def _modes_at_rename(run) -> list[int]:
+    """Every source mode observed AT the `os.replace`, in call order.
+
+    The mode legs assert only THAT a mode is set, which any ordering satisfies - so the whole
+    reason `finalize` exists (the mode is in place before the file wears its final name) had no
+    leg on any platform. Reading the mode inside the rename is the only place the ordering is
+    observable at all: afterwards every ordering leaves an identical file.
+    """
+    seen: list[int] = []
+    real_replace = os.replace
+
+    def _watch(src, dst):
+        seen.append(os.stat(src).st_mode)
+        return real_replace(src, dst)
+
+    os.replace = _watch
+    try:
+        run()
+    finally:
+        os.replace = real_replace
+    return seen
+
+
+def _universal_fixture(base: Path) -> tuple[Path, Path]:
+    """A repo root + a cache holding BOTH per-arch slices of one sidecar and one resource tree."""
+    root, cache = base / "repo", base / "cache"
+    (root / BINARIES_REL).mkdir(parents=True)
+    (root / RESOURCES_REL).mkdir(parents=True)
+    for slice_triple in UNIVERSAL_SLICES:
+        entry = cache / f"ffmpeg-7.1-{slice_triple}"
+        entry.mkdir(parents=True)
+        (entry / "ffmpeg").write_bytes(_THIN_MACHO + slice_triple.encode())
+        tree = cache / f"libreoffice-24.8-{slice_triple}"
+        (tree / "program").mkdir(parents=True)
+        (tree / "program" / "soffice.bin").write_bytes(_THIN_MACHO + slice_triple.encode())
+        (tree / "program" / "shared.rdb").write_bytes(b"arch-independent data")
+    return root, cache
+
+
+def _plant_link(link: Path, target: Path, *, directory: bool) -> str | None:
+    """Plant a link at `link` pointing at `target`; returns its shape, or None if the host can't.
+
+    Two shapes, and they are NOT interchangeable. A POSIX symlink is planted relatively, because
+    an absolute one trips a different guard than the one under test. Where the host refuses a
+    symlink outright - the DEFAULT Windows configuration, which lacks
+    SeCreateSymbolicLinkPrivilege - a directory JUNCTION stands in: the shape `copytree`
+    MATERIALISES, and the reason the tree guard runs on the source at all. So each host proves the
+    half of the rule it is able to express, and only a host that can express NEITHER skips.
+    """
+    try:
+        link.symlink_to(os.path.relpath(target, link.parent), target_is_directory=directory)
+        return "symlink"
+    except (OSError, NotImplementedError):
+        pass
+    if not directory or os.name != "nt":
+        return None
+    made = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=False
+    )
+    return "junction" if made.returncode == 0 else None
+
+
+_UNIVERSAL_ROWS = (
+    EngineStaging("ffmpeg", StagingKind.SIDECAR, "ffmpeg"),
+    EngineStaging("libreoffice", StagingKind.RESOURCE_TREE, "libreoffice", member="program"),
+)
 
 _LINUX = "x86_64-unknown-linux-gnu"
 _WIN = "x86_64-pc-windows-msvc"
@@ -705,9 +1380,1018 @@ def selftest() -> int:
         and sidecar_filename("ffmpeg", _LINUX) == "ffmpeg-x86_64-unknown-linux-gnu",
     )
 
-    # (2) target resolution, incl. the deliberate universal refusal (the P4.29 boundary).
+    # (2) target resolution, incl. the universal target this box makes resolvable.
     _record("target: explicit v1 triple accepted", resolve_target(_LINUX) == _LINUX)
-    _record("target: universal-apple-darwin refused (P4.29)", _raises(lambda: resolve_target(UNIVERSAL_TRIPLE), "needs both per-arch slices"))
+    # [Test-Change: P4.29 - old-obsolete+new-correct, §6.1.3] the leg asserted that
+    # `universal-apple-darwin` is REFUSED, with a message naming P4.29 as the box that would make
+    # it work. This IS that box: the refusal is the obsolete expectation, and the new one - the
+    # target resolves to itself - is verified below by staging through it end to end.
+    _record("target: universal-apple-darwin accepted (P4.29)", resolve_target(UNIVERSAL_TRIPLE) == UNIVERSAL_TRIPLE)
+    # (2a) the universal merge: the fat parse, the assertion, the lipo seam, the dual sourcing.
+    with tempfile.TemporaryDirectory() as tmp:
+        ubase = Path(tmp)
+        _record(
+            "fat parse: a two-slice header reports both cputypes",
+            fat_slice_cputypes(_write_bytes(ubase / "fat", _FAT_BOTH))
+            == (_CPU_TYPE_ARM64, _CPU_TYPE_X86_64),
+        )
+        _record(
+            "fat parse: a 64-bit fat header is read at its own arch width",
+            fat_slice_cputypes(
+                _write_bytes(ubase / "fat64",
+                             _fat_bytes((_CPU_TYPE_ARM64, _CPU_TYPE_X86_64), magic=_FAT_MAGIC_64))
+            )
+            == (_CPU_TYPE_ARM64, _CPU_TYPE_X86_64),
+        )
+        _record(
+            "fat parse: a THIN Mach-O is not fat",
+            fat_slice_cputypes(_write_bytes(ubase / "thin", _THIN_MACHO)) == (),
+        )
+        _record(
+            "fat parse: a non-Mach-O is not fat",
+            fat_slice_cputypes(_write_bytes(ubase / "data", b"just some bytes")) == (),
+        )
+        _record(
+            "fat parse: the cputype constants are read from a LITERAL header, not from themselves",
+            # Every other fixture is generated FROM these constants, so a wrong value would be
+            # invisible - and a wrong cputype refuses every genuine universal artifact, on the one
+            # platform none of this can be exercised locally.
+            fat_slice_cputypes(
+                _write_bytes(
+                    ubase / "literal",
+                    bytes.fromhex("cafebabe00000002" + "0100000c" + "00" * 16
+                                  + "01000007" + "00" * 16),
+                )
+            )
+            == (_CPU_TYPE_ARM64, _CPU_TYPE_X86_64),
+        )
+        _record(
+            "fat parse: the arch bound AGREES with the G30 gate that parses the same bytes",
+            # Producer and gate answer one question about one file; two values would mean one
+            # accepts what the other refuses, and each file's own suite stays internally
+            # consistent either way, so the drift is invisible without this bind. Frozen against
+            # the gate's own source, for EVERY such constant rather than one at a time: the fat64
+            # magic was unpinned and undetectable, because the fixtures are generated FROM it.
+            all(
+                _gate_constant(there) == globals()[here]
+                for there, here in _GATE_PINNED_CONSTANTS.items()
+            )
+            # ...and the mapping covers every integer constant this module defines under the
+            # three fat-header PREFIXES, so a new magic, cputype or bound cannot arrive unpinned.
+            # Prefix-bounded, not shape-complete: a constant named outside them is still invisible
+            # here, which is the honest limit of a rule written over names.
+            and set(_GATE_PINNED_CONSTANTS.values())
+            == {
+                name
+                for name, value in globals().items()
+                # The INTEGER header constants: `_CPU_TYPE_NAMES` shares the prefix but is the
+                # diagnostic spelling table, which the gate homes under a name of its own.
+                if isinstance(value, int)
+                and name.startswith(("_FAT_MAGIC", "_CPU_TYPE", "_MAX_FAT"))
+            },
+        )
+        _record(
+            "fat parse: a declared count the table does not carry is refused",
+            fat_slice_cputypes(
+                _write_bytes(ubase / "liar", _fat_bytes((_CPU_TYPE_ARM64,), count=2))
+            )
+            == (),
+        )
+        _record(
+            "fat parse: a header shorter than 8 bytes is refused",
+            fat_slice_cputypes(_write_bytes(ubase / "stub", b"\xca\xfe")) == (),
+        )
+        _record(
+            "fat parse: a non-fat MAGIC with a plausible header is still not fat",
+            # `b"just some bytes"` could not discriminate this: its header yields an absurd count
+            # that the BOUND rejects anyway, so the magic check itself went unasserted. An ELF
+            # magic with a small, well-formed arch table isolates it.
+            fat_slice_cputypes(
+                _write_bytes(ubase / "elf",
+                             struct.pack(">II", 0x7F454C46, 2) + b"\x00" * 40)
+            )
+            == (),
+        )
+        _record(
+            "fat parse: an absurd arch count is refused, not trusted",
+            # A Java `.class` opens with the same 0xCAFEBABE. The table is written in FULL, so the
+            # truncation check cannot mask the bound: without it this parses as `_MAX_FAT_ARCH + 1` slices.
+            fat_slice_cputypes(
+                _write_bytes(
+                    ubase / "classfile",
+                    _fat_bytes(tuple([_CPU_TYPE_ARM64] * (_MAX_FAT_ARCH + 1))),
+                )
+            )
+            == (),
+        )
+        _record(
+            "fat parse: a truncated arch table is refused",
+            fat_slice_cputypes(_write_bytes(ubase / "cut", _FAT_BOTH[:-8])) == (),
+        )
+        _record(
+            "G30 assertion: a both-slice fat binary passes",
+            assert_universal_fat(_write_bytes(ubase / "ok", _FAT_BOTH), "probe") is None,
+        )
+        _record(
+            "G30 assertion: a THIN binary wearing the universal name is refused",
+            _raises(
+                lambda: assert_universal_fat(_write_bytes(ubase / "thin2", _THIN_MACHO), "probe"),
+                "is not a fat Mach-O",
+            ),
+        )
+        _record(
+            "G30 assertion: a fat binary missing a slice names WHICH one",
+            _raises(
+                lambda: assert_universal_fat(
+                    _write_bytes(ubase / "arm", _FAT_ARM_ONLY), "probe"
+                ),
+                "missing [x86_64]",
+            ),
+        )
+        _record(
+            "is_macho: thin and fat are Mach-O, data is not",
+            is_macho(ubase / "thin")
+            and is_macho(ubase / "fat")
+            and not is_macho(ubase / "data"),
+        )
+        runner = _LipoRunner()
+        merge_universal_binary([ubase / "thin", ubase / "thin2"], ubase / "merged", "probe",
+                               runner=runner)
+        _record(
+            "lipo: driven as an argv LIST, `-create <slices> -output <staging sibling>`",
+            runner.calls == [["lipo", "-create", str(ubase / "thin"), str(ubase / "thin2"),
+                              "-output", str(ubase / ".merged.merging")]],
+        )
+        _record(
+            "lipo: the merge is ATOMIC - the staging sibling never survives",
+            (ubase / "merged").is_file() and not (ubase / ".merged.merging").exists(),
+        )
+        _record(
+            "lipo: a merge REFUSED for thinness leaves no file under the real name",
+            _raises(
+                lambda: merge_universal_binary([ubase / "thin"], ubase / "refused", "probe",
+                                               runner=_LipoRunner(output=_THIN_MACHO)),
+                "is not a fat Mach-O",
+            )
+            and not (ubase / "refused").exists()
+            and not (ubase / ".refused.merging").exists(),
+        )
+        _record(
+            "lipo: a failing merge is a clear refusal, not a silent miss",
+            _raises(
+                lambda: merge_universal_binary([ubase / "thin"], ubase / "x", "probe",
+                                               runner=_LipoRunner(fails=True)),
+                "`lipo -create` failed",
+            ),
+        )
+        _record(
+            "run_lipo passes an argv LIST - a path with a space stays ONE argument",
+            # Every leg above drives the injected runner, so the one place a real process is
+            # spawned would otherwise be unexercised: switching it to a joined shell line passed
+            # the whole suite.
+            (lambda probe: probe.returncode == 0 and probe.stdout.strip() == "['one two']")(
+                run_lipo([sys.executable, "-c",
+                          "import sys; sys.stdout.write(repr(sys.argv[1:]))", "one two"])
+            ),
+        )
+        _record(
+            "lipo: success with no output file is still a refusal",
+            _raises(
+                lambda: merge_universal_binary([ubase / "thin"], ubase / "y", "probe",
+                                               runner=_LipoRunner(write_output=False)),
+                "wrote no y",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        _record(
+            "dual sourcing: both per-arch entries are found for one row",
+            sorted(_slice_entries(ucache, _UNIVERSAL_ROWS[0])) == sorted(UNIVERSAL_SLICES),
+        )
+        _record(
+            "dual sourcing: an engine absent from BOTH slices is absent, not an error",
+            _slice_entries(ucache, EngineStaging("nope", StagingKind.SIDECAR, "nope")) is None,
+        )
+        shutil.rmtree(ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[1]}")
+        _record(
+            "dual sourcing: ONE slice present is a refusal naming the missing one and P4.29.1",
+            _raises(
+                lambda: _slice_entries(ucache, _UNIVERSAL_ROWS[0]),
+                "P4.29.1",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        merge_runner = _LipoRunner()
+        results = stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS,
+                            runner=merge_runner)
+        merged = uroot / BINARIES_REL / f"ffmpeg-{UNIVERSAL_TRIPLE}"
+        _record(
+            "universal staging: the sidecar lands under the universal externalBin name",
+            merged.is_file() and len([r for r in results if r.dest is not None]) == 2,
+        )
+        _record(
+            "universal staging: lipo was handed BOTH slices, in UNIVERSAL_SLICES order",
+            # The exact argv, not a substring search: the ORDER decides which slice `lipo` reads
+            # first, and a single-slice call would still satisfy any "contains arm64" test.
+            merge_runner.calls[0]
+            == [
+                "lipo",
+                "-create",
+                str(ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[0]}" / "ffmpeg"),
+                str(ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[1]}" / "ffmpeg"),
+                "-output",
+                # the STAGING sibling: the merge is atomic, so `lipo` never writes the real name.
+                str(merged.with_name(f".{merged.name}.merging")),
+            ],
+        )
+        _record(
+            "universal staging: the merged sidecar is asserted fat with BOTH slices",
+            fat_slice_cputypes(merged) == (_CPU_TYPE_ARM64, _CPU_TYPE_X86_64),
+        )
+        _record(
+            "universal staging: the merged sidecar keeps its exec bit",
+            bool(merged.stat().st_mode & stat.S_IXUSR) if os.name != "nt" else True,
+        )
+        _record(
+            "universal staging: the resource tree's Mach-O member is lipo'd, its data copied",
+            (uroot / RESOURCES_REL / "libreoffice" / "soffice.bin").is_file()
+            and (uroot / RESOURCES_REL / "libreoffice" / "shared.rdb").read_bytes()
+            == b"arch-independent data",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        (ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[1]}" / "ffmpeg").unlink()
+        _record(
+            "universal staging: a member missing from ONE slice's entry is named, not a lipo error",
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                                  runner=_LipoRunner()),
+                f"is missing from the restored {UNIVERSAL_SLICES[1]} cache entry",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        shutil.rmtree(ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[1]}" / "program")
+        _record(
+            "universal staging: a resource MEMBER that is not a directory is named",
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                  runner=_LipoRunner()),
+                "stages a DIRECTORY",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        stale = uroot / RESOURCES_REL / "libreoffice"
+        stale.mkdir(parents=True)
+        (stale / "left-over.rdb").write_bytes(b"from a previous run")
+        stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:], runner=_LipoRunner())
+        _record(
+            "universal staging: the resource destination is CLEARED, not merged into",
+            not (stale / "left-over.rdb").exists() and (stale / "shared.rdb").is_file(),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        for slice_triple in UNIVERSAL_SLICES:
+            (ucache / f"libreoffice-24.8-{slice_triple}" / "program" / "plugins").mkdir()
+        stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:], runner=_LipoRunner())
+        _record(
+            "universal staging: a directory both slices carry SURVIVES the merge",
+            (uroot / RESOURCES_REL / "libreoffice" / "plugins").is_dir(),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        already = _FAT_BOTH
+        for slice_triple in UNIVERSAL_SLICES:
+            (ucache / f"libreoffice-24.8-{slice_triple}" / "program" / "fat.dylib").write_bytes(already)
+        copy_runner = _LipoRunner()
+        stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:], runner=copy_runner)
+        _record(
+            "universal staging: an ALREADY-fat identical member is copied, never re-merged",
+            # `lipo -create` refuses overlapping architectures, so handing it two copies of one
+            # fat binary would fail a correct input.
+            (uroot / RESOURCES_REL / "libreoffice" / "fat.dylib").read_bytes() == already
+            and not any("fat.dylib" in " ".join(call) for call in copy_runner.calls),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        (ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[1]}").rename(
+            ucache / f"ffmpeg-9.9-{UNIVERSAL_SLICES[1]}"
+        )
+        _record(
+            "universal staging: the two slices must pin the SAME version",
+            # Nothing downstream can see this: a fat header carries no source version and the
+            # SBOM lists one. This is the only point where both version strings are in hand.
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                                  runner=_LipoRunner()),
+                "pin DIFFERENT versions",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        (ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[0]}" / "program" / "either").mkdir()
+        (ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[1]}" / "program" / "either").write_bytes(b"file")
+        _record(
+            "universal staging: a DIRECTORY in one slice and a file in the other is refused",
+            # Portable, unlike the symlink mismatches: no privilege is needed to disagree about
+            # whether a path is a directory.
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                  runner=_LipoRunner()),
+                "is a directory in one slice and a file in the other",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        (ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[0]}" / "program" / "maybe.dylib").write_bytes(_THIN_MACHO)
+        (ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[1]}" / "program" / "maybe.dylib").write_bytes(b"not a mach-o")
+        _record(
+            "universal staging: a Mach-O in ONE slice only is a divergence, not a merge",
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                  runner=_LipoRunner()),
+                # The message names WHICH slice carries the Mach-O, and the fixture puts it in
+                # the FIRST - so a swapped pair of roots would name the wrong one and still raise.
+                # A diagnostic that points at the innocent slice is worse than none.
+                f"is a Mach-O in {UNIVERSAL_SLICES[0]} and not in the other",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        one = ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[0]}" / "program"
+        two = ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[1]}" / "program"
+        try:
+            (one / "opt").symlink_to("shared.rdb")
+            _mixed_linkable = True
+        except OSError:
+            _mixed_linkable = False
+        if _mixed_linkable:
+            (two / "opt").write_bytes(b"arch-independent data")
+            _record(
+                "universal staging: a symlink in one slice and a FILE in the other is refused",
+                # Distinct from the two target-disagreement legs: both of those symlink BOTH
+                # sides, so this mixed-TYPE branch was unexercised on every platform.
+                _raises(
+                    lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                      runner=_LipoRunner()),
+                    "a real file in the other slice",
+                ),
+            )
+        else:
+            _record("universal staging: symlink-vs-file leg (skipped - host cannot create symlinks)", True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        for slice_triple in UNIVERSAL_SLICES:
+            (ucache / f"libreoffice-24.8-{slice_triple}" / "program" / "same.dylib").write_bytes(_THIN_MACHO)
+        _record(
+            "universal staging: two IDENTICAL thin Mach-Os are refused, not copied through",
+            # Byte-identity is not evidence of fatness. This is the path the already-fat member
+            # takes, and it must not become a way past the G30 net - which cannot see a tree
+            # member at all, since it finds universal artifacts by NAME.
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                  runner=_LipoRunner()),
+                "is not a fat Mach-O",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        for slice_triple in UNIVERSAL_SLICES:
+            member = ucache / f"libreoffice-24.8-{slice_triple}" / "program" / "soffice.bin"
+            if os.name != "nt":
+                _set_exec_bit(member)
+        stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:], runner=_LipoRunner())
+        staged_member = uroot / RESOURCES_REL / "libreoffice" / "soffice.bin"
+        _record(
+            "universal staging: a MERGED tree member keeps the mode its slice had",
+            # `lipo -create` writes its own mode, which is why the sidecar path sets the bit
+            # explicitly. §3.3.1 stages LibreOffice's launcher inside the resources tree, so a
+            # dropped +x here fails every conversion on the universal build alone.
+            bool(staged_member.stat().st_mode & stat.S_IXUSR) if os.name != "nt" else True,
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        first = ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[0]}" / "program"
+        second = ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[1]}" / "program"
+        # A sibling subtree in BOTH slices, so the link has something contained and RELATIVE to
+        # point at. Pointing it at its own parent - the obvious shape - planted an ABSOLUTE link
+        # (pathlib hands the target straight to `os.symlink`), which `assert_no_escaping_links`
+        # refuses on an arm of its own BEFORE the merge is entered: the leg was green here only
+        # because this host skips it, and would have recorded a FAIL on every POSIX runner. A
+        # symlink is the whole point of this leg, so there is no junction fallback - a junction is
+        # not a symlink and legitimately takes the directory branch.
+        for program in (first, second):
+            (program / "other").mkdir()
+            (program / "other" / "member.rdb").write_bytes(b"arch-independent data")
+        (first / "sub").mkdir()
+        try:
+            (second / "sub").symlink_to("other", target_is_directory=True)
+            _dirlink = True
+        except OSError:
+            _dirlink = False
+        if _dirlink:
+            _record(
+                "universal staging: a real DIR against a symlink-to-dir is refused, not flattened",
+                # `is_dir()` follows the link, so checking only the primary side would take the
+                # directory branch and publish an empty dir, dropping the other slice's layout.
+                _raises(
+                    lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                      runner=_LipoRunner()),
+                    # Discriminated on the OTHER side's real type: the symlink-vs-FILE leg reaches
+                    # this same guard, so a shared message would let either leg pass on the
+                    # other's input.
+                    "a real directory in the other slice",
+                ),
+            )
+        else:
+            _record("universal staging: dir-vs-dirlink leg (skipped - host cannot create symlinks)", True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        for slice_triple in UNIVERSAL_SLICES:
+            (ucache / f"ffmpeg-7.1-{slice_triple}" / "ffmpeg").write_bytes(_FAT_BOTH)
+        already_runner = _LipoRunner()
+        stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1], runner=already_runner)
+        _record(
+            "universal staging: an upstream that already ships universal is COPIED, not re-merged",
+            # `lipo -create` refuses two copies of one fat binary, so merging would fail a
+            # perfectly good input with a raw tool error.
+            already_runner.calls == []
+            and (uroot / BINARIES_REL / f"ffmpeg-{UNIVERSAL_TRIPLE}").read_bytes() == _FAT_BOTH
+            # ...and published through the same staging sibling the merge uses, leaving none.
+            and not (uroot / BINARIES_REL
+                     / f".ffmpeg-{UNIVERSAL_TRIPLE}.merging").exists()
+            # ...carrying the exec bit, which only the MERGE path had a leg for: a copied sidecar
+            # inherits whatever mode the cache entry had, and §3.4.5/G37 surfaces a dropped +x as
+            # a misleading startup "integrity failed" rather than as the staging fault it is.
+            and (bool((uroot / BINARIES_REL / f"ffmpeg-{UNIVERSAL_TRIPLE}")
+                      .stat().st_mode & stat.S_IXUSR) if os.name != "nt" else True),
+        )
+        # Setup on its OWN statement: chained into the lambda with `and`, the assertion hung off
+        # the truthiness of a list comprehension - the shape that silently skips the very call it
+        # is meant to guard.
+        for slice_triple in UNIVERSAL_SLICES:
+            (ucache / f"ffmpeg-7.1-{slice_triple}" / "ffmpeg").write_bytes(_FAT_ARM_ONLY)
+        _record(
+            "universal staging: an already-universal sidecar is still asserted fat",
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                                  runner=_LipoRunner()),
+                "missing [x86_64]",
+            ),
+        )
+        for slice_triple in UNIVERSAL_SLICES:
+            (ucache / f"ffmpeg-7.1-{slice_triple}" / "ffmpeg").write_bytes(_FAT_BOTH)
+        previous = b"the previous run's universal sidecar"
+        dest_path = uroot / BINARIES_REL / f"ffmpeg-{UNIVERSAL_TRIPLE}"
+        dest_path.write_bytes(previous)
+        _real_copy2 = shutil.copy2
+
+        def _copy_then_fail(src, dst):
+            """Land the bytes, THEN fail - the one ordering a residue check cannot distinguish."""
+            _real_copy2(src, dst)
+            raise OSError("simulated failure after the bytes landed")
+
+        shutil.copy2 = _copy_then_fail
+        try:
+            stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1], runner=_LipoRunner())
+        except OSError:
+            raised = True
+        else:
+            raised = False
+        finally:
+            shutil.copy2 = _real_copy2
+        _record(
+            "universal staging: a failure AFTER the bytes land leaves no TORN universal sidecar",
+            # The atomicity of the already-universal path, which the residue leg above cannot
+            # see: a direct `copy2` into the destination leaves no `.merging` residue either, so
+            # both shapes look identical unless the copy is made to fail once the bytes are down.
+            # What survives such a run is a half-written file wearing the universal name, and the
+            # NEXT run - one whose engine is simply absent from the cache - exits 0 with it still
+            # in place, straight into `tauri build`. Same reason the merge stages and replaces.
+            raised
+            and dest_path.read_bytes() == previous
+            and not (uroot / BINARIES_REL / f".ffmpeg-{UNIVERSAL_TRIPLE}.merging").exists(),
+        )
+        _real_replace = os.replace
+
+        def _fail_at_the_publish(*_args):
+            """Fail AT the rename - the step a mid-copy failure never reaches."""
+            raise OSError("simulated failure at the publish")
+
+        os.replace = _fail_at_the_publish
+        try:
+            stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1], runner=_LipoRunner())
+        except OSError:
+            published_by_rename = True
+        else:
+            published_by_rename = False
+        finally:
+            os.replace = _real_replace
+        _record(
+            "universal staging: the already-universal sidecar is PUBLISHED by a rename",
+            # The leg above fails mid-COPY and therefore never reaches the publish, so swapping
+            # `os.replace` for a second `copy2` survives it entirely - and a copied publish is
+            # exactly the window the staging sibling exists to close. Two failure points, because
+            # one injection cannot observe both steps.
+            published_by_rename
+            and dest_path.read_bytes() == previous
+            and not (uroot / BINARIES_REL / f".ffmpeg-{UNIVERSAL_TRIPLE}.merging").exists(),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        for slice_triple in UNIVERSAL_SLICES:
+            (ucache / f"ffmpeg-7.1-{slice_triple}" / "ffmpeg").write_bytes(_THIN_MACHO)
+        _record(
+            "universal --check refuses a THIN already-universal SIDECAR, as the real run does",
+            # The sidecar twin of the tree's --check depth, and the sibling the tree fix left
+            # open: identical bytes in both slices take the copy path, whose fatness verdict is a
+            # judgement on the restored cache rather than a consequence of writing. `ci.yml`'s
+            # check pass runs `--check` for the runner's HOST triple, so this branch has no live
+            # CI consumer until P10.10 wires the universal one - which is exactly why the
+            # divergence had to be closed now rather than discovered then, on the artifact G30
+            # looks for BY that universal name.
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                                  write=False, runner=_LipoRunner()),
+                "is not a fat Mach-O",
+            )
+            and not (uroot / BINARIES_REL / f"ffmpeg-{UNIVERSAL_TRIPLE}").exists(),
+        )
+        # Exactly ONE Mach-O: the shape this branch is NAMED for, and the one its diagnostic
+        # SPELLS per slice. Two non-Mach-Os make that spelling symmetric, so the pair of legs
+        # below covers both the refusal and the naming - a diagnostic that points at the innocent
+        # slice is the sibling defect the tree path's message pin just closed.
+        (ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[0]}" / "ffmpeg").write_bytes(_THIN_MACHO)
+        (ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[1]}" / "ffmpeg").write_bytes(b"a wrapper script")
+        _record(
+            "universal staging: ONE Mach-O sidecar slice against a non-Mach-O is refused BY SLICE",
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                                  runner=_LipoRunner()),
+                f"{UNIVERSAL_SLICES[0]}=Mach-O, {UNIVERSAL_SLICES[1]}=not a Mach-O",
+            ),
+        )
+        for slice_triple, payload in zip(UNIVERSAL_SLICES, (b"a wrapper script", b"a different one")):
+            (ucache / f"ffmpeg-7.1-{slice_triple}" / "ffmpeg").write_bytes(payload)
+        _record(
+            "universal staging: two DIFFERING sidecar slices that are not both Mach-O are NAMED",
+            # Asserted in BOTH modes because they fail for two different reasons: the real run
+            # would have died on a raw `lipo` error naming neither row nor slice, and --check,
+            # which never runs `lipo`, accepted the pair outright.
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                                  runner=_LipoRunner()),
+                "not both Mach-O",
+            )
+            and _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                                  write=False, runner=_LipoRunner()),
+                "not both Mach-O",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        # An entry keyed to the SECOND slice only, claimed by no row: visible only if the scan
+        # unions both slice triples. Driven through `main` with a patched row set, the way the
+        # per-triple form is already covered.
+        (ucache / f"libheif-1.0-{UNIVERSAL_SLICES[1]}").mkdir()
+        _saved_rows = STAGED_ENGINES
+        buffer = io.StringIO()
+        try:
+            globals()["STAGED_ENGINES"] = _UNIVERSAL_ROWS
+            with contextlib.redirect_stdout(buffer):
+                main(["--root", str(uroot), "--cache-root", str(ucache), "--target",
+                      UNIVERSAL_TRIPLE, "--check", "-v"])
+        finally:
+            globals()["STAGED_ENGINES"] = _saved_rows
+        _record(
+            "universal --check reports an UNCLAIMED entry from either slice triple",
+            # A `-universal-apple-darwin`-suffix scan would always match nothing - the cache is
+            # keyed per real triple - silencing the "or a MISSING staging row" half of the signal
+            # on exactly the run that reads two slices.
+            f"libheif-1.0-{UNIVERSAL_SLICES[1]}" in buffer.getvalue(),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        results = stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                            runner=_LipoRunner())
+        _record(
+            "universal staging: the result records the PRIMARY slice's entry",
+            results[0].entry == ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[0]}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        _record(
+            "universal staging: a lipo that emits a THIN binary is refused, not shipped",
+            # The G30 case exactly: `lipo` succeeded, the file exists and wears the universal
+            # name, and it carries one architecture. Tauri would bundle it without complaint.
+            # SIDECAR-only rows: `_UNIVERSAL_ROWS` also carries a resource tree, whose merge
+            # asserts fatness too - so with the sidecar's own assertion deleted the leg would
+            # still raise, from the wrong place.
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                                  runner=_LipoRunner(output=_THIN_MACHO)),
+                "is not a fat Mach-O",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        _record(
+            "universal staging: a THIN tree MEMBER is refused too - G30 cannot see it by name",
+            # The complement of the sidecar leg: `check-build-matrix` finds universal artifacts by
+            # NAME, and a merged tree member is called `soffice.bin`. This assertion is the only
+            # net for it, so it needs its own leg on the TREE-only row set.
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                  runner=_LipoRunner(output=_THIN_MACHO)),
+                "resource tree 'libreoffice': soffice.bin",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        shutil.copytree(ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[0]}",
+                        ucache / f"ffmpeg-9.9-{UNIVERSAL_SLICES[0]}")
+        _record(
+            "universal staging: two pinned VERSIONS of one engine are refused per slice",
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS,
+                                  runner=_LipoRunner()),
+                "exactly one pinned version may be restored per engine",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        # A DIFFERENT mechanism from the version clash above: `cache_entry_matches` anchors on the
+        # two ends, so `libvips-tools-1.0-<slice>` parses as belonging to BOTH `libvips` and
+        # `libvips-tools`. That check runs per SLICE triple, and nothing drove it there.
+        prefix_rows = (
+            EngineStaging("libvips", StagingKind.SIDECAR, "libvips"),
+            EngineStaging("libvips-tools", StagingKind.SIDECAR, "libvips-tools"),
+        )
+        # The SECOND slice only: planted in both, restricting the scan to `UNIVERSAL_SLICES[:1]`
+        # still finds it, so the leg could not tell a per-slice scan from a primary-only one - the
+        # same reasoning the escaping-link leg states, applied here too.
+        entry = ucache / f"libvips-tools-1.0-{UNIVERSAL_SLICES[1]}"
+        entry.mkdir(parents=True)
+        (entry / "libvips-tools").write_bytes(_THIN_MACHO)
+        _record(
+            "universal staging: an entry TWO declared engines claim is refused, per slice",
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, prefix_rows,
+                                  runner=_LipoRunner()),
+                "must identify exactly one engine",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        program = ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[0]}" / "program"
+        other = ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[1]}" / "program"
+        try:
+            (program / "link").symlink_to("soffice.bin")
+            (other / "link").symlink_to("shared.rdb")
+            _linkable_u = True
+        except OSError:
+            _linkable_u = False
+        if _linkable_u:
+            _record(
+                "universal staging: the two slices pointing one symlink elsewhere is refused",
+                _raises(
+                    lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS,
+                                      runner=_LipoRunner()),
+                    "different targets",
+                ),
+            )
+            (other / "link").unlink()
+            (other / "link").symlink_to("soffice.bin")
+            stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS, runner=_LipoRunner())
+            staged_link = uroot / RESOURCES_REL / "libreoffice" / "link"
+            _record(
+                "universal staging: a symlink agreeing across slices is PRESERVED, not merged",
+                staged_link.is_symlink() and os.readlink(staged_link) == "soffice.bin",
+            )
+        else:
+            _record("universal staging: symlink-disagreement leg (skipped - host cannot create symlinks)", True)
+            _record("universal staging: symlink-preserve leg (skipped - host cannot create symlinks)", True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        outside = Path(tmp) / "outside-the-entry"
+        outside.mkdir()
+        (outside / "secret.txt").write_bytes(b"out-of-entry sentinel")
+        # The SECOND slice deliberately: `stage_universal` walks BOTH restored trees, so a guard
+        # placed on the primary alone would pass every leg written against the first while the
+        # other slice walked straight out of its cache entry.
+        escape = ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[1]}" / "program" / "escape.link"
+        if _plant_link(escape, outside, directory=True):
+            _record(
+                "universal staging: an escaping link in EITHER slice is refused, on --check too",
+                # A call site of its own: the per-triple twin in stage_resource_tree is covered by
+                # the (5d) legs, and nothing bound the universal path to the same refusal - a
+                # merge that dropped it would pull out-of-entry content into the bundle on exactly
+                # the target that has no per-arch build to compare against (§0.11 T3a / G37b).
+                _raises(
+                    lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                      runner=_LipoRunner()),
+                    "is a link resolving outside the staged tree",
+                )
+                and _raises(
+                    lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                      write=False, runner=_LipoRunner()),
+                    "is a link resolving outside the staged tree",
+                ),
+            )
+        else:
+            _record(
+                "universal staging: escaping-link leg (skipped - host cannot create any link)",
+                True,
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        for slice_triple, payload in zip(UNIVERSAL_SLICES, (b"one", b"two")):
+            (ucache / f"libreoffice-24.8-{slice_triple}" / "program" / "diverges.rdb").write_bytes(payload)
+        _record(
+            "universal --check reaches member CONTENT, not only the two path SETS",
+            # A --check that returned at the path-set diff validated strictly LESS than the real
+            # run, and a dry run greener than the wet one is the one thing a check mode must never
+            # be: CI would sign off a tree `stage-engines` then refuses at package time.
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                  write=False, runner=_LipoRunner()),
+                "no merge rule for it",
+            ),
+        )
+        for slice_triple in UNIVERSAL_SLICES:
+            (ucache / f"libreoffice-24.8-{slice_triple}" / "program" / "diverges.rdb").write_bytes(b"agreed")
+            (ucache / f"libreoffice-24.8-{slice_triple}" / "program" / "thin.dylib").write_bytes(_THIN_MACHO)
+        _record(
+            "universal --check refuses an identical THIN Mach-O, exactly as the real run does",
+            # The byte-identity branch's fatness assertion is a VERDICT on the restored cache, not
+            # a consequence of writing, so it has to hold in both modes.
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                  write=False, runner=_LipoRunner()),
+                "is not a fat Mach-O",
+            ),
+        )
+        _record(
+            "universal --check still writes NOTHING while validating that deeply",
+            # The other direction of the same change: deepening --check must not have turned it
+            # into a run that mutates src-tauri/ behind a flag whose whole promise is that it does
+            # not.
+            not (uroot / RESOURCES_REL / "libreoffice").exists(),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        shapes = set()
+        for slice_triple in UNIVERSAL_SLICES:
+            program = ucache / f"libreoffice-24.8-{slice_triple}" / "program"
+            # `aaa` sorts BEFORE `zlink`, so the link's target is already staged when the link is
+            # reached: a descent would then write THROUGH it instead of failing on a dangling
+            # parent, which is what makes the two outcomes differ by a countable merge rather than
+            # by an incidental OSError.
+            (program / "aaa").mkdir()
+            (program / "aaa" / "lib.dylib").write_bytes(_THIN_MACHO + slice_triple.encode())
+            shapes.add(_plant_link(program / "zlink", program / "aaa", directory=True))
+        if shapes == {"symlink"} or shapes == {"junction"}:
+            walk_runner = _LipoRunner()
+            stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:], runner=walk_runner)
+            staged = uroot / RESOURCES_REL / "libreoffice"
+            # Counted UNDER the link rather than in total: the fixture merges its own members too,
+            # so a bare call count would pin an unrelated number and drift with the fixture.
+            under_link = [
+                call[-1] for call in walk_runner.calls if "zlink" in Path(call[-1]).parts
+            ]
+            _record(
+                "universal staging: the tree walk descends exactly as `copytree` does",
+                # The rule is spelled in `relatives`, not inherited from `rglob`'s stdlib default:
+                # a SYMLINK is preserved and never entered (so `aaa/lib.dylib` is merged ONCE),
+                # a JUNCTION is entered and materialised (so `zlink/lib.dylib` is a real merged
+                # file). Either half failing means the universal bundle differs from the three
+                # per-arch ones for a reason no downstream gate could name.
+                (not under_link and (staged / "zlink").is_symlink())
+                if shapes == {"symlink"}
+                else (len(under_link) == 1 and (staged / "zlink" / "lib.dylib").is_file()),
+            )
+        else:
+            _record(
+                "universal staging: tree-walk descent leg (skipped - host cannot create any link)",
+                True,
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        # READ-ONLY, not the exec bit: Windows does not carry `S_IXUSR` on a file without an
+        # executable extension, so an exec-bit assertion is inert on this host - and the ordering
+        # is exactly the property that had no leg on ANY platform. Windows DOES honour the write
+        # bit, so `copystat` from a read-only slice is observable everywhere.
+        readonly = [ucache / f"libreoffice-24.8-{slice_triple}" / "program" / "soffice.bin"
+                    for slice_triple in UNIVERSAL_SLICES]
+        for member in readonly:
+            member.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+        staged_member = uroot / RESOURCES_REL / "libreoffice" / "soffice.bin"
+        try:
+            merged_modes = _modes_at_rename(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:],
+                                  runner=_LipoRunner())
+            )
+        finally:
+            # Restored the way `_modes_at_rename` restores `os.replace`: a fixture that mutates
+            # the environment puts it back on the failing path too, or the next leg inherits it.
+            for member in [*readonly, staged_member]:
+                if member.exists():
+                    member.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        _record(
+            "universal staging: the merged MODE is in place AT the rename, not applied after it",
+            # The ordering `finalize` exists for. Applied after `os.replace` the FINAL file is
+            # identical, which is why the "keeps its mode" legs cannot see the difference - and
+            # why an interrupted run leaving a merged file under the universal name with the
+            # wrong mode was invisible on every platform, not just this one.
+            len(merged_modes) == 1 and not (merged_modes[0] & stat.S_IWUSR),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        for slice_triple in UNIVERSAL_SLICES:
+            (ucache / f"ffmpeg-7.1-{slice_triple}" / "ffmpeg").write_bytes(_FAT_BOTH)
+        copied_modes = _modes_at_rename(
+            lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[:1],
+                              runner=_LipoRunner())
+        )
+        _record(
+            "universal staging: the COPIED sidecar's mode is in place at the rename too",
+            # Exec-bit here, so POSIX-only: the copy path's own publish sets the bit rather than
+            # inheriting a mode, and there is no read-only source to observe instead.
+            # The already-universal branch has its own copy-and-publish, so it has its own
+            # ordering to get wrong; the fixture writes the slices without an exec bit, so the
+            # observed one can only come from the staging step.
+            len(copied_modes) == 1
+            and (bool(copied_modes[0] & stat.S_IXUSR) if os.name != "nt" else True),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        for slice_triple in UNIVERSAL_SLICES:
+            shutil.rmtree(ucache / f"libreoffice-24.8-{slice_triple}" / "program")
+            (ucache / f"libreoffice-24.8-{slice_triple}" / "program").mkdir()
+        stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS[1:], runner=_LipoRunner())
+        _record(
+            "universal staging: two EMPTY slice trees still produce the destination directory",
+            # `copytree` on the per-arch path creates it unconditionally, and `relatives()`'s
+            # contract is that the universal tree does not differ from the three per-arch ones.
+            # A merge loop over an empty path set creates nothing, so the corner needs saying.
+            (uroot / RESOURCES_REL / "libreoffice").is_dir(),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        (base / "a").write_bytes(b"AAAA" + b"BBBB")
+        (base / "b").write_bytes(b"AAAA" + b"CCCC")
+        (base / "c").write_bytes(b"AAAA" + b"BBBB")
+        (base / "short").write_bytes(b"AAAA")
+        _saved_chunk = _COMPARE_CHUNK
+        globals()["_COMPARE_CHUNK"] = 4
+        try:
+            differs_late = same_bytes(base / "a", base / "b")
+            agrees = same_bytes(base / "a", base / "c")
+            prefix = same_bytes(base / "a", base / "short")
+            prefix_reversed = same_bytes(base / "short", base / "a")
+        finally:
+            globals()["_COMPARE_CHUNK"] = _saved_chunk
+        _record(
+            "same_bytes: the comparison spans CHUNKS, and a prefix is not a match",
+            # Driven across a chunk boundary, which no engine fixture can do at a 1 MiB read: a
+            # comparison that stopped after the first chunk would be correct on every one of them
+            # and would silently take the already-universal COPY path on two differing slices.
+            # The third case is the size difference the function no longer short-circuits.
+            differs_late is False
+            and agrees is True
+            # BOTH directions. Asserted long-side-first only, moving the EOF check above the
+            # inequality check survives - and then a short side whose length is an exact multiple
+            # of the chunk answers True against a longer file, which at the tree call site turns
+            # the "differs but has no merge rule" refusal into a silent publish of the shorter
+            # slice's bytes.
+            and prefix is False
+            and prefix_reversed is False
+            # ...and the seam this leg rests on is REAL: hard-coding the read size back into the
+            # body would leave every assertion above true while the loop was never crossed, so
+            # the leg would pass vacuously. Structural, because the chunk size cannot change an
+            # answer - that is precisely why it needs pinning some other way.
+            and "_COMPARE_CHUNK" in same_bytes.__code__.co_names,
+        )
+
+    _absent_lipo = None
+    try:
+        run_lipo(["convertia-no-such-tool-in-any-PATH", "-create"])
+    except StagingError as e:
+        _absent_lipo = e
+    _record(
+        "an absent `lipo` is a structural refusal (exit 2), not a filesystem fault (exit 1)",
+        # `subprocess` raises FileNotFoundError, an OSError, which `main` reports as exit 1
+        # alongside genuine filesystem faults - the module docstring reserves exit 2 for an
+        # unusable prerequisite, and "the tool is not installed" is precisely that. The two read
+        # very differently to whoever is looking at a red macOS leg.
+        _absent_lipo is not None
+        and "is not on PATH" in str(_absent_lipo)
+        # ...naming the program it actually failed to spawn. Hard-coding `lipo` back reads
+        # identically on the one call site that exists and lies the moment a second one does.
+        and "convertia-no-such-tool-in-any-PATH" in str(_absent_lipo)
+        and _absent_lipo.structural,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        # P3: `row.member` picks the file INSIDE the entry, and every universal fixture row left
+        # it None - so the universal sidecar path's own resolution was never driven.
+        member_rows = (
+            EngineStaging("ffmpeg", StagingKind.SIDECAR, "ffprobe", member="bin/ffprobe"),
+        )
+        for slice_triple in UNIVERSAL_SLICES:
+            entry = ucache / f"ffmpeg-7.1-{slice_triple}" / "bin"
+            entry.mkdir()
+            (entry / "ffprobe").write_bytes(_THIN_MACHO + slice_triple.encode())
+        member_runner = _LipoRunner()
+        stage_all(uroot, ucache, UNIVERSAL_TRIPLE, member_rows, runner=member_runner)
+        _record(
+            "universal staging: a sidecar row's `member` picks the file inside the entry",
+            # Resolved a second time on this path, so it can disagree with the per-arch one.
+            len(member_runner.calls) == 1
+            and all(call.endswith("bin/ffprobe") or call.endswith("bin\\ffprobe")
+                    for call in member_runner.calls[0][2:4])
+            and (uroot / BINARIES_REL / f"ffprobe-{UNIVERSAL_TRIPLE}").is_file(),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        absent_rows = (EngineStaging("pandoc", StagingKind.SIDECAR, "pandoc"),)
+        absent = stage_all(uroot, ucache, UNIVERSAL_TRIPLE, absent_rows, runner=_LipoRunner())
+        _record(
+            "universal staging: an engine absent from BOTH slices is reported, not an error",
+            # §6.1.3 lets a platform ship without a §3.4-unavailable engine, so absent-everywhere is
+            # a REPORT while absent-from-one is the P4.29.1 refusal. Driven through stage_all,
+            # because the leg on `_slice_entries` alone never sees what the caller does with None.
+            absent == [StagedResult(absent_rows[0], None, None)],
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        check_runner = _LipoRunner()
+        stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS, write=False,
+                  runner=check_runner)
+        _record(
+            "universal --check resolves and validates but merges nothing",
+            check_runner.calls == []
+            and not (uroot / BINARIES_REL / f"ffmpeg-{UNIVERSAL_TRIPLE}").exists(),
+        )
+        (ucache / f"libreoffice-24.8-{UNIVERSAL_SLICES[0]}" / "program" / "extra.rdb").write_bytes(b"x")
+        _record(
+            "universal staging: a path present in only ONE slice's tree is refused",
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS,
+                                  runner=_LipoRunner()),
+                "do not carry the same paths",
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        uroot, ucache = _universal_fixture(Path(tmp))
+        for slice_triple, payload in zip(UNIVERSAL_SLICES, (b"one", b"two")):
+            (ucache / f"libreoffice-24.8-{slice_triple}" / "program" / "shared.rdb").write_bytes(payload)
+        _record(
+            "universal staging: a DIFFERING non-Mach-O has no merge rule and is refused",
+            _raises(
+                lambda: stage_all(uroot, ucache, UNIVERSAL_TRIPLE, _UNIVERSAL_ROWS,
+                                  runner=_LipoRunner()),
+                "no merge rule for it",
+            ),
+        )
+
     _record("target: unknown triple refused", _raises(lambda: resolve_target("mips-unknown-linux-gnu"), "unknown target triple"))
     # A host outside _HOST_TRIPLES (Linux aarch64, Windows ARM64) must REPORT, not traceback.
     host = host_target_triple()
@@ -853,8 +2537,6 @@ def selftest() -> int:
         # directory - by the time the staged tree exists there is no link left to detect. That is
         # exactly why the guard runs on the SOURCE. Real junction, real refusal.
         if os.name == "nt":
-            import subprocess  # test-only: the stdlib has no junction constructor
-
             outside_dir = base / "outside-dir"
             outside_dir.mkdir()
             (outside_dir / "secret.txt").write_bytes(b"out-of-entry sentinel")
@@ -1227,7 +2909,21 @@ def main(argv: list[str]) -> int:
             write=write,
             lock_path=root / LOCK_REL,
         )
-        unclaimed = unclaimed_cache_entries(cache_root, STAGED_ENGINES, triple)
+        # On the universal run the cache holds no `-universal-apple-darwin` entry - it is keyed
+        # per real triple - so scanning for that suffix would always report nothing, silencing the
+        # "a build input, or a MISSING STAGING ROW" signal on exactly the leg that reads two.
+        # In PRODUCTION this is not reached while `STAGED_ENGINES` is empty - `main` returns
+        # above on the no-rows path - but the suite reaches it by patching the row set, which is
+        # how the per-triple form is already covered. A first attempt recorded it as untestable;
+        # the dual review disproved that by writing the leg, so the leg is below.
+        scanned = UNIVERSAL_SLICES if triple == UNIVERSAL_TRIPLE else (triple,)
+        unclaimed = sorted(
+            {
+                name
+                for slice_triple in scanned
+                for name in unclaimed_cache_entries(cache_root, STAGED_ENGINES, slice_triple)
+            }
+        )
     except StagingError as e:
         fail(str(e))
         return 2 if e.structural else 1
