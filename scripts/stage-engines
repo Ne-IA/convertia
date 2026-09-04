@@ -47,8 +47,11 @@ target-absent no-op that says so - the same skip-with-notice posture `check-buil
 holds for its sidecar slice assertion until a sidecar is staged. Each excluded piece is its own
 box: the rpath/install_name relocation (P4.30), the `tauri.conf.json` externalBin/resources
 wiring (P4.31), the in-bundle hash manifest (P4.41), the §6.1.3 build-assertion framework
-(P4.51). The macOS dual-arch `lipo -create` merge was on that list until P4.29 landed it here;
-its missing-x86_64-slice from-source fallback (P4.29.1) is still to come.
+(P4.51). The macOS dual-arch `lipo -create` merge was on that list until P4.29 landed it here.
+Its missing-x86_64-slice from-source fallback is `scripts/compile-engine-asset`'s (P4.29.1), one
+step UPSTREAM of here: that script cross-builds the absent slice into the cache, while this one
+only ever READS the cache - so a one-slice cache stays a refusal naming the fallback rather than
+an attempt to fill the gap, and the one socket-opening actor at package time stays exactly one.
 
 [Build-Session-Entscheidung: P4.27] --selftest lives IN this file. The repo's only Python-test
 runner is `run-gate-selftests` over `scripts/gate-selftests/`, which is L(-1) (G71) and therefore
@@ -285,7 +288,14 @@ def fat_slice_cputypes(path: Path) -> tuple[int, ...]:
     if len(table) < width * count:
         return ()
     return tuple(
-        struct.unpack_from(">i", table, index * width)[0] for index in range(count)
+        # UNSIGNED, matching the G30 gate's own `">IIIII"` fat_arch read and the sibling parser in
+        # `compile-engine-asset`. Signed was not WRONG - Apple's `cpu_type_t` really is a signed
+        # int32 - it DISAGREED with the gate that judges these same bytes, and identically for
+        # every real cputype (all below 2^31), so no fixture of real values could tell the two
+        # readers apart. That is how a latent producer-vs-gate disagreement survives unnoticed;
+        # the sibling's cross-check now drives a high-bit cputype so it cannot again.
+        # [Build-Session-Entscheidung: P4.29.1]
+        struct.unpack_from(">I", table, index * width)[0] for index in range(count)
     )
 
 
@@ -799,7 +809,18 @@ def _slice_entries(
             f"{', '.join(s for s in UNIVERSAL_SLICES if s not in missing)} but not "
             f"{', '.join(missing)}. A universal artifact needs BOTH slices (§6.1.3 keys them "
             "separately, one per triple) - `lipo` cannot merge a slice it does not have. The "
-            "documented fallback is to compile the missing slice from source (P4.29.1)."
+            "documented fallback is to compile the missing slice from source (P4.29.1): "
+            f"`scripts/compile-engine-asset --engine {row.cache_engine} --target {missing[0]}`. "
+            # Which of the two that is decides whether it is a CROSS build: the universal leg runs
+            # on an arm64 runner, so a missing x86_64 slice is §6.1.3's declared cross fallback
+            # while a missing aarch64 slice is an ordinary native compile. Saying "cross-builds"
+            # unconditionally would be false on one of the two branches this message is symmetric
+            # over. [Build-Session-Entscheidung: P4.29.1]
+            "On the arm64 universal runner that is "
+            f"{'a cross build (§6.1.3 declares the arm64-host to x86_64-target direction)' if missing[0] == UNIVERSAL_SLICES[1] else 'a native build'}. "
+            "Either way the row has to declare that triple `from-source` with a configure line - "
+            "a prebuilt-declared row gives the compile step nothing to build. This script only "
+            "reads the cache; it never compiles."
         )
     # ONE engine is ONE pinned version. `select_cache_entry` is called once per slice and knows
     # nothing about the other, so a stale or half-updated cache - a version bump that landed for
@@ -1262,7 +1283,11 @@ def _fat_bytes(cputypes: tuple[int, ...], *, magic: int = _FAT_MAGIC, count: int
     width = 32 if magic == _FAT_MAGIC_64 else 20
     out = struct.pack(">II", magic, len(cputypes) if count is None else count)
     for cpu in cputypes:
-        out += struct.pack(">i", cpu) + b"\x00" * (width - 4)
+        # UNSIGNED, matching the reader above and the G30 gate. Byte-identical for every real
+        # cputype, so no fixture could ever have caught the mismatch - which is why the SIGNED
+        # spelling survived here after the reader was aligned, until the dual review grepped the
+        # file for the literal instead of trusting the claim. [Build-Session-Entscheidung: P4.29.1]
+        out += struct.pack(">I", cpu) + b"\x00" * (width - 4)
     return out
 
 
@@ -1598,6 +1623,35 @@ def selftest() -> int:
                 lambda: _slice_entries(ucache, _UNIVERSAL_ROWS[0]),
                 "P4.29.1",
             ),
+        )
+        # The refusal names the REMEDY, and which remedy it is depends on WHICH slice is gone: on
+        # the arm64 universal runner a missing x86_64 slice is §6.1.3's cross fallback while a
+        # missing aarch64 slice is an ordinary native compile. `missing` is symmetric over
+        # UNIVERSAL_SLICES, so a leg driving only one arm cannot see the other arm's wording go
+        # wrong - the arm-blind shape this file's own `_raises` contract exists to forbid. TWO
+        # arms, TWO legs, distinct needles. [Build-Session-Entscheidung: P4.29.1]
+        _record(
+            "dual sourcing: the missing-x86_64 arm names the CROSS remedy and its exact --target",
+            _raises(
+                lambda: _slice_entries(ucache, _UNIVERSAL_ROWS[0]),
+                f"--target {UNIVERSAL_SLICES[1]}",
+            )
+            and _raises(lambda: _slice_entries(ucache, _UNIVERSAL_ROWS[0]), "a cross build"),
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _, ucache = _universal_fixture(Path(tmp))
+        # The OTHER arm, on its own fixture: removing the aarch64 entry instead. Driven through a
+        # second fixture rather than by deleting both in turn, because an entry removed from the
+        # first one cannot be put back.
+        shutil.rmtree(ucache / f"ffmpeg-7.1-{UNIVERSAL_SLICES[0]}")
+        _record(
+            "dual sourcing: the missing-aarch64 arm names a NATIVE compile, not a cross build",
+            _raises(
+                lambda: _slice_entries(ucache, _UNIVERSAL_ROWS[0]),
+                f"--target {UNIVERSAL_SLICES[0]}",
+            )
+            and _raises(lambda: _slice_entries(ucache, _UNIVERSAL_ROWS[0]), "a native build"),
         )
 
     with tempfile.TemporaryDirectory() as tmp:

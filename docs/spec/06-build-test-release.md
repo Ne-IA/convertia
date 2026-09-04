@@ -104,7 +104,25 @@ build-time mechanics that realise them**:
     fallback** is to build it x86_64-on-arm64 via the cross toolchain / Rosetta 2 from source
     (the hardest practical step, used only when the cache lacks a slice); `lipo` cannot merge
     a slice it does not have, so a missing slice fails the macOS leg clearly rather than
-    shipping a single-arch sidecar.
+    shipping a single-arch sidecar. **Its actor is `scripts/compile-engine-asset`** (P4.29.1),
+    one step UPSTREAM of `stage-engines`, which only ever reads the cache: the slice is declared
+    `from-source` for that triple, which the row law already EXPRESSES — `acquisition` is a scalar
+    on a triple-keyed row and the cache-group invariant is keyed `(cache_engine, triple)`
+    (§3.7.2/§3.8), so no schema change is needed. **Expressible is not the same as permitted:**
+    whether the two halves of one universal binary may differ in acquisition mode stays §3.8's
+    per-engine decision, and for the engines whose load-bearing §3.5.1/§3.6.1 properties only a
+    ConvertIA-configured build has it is already settled against — a prebuilt FFmpeg ships the
+    network protocol family enabled and so cannot satisfy the `--disable-network` floor on
+    *either* slice. G30 asserts a universal artifact is fat with both slices; nothing looks at
+    provenance per slice, so a mixed-provenance pair would ship one binary whose halves differ on
+    a load-bearing property with no gate in the way. The compile resolves the
+    `(host, target)` pair against a DECLARED cross table — an undeclared mismatch is refused
+    rather than built for the host — appends each build system's own cross spelling as a SUFFIX
+    on the declared configure line (so both slices carry the identical curated flags), probes
+    Rosetta 2 up front, and asserts every Mach-O it installs carries exactly that triple's CPU
+    type before publishing. A cross build that silently came out native would otherwise reach
+    `lipo -create` as two `arm64` slices — the same silent single-arch class G30 catches one step
+    later, caught here at the step that produced the bytes.
   - **Engine support files** (non-executable: LibreOffice's `share/`, `program/`
     libs, fonts, pandoc data) → `bundle.resources`, resolved at runtime via the
     Tauri resource path (§3.5 owns the working-dir/env wiring; §7.2 owns startup
@@ -123,7 +141,10 @@ build-time mechanics that realise them**:
   `from_source.tarball_sha256` — a cache is not a trust boundary — verify each one's detached
   signature against the pinned `from_source.signing_key_fingerprint` with the tool the row NAMES,
   regenerate `configure`/`m4` locally, configure each source with its declared line into ONE
-  shared `--prefix`, build, install, publish that prefix under the §6.1.3 key) **and
+  shared `--prefix`, build, install, publish that prefix under the §6.1.3 key; and P4.29.1: resolve
+  the `(host, target)` pair against the declared cross table, append the build system's own cross
+  spelling, probe the emulator, and assert the installed Mach-Os carry the target's CPU type before
+  publishing) **and
   `scripts/fetch-engine-assets --source`**, which acquires each signed tarball AND its
   `from_source.signature_url` and publishes them RAW — unpacked bytes cannot carry a signature —
   under a `.src`-suffixed key that `stage-engines` structurally cannot match. The download stays

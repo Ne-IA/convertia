@@ -29,6 +29,18 @@ NAMES (`gpg` or `sq`), then the local regeneration of `configure`/`m4` (the xz/l
 validly-signed tarball whose generated files differ from the upstream git tree), and only then the
 configure line. A failure at any step publishes nothing.
 
+WHAT IT VERIFIES AFTER IT BUILDS (P4.29.1). §6.1.3's macOS fallback compiles the `x86_64` slice on
+an ARM64 runner - "x86_64-on-arm64 via the cross toolchain / Rosetta 2" - so which architecture a
+build actually produced stops being readable off the target name. `--target` used to be a row
+filter and a cache-key suffix and nothing more: a cross-named run built for the HOST and published
+under the target key, and the first thing to notice would have been `lipo -create` meeting two
+arm64 slices. So the (host, target) pair is now resolved against a DECLARED cross table - an
+undeclared mismatch is refused, never guessed native - each build system is handed its own
+canonical cross spelling as a SUFFIX on the declared line (so both slices carry the identical
+curated flags), Rosetta 2 is probed before the first build step rather than discovered mid-build,
+and every Mach-O the build installs must carry exactly the entry's own CPU type. `lipo` cannot
+merge a slice it does not have, and it cannot merge two of the same either.
+
 THE CONFIGURE LINE IS DATA. `src-tauri/engine-configure.toml` declares
 `<cache_engine>.configure.flags` per engine, filled by the named compile boxes (P4.34's pull-forward first, then P5.1.1, P5.5.1,
 P5.9.1, P6.1.1, P7.17.1). A group with no table is REFUSED rather than built with a default line:
@@ -65,6 +77,7 @@ import os
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -263,6 +276,50 @@ _HOST_TRIPLES = {
     ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
 }
 
+# The Mach-O header constants, so a produced slice can be checked for the architecture it was
+# ASKED for. The values are the G30 gate's (`scripts/check-build-matrix`, P0.4.10); `stage-engines`
+# pins the same set for the same reason, and a leg READS all three copies rather than trusting they
+# agree - a producer and its gate answering one question two ways is invisible otherwise, because
+# each file's own suite is internally consistent. [Build-Session-Entscheidung: P4.29.1]
+_FAT_MAGIC = 0xCAFEBABE
+_FAT_MAGIC_64 = 0xCAFEBABF
+_CPU_TYPE_X86_64 = 0x01000007
+_CPU_TYPE_ARM64 = 0x0100000C
+_MAX_FAT_ARCH = 64
+_CPU_TYPE_NAMES = {_CPU_TYPE_X86_64: "x86_64", _CPU_TYPE_ARM64: "arm64"}
+# The gate's spelling -> this module's. A leg reads each name out of the gate AND asserts this table
+# covers every module-level int named with one of the prefixes below, so a new magic, cputype or
+# bound cannot arrive unpinned under one of those names. PREFIX-BOUNDED, not shape-complete: a
+# constant named outside them is still invisible to the rule, which is the honest limit of a rule
+# written over names - the sibling in `stage-engines` records the same limit, and `_MACHO_THIN_MAGICS`
+# below is exactly such a constant. `_CPU_TYPE_NAMES` shares a prefix but is a dict, not an int, and
+# the rule filters on the VALUE's type rather than on the name alone.
+_GATE_PINNED_CONSTANTS = {
+    "FAT_MAGIC": "_FAT_MAGIC",
+    "FAT_MAGIC_64": "_FAT_MAGIC_64",
+    "CPU_TYPE_X86_64": "_CPU_TYPE_X86_64",
+    "CPU_TYPE_ARM64": "_CPU_TYPE_ARM64",
+    "_MAX_FAT_ARCH": "_MAX_FAT_ARCH",
+}
+_GATE_PINNED_PREFIXES = ("_FAT_MAGIC", "_CPU_TYPE", "_MAX_FAT")
+# The thin magics, both byte orders, spelled exactly as `stage-engines._MACHO_MAGICS` spells them:
+# the slice this script publishes is the file that script later reads, so the two have to agree on
+# what a Mach-O IS. A leg pins the pair.
+_MACHO_THIN_MAGICS = (
+    b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",  # MH_MAGIC_64 / MH_MAGIC, little-endian
+    b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",  # ...big-endian
+)
+# The v1 triples whose produced binaries are Mach-O, and the CPU type each one's entry must carry.
+# The criterion is the FORMAT, not the cross-ness: both darwin triples are listed, including the
+# one that is only ever built natively, because checking both halves is what makes merging them
+# meaningful. An ELF or PE target is absent because this parser cannot read those headers at all -
+# and it loses nothing by it, since `_CROSS_BUILDS` declares no cross pair outside macOS, so a
+# non-darwin build produces the host's architecture by construction.
+_TARGET_CPU_TYPES = {
+    "aarch64-apple-darwin": _CPU_TYPE_ARM64,
+    "x86_64-apple-darwin": _CPU_TYPE_X86_64,
+}
+
 
 class CompileError(Exception):
     """A verification or build violation - exit 1."""
@@ -359,9 +416,212 @@ def resolve_target(explicit: str | None) -> str:
     if host is None:
         raise StructuralError(
             f"cannot resolve a target triple for this host "
-            f"({platform.system()}/{platform.machine()}) - pass --target explicitly"
+            f"({platform.system()}/{platform.machine()}) - the §3.4.5 v1 set is "
+            f"{', '.join(V1_TARGET_TRIPLES)}, and this host is in none of them. Passing --target "
+            "does not help: since P4.29.1 a build whose (host, target) pair cannot be classified "
+            "as native or cross is refused rather than published under a key it may not match"
         )
     return host
+
+
+# --------------------------------------------------------------------------------------------
+# The §6.1.3 missing-slice cross fallback (P4.29.1).
+# --------------------------------------------------------------------------------------------
+
+
+class CrossBuild(NamedTuple):
+    """A DECLARED (host, target) pair this script may compile ACROSS, and how.
+
+    §6.1.3 names exactly one, and names it as a fallback rather than a mode: the macOS universal
+    build runs on an arm64 runner, so when the engine-asset cache lacks an `x86_64-apple-darwin`
+    slice it is built "x86_64-on-arm64 via the cross toolchain / Rosetta 2 from source" before
+    `lipo -create` can merge the pair. `lipo` cannot merge a slice it does not have.
+    """
+
+    host: str
+    target: str
+    #: The architecture token every half of the cross spelling uses. It is ONE field standing in
+    #: for four naming domains that happen to spell x86_64 identically - clang `-arch`, Meson
+    #: `cpu_family`, FFmpeg `--arch`, `CMAKE_OSX_ARCHITECTURES` - and they DIVERGE for arm64
+    #: (Meson wants `aarch64`, clang and CMake want `arm64`). Fail-closed today, because
+    #: `_CROSS_BUILDS` declares one pair and `_cross_argv` refuses every other: a SECOND row
+    #: cannot be added without splitting this field per domain first.
+    arch: str
+    #: The CPU type every Mach-O this build installs has to carry - and carry alone.
+    cpu_type: int
+    #: CMake's `CMAKE_SYSTEM_NAME` / FFmpeg's `--target-os`, in each one's own casing.
+    system_name: str
+    #: How this HOST executes a TARGET binary. macOS runs a thin x86_64 binary on arm64
+    #: TRANSPARENTLY once Rosetta 2 is installed, so no build step is wrapped in it: the wrapper is
+    #: what the two build systems with an emulator hook are handed (Meson's `exe_wrapper`, CMake's
+    #: `CMAKE_CROSSCOMPILING_EMULATOR`), and what the availability probe runs.
+    emulator: tuple[str, ...]
+
+
+_CROSS_BUILDS: dict[tuple[str, str], CrossBuild] = {
+    ("aarch64-apple-darwin", "x86_64-apple-darwin"): CrossBuild(
+        host="aarch64-apple-darwin",
+        target="x86_64-apple-darwin",
+        arch="x86_64",
+        cpu_type=_CPU_TYPE_X86_64,
+        system_name="Darwin",
+        emulator=("arch", "-x86_64"),
+    ),
+}
+
+
+def resolve_build(host: str | None, target: str) -> CrossBuild | None:
+    """`None` for a native build, a `CrossBuild` for the declared pair; anything else is refused.
+
+    Until this existed `--target` was a row FILTER and a cache-key SUFFIX and nothing else, so
+    `--target x86_64-apple-darwin` on an arm64 mac exited 0 and published a NATIVE arm64 tree under
+    the x86_64 key. `stage-engines` would then hand `lipo -create` two arm64 slices, and `lipo`
+    would report a duplicate architecture naming neither the row nor the build that produced it:
+    the silent single-arch class G30 exists for, one step upstream of where G30 can see it.
+
+    An UNDECLARED mismatch is refused rather than built natively, because those are the two
+    readings of the same command and only one of them is safe to guess.
+    """
+    if host is not None and host == target:
+        return None
+    if host is None:
+        raise StructuralError(
+            f"cannot tell whether building for '{target}' on this host "
+            f"({platform.system()}/{platform.machine()}) is native or cross - the host has no "
+            "§3.4.5 v1 triple, and a build whose architecture cannot be established is refused "
+            "rather than published under a target key it may not match"
+        )
+    cross = _CROSS_BUILDS.get((host, target))
+    if cross is None:
+        declared = ", ".join(f"{h} -> {t}" for h, t in sorted(_CROSS_BUILDS))
+        raise StructuralError(
+            f"building for '{target}' on a '{host}' host is not a declared cross pair - §6.1.3 "
+            f"declares {declared} (the macOS universal build's missing-x86_64-slice fallback). "
+            "Compiling it here would publish host-architecture bytes under a target key"
+        )
+    return cross
+
+
+def _meson_cross_file(cross: CrossBuild, workdir: Path) -> Path:
+    """Write Meson's machine description beside the source's build system and hand back its path.
+
+    `workdir` is the UNPACKED SOURCE directory (`meson setup _build` runs there), not the `_build`
+    tree Meson generates - the file has to exist before that tree does. Both live inside the run's
+    `mkdtemp` staging and neither is ever published.
+
+    Meson has no command-line spelling for a cross build - the machine description IS a file, and
+    `--cross-file` is one of the `_IMPORTED_SETTINGS_OPTIONS` a manifest may never declare, exactly
+    because such a file can reset the install prefix or the compiler out from under the declared
+    line the §6.1.3 assertions cross-check. Generating it HERE, after `parse_configure` has already
+    validated that line, keeps both halves of that rule true: the manifest still cannot import
+    build settings, and the one file that does is this script's own, derived from the declared pair
+    and nothing else. [Build-Session-Entscheidung: P4.29.1]
+    """
+    path = workdir / f".convertia-cross-{cross.target}.ini"
+    path.write_text(
+        "# Generated by scripts/compile-engine-asset (P4.29.1) - do not edit; not a manifest.\n"
+        "[binaries]\n"
+        f"c = ['clang', '-arch', '{cross.arch}']\n"
+        f"cpp = ['clang++', '-arch', '{cross.arch}']\n"
+        f"exe_wrapper = {list(cross.emulator)!r}\n"
+        "\n"
+        "[host_machine]\n"
+        f"system = '{cross.system_name.lower()}'\n"
+        f"cpu_family = '{cross.arch}'\n"
+        f"cpu = '{cross.arch}'\n"
+        "endian = 'little'\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+# How each declared build system is told to target another architecture. Keyed the same way
+# `_BUILD_SYSTEMS` is, and `_cross_argv` refuses a system missing from here rather than falling
+# through to a native build - a system declarable in the configure seam but not cross-configurable
+# would silently build for the HOST on the one path where that is the whole defect.
+#
+# Each spelling is the build system's own canonical one, which is why they differ: `autotools` is
+# GNU autoconf's `--host`/`--build` pair plus the compiler assignments autoconf reads as arguments;
+# `configure` is FFmpeg's handwritten script, which is the reason that system name exists at all
+# (no `configure.ac`, and no autoconf argument grammar - it takes `--enable-cross-compile`);
+# `cmake` uses Apple's own `CMAKE_OSX_ARCHITECTURES` beside the generic toolchain triple; `meson`
+# takes the generated file above. [Build-Session-Entscheidung: P4.29.1]
+_CROSS_ARGV = {
+    "autotools": lambda cross, workdir: [
+        f"--host={cross.target}",
+        f"--build={cross.host}",
+        f"CC=clang -arch {cross.arch}",
+        f"CXX=clang++ -arch {cross.arch}",
+    ],
+    "configure": lambda cross, workdir: [
+        "--enable-cross-compile",
+        f"--arch={cross.arch}",
+        f"--target-os={cross.system_name.lower()}",
+        f"--cc=clang -arch {cross.arch}",
+    ],
+    "meson": lambda cross, workdir: [
+        f"--cross-file={_posix(_meson_cross_file(cross, workdir))}",
+    ],
+    # NAMED RESIDUAL for the first `cmake` fill box (no from-source cmake engine is declared yet,
+    # so none of this has met a real project): `CMAKE_OSX_ARCHITECTURES` is Apple's own mechanism
+    # and alone produces the `-arch` on compile AND link, while `CMAKE_SYSTEM_NAME` additionally
+    # flips CMake into `CMAKE_CROSSCOMPILING` mode - which is what makes
+    # `CMAKE_CROSSCOMPILING_EMULATOR` take effect, and also what changes `try_run`/Find-module
+    # behaviour and can break a project that builds a host-side generator. Both readings are
+    # defensible and neither is settleable by reading: the first cmake fill box VALIDATES this on a
+    # real macOS runner and drops `CMAKE_SYSTEM_NAME` if a host-side generator breaks.
+    # [Build-Session-Entscheidung: P4.29.1]
+    "cmake": lambda cross, workdir: [
+        f"-DCMAKE_SYSTEM_NAME={cross.system_name}",
+        f"-DCMAKE_SYSTEM_PROCESSOR={cross.arch}",
+        f"-DCMAKE_OSX_ARCHITECTURES={cross.arch}",
+        f"-DCMAKE_CROSSCOMPILING_EMULATOR={';'.join(cross.emulator)}",
+    ],
+}
+
+
+def _cross_argv(cross: CrossBuild, system: str, workdir: Path) -> list[str]:
+    """The flags that make ONE build system target `cross.target` instead of the host."""
+    builder = _CROSS_ARGV.get(system)
+    if builder is None:
+        raise StructuralError(
+            f"build system '{system}' has no declared cross spelling - it can be declared in "
+            f"{CONFIGURE_REL} but not cross-configured, so a fallback build would silently target "
+            "the host. The box widening `BUILD_SYSTEMS` widens this table in the same act"
+        )
+    return builder(cross, workdir)
+
+
+def assert_emulator_available(
+    cross: CrossBuild, cwd: Path, *, runner: Callable[[list[str], Path], object]
+) -> None:
+    """Refuse a cross build on a host that cannot RUN the architecture it is about to produce.
+
+    No build step is wrapped in the emulator - macOS runs a thin x86_64 binary transparently once
+    Rosetta 2 is installed - but a build that executes a tool it just built (a code generator, a
+    configure-time run test, whatever Meson's `exe_wrapper` invokes) needs it, and without it the
+    failure surfaces mid-build as an opaque exec error naming a file no manifest mentions. Probed
+    once per ENTRY - after that entry's signatures verify, before its first build step - so the
+    fallback either starts on a host that can finish it or says why not. Per entry rather than per
+    run, because a run legitimately compiles nothing (every entry a cache hit), and a probe above
+    that loop would demand Rosetta from a run that was never going to build anything.
+    Rosetta 2 is §6.1.3's own named half of this fallback. [Build-Session-Entscheidung: P4.29.1]
+    """
+    argv = [*cross.emulator, "/usr/bin/true"]
+    try:
+        result = runner(argv, cwd)
+    except FileNotFoundError as exc:
+        raise StructuralError(
+            f"'{cross.emulator[0]}' is not on PATH, so a {cross.target} build cannot be checked "
+            f"or run on this {cross.host} host - §6.1.3's cross fallback needs the macOS `arch` "
+            "tool"
+        ) from exc
+    if getattr(result, "returncode", 1) != 0:
+        raise StructuralError(
+            f"this {cross.host} host cannot execute {cross.arch} binaries: "
+            f"`{' '.join(argv)}` failed. Rosetta 2 is §6.1.3's named half of the cross fallback - "
+            "install it with `softwareupdate --install-rosetta` and re-run"
+        )
 
 
 # --------------------------------------------------------------------------------------------
@@ -1002,6 +1262,7 @@ def build_source(
     prefix: Path,
     *,
     runner: Callable[[list[str], Path], object],
+    cross: CrossBuild | None = None,
 ) -> None:
     """Drive the DECLARED build system: regenerate where that applies, configure, build, install.
 
@@ -1028,6 +1289,13 @@ def build_source(
         _PLACEHOLDER.sub(lambda m: _posix(prefix) if m.group(1) == "prefix" else m.group(0), flag)
         for flag in source.flags
     )
+    if cross is not None:
+        # APPENDED, never mixed in: the box's contract is that both macOS slices carry "the same
+        # curated configure flags", so the native argv stays a strict PREFIX of the cross argv and
+        # the only difference between the two slices is this script-owned suffix. Every one of the
+        # four build systems passes `flags` to its CONFIGURE step alone, so appending here reaches
+        # exactly the step that decides the architecture. [Build-Session-Entscheidung: P4.29.1]
+        flags = flags + tuple(_cross_argv(cross, source.system, workdir))
     for label, argv in _BUILD_SYSTEMS[source.system](prefix, flags):
         result = runner(argv, workdir)
         if getattr(result, "returncode", 1) != 0:
@@ -1088,6 +1356,92 @@ def link_target_escapes(target: str) -> bool:
     return len(first) >= 2 and first[1] == ":"
 
 
+def macho_cpu_types(path: Path) -> tuple[int, ...]:
+    """Every CPU type a file DECLARES: a thin Mach-O's one, a fat one's whole arch table, or `()`.
+
+    Header-only, exactly like `stage-engines.fat_slice_cputypes` and the G30 gate's own parse: the
+    question is which architecture the file CLAIMS to be, which is what `lipo -info` reports. `()`
+    means "not a Mach-O", which is the right answer for the data, scripts and `.pc` files a real
+    install prefix is mostly made of.
+    """
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(8)
+            if len(header) < 8:
+                return ()
+            if header[:4] in _MACHO_THIN_MAGICS:
+                # The magic's byte ORDER is the file's: the two little-endian spellings start with
+                # the low byte of MH_MAGIC*, the big-endian ones with its high byte. Reading the
+                # cputype in the other order would report a nonsense architecture as confidently
+                # as a real one.
+                order = "<" if header[0] in (0xCF, 0xCE) else ">"
+                return (struct.unpack(f"{order}I", header[4:8])[0],)
+            magic, count = struct.unpack(">II", header)
+            if magic not in (_FAT_MAGIC, _FAT_MAGIC_64):
+                return ()
+            # The same bound the G30 gate applies. It is ONE of three filters on a non-Mach-O whose
+            # leading bytes happen to mimic the fat magic (a Java `.class`, whose second field is
+            # the class-file version): the bound alone only rejects major >= 65 (Java 21+), and
+            # Java 8-20 falls to the short-read check below, or to the cputype mismatch in
+            # `assert_target_arch`. All three are fail-CLOSED, so the verdict is right whichever
+            # answers - but the bound does not deserve sole credit for it.
+            if not 1 <= count <= _MAX_FAT_ARCH:
+                return ()
+            width = 32 if magic == _FAT_MAGIC_64 else 20
+            table = handle.read(width * count)
+    except OSError:
+        # The one fail-OPEN arm in an otherwise fail-closed guard: an UNREADABLE file is reported
+        # as not-architecture-bearing rather than as a violation. Deliberate and bounded - the
+        # sibling `assert_self_contained` walks the same tree with the same tolerance, a file that
+        # vanishes mid-walk is a normal race in a tree we just built, and raising here would turn
+        # a transient read error into a failed release build. The bytes that MATTER are the ones
+        # that read successfully and declare the wrong arch. [Build-Session-Entscheidung: P4.29.1]
+        return ()
+    if len(table) < width * count:
+        return ()
+    return tuple(
+        struct.unpack_from(">I", table, index * width)[0] for index in range(count)
+    )
+
+
+def assert_target_arch(prefix: Path, triple: str, entry_name: str) -> None:
+    """Refuse a built tree whose Mach-Os are not the architecture the entry is KEYED for.
+
+    Asserted at the step that PRODUCED the bytes - the discipline P4.29 applied to
+    `assert_universal_fat` - because the entry name carries the triple and nothing else does: a
+    slice that silently came out native is indistinguishable from a correct one to every later
+    reader, and the first thing that would notice is `lipo -create` reporting a duplicate
+    architecture, naming neither the row nor the build.
+
+    EXACTLY the target's CPU type, and nothing else. "Carries the target" is not enough: a slice
+    that is already FAT cannot be merged with its sibling either, because `lipo` refuses a
+    duplicate architecture - so a per-slice entry has to be thin and it has to be the right thin.
+    Non-Mach-O members are not architecture-bearing and are skipped; a symlink is skipped because
+    whatever it points at inside the tree is walked on its own. [Build-Session-Entscheidung:
+    P4.29.1]
+    """
+    expected = _TARGET_CPU_TYPES.get(triple)
+    if expected is None:
+        # Every non-Mach-O v1 triple is native-only by `_CROSS_BUILDS`, so what a build for it
+        # produces is the host's architecture by construction - there is no cross step that could
+        # make it anything else, and no header check that could tell it anything.
+        return
+    for installed in sorted(prefix.rglob("*")):
+        if installed.is_symlink() or not installed.is_file():
+            continue
+        cpu_types = macho_cpu_types(installed)
+        if not cpu_types or cpu_types == (expected,):
+            continue
+        found = ", ".join(_CPU_TYPE_NAMES.get(cpu, hex(cpu)) for cpu in cpu_types)
+        shape = "a fat binary" if len(cpu_types) > 1 else "the wrong architecture"
+        raise CompileError(
+            f"{entry_name}: the build installed "
+            f"'{installed.relative_to(prefix).as_posix()}' as {found}, but the entry is keyed for "
+            f"{triple} ({_CPU_TYPE_NAMES[expected]}) - refusing to publish {shape} under a "
+            "per-slice key, which `lipo -create` would meet as a duplicate or missing architecture"
+        )
+
+
 def assert_self_contained(prefix: Path, entry_name: str) -> None:
     """Refuse a built tree that points OUT of itself.
 
@@ -1118,7 +1472,11 @@ def assert_self_contained(prefix: Path, entry_name: str) -> None:
 
 
 def compile_entry(
-    plan: CompilePlan, cache_root: Path, *, runner: Callable[[list[str], Path], object]
+    plan: CompilePlan,
+    cache_root: Path,
+    *,
+    runner: Callable[[list[str], Path], object],
+    cross: CrossBuild | None = None,
 ) -> Path:
     """Verify, regenerate, build and publish ONE entry atomically. Returns the published path.
 
@@ -1147,6 +1505,8 @@ def compile_entry(
     try:
         prefix = staging / "prefix"
         prefix.mkdir()
+        if cross is not None:
+            assert_emulator_available(cross, staging, runner=runner)
         for index, source in enumerate(plan.sources):
             unpacked = staging / "build" / f"src{index:02d}"
             unpack_source(sources / source.archive_name, unpacked)
@@ -1158,8 +1518,9 @@ def compile_entry(
                         f"{source.row.id}: the declared source_dir "
                         f"{source.source_dir!r} is not a directory in the unpacked tree"
                     )
-            build_source(source, workdir, prefix, runner=runner)
+            build_source(source, workdir, prefix, runner=runner, cross=cross)
         assert_self_contained(prefix, plan.entry_name)
+        assert_target_arch(prefix, plan.triple, plan.entry_name)
         if not any(prefix.iterdir()):
             # The sibling refuses an empty entry for the same reason: one that stages nothing
             # would read as a silent success on every subsequent run, because `cached` is
@@ -1213,7 +1574,18 @@ def run(
     check_only: bool,
     verbose: bool,
     runner: Callable[[list[str], Path], object],
+    host: str | None,
 ) -> int:
+    # Resolved FIRST, before either manifest is read: "can this host produce that target at all" is
+    # a question about the two triples and nothing else, and an answer of no makes every later step
+    # moot. It is also the one question `--check` could not answer while the target was a bare row
+    # filter. [Build-Session-Entscheidung: P4.29.1]
+    cross = resolve_build(host, triple)
+    if cross is not None:
+        note(
+            f"cross build: {cross.host} host -> {cross.target} (§6.1.3's missing-slice fallback; "
+            f"every Mach-O the build installs is asserted {cross.arch} before publish)"
+        )
     if not lock_path.is_file():
         raise StructuralError(f"missing engine manifest: {lock_path} (§3.7.2)")
     if not configure_path.is_file():
@@ -1267,7 +1639,7 @@ def run(
             )
             continue
         try:
-            compile_entry(plan, cache_root, runner=runner)
+            compile_entry(plan, cache_root, runner=runner, cross=cross)
         except _AlreadyBuilt:
             hits += 1
             note(
@@ -1293,7 +1665,15 @@ _results: list[tuple[str, bool]] = []
 
 
 def _record(name: str, ok: bool) -> None:
+    # PRINTED at the moment the leg is recorded, not only aggregated at the end. The third
+    # force-green shape - a post-hoc in-place rewrite of `_results` at the END of `selftest()` -
+    # defeats every read-the-state-afterwards leg, and the caged canary recorded it as a KNOWN
+    # BOUND here precisely because this recorder appended silently: "the equivalent closure here
+    # requires a tool-side print - a Loop edit at the next --selftest-touching box". This is that
+    # box. `stage-engines._record` prints for the same reason, and its canary captures the stream
+    # as production-time evidence a rewrite cannot forge. [Build-Session-Entscheidung: P4.29.1]
     _results.append((name, ok))
+    print(f"[{'PASS' if ok else 'FAIL'}] {name}")
 
 
 def _raises(fn, needle: str, kind: type[Exception] = Exception) -> bool:
@@ -1513,6 +1893,46 @@ class _RacingRunner(_Runner):
         return result
 
 
+def _thin_macho(cpu_type: int, *, order: str = "<") -> bytes:
+    """A thin Mach-O header declaring ONE cpu type - the shape a per-slice entry must have.
+
+    Built FROM the module's own constants rather than from a literal, so a leg cannot agree with an
+    implementation that got the constant wrong; the constants themselves are frozen to the G30
+    gate's copies by their own leg. `order` exists because the magic's byte order IS the file's,
+    and a parser that read the cputype in the other order would report a nonsense architecture just
+    as confidently as a real one.
+    """
+    return struct.pack(f"{order}II", 0xFEEDFACF, cpu_type) + b"\0" * 24
+
+
+def _fat_macho(cpu_types: tuple[int, ...], *, magic: int = _FAT_MAGIC,
+               count: int | None = None) -> bytes:
+    """A fat Mach-O header carrying `cpu_types` - the shape a per-slice entry must NOT have."""
+    width = 32 if magic == _FAT_MAGIC_64 else 20
+    body = b"".join(struct.pack(">I", cpu) + b"\0" * (width - 4) for cpu in cpu_types)
+    return struct.pack(">II", magic, len(cpu_types) if count is None else count) + body
+
+
+class _MachoRunner(_Runner):
+    """A runner whose install step drops a Mach-O of a CHOSEN architecture into the prefix.
+
+    The defect P4.29.1's assertion exists for is a cross build that quietly came out NATIVE, and no
+    fixture derived from the tool's own success path can express it - the runner has to be able to
+    LIE about what it produced, exactly as a cross toolchain with a no-op flag would.
+    """
+
+    def __init__(self, cpu_type: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._cpu_type = cpu_type
+
+    def __call__(self, argv: list[str], cwd: Path):
+        result = super().__call__(argv, cwd)
+        if self._prefix is not None and "install" in self.label_of(argv):
+            (self._prefix / "lib").mkdir(parents=True, exist_ok=True)
+            (self._prefix / "lib" / "libengine.dylib").write_bytes(_thin_macho(self._cpu_type))
+        return result
+
+
 class _FakeLink:
     """One symlink entry, without the OS privilege a real one needs.
 
@@ -1648,6 +2068,28 @@ def _load_sibling(name: str):
     return module
 
 
+def _gate_constant(name: str) -> int | None:
+    """Read a named integer constant out of `scripts/check-build-matrix` (the G30 gate).
+
+    The gate parses the same fat headers this file does, and `stage-engines` reads the very same
+    file the very same way. Freezing all three mechanically is what keeps a producer and its gate
+    from answering one question two ways - the drift is invisible otherwise, because each file's
+    own suite is internally consistent. READING rather than importing keeps this side of the L(-1)
+    line: the gate is caged, its VALUE is not a secret. [Build-Session-Entscheidung: P4.29.1]
+    """
+    gate = ROOT / "scripts" / "check-build-matrix"
+    if not gate.is_file():
+        return None
+    for line in gate.read_text(encoding="utf-8", errors="replace").splitlines():
+        head, sep, tail = line.partition("=")
+        if sep and head.strip() == name:
+            try:
+                return int(tail.split("#")[0].strip(), 0)
+            except ValueError:
+                return None
+    return None
+
+
 def _shared_row(ident: str, version: str, url: str, payload: bytes) -> str:
     """A row satisfying BOTH readers.
 
@@ -1680,6 +2122,16 @@ def _report(call) -> str:
     them apart - the `-v` cache-hit note has no other observable effect at all."""
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
+        call()
+    return buffer.getvalue()
+
+
+def _report_err(call) -> str:
+    """What a call writes to STDERR. `fail()` prints there, so an exit-code leg that wants to pin
+    WHICH refusal it got has to read this stream - `_report` sees stdout and would find nothing.
+    [Build-Session-Entscheidung: P4.29.1]"""
+    buffer = io.StringIO()
+    with contextlib.redirect_stderr(buffer):
         call()
     return buffer.getvalue()
 
@@ -2621,6 +3073,309 @@ def _legs() -> None:
                 ),
             )
 
+        # ---- the §6.1.3 missing-slice cross fallback (P4.29.1) -------------------------------
+        # Every leg here is driven through the INJECTED runner and an explicitly-passed host, so
+        # the whole macOS mechanism is exercised on a Linux or Windows runner with no compiler, no
+        # `arch`, no `lipo` and no mac. That is not a convenience: the caged canary tolerates ZERO
+        # skipped legs on POSIX, so a mechanism that could only be checked on its own platform
+        # would be checked nowhere.
+        _ARM_T, _X86_T = "aarch64-apple-darwin", "x86_64-apple-darwin"
+        cross = _CROSS_BUILDS[(_ARM_T, _X86_T)]
+        _record(
+            "a host building for ITSELF is native - nothing to cross-configure, nothing to emulate",
+            resolve_build(_LINUX, _LINUX) is None and resolve_build(_ARM_T, _ARM_T) is None,
+        )
+        _record(
+            "the §6.1.3 pair (arm64 mac -> x86_64 mac) resolves to the declared cross build",
+            resolve_build(_ARM_T, _X86_T) is cross
+            and (cross.arch, cross.cpu_type) == ("x86_64", _CPU_TYPE_X86_64),
+        )
+        _record(
+            "an UNDECLARED host/target mismatch is REFUSED, never quietly built for the host",
+            _raises(lambda: resolve_build(_LINUX, _X86_T), "not a declared cross pair",
+                    StructuralError),
+        )
+        _record(
+            "...and the refusal names both sides of the pair it will not guess at",
+            _raises(lambda: resolve_build(_LINUX, _X86_T), _X86_T, StructuralError)
+            and _raises(lambda: resolve_build(_LINUX, _X86_T), _LINUX, StructuralError),
+        )
+        _record(
+            "the fallback is ONE-WAY - the reverse direction is not a declared pair either",
+            _raises(lambda: resolve_build(_X86_T, _ARM_T), "not a declared cross pair",
+                    StructuralError),
+        )
+        _record(
+            "a host with no §3.4.5 triple cannot be classified, so the build is refused rather "
+            "than published under a key it may not match",
+            _raises(lambda: resolve_build(None, _X86_T), "native or cross", StructuralError),
+        )
+        _record(
+            "every declarable build system has a cross spelling - none can fall through to native",
+            set(_CROSS_ARGV) == set(BUILD_SYSTEMS),
+        )
+        _record(
+            "a build system with NO declared cross spelling is refused, not built for the host",
+            _raises(lambda: _cross_argv(cross, "ninja", flat), "no declared cross spelling",
+                    StructuralError),
+        )
+
+        def _configure_call(recorder) -> list[str]:
+            """The step that decides the architecture, found by the prefix it carries.
+
+            Indexing `calls[0]`/`calls[1]` would be right for two of the four systems and silently
+            wrong for the others - autotools regenerates first, and only Meson and CMake put the
+            prefix on their own opening call.
+            """
+            for argv in recorder.calls:
+                if any(t.startswith(("--prefix=", "-DCMAKE_INSTALL_PREFIX=")) for t in argv):
+                    return argv
+            return []
+
+        for system, needle in (
+            ("autotools", f"--host={_X86_T}"),
+            ("configure", "--enable-cross-compile"),
+            ("meson", "--cross-file="),
+            ("cmake", "-DCMAKE_OSX_ARCHITECTURES=x86_64"),
+        ):
+            native_run, cross_run = _Runner(), _Runner()
+            build_source(source._replace(system=system), flat, prefix, runner=native_run)
+            build_source(source._replace(system=system), flat, prefix, runner=cross_run,
+                         cross=cross)
+            native_argv, cross_argv = _configure_call(native_run), _configure_call(cross_run)
+            _record(
+                f"a cross `{system}` build keeps the declared line as a strict PREFIX and appends "
+                "only the cross suffix - both slices carry the identical curated flags",
+                bool(native_argv)
+                and cross_argv[: len(native_argv)] == native_argv
+                and len(cross_argv) > len(native_argv),
+            )
+            _record(
+                f"a cross `{system}` build is told to target x86_64 in THAT system's own spelling",
+                any(token.startswith(needle) for token in cross_argv),
+            )
+            _record(
+                f"a NATIVE `{system}` build carries no cross spelling at all",
+                not any(token.startswith(needle) for token in native_argv),
+            )
+        meson_run = _Runner()
+        build_source(source._replace(system="meson"), flat, prefix, runner=meson_run, cross=cross)
+        cross_file = flat / f".convertia-cross-{_X86_T}.ini"
+        _record(
+            "meson's machine description is a FILE this script GENERATES, and the flag points at it",
+            cross_file.is_file()
+            and f"--cross-file={_posix(cross_file)}" in _configure_call(meson_run),
+        )
+        _record(
+            "...naming the target CPU and the Rosetta wrapper meson runs target binaries with",
+            (lambda ini: "cpu = 'x86_64'" in ini
+             and "'-arch', 'x86_64'" in ini
+             and "exe_wrapper = ['arch', '-x86_64']" in ini)(
+                cross_file.read_text(encoding="utf-8")
+            ),
+        )
+        _record(
+            "`--cross-file` is STILL refused in a DECLARED line - generating one here does not "
+            "widen the guard that keeps a manifest from importing build settings",
+            _raises(
+                lambda: parse_configure(_seam(system="meson", ffmpeg='["--cross-file=/tmp/x.ini"]'),
+                                        where="fixture"),
+                "imports build settings from a file",
+                StructuralError,
+            ),
+        )
+        probe_ok = _Runner()
+        assert_emulator_available(cross, flat, runner=probe_ok)
+        _record(
+            "a cross build probes the emulator exactly once, with the declared wrapper",
+            probe_ok.calls == [["arch", "-x86_64", "/usr/bin/true"]],
+        )
+        _record(
+            "a host that cannot EXECUTE the target architecture is refused, naming Rosetta 2",
+            _raises(
+                lambda: assert_emulator_available(cross, flat, runner=_Runner(fail_on="arch")),
+                "install-rosetta",
+                StructuralError,
+            ),
+        )
+
+        def _no_arch_tool(argv, cwd):
+            raise FileNotFoundError(argv[0])
+
+        _record(
+            "an ABSENT `arch` tool is a structural refusal, not a bare traceback",
+            _raises(lambda: assert_emulator_available(cross, flat, runner=_no_arch_tool),
+                    "is not on PATH", StructuralError),
+        )
+
+        # ---- the produced architecture, asserted at the producing step ------------------------
+        macho = base / "macho"
+        macho.mkdir()
+        thin_arm, thin_x86 = macho / "arm", macho / "x86"
+        thin_arm.write_bytes(_thin_macho(_CPU_TYPE_ARM64))
+        thin_x86.write_bytes(_thin_macho(_CPU_TYPE_X86_64))
+        big_endian = macho / "be"
+        big_endian.write_bytes(_thin_macho(_CPU_TYPE_X86_64, order=">"))
+        fat_both = macho / "fat"
+        fat_both.write_bytes(_fat_macho((_CPU_TYPE_ARM64, _CPU_TYPE_X86_64)))
+        not_macho, truncated, liar = macho / "data", macho / "short", macho / "liar"
+        not_macho.write_bytes(b"just some engine data, not a binary")
+        truncated.write_bytes(b"\xcf\xfa")
+        # The whole table is PRESENT, one entry over the bound - otherwise the truncation check
+        # below answers this leg and the bound itself is never driven (a mutation raising the bound
+        # survived exactly that way).
+        liar.write_bytes(_fat_macho(tuple([_CPU_TYPE_ARM64] * (_MAX_FAT_ARCH + 1))))
+        overclaims = macho / "overclaims"
+        overclaims.write_bytes(_fat_macho((_CPU_TYPE_ARM64,), count=3))
+        _record(
+            "a thin Mach-O reports the one architecture it declares",
+            macho_cpu_types(thin_arm) == (_CPU_TYPE_ARM64,)
+            and macho_cpu_types(thin_x86) == (_CPU_TYPE_X86_64,),
+        )
+        _record(
+            "the magic's byte ORDER is the file's - a big-endian header is not read little-endian",
+            macho_cpu_types(big_endian) == (_CPU_TYPE_X86_64,),
+        )
+        _record(
+            "a fat Mach-O reports its whole arch table",
+            macho_cpu_types(fat_both) == (_CPU_TYPE_ARM64, _CPU_TYPE_X86_64),
+        )
+        _record(
+            "a non-Mach-O and a truncated header are not architecture-bearing",
+            macho_cpu_types(not_macho) == () and macho_cpu_types(truncated) == (),
+        )
+        _record(
+            "an implausible fat arch COUNT is rejected the way the G30 gate rejects it",
+            macho_cpu_types(liar) == (),
+        )
+        _record(
+            "a fat header that CLAIMS more arches than it carries is rejected, not read past its "
+            "own table",
+            macho_cpu_types(overclaims) == (),
+        )
+        # A cputype with the HIGH BIT set, alongside the ordinary pair. Apple's `cpu_type_t` is a
+        # signed int32 (`CPU_TYPE_ANY` is -1), and both real cputypes sit below 2^31 - so a fixture
+        # of real values cannot tell a SIGNED reader from an UNSIGNED one, and the two spellings
+        # drifted apart across this module, its sibling and the G30 gate without any leg noticing.
+        # This one value is what turns that into an observable difference.
+        # [Build-Session-Entscheidung: P4.29.1]
+        wide = macho / "wide"
+        wide.write_bytes(_fat_macho((_CPU_TYPE_ARM64, 0xFFFFFFFF)))
+        _record(
+            "the sibling that CONSUMES these slices reads the same header the same way - two fat "
+            "fixtures, two parsers, one verdict, and one of them carries a high-bit cputype so a "
+            "signed-vs-unsigned drift cannot hide",
+            (lambda staging: macho_cpu_types(fat_both) == staging.fat_slice_cputypes(fat_both)
+             and macho_cpu_types(wide) == staging.fat_slice_cputypes(wide)
+             and macho_cpu_types(wide) == (_CPU_TYPE_ARM64, 0xFFFFFFFF)
+             and set(_MACHO_THIN_MAGICS) <= set(staging._MACHO_MAGICS))(
+                _load_sibling("stage-engines")
+            ),
+        )
+        _record(
+            "every Mach-O header constant is frozen to the G30 gate's own value",
+            all(_gate_constant(there) is not None
+                and _gate_constant(there) == globals()[here]
+                for there, here in _GATE_PINNED_CONSTANTS.items()),
+        )
+        _record(
+            "...and the freeze table covers every int constant this module defines under the three "
+            "fat-header PREFIXES, so a new magic, cputype or bound cannot arrive unpinned under one "
+            "of those names (prefix-bounded, not shape-complete)",
+            set(_GATE_PINNED_CONSTANTS.values())
+            == {name for name, value in globals().items()
+                if isinstance(value, int) and name.startswith(_GATE_PINNED_PREFIXES)},
+        )
+        arch_ok = base / "arch-ok"
+        (arch_ok / "lib").mkdir(parents=True)
+        (arch_ok / "lib" / "libengine.dylib").write_bytes(_thin_macho(_CPU_TYPE_X86_64))
+        (arch_ok / "lib" / "engine.pc").write_bytes(b"prefix=/nowhere\n")
+        _record(
+            "a prefix whose Mach-Os are all the target arch passes, and its data files are not "
+            "architecture-bearing",
+            assert_target_arch(arch_ok, _X86_T, "probe") is None,
+        )
+        _record(
+            "a non-Mach-O target is not header-checked - it is native-only by construction",
+            assert_target_arch(arch_ok, _LINUX, "probe") is None,
+        )
+        arch_native = base / "arch-native"
+        (arch_native / "lib").mkdir(parents=True)
+        (arch_native / "lib" / "libengine.dylib").write_bytes(_thin_macho(_CPU_TYPE_ARM64))
+        _record(
+            "a slice that came out NATIVE is refused, naming the file, the arch it is and the "
+            "arch the entry is keyed for",
+            _raises(lambda: assert_target_arch(arch_native, _X86_T, "probe"),
+                    "'lib/libengine.dylib' as arm64", CompileError)
+            and _raises(lambda: assert_target_arch(arch_native, _X86_T, "probe"),
+                        "keyed for x86_64-apple-darwin (x86_64)", CompileError),
+        )
+        arch_fat = base / "arch-fat"
+        (arch_fat / "lib").mkdir(parents=True)
+        (arch_fat / "lib" / "libengine.dylib").write_bytes(
+            _fat_macho((_CPU_TYPE_ARM64, _CPU_TYPE_X86_64))
+        )
+        _record(
+            "an already-FAT member is refused under a per-slice key too - `lipo` cannot merge a "
+            "duplicate architecture any more than it can merge a missing one",
+            _raises(lambda: assert_target_arch(arch_fat, _X86_T, "probe"), "a fat binary",
+                    CompileError),
+        )
+
+        # ---- the fallback, end to end through compile_entry ------------------------------------
+        dar_lock = _row(triples=f'["{_X86_T}"]')
+        dar_seam = parse_configure(_seam(), where="fixture")
+        dar = base / "darwin"
+        dar_plan = plan_compiles(parse_lock(dar_lock, where="fixture"), dar_seam, _X86_T, dar)[0]
+        _entry(dar, f"ffmpeg-7.1-{_X86_T}", _GOOD_ENTRY)
+        _record(
+            "a cross build whose toolchain quietly emitted the HOST architecture is refused",
+            _raises(
+                lambda: compile_entry(dar_plan, dar, runner=_MachoRunner(_CPU_TYPE_ARM64),
+                                      cross=cross),
+                "keyed for x86_64-apple-darwin",
+                CompileError,
+            ),
+        )
+        _record(
+            "...and publishes NOTHING, so the wrong-arch slice never becomes a permanent cache hit",
+            not (dar / f"ffmpeg-7.1-{_X86_T}").exists(),
+        )
+        honest = _MachoRunner(_CPU_TYPE_X86_64)
+        _record(
+            "an honest cross build publishes the entry `stage-engines` will lipo",
+            compile_entry(dar_plan, dar, runner=honest, cross=cross).is_dir(),
+        )
+        honest_steps = honest.steps()
+        _record(
+            "...having probed the emulator AFTER the signatures and BEFORE the first build step",
+            honest_steps.index("gpg")
+            < honest_steps.index("arch")
+            < honest_steps.index("autoreconf"),
+        )
+        nat_dar = base / "darwin-native"
+        nat_plan = plan_compiles(parse_lock(dar_lock, where="fixture"), dar_seam, _X86_T, nat_dar)[0]
+        _entry(nat_dar, f"ffmpeg-7.1-{_X86_T}", _GOOD_ENTRY)
+        nat_runner = _MachoRunner(_CPU_TYPE_X86_64)
+        compile_entry(nat_plan, nat_dar, runner=nat_runner)
+        _record(
+            "a NATIVE build never probes an emulator it does not need",
+            "arch" not in nat_runner.steps(),
+        )
+        arm_cache = base / "darwin-arm"
+        arm_plan = plan_compiles(parse_lock(_row(triples=f'["{_ARM_T}"]'), where="fixture"),
+                                 dar_seam, _ARM_T, arm_cache)[0]
+        _entry(arm_cache, f"ffmpeg-7.1-{_ARM_T}", _GOOD_ENTRY)
+        _record(
+            "the arch assertion guards the NATIVE slice too - both halves of a universal pair are "
+            "checked the same way, which is what makes the merge meaningful",
+            _raises(
+                lambda: compile_entry(arm_plan, arm_cache, runner=_MachoRunner(_CPU_TYPE_X86_64)),
+                "keyed for aarch64-apple-darwin",
+                CompileError,
+            ),
+        )
+
         # ---- compile_entry, end to end ------------------------------------------------------
         full = base / "full"
         full_plan = plan_compiles(parse_lock(pair, where="fixture"), seam_pair, _LINUX, full)[0]
@@ -2907,7 +3662,7 @@ def _legs() -> None:
             "and run() counts that race as a cache HIT, the way the sibling counts one",
             "1 cache hit(s), compiled 0 entr(ies)" in _report(
                 lambda: run(lock_path=raced_lock, configure_path=raced_seam,
-                            cache_root=raced_run, triple=_LINUX, engine=None, check_only=False,
+                            cache_root=raced_run, triple=_LINUX, host=_LINUX, engine=None, check_only=False,
                             verbose=False,
                             runner=_RacingRunner(raced_run / f"ffmpeg-7.1-{_LINUX}"))
             ),
@@ -2959,14 +3714,14 @@ def _legs() -> None:
         _record(
             "run() compiles the manifest's groups",
             run(lock_path=lock_file, configure_path=seam_file, cache_root=run_cache,
-                triple=_LINUX, engine=None, check_only=False, verbose=False, runner=runner2) == 0
+                triple=_LINUX, host=_LINUX, engine=None, check_only=False, verbose=False, runner=runner2) == 0
             and (run_cache / f"ffmpeg-7.1-{_LINUX}").is_dir(),
         )
         _record(
             "a cache HIT is reported under -v, naming the entry",
             _report(
                 lambda: run(lock_path=lock_file, configure_path=seam_file, cache_root=run_cache,
-                            triple=_LINUX, engine=None, check_only=False, verbose=True,
+                            triple=_LINUX, host=_LINUX, engine=None, check_only=False, verbose=True,
                             runner=_Runner())
             ).count(f"cache hit: ffmpeg-7.1-{_LINUX}")
             == 1,
@@ -2981,7 +3736,7 @@ def _legs() -> None:
             "the report names EVERY row the build produces, not only the declaring one",
             "[ffmpeg, ffprobe]" in _report(
                 lambda: run(lock_path=shared_lock_run, configure_path=shared_seam_file,
-                            cache_root=shared_run_cache, triple=_LINUX, engine=None,
+                            cache_root=shared_run_cache, triple=_LINUX, host=_LINUX, engine=None,
                             check_only=False, verbose=False, runner=_Runner())
             ),
         )
@@ -2989,21 +3744,21 @@ def _legs() -> None:
             "--check counts a cache HIT as a hit, not as work still to do",
             "1 cache hit(s), would compile 0 entr(ies)" in _report(
                 lambda: run(lock_path=lock_file, configure_path=seam_file, cache_root=run_cache,
-                            triple=_LINUX, engine=None, check_only=True, verbose=False,
+                            triple=_LINUX, host=_LINUX, engine=None, check_only=True, verbose=False,
                             runner=_Runner())
             ),
         )
         _record(
             "run() is a no-op on a triple no row targets",
             run(lock_path=lock_file, configure_path=seam_file, cache_root=base / "empty",
-                triple=_WIN, engine=None, check_only=False, verbose=False,
+                triple=_WIN, host=_WIN, engine=None, check_only=False, verbose=False,
                 runner=_Runner()) == 0
             and not (base / "empty").exists(),
         )
         _record(
             "--check writes nothing",
             run(lock_path=lock_file, configure_path=seam_file, cache_root=base / "nocache",
-                triple=_LINUX, engine=None, check_only=True, verbose=False,
+                triple=_LINUX, host=_LINUX, engine=None, check_only=True, verbose=False,
                 runner=_Runner()) == 0
             and not (base / "nocache").exists(),
         )
@@ -3013,7 +3768,7 @@ def _legs() -> None:
             "an unbound seam entry stops the run",
             _raises(
                 lambda: run(lock_path=lock_file, configure_path=bad_seam,
-                            cache_root=base / "x", triple=_LINUX, engine=None, check_only=True,
+                            cache_root=base / "x", triple=_LINUX, host=_LINUX, engine=None, check_only=True,
                             verbose=False, runner=_Runner()),
                 "name no from-source `engines.lock` group",
                 StructuralError,
@@ -3023,7 +3778,7 @@ def _legs() -> None:
             "--engine on an absent group is a structural error",
             _raises(
                 lambda: run(lock_path=lock_file, configure_path=seam_file, cache_root=base / "x",
-                            triple=_LINUX, engine="nope", check_only=True, verbose=False,
+                            triple=_LINUX, host=_LINUX, engine="nope", check_only=True, verbose=False,
                             runner=_Runner()),
                 "no from-source `engines.lock` group 'nope'",
                 StructuralError,
@@ -3033,7 +3788,7 @@ def _legs() -> None:
             "a missing manifest is a structural error, not a traceback",
             _raises(
                 lambda: run(lock_path=base / "absent.lock", configure_path=seam_file,
-                            cache_root=base / "x", triple=_LINUX, engine=None, check_only=True,
+                            cache_root=base / "x", triple=_LINUX, host=_LINUX, engine=None, check_only=True,
                             verbose=False, runner=_Runner()),
                 "missing engine manifest",
                 StructuralError,
@@ -3043,30 +3798,112 @@ def _legs() -> None:
             "a missing configure manifest is a structural error",
             _raises(
                 lambda: run(lock_path=lock_file, configure_path=base / "absent.toml",
-                            cache_root=base / "x", triple=_LINUX, engine=None, check_only=True,
+                            cache_root=base / "x", triple=_LINUX, host=_LINUX, engine=None, check_only=True,
                             verbose=False, runner=_Runner()),
                 "missing configure-flag manifest",
                 StructuralError,
             ),
         )
+        # The cross seam THROUGH run(), not around it. Every other cross leg drives
+        # `compile_entry` / `build_source` / `resolve_build` DIRECTLY, so `run()`'s own
+        # `compile_entry(..., cross=cross)` threading had no leg at all: dropping it to
+        # `cross=None` survived the entire suite while quietly turning the documented fallback back
+        # into the native build it exists to replace. Observed through the two things only the
+        # cross path does - the emulator probe and the cross argv suffix - because the published
+        # bytes look the same either way when the runner is the one lying about them.
+        # [Build-Session-Entscheidung: P4.29.1]
+        cross_run_cache = base / "crossrun"
+        cross_run_lock, cross_run_seam = base / "crossrun.lock", base / "crossrun-seam.toml"
+        cross_run_lock.write_text(_row(triples=f'["{_X86_T}"]'), encoding="utf-8")
+        cross_run_seam.write_text(_seam(), encoding="utf-8")
+        _entry(cross_run_cache, f"ffmpeg-7.1-{_X86_T}", _GOOD_ENTRY)
+        cross_run_runner = _MachoRunner(_CPU_TYPE_X86_64)
+        _record(
+            "run() drives a full cross build end to end and publishes the slice `stage-engines` "
+            "will lipo",
+            run(lock_path=cross_run_lock, configure_path=cross_run_seam,
+                cache_root=cross_run_cache, triple=_X86_T, host=_ARM_T, engine=None,
+                check_only=False, verbose=False, runner=cross_run_runner) == 0
+            and (cross_run_cache / f"ffmpeg-7.1-{_X86_T}").is_dir(),
+        )
+        _record(
+            "...with the cross build THREADED through it - the emulator was probed and the cross "
+            "suffix reached configure, neither of which a native run does",
+            "arch" in cross_run_runner.steps()
+            and any(token == f"--host={_X86_T}"
+                    for call in cross_run_runner.calls for token in call),
+        )
+        _record(
+            "run() resolves the (host, target) pair BEFORE it reads either manifest - `--check` "
+            "catches a target this host cannot produce, whatever the manifest says",
+            # Both manifest paths are ABSENT: if the pair were resolved after them, "missing
+            # engine manifest" would win and this leg would pass while asserting the wrong order.
+            _raises(
+                lambda: run(lock_path=base / "absent.lock", configure_path=base / "absent.toml",
+                            cache_root=base / "x", triple=_X86_T, host=_LINUX, engine=None,
+                            check_only=True, verbose=False, runner=_Runner()),
+                "not a declared cross pair",
+                StructuralError,
+            ),
+        )
         argv_root = base / "argv-root"
         (argv_root / "src-tauri").mkdir(parents=True)
-        (argv_root / LOCK_REL).write_text(pair, encoding="utf-8")
-        (argv_root / CONFIGURE_REL).write_text(
-            _seam(ffmpeg='["--disable-network"]', **{"libmp3lame.so": '["--disable-frontend"]'}),
-            encoding="utf-8",
-        )
+        # The manifest targets THIS HOST's own triple. `--target` is no longer a bare row filter:
+        # since P4.29.1 it names the architecture the build must PRODUCE, so a leg pinned to a
+        # foreign triple would assert a request no host can honour, and `main` would correctly
+        # exit 2. `or _LINUX` keeps the expression TYPE-total (never `None`); it is not a working
+        # fallback - on a host outside `_HOST_TRIPLES` this leg goes RED rather than erroring
+        # clearly, which is the honest outcome, because such a host cannot run the tool at all
+        # (`resolve_target(None)` refuses there too) and a green suite would say otherwise.
+        # `_HOST_TRIPLES` covers all three CI runners plus this dev host.
+        # [Test-Change: P4.29.1 - old-obsolete+new-correct, §6.1.3: the old leg asserted exit 0
+        # for a Linux build on a Windows host, which was only ever satisfiable while a cross-named
+        # run silently built for the host - the defect this box closes. The new leg asserts the
+        # same THREADING through the entry name the target appears in, verified by reading the
+        # report back rather than by trusting a bare exit code. The fixture ALSO narrows from the
+        # two-row `pair` manifest + two-table seam to a single `_row()` + default `_seam()`: the
+        # leg is about argv threading, and a one-row manifest makes the `would compile:` line it
+        # now reads back unambiguous rather than one of two.]
+        argv_triple = host_target_triple() or _LINUX
+        (argv_root / LOCK_REL).write_text(_row(triples=f'["{argv_triple}"]'), encoding="utf-8")
+        (argv_root / CONFIGURE_REL).write_text(_seam(), encoding="utf-8")
         # A FAKE root, never the real repo - the `g24-*` target-absent lesson: a leg that reaches
         # the checked-in manifest asserts the repo's contents, not this script's behaviour.
+        argv_rc: list[int] = []
+        argv_out = _report(
+            lambda: argv_rc.append(
+                main(["--all", "--root", str(argv_root), "--cache-root", str(base / "argvcache"),
+                      "--target", argv_triple, "--check"])
+            )
+        )
         _record(
             "main threads --root/--cache-root/--target through to the run",
-            main(["--all", "--root", str(argv_root), "--cache-root", str(base / "argvcache"),
-                  "--target", _LINUX, "--check"]) == 0
+            argv_rc == [0]
+            and f"would compile: ffmpeg-7.1-{argv_triple}" in argv_out
             and not (base / "argvcache").exists(),
         )
         _record(
-            "main reports a structural error as exit 2",
-            main(["--all", "--root", str(base / "nowhere"), "--target", _LINUX, "--check"]) == 2,
+            "main REFUSES a --target this host cannot produce, instead of filtering rows by it",
+            main(["--all", "--root", str(argv_root), "--check",
+                  "--target", _WIN if argv_triple != _WIN else _LINUX]) == 2,
+        )
+        # The triple is the HOST's, not a hardcoded one: hoisting `resolve_build` to the top of
+        # `run()` gave this leg a SECOND way to reach exit 2, and a hardcoded foreign triple takes
+        # it on every runner whose host is not that triple - so the leg would pass while asserting
+        # the wrong arm, exactly the failure the ordering leg above is written to avoid, mirrored.
+        # The needle is what actually pins the arm; `main` returns a bare int, so an exit-code leg
+        # has no `_raises` needle discipline of its own and has to read the report back.
+        # [Build-Session-Entscheidung: P4.29.1]
+        absent_root: list[int] = []
+        absent_out = _report_err(
+            lambda: absent_root.append(
+                main(["--all", "--root", str(base / "nowhere"), "--target", argv_triple, "--check"])
+            )
+        )
+        _record(
+            "main reports a structural error as exit 2 - and it is the MISSING MANIFEST arm, not "
+            "the cross-pair refusal that now also exits 2",
+            absent_root == [2] and "missing engine manifest" in absent_out,
         )
         _record(
             "main refuses a run that names neither --engine nor --all",
@@ -3205,7 +4042,12 @@ def main(argv: list[str]) -> int:
     ap.add_argument(
         "--cache-root", default=None, help=f"cache to populate (default: <root>/{DEFAULT_CACHE_REL})"
     )
-    ap.add_argument("--target", default=None, help="target triple (default: this host's)")
+    ap.add_argument(
+        "--target",
+        default=None,
+        help="target triple to PRODUCE (default: this host's); a target that is neither the host "
+             "nor a declared cross pair is refused, never built natively",
+    )
     ap.add_argument("--engine", default=None, help="compile only this `engines.lock` cache group")
     ap.add_argument("--all", action="store_true", help="compile every from-source group")
     ap.add_argument(
@@ -3229,6 +4071,7 @@ def main(argv: list[str]) -> int:
             configure_path=root / CONFIGURE_REL,
             cache_root=cache_root,
             triple=resolve_target(args.target),
+            host=host_target_triple(),
             engine=args.engine,
             check_only=args.check,
             verbose=args.verbose,
