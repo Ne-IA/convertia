@@ -3608,7 +3608,7 @@ def _legs() -> None:
             "compile_entry runs the check over the PREFIX, the check WALKS, and its refusal "
             "REACHES the caller",
             # SEVEN assertions in one leg, deliberately: splitting them would move the tally off
-            # the caged canary's pin (208) and cost an owner act. The trade is diagnostic
+            # the caged canary's pin and cost an owner act. The trade is diagnostic
             # precision - a wiring regression and a walk regression print the same string - and it
             # is taken knowingly, against this file's own message-discrimination habit.
             # The monkeypatch above proves the CALL happens,

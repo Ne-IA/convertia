@@ -3,13 +3,17 @@
 
 The sibling of g24-fetch-engine-assets.py, and the pre-declared owner act (c) of the P4.28.1
 tail: `run-gate-selftests` discovers only `scripts/gate-selftests/*.py`, so WITHOUT this file
-the harness's 208 `--selftest` legs would execute in NO gate and NO workflow - the reason the
+the harness's `--selftest` legs would execute in NO gate and NO workflow - the reason the
 act was pre-declared with the box. Two jobs, both from OUTSIDE the tool so a neutering edit to
 compile-engine-asset cannot neuter its own check:
 
-1. RUN the tool's fixture-driven `--selftest` (208 legs at delivery, P4.28.1/072a021) and PIN
-   the tally at 208 - the host-stable-count claim, CI-checked at L2 (diff-scoped canary) and
-   L4 (3-OS).
+1. RUN the tool's fixture-driven `--selftest` under a CAPTURED stdout (the tool's `_record`
+   prints each leg since P4.29.1, so the stream is production-time evidence - section 1) and
+   PIN the tally at 257 - the host-stable-count claim, CI-checked at L2 (diff-scoped canary)
+   and L4 (3-OS). (208 legs at delivery, P4.28.1/072a021; 257 since P4.29.1/8affa89 - the
+   cross-fallback + producing-step-arch legs; each bump is that box's pre-declared owner-acked
+   tail, and the number is READ from the committed tree's own `--selftest` run, never carried
+   from prose.)
 
 2. The skip INVENTORY (the g24-stage-engines per-OS model, the 2026-08-31 owner ruling: no
    silent skips): the suite injects every subprocess (no compiler, no `gpg`, no network), so on
@@ -35,14 +39,21 @@ neutered in place) - the restored-source RE-HASH (`resolve_inputs` refuses bytes
 the pinned `tarball_sha256`; a cache is not a trust boundary) and the signature-verdict
 ENFORCEMENT pair (`verify_signature` with an injected runner: a clean tool exit whose output
 never names the pinned key REFUSES, and the same call ACCEPTS once it does - so the matcher is
-consumed, not decorative). Plus the two 4a5f359-escalated catchers: the recorder-fidelity leg
+consumed, not decorative). Plus the two P4.29.1 guards, driven with this canary's OWN header
+bytes, triples and tempdir (the pre-declared clause (b) of that box's owner tail - both live in
+the un-caged tool, whose only other legs live in that same un-caged file, exactly the
+force-green shape this discipline exists for): `resolve_build` must REFUSE an undeclared
+`(host, target)` cross pair while still resolving the one declared pair and the native case,
+and `assert_target_arch` must refuse BOTH its enumerated shapes - a wrong-architecture thin
+Mach-O and an already-fat one - while passing a correct prefix (the no-over-fire direction).
+Plus the two 4a5f359-escalated catchers: the recorder-fidelity leg
 (a FAIL fed to the tool's `_record` must be stored faithfully - a force-green recorder reds
 this caged canary at a preserved tally) and the `assert_self_contained` stub probe (a
 duck-typed prefix whose walk yields an escaping symlink, no link privilege needed, with the
 walk pattern pinned at "*" - a third cage-ruling-leaning seam, driven from outside).
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop: this file is
-L(-1)-caged while compile-engine-asset is not, and it PINS the tally (208), the empty-skip
+L(-1)-caged while compile-engine-asset is not, and it PINS the tally (257), the empty-skip
 inventory, and its OWN leg count - any box that adds a `--selftest` leg to the tool (P4.34's
 pull-forward, the first seam fill per its 2026-09-03 attribution ruling, and the
 P5.1.1/P5.5.1/P5.9.1/P6.1.1/P7.17.1 compile boxes filling the configure seam) carries the
@@ -50,8 +61,11 @@ matching bump HERE as a pre-planned owner-acked L(-1) tail of that box.
 
 Run:  python3 scripts/gate-selftests/g24-compile-engine-asset.py   Exit 0 = every assertion held.
 """
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -109,25 +123,39 @@ def _probe(fn) -> bool:
 
 # --- 1. the full suite, its tally, and the strict skip inventory --------------------------------
 print("[g24-compile-engine-asset] running compile-engine-asset --selftest ...")
+# The suite runs under a CAPTURED stdout: compile-engine-asset's _record PRINTS each leg as it
+# is recorded (the P4.29.1 Loop half, closing the bound the P4.29 tail RECORDED at this exact
+# site: "the equivalent closure here requires a tool-side print - a Loop edit at the next
+# --selftest-touching box" - P4.29.1 was that box), so the captured stream is PRODUCTION-TIME
+# evidence a post-hoc in-place rewrite of _results cannot forge (the r4 review's third
+# force-green shape: `_results[:] = [(n, True)...]` at the end of selftest() keeps the tally,
+# rc=0 AND a green post-hoc read - only what was already printed still carries the [FAIL]).
+# The stream is replayed below so the log keeps it.
+_suite_out = io.StringIO()
 try:
-    rc = m.selftest()
+    with contextlib.redirect_stdout(_suite_out):
+        rc = m.selftest()
     suite_crashed = ""
 except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
     rc, suite_crashed = 1, f"{type(e).__name__}: {e}"
+print(_suite_out.getvalue(), end="")
+if suite_crashed:
     print(f"[g24-compile-engine-asset] --selftest raised: {suite_crashed}")
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
-record("the leg tally is host-stable at 208 (the pinned count)", _probe(lambda: len(m._results) == 208))
+record("the leg tally is host-stable at 257 (the pinned count)", _probe(lambda: len(m._results) == 257))
 # The INDEPENDENT verdict from the stored entries: `rc` comes from selftest()'s own
 # aggregation, which lives in the same un-caged tool - force-greening it is a one-line edit
 # the recorder-fidelity catcher cannot see. Both reporting halves are pinned from outside.
-# KNOWN, RECORDED BOUND (the r4 review): a post-hoc in-place rewrite of _results at the END of
-# selftest() defeats every read-the-state-afterwards leg. This tool's recorder appends
-# SILENTLY, so no production-time stream exists to capture (the stage canary closes that shape
-# via its printed stream); the equivalent closure here requires a tool-side print - a Loop edit
-# at the next --selftest-touching box, made plan-visible by this comment and the P4.29 appendix.
 record("independent verdict: every recorded suite leg is green (read from _results, never the "
        "tool's own aggregation)", _probe(lambda: all(ok for _, ok in m._results)))
+record(
+    "production-time evidence: the captured suite stream carries one [PASS] line per recorded "
+    "leg and NO [FAIL] line (what was printed at record time cannot be rewritten afterwards; "
+    "the per-leg COUNT bound also reds a reworded FAIL marker beside a rewrite - the r1 opus P2)",
+    _probe(lambda: _suite_out.getvalue().count("[PASS]") == len(m._results))
+    and "[FAIL]" not in _suite_out.getvalue(),
+)
 
 # The one declared skip set: the symlink trio, Windows-only, all-or-none on the single
 # privilege probe. The EXACT names are pinned so a renamed or added skip is a named FAIL.
@@ -335,10 +363,84 @@ record(
     ) is None),
 )
 
+# --- 4b. the two P4.29.1 guards (the pre-declared clause (b) of that box's owner tail): both
+# live in the un-caged tool, whose only other legs live in that same un-caged file - exactly
+# the force-green shape the canary discipline exists for. Driven with this canary's OWN header
+# bytes, triples and tempdir, never the suite's fixtures. ----------------------------------------
+
+# This canary's own Mach-O spellings (independent pins, never read from the tool - a tool whose
+# constants drift from these no longer parses real Apple headers): MH_MAGIC_64 written
+# little-endian, FAT_MAGIC + its 20-byte arch records written big-endian - each the file's own
+# byte order, per the Mach-O ABI the tool documents.
+_G24_ARM64 = 0x0100000C
+_G24_X86_64 = 0x01000007
+
+
+def _g24_thin(cpu: int) -> bytes:
+    return struct.pack("<II", 0xFEEDFACF, cpu)
+
+
+def _g24_fat(cpus: tuple[int, ...]) -> bytes:
+    head = struct.pack(">II", 0xCAFEBABE, len(cpus))
+    return head + b"".join(struct.pack(">IIIII", cpu, 0, 0, 0, 0) for cpu in cpus)
+
+
+raised, msg = _refused(lambda: m.resolve_build("x86_64-apple-darwin", "aarch64-apple-darwin"),
+                       _STRUCTURAL_ERROR)
+record("P4.29.1 guard: an UNDECLARED (host, target) cross pair is refused, never built natively "
+       "(driven with the REVERSE of the declared pair, so a direction-blind table reds too)",
+       raised and "is not a declared cross pair" in msg)
+record(
+    "P4.29.1 guard (no over-fire): the one declared pair resolves to its CrossBuild and a "
+    "same-triple build resolves native (None)",
+    _probe(lambda: m.resolve_build("aarch64-apple-darwin", "x86_64-apple-darwin").target
+           == "x86_64-apple-darwin")
+    and _probe(lambda: m.resolve_build("x86_64-unknown-linux-gnu",
+                                       "x86_64-unknown-linux-gnu") is None),
+)
+
+
+def _arch_probe(payload: bytes) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        prefix = Path(td)
+        bin_dir = prefix / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "g24-tool").write_bytes(payload)
+        m.assert_target_arch(prefix, "x86_64-apple-darwin", "g24-canary-entry")
+
+
+raised, msg = _refused(lambda: _arch_probe(_g24_thin(_G24_ARM64)), _COMPILE_ERROR)
+record("P4.29.1 guard: a thin Mach-O of the WRONG architecture under a per-slice key is refused "
+       "(the silent-native class G30 exists for, one step upstream)",
+       raised and "refusing to publish the wrong architecture under a per-slice key" in msg)
+raised, msg = _refused(lambda: _arch_probe(_g24_fat((_G24_ARM64, _G24_X86_64))), _COMPILE_ERROR)
+record("P4.29.1 guard: an already-FAT Mach-O under a per-slice key is refused on ITS arm "
+       "(`lipo -create` would meet it as a duplicate architecture)",
+       raised and "refusing to publish a fat binary under a per-slice key" in msg)
+
+
+def _arch_clean() -> bool:
+    with tempfile.TemporaryDirectory() as td:
+        prefix = Path(td)
+        bin_dir = prefix / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "g24-tool").write_bytes(_g24_thin(_G24_X86_64))
+        share = prefix / "share"
+        share.mkdir()
+        (share / "g24.txt").write_text("not a Mach-O", encoding="utf-8")
+        return m.assert_target_arch(prefix, "x86_64-apple-darwin", "g24-canary-entry") is None
+
+
+record("P4.29.1 guard (no over-fire): a correct-architecture prefix with non-Mach-O data passes "
+       "the producing-step assertion",
+       _probe(_arch_clean))
+
 # --- 5. the two 4a5f359-escalated catchers: recorder fidelity + the assert_self_contained
 # stub probe. A forced-green _record disarms the whole suite at a PRESERVED tally; not closable
 # from the un-caged tool, so it is caged here - a FAIL fed to the recorder must be stored
-# faithfully. (This tool's recorder appends silently; only stage-engines' prints its entries.)
+# faithfully. (This tool's recorder PRINTS its entries since P4.29.1 - the section-1 stream leg
+# is the production-time half; this leg pins STORAGE, the other reporting half. The [FAIL] line
+# the probe prints below is its own deliberate entry, not a suite failure - the name says so.)
 _PROBE_NAME = "g24 recorder-fidelity probe (a deliberate FAIL entry; not a suite failure)"
 record(
     "escalation catcher: the tool's recorder stores a FAIL faithfully "
@@ -384,7 +486,7 @@ record(
 # (No section-level exception guard: every raising seam runs inside _refused's try, every
 # tool-touching predicate inside _probe's, and a module-load failure tracebacks to exit 1 -
 # fail-closed either way; this canary builds no real trees.)
-record("the canary's own leg count is pinned (23 + this pin)", len(results) == 23)
+record("the canary's own leg count is pinned (29 + this pin)", len(results) == 29)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-compile-engine-asset] {len(results) - len(failed)}/{len(results)} assertions passed.")

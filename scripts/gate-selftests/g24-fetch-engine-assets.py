@@ -106,8 +106,9 @@ record("the leg tally is host-stable at 165 (the pinned count)", _probe(lambda: 
 # the recorder-fidelity catcher cannot see. Both reporting halves are pinned from outside.
 # KNOWN, RECORDED BOUND (the r4 review): a post-hoc in-place rewrite of _results at the END of
 # selftest() defeats every read-the-state-afterwards leg. This tool's recorder appends
-# SILENTLY, so no production-time stream exists to capture (the stage canary closes that shape
-# via its printed stream); the equivalent closure here requires a tool-side print - a Loop edit
+# SILENTLY, so no production-time stream exists to capture (the stage and compile canaries
+# close that shape via their tools' printed streams - compile's print landed at P4.29.1);
+# the equivalent closure here requires a tool-side print - a Loop edit
 # at the next --selftest-touching box, made plan-visible by this comment and the P4.29 appendix.
 record("independent verdict: every recorded suite leg is green (read from _results, never the "
        "tool's own aggregation)", _probe(lambda: all(ok for _, ok in m._results)))
@@ -189,7 +190,7 @@ record("planted positive: an off-row URL is refused UNDER THE DERIVED allow-list
 # --- 3. the recorder-fidelity catcher (the 4a5f359-escalated _record force-green class): a
 # forced-green _record disarms the whole suite at a PRESERVED tally; not closable from the
 # un-caged tool, so it is caged here - a FAIL fed to the recorder must be stored faithfully.
-# (This tool's recorder appends silently; only stage-engines' prints its entries.)
+# (This tool's recorder appends silently; stage-engines' and compile-engine-asset's print theirs.)
 _PROBE_NAME = "g24 recorder-fidelity probe (a deliberate FAIL entry; not a suite failure)"
 record(
     "escalation catcher: the tool's recorder stores a FAIL faithfully "
