@@ -18,10 +18,10 @@ Per-OS layout (§3.4.5): a `-pc-windows-` triple gets the `.exe` suffix; every o
 the executable bit set on the staged sidecar (a dropped +x otherwise surfaces at runtime as a
 misleading startup "integrity failed" rather than a packaging error, G37). §3.4.5's macOS `.app`
 column is a RECORDED NO-OP for this script: the `.app` is assembled by `tauri build` out of these
-same two destinations, and the install_name relocation that follows the merge is P4.30. The
+same two destinations; the install_name relocation that follows the merge is HERE since P4.30. The
 fat-Mach-O merge itself is HERE since P4.29: on a per-arch triple staging places the restored
 bytes unchanged, and on `universal-apple-darwin` it reads BOTH slices and `lipo -create`s them
-into one fat artifact - which is why `lipo` runs first and P4.30's relocation second (the merge
+into one fat artifact - which is why `lipo` runs first and the relocation tail second (the merge
 re-emits the Mach-O and would clobber a rewrite applied to a slice).
 
 It NEVER touches the network. It reads only the restored cache directory. Its counterpart is
@@ -45,9 +45,11 @@ launcher-as-externalBin vs launcher-in-resources split to that same §6.1 packag
 The MECHANISM below is live and exercised by --selftest; with no rows declared a run is a
 target-absent no-op that says so - the same skip-with-notice posture `check-build-matrix` (G30)
 holds for its sidecar slice assertion until a sidecar is staged. Each excluded piece is its own
-box: the rpath/install_name relocation (P4.30), the `tauri.conf.json` externalBin/resources
+box: the `tauri.conf.json` externalBin/resources
 wiring (P4.31), the in-bundle hash manifest (P4.41), the §6.1.3 build-assertion framework
-(P4.51). The macOS dual-arch `lipo -create` merge was on that list until P4.29 landed it here.
+(P4.51). The macOS dual-arch `lipo -create` merge was on that list until P4.29 landed it here,
+and the per-OS rpath/install_name relocation until P4.30 did - a leg below re-reads THIS sentence
+against the plan on every run, so the next piece that lands cannot leave itself listed as absent.
 Its missing-x86_64-slice from-source fallback is `scripts/compile-engine-asset`'s (P4.29.1), one
 step UPSTREAM of here: that script cross-builds the absent slice into the cache, while this one
 only ever READS the cache - so a one-slice cache stays a refusal naming the fallback rather than
@@ -75,8 +77,11 @@ Usage:
   stage-engines --selftest         # the tool's own fixture-driven regression suite
 
 stdlib-only. Exit: 0 = staged (or nothing declared yet); 1 = a staging violation; 2 = a
-structural prerequisite is unusable (missing cache root, unresolvable target, or - for the
-universal target - no `lipo` on PATH).
+structural prerequisite is unusable. Stated as a RULE rather than a list of causes: the list was
+already stale once (it named only `lipo`, while an absent `install_name_tool`/`patchelf`/`otool`
+and a target with no declared relocator both raise structurally too), and `run_tool`'s own message
+was rewritten to name `argv[0]` for exactly that reason while this sentence sixty lines up was
+left behind.
 """
 from __future__ import annotations
 
@@ -85,6 +90,7 @@ import contextlib
 import io
 import os
 import platform
+import re
 import shutil
 import stat
 import struct
@@ -230,6 +236,56 @@ class StagedResult(NamedTuple):
     dest: Path | None  # the staged destination, None when nothing was staged
 
 
+class Relocation(NamedTuple):
+    """One staged file's §3.5 beside-the-exe load-path rewrite (P4.30).
+
+    DATA, exactly like `EngineStaging`: the per-engine box that stages a dynamically-linked
+    component set declares WHAT must be rewritten, and the per-OS functions below decide HOW on the
+    target platform. The mechanism ships here; the first filler is P6.1.2 (FFmpeg + its five §3.1
+    row-2a component libs).
+
+    WHY IT IS NEEDED AT ALL. §3.5 clears `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_INSERT_LIBRARIES`/
+    `DYLD_LIBRARY_PATH` from the engine environment and §3.3.3 resolves programs by absolute
+    bundled path rather than `PATH`, so no environment channel is left for the dynamic loader.
+    The ONLY way a component lib shipped BESIDE the exe (§3.9.1's v1 preference) resolves is a
+    RELATIVE load path baked into the binary - and upstream/distro builds carry ABSOLUTE
+    `install_name`/`RUNPATH` entries, so as staged they resolve to paths that do not exist on the
+    user's machine.
+
+    Fields:
+      dest:       the `EngineStaging.dest` of the row that stages this file - the binding key. A
+                  declaration naming no staged row is refused (`assert_relocations_bound`), the
+                  same "a line nothing binds to never runs" rule the configure seam holds.
+      member:     the path INSIDE that row's staged destination, "" for the row's own file. A
+                  SIDECAR row stages one file, so its declarations leave this empty; a
+                  RESOURCE_TREE row stages a subtree, so each rewritten file names itself.
+      set_id:     macOS only - rewrite this file's OWN install name (`-id`). True for a shipped
+                  component LIB, False for the dependent binary that merely references them.
+      references: macOS only - the `(absolute install name as built, bundled basename)` pairs to
+                  rewrite (`-change`). These are per-BUILD facts that can only be read off the
+                  binary's load commands, so the per-engine box declares them rather than this
+                  mechanism guessing.
+      origin:     where the libs sit relative to the file being rewritten, "." for beside it.
+                  Shapes BOTH legs: `@loader_path/<origin>` on macOS, `$ORIGIN/<origin>` on Linux.
+    """
+
+    dest: str
+    member: str = ""
+    set_id: bool = False
+    references: tuple[tuple[str, str], ...] = ()
+    origin: str = "."
+
+
+# The per-engine relocation declarations. EMPTY here by design, exactly as `STAGED_ENGINES` is: a
+# relocation is inseparable from the component set it rewrites, so it is authored by the box that
+# stages that set. P6.1.2 (FFmpeg + libmp3lame/libvorbis/libogg/libopus/libvpx) is the first and,
+# per the §3.6.1 model, close to the only one - the image stack is STATICALLY linked into
+# `convertia-imgworker` (P4.34) and x265 is a libheif PLUGIN discovered through
+# `LIBHEIF_PLUGIN_PATH` (P5.10), so neither is a beside-the-exe lib and neither needs a rewrite.
+# That absence is a recorded decision, not an oversight.
+RELOCATIONS: tuple[Relocation, ...] = ()
+
+
 def fail(msg: str) -> None:
     print(f"[stage-engines] {msg}", file=sys.stderr)
 
@@ -346,16 +402,23 @@ def assert_universal_fat(path: Path, label: str) -> None:
         )
 
 
-def run_lipo(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    """The real `lipo` seam. Replaced wholesale by the fixtures.
+def run_tool(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    """The real external-tool seam. Replaced wholesale by the fixtures.
+
+    ONE seam for every subprocess this script spawns - `lipo` for the universal merge (P4.29) and
+    the per-OS relocation tools for the load-path rewrite (P4.30) - so there is exactly one place a
+    process can start and exactly one thing a self-test has to inject. It was `run_lipo` until
+    P4.30 gave it a second caller; the body never named the tool, only the docstring did.
+    [Build-Session-Entscheidung: P4.30]
 
     `shell=False` and an argv LIST: the paths are cache-entry and staging paths, and joining them
     into a shell line is how a directory with a space becomes two arguments.
 
-    An ABSENT `lipo` is a missing prerequisite, not a staging violation: it surfaces as an
-    `OSError`, which `main` reports as exit 1 alongside genuine filesystem faults, and the two
-    read very differently to whoever is looking at a red macOS leg. Named and re-raised
-    structurally (exit 2), the way an absent cache root already is.
+    An ABSENT tool is a missing prerequisite, not a staging violation: it surfaces as an `OSError`,
+    which `main` reports as exit 1 alongside genuine filesystem faults, and the two read very
+    differently to whoever is looking at a red CI leg. Named and re-raised structurally (exit 2),
+    the way an absent cache root already is. The message names the tool it could not run rather
+    than a fixed list of tools, so a leg that adds one cannot leave this text behind.
     """
     try:
         return subprocess.run(
@@ -363,10 +426,11 @@ def run_lipo(argv: list[str]) -> subprocess.CompletedProcess[str]:
         )
     except FileNotFoundError as absent:
         raise StagingError(
-            f"`{argv[0]}` could not be run - it is not on PATH. The universal target merges the "
-            "two per-arch slices with Xcode's `lipo`, which ships with the macOS command line "
-            "tools (§6.1.3), so this target cannot be staged from a machine without them. "
-            "(A `lipo` that IS present and fails reports through its exit code instead.)",
+            f"`{argv[0]}` could not be run - it is not on PATH. Staging for this target needs it "
+            "(§6.1.3), so this target cannot be staged from a machine without it. A "
+            f"`{argv[0]}` that IS present and fails reports through its exit code instead. "
+            "(Named rather than enumerated: a message listing every tool the seam can carry reads "
+            "wrong on the leg that is missing only one of them.)",
             structural=True,
         ) from absent
 
@@ -1009,7 +1073,7 @@ def stage_universal(
 ) -> list[StagedResult]:
     """Stage every row for `universal-apple-darwin` by merging both per-arch slices.
 
-    Ordering note (§6.1.3 / the P4.29 box): `lipo` runs FIRST, the P4.30 install_name relocation
+    Ordering note (§6.1.3 / the P4.29 box): `lipo` runs FIRST, the P4.30 install_name relocation tail
     afterwards - `lipo -create` re-emits the Mach-O and rewrites its load commands, so a
     relocation applied to a per-arch slice would be clobbered by the merge.
     """
@@ -1120,6 +1184,438 @@ def stage_universal(
     return results
 
 
+# --------------------------------------------------------------------------------------------
+# The §3.5 beside-the-exe load-path rewrite (P4.30). Three INDEPENDENT per-OS legs: each is a
+# different toolchain on a different CI leg, so a macOS `install_name_tool` failure must not read
+# as a Linux `patchelf` failure. Keyed on the TRIPLE, never the host - a cross-named stage has to
+# get the target's rewrite, the same rule `_WINDOWS_TRIPLE_MARKER` already holds for the suffix.
+# --------------------------------------------------------------------------------------------
+
+
+def _macho_prefix(rel: Relocation) -> str:
+    """The `@loader_path` prefix a macOS load path carries. ONE spelling, shared by the builder
+    and by the expectation that reads its result back - two independent spellings of one rule is
+    the enumeration-not-rule shape this box spent a review round removing elsewhere, and a
+    divergence between them would fail closed (a false refusal) rather than loudly.
+    [Build-Session-Entscheidung: P4.30]"""
+    return "@loader_path" if rel.origin == "." else f"@loader_path/{rel.origin}"
+
+
+def _macho_relocation_argv(path: Path, rel: Relocation) -> list[list[str]]:
+    """P4.30.1 - macOS. `install_name_tool`, one invocation carrying every declared operation.
+
+    `-id @loader_path/<name>` rewrites a shipped lib's OWN install name, which is what a dependent
+    binary records when it links against it; `-change <abs> @loader_path/<lib>` rewrites the
+    ABSOLUTE entries an upstream build already baked into the dependent. One invocation because
+    the tool takes them together and applies them atomically - a half-rewritten Mach-O is not a
+    state worth being able to reach. Runs over the LIPO'D fat binary, never a per-arch slice:
+    `lipo -create` re-emits the Mach-O and rewrites its load commands, so a rewrite applied first
+    would be clobbered (the P4.29 ordering note, which `stage_universal`'s docstring also carries).
+    """
+    prefix = _macho_prefix(rel)
+    operations: list[str] = []
+    if rel.set_id:
+        operations += ["-id", f"{prefix}/{path.name}"]
+    for absolute, bundled in rel.references:
+        operations += ["-change", absolute, f"{prefix}/{bundled}"]
+    return [["install_name_tool", *operations, str(path)]] if operations else []
+
+
+def _elf_relocation_argv(path: Path, rel: Relocation) -> list[list[str]]:
+    """P4.30.2 - Linux. `patchelf --set-rpath '$ORIGIN'` so `DT_RUNPATH` resolves beside the exe.
+
+    `$ORIGIN` is expanded by the loader against the DIRECTORY OF THE BINARY ITSELF, which is
+    exactly the beside-the-exe layout §3.9.1 prefers. Passed as a literal argv token - `shell=False`
+    means the shell never sees the `$`, which is the whole reason it survives to `patchelf`.
+    Set unconditionally, with no `set_id`/`references` analogue: ELF has no per-lib install name to
+    rewrite, so on this platform the search path IS the entire mechanism.
+
+    TWO properties of `DT_RUNPATH` the declaring box has to know, because neither is visible from
+    this argv (§6.1.3's Linux sub-bullet carries both):
+      * it is **not transitive** - `ld.so` consults it only for the DIRECT dependencies of the
+        object carrying it - so a chain like `ffmpeg -> libvorbisenc -> libvorbis -> libogg` needs
+        a `Relocation` row for EVERY link, not just the executable. The mechanism supports that
+        (rows are per file); nothing here can enforce it.
+      * it is consulted **after** `LD_LIBRARY_PATH`, where the legacy `DT_RPATH` precedes it. So
+        the beside-the-exe guarantee on Linux rests on §3.5's loader-variable strip; `--force-rpath`
+        would add a second line and is deliberately NOT taken, because `DT_RPATH` is deprecated and
+        the strip is a control this repo already holds and tests.
+    """
+    rpath = "$ORIGIN" if rel.origin == "." else f"$ORIGIN/{rel.origin}"
+    return [["patchelf", "--set-rpath", rpath, str(path)]]
+
+
+def _pe_relocation_argv(path: Path, rel: Relocation) -> list[list[str]]:
+    """P4.30.3 - Windows. A RECORDED no-op, declared so the absence is a decision and not a gap.
+
+    The PE loader searches the directory of the executable that started the process before any
+    other user path, so a DLL shipped beside the exe already resolves with nothing rewritten -
+    there is no PE analogue of `install_name`/`RUNPATH` to fix. The minimal explicit `PATH`
+    Windows engines are spawned with - the bundle dir only, so the OS search STARTS inside the
+    bundle - is §0.11 T3a's control (asserted by G37b), not §3.5's, which says only that `PATH` is
+    not relied on. The G37b closure assertion's Windows arm (`dumpbin /dependents`) therefore
+    validates the AS-STAGED layout directly, with no rewrite step in between.
+
+    It returns no argv rather than being absent from the dispatch table: an unlisted triple is a
+    REFUSAL (`relocator_for`), so declaring the no-op is what distinguishes "nothing to do here"
+    from "nobody thought about here".
+    """
+    return []
+
+
+#: triple -> the argv builder for that target's load-path rewrite. Every §3.4.5 v1 triple plus the
+#: universal merge target is listed; `relocator_for` refuses anything else rather than defaulting
+#: to a no-op, so a widened `V1_TARGET_TRIPLES` cannot arrive silently unrelocated. A leg pins the
+#: coverage in both directions.
+_RELOCATORS = {
+    "x86_64-pc-windows-msvc": _pe_relocation_argv,
+    "aarch64-apple-darwin": _macho_relocation_argv,
+    "x86_64-apple-darwin": _macho_relocation_argv,
+    UNIVERSAL_TRIPLE: _macho_relocation_argv,
+    "x86_64-unknown-linux-gnu": _elf_relocation_argv,
+}
+
+#: triple -> the READ-BACK argv builders for the two halves a rewrite can have: `id` (this file's
+#: own install name) and `refs` (the references it makes). `None` where a platform rewrites nothing.
+#: Linux's `--print-rpath` answers the whole mechanism in one call, so both halves point at it;
+#: macOS needs two tools, `otool -D` for the install name and `otool -L` for the references.
+#:
+#: The `refs` half is NOT G37b arriving early. G37b asserts CLOSURE - every load command, `LC_RPATH`
+#: included, resolves inside the bundle - which needs `otool -l` and a per-binary dependency walk.
+#: This asserts only that the PAIRS THIS ROW DECLARED were actually applied, over data the
+#: `Relocation` already carries. It matters because `install_name_tool -change <old> <new>` matches
+#: `<old>` LITERALLY and, on no match, does nothing and exits 0 - so the dependent binary, the one
+#: case with no `-id` to read back, was the half where the silent-no-op class was still open.
+_RELOCATION_READBACK = {
+    "x86_64-pc-windows-msvc": None,
+    "aarch64-apple-darwin": {"id": "otool -D", "refs": "otool -L"},
+    "x86_64-apple-darwin": {"id": "otool -D", "refs": "otool -L"},
+    UNIVERSAL_TRIPLE: {"id": "otool -D", "refs": "otool -L"},
+    # ONE tool answers the whole Linux mechanism, so both halves name it rather than one being
+    # dead data nothing reads (a mutation proved the `refs` entry unreachable there).
+    "x86_64-unknown-linux-gnu": dict.fromkeys(("id", "refs"), "patchelf --print-rpath"),
+}
+
+
+def scope_ids_still_absent(listed, decided) -> bool:
+    """Is every piece the SCOPE sentence lists as excluded still absent from this file?
+
+    A pure predicate so the COMPARISON is drivable: with no listed id currently decided here, a leg
+    that only evaluates the live inputs cannot tell a working comparison from a dropped one - which
+    a mutation proved. [Build-Session-Entscheidung: P4.30]
+    """
+    return bool(listed) and not (set(listed) & set(decided))
+
+
+def build_relocation_argv(path: Path, rel: Relocation, triple: str) -> list[list[str]]:
+    """The rewrite argv for one file, with the contract `relocate_one` depends on asserted.
+
+    The path is the LAST token, and `relocate_one` substitutes exactly that token to point at its
+    staging sibling. A builder that put it anywhere else would leave the real target argument
+    pointing at the PUBLISHED file, so the tool would rewrite it in place - silently losing the
+    atomic publish. Asserted rather than trusted, because the three current builders satisfy it
+    only by construction.
+
+    Separated from `relocate_one` so `--check` reaches it too: the contract is byte-free, and a
+    check pass that skipped it would validate LESS than the run for a reason that has nothing to do
+    with the bytes. [Build-Session-Entscheidung: P4.30]
+    """
+    argvs = relocator_for(triple)(path, rel)
+    for argv in argvs:
+        if argv[-1] != str(path):
+            raise StagingError(
+                f"relocating '{path.name}': the argv builder for '{triple}' does not end in the "
+                f"target path ({argv[-1]!r}) - `relocate_one` substitutes the LAST token to point "
+                "at its staging sibling, so a builder that places the path elsewhere would rewrite "
+                "the published file in place and lose the atomic publish"
+            )
+    return argvs
+
+
+def assert_not_symlink(path, label: str) -> None:
+    """Refuse a relocation target that is a SYMLINK, before anything reads or resolves it.
+
+    `shutil.copy2` follows links, so the copy-rewrite-replace would silently FLATTEN the link into
+    a real file - and a resource tree is staged with `copytree(symlinks=True)` precisely because a
+    real LibreOffice/`.app` tree is full of internal links, which the staging guards keep (they
+    refuse only links that ESCAPE the tree). Which of the two things a rewrite should mean there -
+    edit the link's target, or replace the link - is the declaring box's call, not this mechanism's.
+
+    Called on the RAW path, BEFORE `_member_path`, because `_member_path` resolves: after it, a
+    symlinked member is indistinguishable from its target and this guard could never fire on the
+    one case class it exists for. It takes only `is_symlink()`, so a leg drives it with a stub and
+    no OS link privilege. [Build-Session-Entscheidung: P4.30]
+    """
+    if path.is_symlink():
+        raise StagingError(
+            f"relocating '{label}': the target is a SYMLINK. Rewriting it would either flatten the "
+            "link into a real file or edit whatever it points at, and neither is a choice this "
+            "mechanism may make for the box that declared the relocation - name the real file"
+        )
+
+
+def relocator_for(triple: str):
+    """The argv builder for `triple`, or a structural refusal - never a silent no-op."""
+    builder = _RELOCATORS.get(triple)
+    if builder is None:
+        raise StagingError(
+            f"no declared load-path relocation for target '{triple}' - every §3.4.5 v1 triple and "
+            f"the universal merge target declare one ({', '.join(sorted(_RELOCATORS))}), because a "
+            "target with no declared rewrite would stage binaries carrying the build machine's "
+            "ABSOLUTE load paths and only fail on the user's machine (§3.5)",
+            structural=True,
+        )
+    return builder
+
+
+def assert_relocations_bound(
+    rows: tuple[EngineStaging, ...], relocations: tuple[Relocation, ...]
+) -> None:
+    """Refuse a relocation declaring a `dest` no staging row stages.
+
+    The binder's load-bearing direction: a typo'd `dest` sits there looking authoritative while the
+    real binary is staged with its absolute paths intact and fails on the user's machine. The
+    inverse direction is deliberately NOT checked - a staged row with no relocation is the NORMAL
+    case (a statically-linked worker, a data tree, the Windows no-op), so requiring one would be
+    the wrong default. [Build-Session-Entscheidung: P4.30]
+    """
+    staged = {row.dest for row in rows}
+    unbound = sorted({rel.dest for rel in relocations if rel.dest not in staged})
+    if unbound:
+        raise StagingError(
+            f"relocation declaration(s) for {', '.join(unbound)} name no staged row - a rewrite "
+            "bound to nothing never runs, and the binary it was meant to fix ships with the build "
+            "machine's absolute load paths"
+        )
+
+
+def relocate_one(path: Path, rel: Relocation, triple: str, *, runner) -> list[list[str]]:
+    """Rewrite ONE staged file's load paths in place, atomically. Returns the argv that ran.
+
+    ATOMIC, like every other publish in this file: the rewrite runs against a `.{name}.relocating`
+    sibling and the finished file is moved into place with one `os.replace`, so a crashed or
+    failing tool leaves the staged binary exactly as it was rather than half-rewritten. Rewriting
+    the published file directly would be simpler and would re-open precisely the torn-publish
+    window the P4.29 legs pin shut. The tool is told the FINAL basename explicitly (it is an
+    argument, not something read off the file), so the temp name never leaks into an install name.
+
+    WHAT THIS ASSERTS, and what it does not. It asserts the tool succeeded, that the result is
+    still a non-empty file of the SAME format it started as (a rewrite that truncates or corrupts
+    its input is caught here, at the step that produced it - the P4.29 discipline), and, where the
+    toolchain can answer precisely, it READS THE RESULT BACK: `patchelf --print-rpath` reports the
+    whole Linux mechanism, `otool -D` reports the macOS install name. It does NOT assert dependency
+    CLOSURE - that every reference resolves inside the bundle is G37b's assertion, built per engine
+    and run at release over these relocated binaries, and building it here would be this box
+    claiming a gate the plan gives to another.
+    """
+    assert_not_symlink(path, path.name)
+    argvs = build_relocation_argv(path, rel, triple)
+    if not argvs:
+        return []
+    with path.open("rb") as handle:
+        before = handle.read(4)
+    staging = path.with_name(f".{path.name}.relocating")
+    try:
+        shutil.copy2(path, staging)
+        for argv in argvs:
+            step = [*argv[:-1], str(staging)]
+            result = runner(step)
+            if getattr(result, "returncode", 1) != 0:
+                raise StagingError(
+                    f"relocating '{path.name}': `{' '.join(step)}` failed:\n"
+                    f"{getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}".strip()
+                )
+        if not staging.is_file() or staging.stat().st_size == 0:
+            raise StagingError(
+                f"relocating '{path.name}': the rewrite left no usable file - a load-path rewrite "
+                "edits headers in place and must never shorten its input to nothing"
+            )
+        with staging.open("rb") as handle:
+            after = handle.read(4)
+        if after != before:
+            raise StagingError(
+                f"relocating '{path.name}': the rewrite changed the file's FORMAT (its leading "
+                "magic differs) - a load-path rewrite edits load commands, never the container"
+            )
+        _verify_relocation(staging, expected_load_paths(path.name, rel, triple), runner=runner)
+        shutil.copystat(path, staging)
+        os.replace(staging, path)
+    finally:
+        # No `exists()` guard: it is redundant before `missing_ok=True` and strictly
+        # WEAKER - a broken-symlink residue answers False and would survive the cleanup.
+        staging.unlink(missing_ok=True)
+    return argvs
+
+
+def expected_load_paths(final_name: str, rel: Relocation,
+                        triple: str) -> list[tuple[str, str, str]]:
+    """The `(read-back tool, value it must contain)` pairs this rewrite is checkable by.
+
+    A pure function of the FINAL basename - the file being rewritten still wears its
+    `.{name}.relocating` staging name, and matching on that would pin the temp spelling into the
+    assertion. Empty where the platform rewrites nothing. Every DECLARED operation contributes an
+    expectation: the `-id` half is read back with `otool -D`, and each `-change` pair with
+    `otool -L`, because `install_name_tool -change` matches its old path literally and silently
+    exits 0 when it does not match - the shape a rewrite is most likely to fail in. Linux's
+    `--print-rpath` answers the whole mechanism in one value. [Build-Session-Entscheidung: P4.30]
+    """
+    tools = _RELOCATION_READBACK.get(triple)
+    if tools is None:
+        return []
+    if triple == "x86_64-unknown-linux-gnu":
+        return [(tools["id"], "$ORIGIN" if rel.origin == "." else f"$ORIGIN/{rel.origin}", "")]
+    prefix = _macho_prefix(rel)
+    expected: list[tuple[str, str, str]] = []
+    if rel.set_id:
+        expected.append((tools["id"], f"{prefix}/{final_name}", ""))
+    # The third element is what must NOT survive. For a `-change` pair the old ABSOLUTE path is
+    # the whole point of the rewrite, so asserting its presence is gone closes the silent-no-op
+    # class a notch deeper than asserting the new value appeared: the new value could already be
+    # there from an unrelated load command.
+    expected += [(tools["refs"], f"{prefix}/{bundled}", absolute)
+                 for absolute, bundled in rel.references]
+    return expected
+
+
+def _verify_relocation(path: Path, expected: list[tuple[str, str, str]], *, runner) -> None:
+    """Read the rewrite back through the toolchain, once per DECLARED operation.
+
+    Exit-code-only would let an `install_name_tool` that silently does nothing publish a binary
+    still carrying the build machine's paths - the exact silent class this repo keeps closing one
+    step upstream of the gate that would otherwise find it. Each tool is run once even when several
+    expectations share it, so a five-reference dependent costs one `otool -L`, not five.
+    """
+    for tool in dict.fromkeys(cmd for cmd, _, _ in expected):
+        argv = [*tool.split(), str(path)]
+        result = runner(argv)
+        if getattr(result, "returncode", 1) != 0:
+            raise StagingError(
+                f"relocating '{path.name}': the rewrite reported success but could not be read "
+                f"back (`{' '.join(argv)}` failed) - an unverifiable rewrite is not a rewrite"
+            )
+        # Matched on whitespace-delimited TOKENS, not as a substring: every one of these tools
+        # prints one path per whitespace-separated field, and a substring test would accept
+        # `$ORIGINAL/lib` for `$ORIGIN` or `…dylib.2` for `…dylib`.
+        seen = getattr(result, "stdout", "") or ""
+        tokens = seen.split()
+        for cmd, wanted, forbidden in expected:
+            if cmd != tool:
+                continue
+            if wanted not in tokens:
+                raise StagingError(
+                    f"relocating '{path.name}': the tool exited 0 but a load path it should have "
+                    f"written is absent - expected {wanted!r} in `{tool}`, got {seen.strip()!r}"
+                )
+            if forbidden and forbidden in tokens:
+                raise StagingError(
+                    f"relocating '{path.name}': the tool exited 0 and the new load path is there, "
+                    f"but the ABSOLUTE one it was meant to replace ({forbidden!r}) is still "
+                    f"present in `{tool}` - the rewrite did not take"
+                )
+
+
+def relocate_all(
+    results: list[StagedResult],
+    triple: str,
+    relocations: tuple[Relocation, ...] | None = None,
+    *,
+    write: bool,
+    runner,
+) -> list[tuple[Path, list[list[str]]]]:
+    """Rewrite every declared staged file's load paths. Runs AFTER staging, over the published file.
+
+    After, not during: on macOS the file to rewrite is the one `lipo -create` produced, and lipo
+    re-emits the Mach-O with fresh load commands (the P4.29 ordering note). Doing it in a tail also
+    keeps the rewrite off the four publish paths that carry no `finalize` hook, so every staged
+    file is reachable by the same rule rather than by which branch happened to stage it.
+
+    `write=False` (--check) resolves and validates everything that does not need the bytes - the
+    declaration binds to a staged row, the triple has a relocator, the target path resolves, the
+    argv is constructible - and rewrites nothing. It deliberately does not go quiet: a check pass
+    that validated LESS than the run would be the one shape a check mode must never have.
+
+    ORDERING, for the next box that adds a tail here: the P4.41 in-bundle hash manifest is
+    generated over the STAGED binaries and must run AFTER this rewrite, on BOTH `stage_all`
+    branches - a manifest taken before it records hashes no shipped file has, which would surface
+    only at P6.1.2 as a runtime "integrity failed" on every user machine. This file already
+    carries the same ordering hazard twice for lipo-vs-relocation, and this commit's own mutation
+    battery proved a one-branch tail is a live, suite-invisible defect.
+    """
+    # Resolved HERE, not as a parameter default: `= RELOCATIONS` in the signature binds the value
+    # at DEFINITION time, so the empty tuple this module ships would be frozen into the default and
+    # a declaration set afterwards would never reach the tail. The wiring leg found exactly that.
+    # [Build-Session-Entscheidung: P4.30]
+    relocations = RELOCATIONS if relocations is None else relocations
+    relocator_for(triple)  # refuse an unrelocatable target before resolving a single path
+    if not relocations:
+        return []
+    # SEVERAL rows may share one RESOURCE_TREE destination (`EngineStaging`'s own docstring: §3.3.1
+    # maps the whole image stack onto `resources/image/`), and they come from DIFFERENT cache
+    # engines, so their presence is independent. A last-wins dict would let one absent engine hide
+    # a destination another engine did stage - the relocation would be skipped while its target sat
+    # on disk. Prefer the row that actually staged. [Build-Session-Entscheidung: P4.30]
+    staged: dict[str, StagedResult] = {}
+    for result in results:
+        seen = staged.get(result.row.dest)
+        if seen is None or (seen.dest is None and result.dest is not None):
+            staged[result.row.dest] = result
+    planned: list[tuple[Path, list[list[str]]]] = []
+    for rel in relocations:
+        result = staged.get(rel.dest)
+        if result is None or result.dest is None:
+            # The engine is not in the restored cache - `report` already says so for the row, and a
+            # rewrite of a file that was never staged is not a violation, it is nothing to do.
+            continue
+        if result.row.kind is StagingKind.SIDECAR and rel.member:
+            raise StagingError(
+                f"relocation for sidecar '{rel.dest}' names a member {rel.member!r} - a sidecar "
+                "row stages exactly one file, so its relocation addresses that file and nothing "
+                "inside it"
+            )
+        if result.row.kind is StagingKind.SIDECAR and rel.set_id:
+            # A sidecar is staged under the externalBin STAGE-TIME name `<dest>-<triple>[.exe]`,
+            # which Tauri STRIPS at bundle time (the module docstring's own note) - so an install
+            # name derived from `path.name` here would bake a filename that does not ship, and the
+            # read-back would then confirm that wrong value, satisfying the silent-no-op guard WITH
+            # the defect. `set_id` belongs on a component lib in the resource tree, whose staged
+            # basename IS its shipped basename. [Build-Session-Entscheidung: P4.30]
+            raise StagingError(
+                f"relocation for sidecar '{rel.dest}' asks for `set_id`, but a sidecar is staged "
+                f"as '{Path(result.dest).name}' and ships under the bare name Tauri strips that "
+                "suffix down to - an install name derived from the staged name would point at a "
+                "file that does not exist in the bundle. `set_id` addresses a component lib in the "
+                "resource tree, whose staged basename is its shipped basename"
+            )
+        raw = (result.dest / rel.member) if rel.member else result.dest
+        assert_not_symlink(raw, rel.dest)
+        target = _member_path(result.dest, rel.member) if rel.member else result.dest
+        if not write:
+            planned.append((target, build_relocation_argv(target, rel, triple)))
+            continue
+        if not target.is_file():
+            raise StagingError(
+                f"relocation for '{rel.dest}' names {target.name}, which the staging step did not "
+                "produce - the declaration and the staged tree disagree about what ships"
+            )
+        planned.append((target, relocate_one(target, rel, triple, runner=runner)))
+    # REPORTED, not silent: this box's whole thesis is that a rewrite which quietly does nothing is
+    # the failure mode worth catching, so a run that rewrote zero files must not look like a run
+    # that rewrote three. `report()` does not carry relocation rows, so the count is said here.
+    #
+    # Counted on the rows that actually PRODUCED argv, not on the rows considered - on the Windows
+    # recorded no-op every builder returns `[]`, and reporting "relocated 1" there would say exactly
+    # the thing the sentence above forbids, on the one platform whose entire point is that its
+    # no-op be distinguishable. [Build-Session-Entscheidung: P4.30]
+    rewritten = [target for target, argvs in planned if argvs]
+    if rewritten:
+        note(f"{'would relocate' if not write else 'relocated'} {len(rewritten)} staged file(s) "
+             f"for {triple}")
+    elif planned:
+        note(f"{len(planned)} staged file(s) declared for {triple} need no load-path rewrite "
+             "(the platform's recorded no-op)")
+    return planned
+
+
 def stage_all(
     root: Path,
     cache_root: Path,
@@ -1138,6 +1634,11 @@ def stage_all(
     """
     if lock_path is not None:
         assert_rows_bound_to_manifest(rows, lock_path)
+    assert_relocations_bound(rows, RELOCATIONS)
+    # Defaulted ONCE, here, rather than inside the universal branch: since P4.30 the per-arch
+    # branch spawns tools too (the relocation tail), so a default that lived on one branch would
+    # leave the other calling `None`. [Build-Session-Entscheidung: P4.30]
+    runner = runner or run_tool
 
     if not cache_root.is_dir():
         raise StagingError(
@@ -1146,9 +1647,9 @@ def stage_all(
             structural=True,
         )
     if triple == UNIVERSAL_TRIPLE:
-        return stage_universal(
-            root, cache_root, rows, write=write, runner=runner or run_lipo
-        )
+        results = stage_universal(root, cache_root, rows, write=write, runner=runner)
+        relocate_all(results, triple, write=write, runner=runner)
+        return results
     for name, claimants in ambiguous_engine_entries(cache_root, rows, triple):
         raise StagingError(
             f"restored cache entry '{name}' parses as belonging to more than one declared engine "
@@ -1167,6 +1668,7 @@ def stage_all(
         else:
             dest = stage_resource_tree(entry, row, root, write=write)
         results.append(StagedResult(row, entry, dest))
+    relocate_all(results, triple, write=write, runner=runner)
     return results
 
 
@@ -1218,12 +1720,32 @@ def _raises(fn, needle: str) -> bool:
     stale sibling fixture made `stage_all` raise from the member-resolution arm instead). Making
     the needle mandatory closes the CLASS rather than that one leg: an arm-blind leg cannot be
     written any more.
+
+    A WRONG exception type is a named FAIL, never a dead suite. It used to propagate, so a guard
+    whose removal made the call fail some other way (an `AttributeError` from a stub that only
+    needed to answer the guard) killed the whole run with a traceback instead of reddening the one
+    leg that names the guard - loud either way, but attributable only in the second form. The
+    sibling `compile-engine-asset._raises` already has exactly this shape (`except kind` then
+    `except Exception: return False`), and the g24 canaries' `_refused` carries the reason in so
+    many words - "a named FAIL beats a dead canary".
+    [Build-Session-Entscheidung: P4.30]
     """
     try:
         fn()
     except StagingError as exc:
         return needle in str(exc)
+    except Exception:  # noqa: BLE001 - a named FAIL beats a dead suite
+        return False
     return False
+
+
+def _printed(call) -> str:
+    """What a call writes to stdout - for the reporting branches whose only observable effect IS
+    the line they print. [Build-Session-Entscheidung: P4.30]"""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        call()
+    return buffer.getvalue()
 
 
 def _write(path: Path, text: str) -> Path:
@@ -1294,6 +1816,72 @@ def _fat_bytes(cputypes: tuple[int, ...], *, magic: int = _FAT_MAGIC, count: int
 _THIN_MACHO = b"\xcf\xfa\xed\xfe" + b"\x00" * 28
 _FAT_BOTH = _fat_bytes((_CPU_TYPE_ARM64, _CPU_TYPE_X86_64))
 _FAT_ARM_ONLY = _fat_bytes((_CPU_TYPE_ARM64,))
+
+
+class _RelocationRunner:
+    """A recording stand-in for the relocation toolchain, dispatching on the PROGRAM.
+
+    ONE double for both halves - the tool that rewrites and the tool that reads back are the same
+    toolchain, and a double that could only do one of them would let the read-back leg pass against
+    a rewrite that never happened. The rewrite MUTATES its target (preserving the leading magic the
+    format guard checks) so a leg can tell a real rewrite from a silent no-op; `corrupt`/`truncate`
+    drive the two ways a real tool can wreck its input, and `readback` is what the read-back tool
+    claims to see, which is how the silent-no-op refusal is driven. [Build-Session-Entscheidung:
+    P4.30]
+    """
+
+    _WRITERS = ("install_name_tool", "patchelf")
+
+    def __init__(self, *, fails: str | None = None, readback: str | None = None,
+                 corrupt: bool = False, truncate: bool = False) -> None:
+        self.calls: list[list[str]] = []
+        self._fails = fails
+        self._readback = readback
+        self._corrupt = corrupt
+        self._truncate = truncate
+
+    def __call__(self, argv: list[str]):
+        self.calls.append(list(argv))
+        rc = 1 if self._fails == argv[0] else 0
+        if argv[0] == "lipo":
+            # The SAME seam carries the universal merge, so the one double has to answer for it -
+            # otherwise the only way to drive stage_all's universal branch end to end would be two
+            # doubles on one seam, which production does not have.
+            if rc == 0:
+                Path(argv[-1]).write_bytes(_FAT_BOTH)
+
+            class _LipoResult:
+                returncode = rc
+                stdout = ""
+                stderr = "tool refused" if rc else ""
+
+            return _LipoResult()
+        out = ""
+        writing = argv[0] in self._WRITERS and "--print-rpath" not in argv
+        if writing and rc == 0:
+            target = Path(argv[-1])
+            body = target.read_bytes()
+            if self._truncate:
+                target.write_bytes(b"")
+            elif self._corrupt:
+                target.write_bytes(b"ZZZZ" + body[4:])
+            else:
+                target.write_bytes(body + b"-relocated")
+        elif not writing:
+            # A dict lets a leg answer DIFFERENTLY per tool, which is the only way to tell a
+            # read-back that matches each expectation to ITS tool from one that checks every
+            # expectation against every output. A single string cannot discriminate that.
+            if isinstance(self._readback, dict):
+                out = self._readback.get(" ".join(argv[:2]), "")
+            else:
+                out = self._readback or ""
+
+        class _Result:
+            returncode = rc
+            stdout = out
+            stderr = "tool refused" if rc else ""
+
+        return _Result()
 
 
 class _LipoRunner:
@@ -1588,12 +2176,12 @@ def selftest() -> int:
             ),
         )
         _record(
-            "run_lipo passes an argv LIST - a path with a space stays ONE argument",
+            "run_tool passes an argv LIST - a path with a space stays ONE argument",
             # Every leg above drives the injected runner, so the one place a real process is
             # spawned would otherwise be unexercised: switching it to a joined shell line passed
             # the whole suite.
             (lambda probe: probe.returncode == 0 and probe.stdout.strip() == "['one two']")(
-                run_lipo([sys.executable, "-c",
+                run_tool([sys.executable, "-c",
                           "import sys; sys.stdout.write(repr(sys.argv[1:]))", "one two"])
             ),
         )
@@ -2380,7 +2968,7 @@ def selftest() -> int:
 
     _absent_lipo = None
     try:
-        run_lipo(["convertia-no-such-tool-in-any-PATH", "-create"])
+        run_tool(["convertia-no-such-tool-in-any-PATH", "-create"])
     except StagingError as e:
         _absent_lipo = e
     _record(
@@ -2938,6 +3526,581 @@ def selftest() -> int:
             )
             == [StagedResult(row, None, None) for row in _FIXTURE_ROWS],
         )
+
+    # (N) the §3.5 beside-the-exe load-path rewrite (P4.30). Every leg drives the injected runner
+    # and an explicit triple, so all three per-OS legs are exercised on ANY host - required, since
+    # the caged canary tolerates no skipped leg on POSIX, and a macOS-only mechanism checked only
+    # on macOS would be checked on no CI leg this repo runs today.
+    _MAC, _UNIV = "aarch64-apple-darwin", UNIVERSAL_TRIPLE
+    _record(
+        "relocation: every v1 triple AND the universal target declare a relocator",
+        set(_RELOCATORS) == set(V1_TARGET_TRIPLES) | {UNIVERSAL_TRIPLE},
+    )
+    _record(
+        "relocation: the read-back table covers exactly the same targets, so a new triple cannot "
+        "arrive with a rewrite but no way to check it",
+        set(_RELOCATION_READBACK) == set(_RELOCATORS),
+    )
+    _record(
+        "relocation: an undeclared target is a structural refusal, never a silent no-op",
+        _raises(lambda: relocator_for("riscv64-unknown-linux-gnu"),
+                "no declared load-path relocation"),
+    )
+    _STAGE_LIB, _STAGE_DEP = Path("/stage/libmp3lame.0.dylib"), Path("/stage/ffmpeg")
+    _lib = Relocation(dest="libmp3lame.so", set_id=True)
+    _dep = Relocation(dest="ffmpeg", references=(("/opt/build/lib/libmp3lame.0.dylib",
+                                                  "libmp3lame.0.dylib"),))
+    _record(
+        "relocation (macOS): a shipped lib gets `-id @loader_path/<its own final name>`",
+        # The target path is asserted as PASS-THROUGH (`str(path)`), never re-spelled as a POSIX
+        # literal: `str(Path("/stage/x"))` renders backslashes on Windows, and a leg written that
+        # way fails on the dev host while claiming to be about install names.
+        _macho_relocation_argv(_STAGE_LIB, _lib)
+        == [["install_name_tool", "-id", "@loader_path/libmp3lame.0.dylib", str(_STAGE_LIB)]],
+    )
+    _record(
+        "relocation (macOS): the dependent's ABSOLUTE reference is rewritten to @loader_path",
+        _macho_relocation_argv(_STAGE_DEP, _dep)
+        == [["install_name_tool", "-change", "/opt/build/lib/libmp3lame.0.dylib",
+             "@loader_path/libmp3lame.0.dylib", str(_STAGE_DEP)]],
+    )
+    _record(
+        "relocation (macOS): id and change travel in ONE invocation - the tool applies them "
+        "together, so a half-rewritten Mach-O is not a reachable state",
+        (lambda argv: len(argv) == 1 and argv[0].count("-change") == 2 and "-id" in argv[0])(
+            _macho_relocation_argv(
+                _STAGE_DEP,
+                _dep._replace(set_id=True,
+                              references=_dep.references + (("/opt/b/libogg.0.dylib",
+                                                             "libogg.0.dylib"),)),
+            )
+        ),
+    )
+    _record(
+        "relocation (macOS): `origin` shapes the prefix for a lib that does NOT sit beside the exe",
+        _macho_relocation_argv(_STAGE_DEP, _lib._replace(origin="../lib"))[0][2]
+        == "@loader_path/../lib/ffmpeg",
+    )
+    _record(
+        "relocation (macOS): a declaration with no operation produces NO invocation",
+        _macho_relocation_argv(_STAGE_DEP, Relocation(dest="ffmpeg")) == [],
+    )
+    _record(
+        "relocation (Linux): `--set-rpath $ORIGIN` as ONE literal argv token, so the shell never "
+        "sees the `$` (which is the only reason it survives to patchelf)",
+        _elf_relocation_argv(_STAGE_DEP, _lib)
+        == [["patchelf", "--set-rpath", "$ORIGIN", str(_STAGE_DEP)]],
+    )
+    _record(
+        "relocation (Linux): `origin` shapes $ORIGIN/<sub>, and the leg needs no set_id/references "
+        "because ELF has no per-lib install name to rewrite",
+        _elf_relocation_argv(_STAGE_DEP, Relocation(dest="ffmpeg", origin="lib"))[0][2]
+        == "$ORIGIN/lib",
+    )
+    _record(
+        "relocation (Windows): a RECORDED no-op - declared in the table, so 'nothing to do' is "
+        "distinguishable from 'nobody considered it'",
+        _pe_relocation_argv(Path("/stage/ffmpeg.exe"), _lib) == []
+        and _RELOCATORS[_WIN] is _pe_relocation_argv,
+    )
+    _record(
+        "relocation: the read-back expectation is the FINAL name, never the staging spelling",
+        expected_load_paths("libmp3lame.0.dylib", _lib, _MAC)
+        == [("otool -D", "@loader_path/libmp3lame.0.dylib", "")]
+        and expected_load_paths("ffmpeg", _lib, _LINUX)
+        == [("patchelf --print-rpath", "$ORIGIN", "")],
+    )
+    _record(
+        "relocation: EVERY declared operation is read back - the `-change` half through "
+        "`otool -L`, because install_name_tool matches its old path literally and exits 0 on no "
+        "match, which is the shape a rewrite most likely fails in",
+        expected_load_paths("ffmpeg", _dep, _MAC)
+        == [("otool -L", "@loader_path/libmp3lame.0.dylib",
+             "/opt/build/lib/libmp3lame.0.dylib")],
+    )
+    _record(
+        "relocation: a platform that rewrites NOTHING has nothing to read back either",
+        expected_load_paths("ffmpeg.exe", _lib, _WIN) == [],
+    )
+    _record(
+        "binder: a relocation naming no staged row is refused",
+        _raises(lambda: assert_relocations_bound(_FIXTURE_ROWS, (Relocation(dest="nope"),)),
+                "name no staged row"),
+    )
+    _record(
+        "binder: a staged row with NO relocation is the normal case, never an error",
+        assert_relocations_bound(_FIXTURE_ROWS, ()) is None,
+    )
+    # The SCOPE paragraph lists the pieces this file deliberately does NOT carry, by box id. That
+    # sentence has now gone stale twice - P4.29 landed the lipo merge while it still read as
+    # excluded, and P4.30 landed the relocation the same way - and nothing sees it: G8 is
+    # diff-scoped so unchanged prose is invisible, G68 is `.md`-only, and plan-lint check 29 scans
+    # `.rs` and matches deadness-UNTIL constructions, not exclusion lists. This is check 29's
+    # mechanic applied to this file: pull the ids out of that sentence and refuse any that the plan
+    # already marks `[x]`. [Build-Session-Entscheidung: P4.30]
+    # The PROPERTY is "a piece listed as not-carried-here has not since landed HERE" - which is
+    # NOT the same as "that box is done somewhere". Keying on the plan's `[x]` would red at P4.31,
+    # a box that wires `tauri.conf.json` and never touches this file, and the only way to green it
+    # would be deleting a cross-reference that is still true. So it keys on THIS FILE: a box that
+    # landed work here leaves a `[Build-Session-Entscheidung: <id>]` tag at the code site, which is
+    # the repo's own marker for exactly that. P4.29 and P4.30 both have one; the three still listed
+    # have none. [Build-Session-Entscheidung: P4.30]
+    _scope_parts = __doc__.split("Each excluded piece is its own")
+    # Guarded, not indexed: a reworded sentinel would otherwise raise IndexError at suite top
+    # level and kill every later leg with a traceback - the shape `_raises` just fixed one scope
+    # down. An empty sentence reds the non-vacuity leg instead, which is the right signal.
+    _scope_sentence = _scope_parts[1].split("The macOS dual-arch")[0] if len(_scope_parts) > 1 else ""
+    _excluded_ids = re.findall(r"\(P(\d+\.\d+)\)", _scope_sentence)
+    _own_source = Path(__file__).read_text(encoding="utf-8")
+    _decided_here = set(re.findall(r"Build-Session-Entscheidung: P(\d+\.\d+(?:\.\d+)?)", _own_source))
+    _record(
+        # RESIDUAL, named: the tag is a heuristic for "landed here". A box that adds code here
+        # WITHOUT a self-made choice site leaves no tag, and the sentence would stay silently
+        # stale. It is the best signal the repo already keeps; the alternative (plan `[x]`) is
+        # strictly worse, since it reds on boxes that never touch this file at all.
+        "SCOPE freshness: no piece the docstring lists as EXCLUDED has since landed in THIS file - "
+        "the sentence went stale at P4.29 and again at P4.30, and no gate could see it (G8 is "
+        "diff-scoped, G68 is .md-only, plan-lint check 29 is .rs-only)",
+        scope_ids_still_absent(_excluded_ids, _decided_here),
+    )
+    _record(
+        "SCOPE freshness: the leg is non-vacuous - it finds ids in that sentence AND finds boxes "
+        "that DID decide here, so an empty either side cannot pass it silently",
+        # Bounded at 1, not at the current 3: the P4.41 forward note this same commit adds
+        # schedules REMOVING one of the listed ids, and a leg pinned to today's length would
+        # red on that correct future edit. Emptiness is what vacuity means here.
+        len(_excluded_ids) >= 1 and len(_decided_here) >= 1,
+    )
+    _record(
+        "SCOPE freshness: the COMPARISON itself is driven, not just its live inputs - a listed id "
+        "that DID decide here is refused, one that did not is accepted (no listed id is currently "
+        "decided here, so the live evaluation alone cannot tell a working check from a dropped one)",
+        scope_ids_still_absent(["4.30"], ["4.27", "4.30"]) is False
+        and scope_ids_still_absent(["4.31"], ["4.27", "4.30"]) is True
+        and scope_ids_still_absent([], ["4.30"]) is False,
+    )
+    _record(
+        "_raises: the NEEDLE decides, not the type alone - a StagingError whose message does not "
+        "contain the needle is False, which is what makes every arm-blind leg in this file "
+        "impossible to write (the docstring claims that; this leg is what proves it)",
+        _raises(lambda: relocator_for("zzz-unknown-triple"), "a phrase that arm does not use")
+        is False,
+    )
+    _record(
+        "_raises: a WRONG exception type is a named FAIL, never a dead suite - it used to "
+        "propagate and kill the whole run with a traceback instead of reddening the one leg. "
+        "The needle IS present in the KeyError, so only the TYPE can decide this leg",
+        _raises(lambda: {}["boom"], "boom") is False,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp).resolve()
+        original = b"\xcf\xfa\xed\xfe" + b"mach-o body"
+
+        def _target(name: str) -> Path:
+            return _write_bytes(base / name, original)
+
+        happy = _RelocationRunner(readback="@loader_path/lib.dylib\n")
+        argvs = relocate_one(_target("lib.dylib"), _lib, _MAC, runner=happy)
+        _record(
+            "relocate_one: the rewrite lands, is read back, and leaves NO staging residue",
+            (base / "lib.dylib").read_bytes() != original
+            and not list(base.glob(".*.relocating"))
+            and len(argvs) == 1,
+        )
+        _record(
+            "relocate_one: the tool is handed the STAGING sibling, never the published file - the "
+            "publish stays one atomic replace",
+            happy.calls[0][-1].endswith(".lib.dylib.relocating"),
+        )
+        _record(
+            "relocate_one: ...and the read-back runs against that same sibling, after the rewrite",
+            happy.calls[1][0] == "otool" and happy.calls[1][-1] == happy.calls[0][-1],
+        )
+        broken = _target("fails.dylib")
+        _record(
+            "relocate_one: a failing tool leaves the published file BYTE-IDENTICAL and no residue",
+            _raises(lambda: relocate_one(broken, _lib, _MAC,
+                                         runner=_RelocationRunner(fails="install_name_tool")),
+                    "failed")
+            and broken.read_bytes() == original
+            and not list(base.glob(".*.relocating")),
+        )
+        truncated = _target("trunc.dylib")
+        _record(
+            "relocate_one: a rewrite that empties its input is refused, and publishes nothing",
+            _raises(lambda: relocate_one(truncated, _lib, _MAC,
+                                         runner=_RelocationRunner(truncate=True)),
+                    "left no usable file")
+            and truncated.read_bytes() == original,
+        )
+        corrupted = _target("corrupt.dylib")
+        _record(
+            "relocate_one: a rewrite that changes the CONTAINER format is refused - a load-path "
+            "rewrite edits load commands, never the magic",
+            _raises(lambda: relocate_one(corrupted, _lib, _MAC,
+                                         runner=_RelocationRunner(corrupt=True)),
+                    "changed the file's FORMAT")
+            and corrupted.read_bytes() == original,
+        )
+        silent = _target("silent.dylib")
+        _record(
+            "relocate_one: a tool that exits 0 without writing the load path is REFUSED - the "
+            "silent-no-op class, caught at the step that produced the file",
+            _raises(lambda: relocate_one(silent, _lib, _MAC,
+                                         runner=_RelocationRunner(readback="/opt/build/lib.dylib")),
+                    "a load path it should have written is absent")
+            and silent.read_bytes() == original,
+        )
+        _both = Relocation(dest="libvorbisenc.dylib", set_id=True,
+                           references=(("/opt/build/lib/libvorbis.0.dylib", "libvorbis.0.dylib"),))
+        _both_runner = _RelocationRunner(readback={
+            "otool -D": "@loader_path/both.dylib",
+            "otool -L": "@loader_path/libvorbis.0.dylib",
+        })
+        relocate_one(_target("both.dylib"), _both, _MAC, runner=_both_runner)
+        _record(
+            "relocate_one: a file declaring BOTH halves reads BOTH back - `otool -D` for its own "
+            "install name AND `otool -L` for its references. This is the realistic first filler "
+            "(P6.1.2's libvorbisenc has an install name AND references libvorbis/libogg), and "
+            "every other leg drives one half alone, which left the multi-tool loop unpinned",
+            [c[0] for c in _both_runner.calls] == ["install_name_tool", "otool", "otool"]
+            and {c[1] for c in _both_runner.calls if c[0] == "otool"} == {"-D", "-L"},
+        )
+        _record(
+            "relocate_one: ...and BOTH operations travel in ONE install_name_tool invocation - the "
+            "rule is per FILE, not per operation kind",
+            _both_runner.calls[0].count("-id") == 1 and _both_runner.calls[0].count("-change") == 1,
+        )
+        stubborn = _target("stubborn.dylib")
+        _record(
+            "relocate_one: the NEW load path present while the ABSOLUTE one it was meant to "
+            "replace SURVIVES is refused - `-change` can match nothing, exit 0, and leave both, "
+            "which asserting only the new value's presence would accept",
+            _raises(lambda: relocate_one(
+                stubborn, _dep, _MAC,
+                runner=_RelocationRunner(readback="@loader_path/libmp3lame.0.dylib "
+                                                  "/opt/build/lib/libmp3lame.0.dylib")),
+                    "is still present")
+            and stubborn.read_bytes() == original,
+        )
+        prefixed = _write_bytes(base / "prefixed.so", b"\x7fELF" + b"elf body")
+        _record(
+            "relocate_one: the read-back matches whole TOKENS, not substrings - a `$ORIGINAL/lib` "
+            "rpath does not satisfy an expected `$ORIGIN`, and the same guard keeps "
+            "`…dylib.2` from satisfying `…dylib`",
+            _raises(lambda: relocate_one(prefixed, Relocation(dest="x"), _LINUX,
+                                         runner=_RelocationRunner(readback="$ORIGINAL/lib")),
+                    "is absent"),
+        )
+        unreadable = _target("unreadable.dylib")
+        _record(
+            "relocate_one: a read-back that cannot run is a refusal - an unverifiable rewrite is "
+            "not a rewrite",
+            _raises(lambda: relocate_one(unreadable, _lib, _MAC,
+                                         runner=_RelocationRunner(fails="otool")),
+                    "could not be read back"),
+        )
+        linux_target = _write_bytes(base / "ffmpeg", b"\x7fELF" + b"elf body")
+        linux_runner = _RelocationRunner(readback="$ORIGIN\n")
+        relocate_one(linux_target, Relocation(dest="ffmpeg"), _LINUX, runner=linux_runner)
+        _record(
+            "relocate_one (Linux): patchelf writes, `--print-rpath` reads the whole mechanism back",
+            linux_runner.calls[0][:3] == ["patchelf", "--set-rpath", "$ORIGIN"]
+            and linux_runner.calls[1][:2] == ["patchelf", "--print-rpath"],
+        )
+        win_target = _write_bytes(base / "ffmpeg.exe", b"MZ\x90\x00pe body")
+        win_runner = _RelocationRunner()
+        class _LinkTarget:
+            """A stand-in that only answers `is_symlink()` - the guard runs before any read, so a
+            leg needs no OS link privilege to drive it, and therefore records no skip on a host
+            that lacks one."""
+
+            name = "libmp3lame.0.dylib"
+
+            @staticmethod
+            def is_symlink() -> bool:
+                return True
+
+        _record(
+            "relocate_one: a SYMLINK target is refused rather than silently flattened by the "
+            "copy-rewrite-replace - which of the two meanings a rewrite has there is the declaring "
+            "box's call",
+            _raises(lambda: relocate_one(_LinkTarget, _lib, _MAC,
+                                         runner=_RelocationRunner(readback="@loader_path/x")),
+                    "the target is a SYMLINK"),
+        )
+        _saved_builder = _RELOCATORS[_LINUX]
+        try:
+            _RELOCATORS[_LINUX] = lambda p, r: [["patchelf", str(p), "--set-rpath", "$ORIGIN"]]
+            _record(
+                "relocate_one: a builder whose argv does NOT end in the target path is refused - "
+                "the substitution rewrites the LAST token, so any other shape would leave the tool "
+                "pointing at the PUBLISHED file and lose the atomic publish",
+                _raises(lambda: relocate_one(_target("argv.so"), Relocation(dest="x"), _LINUX,
+                                             runner=_RelocationRunner(readback="$ORIGIN")),
+                        "does not end in the target path"),
+            )
+        finally:
+            _RELOCATORS[_LINUX] = _saved_builder
+        _record(
+            "relocate_all (Windows): the recorded no-op REPORTS as a no-op - counting the rows "
+            "CONSIDERED rather than the ones that produced argv would print 'relocated 1' on the "
+            "one platform whose entire point is that its no-op be distinguishable, which is the "
+            "thing the count exists to prevent",
+            (lambda out: "need no load-path rewrite" in out and "relocated" not in out)(
+                _printed(lambda: relocate_all(
+                    [StagedResult(EngineStaging("ffmpeg", StagingKind.SIDECAR, "ffmpeg"),
+                                  Path("."), _write_bytes(base / "win.exe", b"MZ\x90\x00pe"))],
+                    _WIN, (Relocation(dest="ffmpeg"),), write=True, runner=_RelocationRunner()))
+            ),
+        )
+        _record(
+            "relocate_one (Windows): the recorded no-op spawns NOTHING and touches nothing",
+            relocate_one(win_target, _lib, _WIN, runner=win_runner) == []
+            and win_runner.calls == []
+            and win_target.read_bytes() == b"MZ\x90\x00pe body",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp).resolve()
+        root, cache = _fixture_tree(base)
+        e2e = _RelocationRunner(readback="$ORIGIN\n")
+        rows = (EngineStaging("ffmpeg", StagingKind.SIDECAR, "ffmpeg"),)
+        results = stage_all(root, cache, _LINUX, rows, runner=e2e)
+        planned = relocate_all(results, _LINUX, (Relocation(dest="ffmpeg"),),
+                               write=False, runner=e2e)
+        _record(
+            "relocate_all: --check RESOLVES the target and builds the argv, and writes nothing - a "
+            "check pass that validated less than the run is the one shape it must never have",
+            len(planned) == 1 and planned[0][1][0][:2] == ["patchelf", "--set-rpath"],
+        )
+        staged_file = sidecar_dest(root, "ffmpeg", _LINUX)
+        before = staged_file.read_bytes()
+        relocate_all(results, _LINUX, (Relocation(dest="ffmpeg"),), write=True, runner=e2e)
+        _record(
+            "relocate_all: the WRITE pass rewrites the file the staging step actually published",
+            staged_file.read_bytes() != before,
+        )
+        _record(
+            "relocate_all: a relocation for a sidecar may not name a member - a sidecar row stages "
+            "one file, so its rewrite addresses that file",
+            _raises(
+                lambda: relocate_all(results, _LINUX,
+                                     (Relocation(dest="ffmpeg", member="inner"),),
+                                     write=True, runner=e2e),
+                "stages exactly one file",
+            ),
+        )
+        _record(
+            "relocate_all: `set_id` on a SIDECAR is refused - a sidecar is staged under the "
+            "externalBin STAGE-TIME name Tauri strips, so an install name derived from it would "
+            "point at a file that does not ship, and the read-back would confirm the wrong value",
+            _raises(
+                lambda: relocate_all(results, _LINUX,
+                                     (Relocation(dest="ffmpeg", set_id=True),),
+                                     write=True, runner=e2e),
+                "ships under the bare name",
+            ),
+        )
+
+        class _LinkedMemberDest:
+            """A staged RESOURCE_TREE destination whose MEMBER is a symlink.
+
+            A stub, for the reason `assert_not_symlink` records: `_member_path` RESOLVES, so once
+            the guard sits behind it this case is unreachable - and a real symlink would cost a
+            skip name on a host without the privilege, which the caged canary forbids.
+            """
+
+            name = "libreoffice"
+
+            @staticmethod
+            def is_symlink() -> bool:
+                return False
+
+            def __truediv__(self, member):
+                return _MemberLink
+
+        class _MemberLink:
+            name = "soffice.bin"
+
+            @staticmethod
+            def is_symlink() -> bool:
+                return True
+
+        _record(
+            "relocate_all: the symlink guard runs on the RAW member path, BEFORE `_member_path` "
+            "resolves it - behind the resolution a symlinked member is indistinguishable from its "
+            "target, so the guard could never fire on the RESOURCE_TREE case it exists for",
+            _raises(
+                lambda: relocate_all(
+                    [StagedResult(EngineStaging("lo", StagingKind.RESOURCE_TREE, "libreoffice"),
+                                  Path("."), _LinkedMemberDest())],
+                    _LINUX, (Relocation(dest="libreoffice", member="program/soffice.bin"),),
+                    write=True, runner=e2e),
+                "the target is a SYMLINK",
+            ),
+        )
+        _shared_row = EngineStaging("image-extra", StagingKind.RESOURCE_TREE, "image")
+        _shared = [
+            StagedResult(EngineStaging("image", StagingKind.RESOURCE_TREE, "image"),
+                         Path("."), staged_file),
+            StagedResult(_shared_row, None, None),  # a SECOND engine on the same dest, absent
+        ]
+        _shared_runner = _RelocationRunner(readback="$ORIGIN")
+        relocate_all(_shared, _LINUX, (Relocation(dest="image"),), write=True,
+                     runner=_shared_runner)
+        _record(
+            "relocate_all: several rows may share one RESOURCE_TREE dest (§3.3.1 maps the whole "
+            "image stack onto resources/image/), and they come from DIFFERENT engines - an absent "
+            "one must not hide a destination another engine DID stage",
+            any(call[:2] == ["patchelf", "--set-rpath"] for call in _shared_runner.calls),
+        )
+        _record(
+            "relocate_all: ...and the binder agrees with it - a dest ANY row stages is bound, so "
+            "the two do not disagree about what a dest is",
+            assert_relocations_bound((_shared[0].row, _shared_row), (Relocation(dest="image"),))
+            is None,
+        )
+        _swapped = [_shared[1], _shared[0]]  # the ABSENT row first
+        _swapped_runner = _RelocationRunner(readback="$ORIGIN")
+        relocate_all(_swapped, _LINUX, (Relocation(dest="image"),), write=True,
+                     runner=_swapped_runner)
+        _record(
+            "relocate_all: ...in BOTH orders - `results` follows declaration order, and §3.3.1 maps "
+            "several P5 boxes onto resources/image/, so absent-FIRST is as reachable as "
+            "absent-last; a first-wins dict would re-open the defect the last-wins one had",
+            any(call[:2] == ["patchelf", "--set-rpath"] for call in _swapped_runner.calls),
+        )
+        _record(
+            "relocate_all: a relocation naming a MEMBER the staging step did not produce is "
+            "refused with a diagnostic - without the guard it falls into relocate_one's open() and "
+            "surfaces as a bare filesystem error that names neither the declaration nor the tree",
+            _raises(
+                lambda: relocate_all(
+                    [StagedResult(EngineStaging("lo", StagingKind.RESOURCE_TREE, "libreoffice"),
+                                  Path("."), base / "no-such-tree")],
+                    _LINUX, (Relocation(dest="libreoffice", member="program/soffice.bin"),),
+                    write=True, runner=e2e),
+                "the staging step did not produce",
+            ),
+        )
+        absent = [StagedResult(rows[0], None, None)]
+        _record(
+            "relocate_all: the count is REPORTED - in a box whose thesis is that a rewrite doing "
+            "nothing must be visible, a run that rewrote zero files must not read like one that "
+            "rewrote three",
+            "relocated 1 staged file(s)" in _printed(
+                lambda: relocate_all(results, _LINUX, (Relocation(dest="ffmpeg"),), write=True,
+                                     runner=_RelocationRunner(readback="$ORIGIN"))
+            ),
+        )
+        # A FIXED, distinctive stamp rather than "whatever the mtime was": two relocations inside
+        # one Windows clock tick (~15.6 ms) carry the SAME mtime, so a before/after comparison
+        # passes by coincidence and the leg is flaky - which is how the mutation battery first
+        # read this guard as unpinned. Stamped, the assertion is deterministic on every host.
+        _stamp = 1_000_000_000
+        os.utime(staged_file, (_stamp, _stamp))
+        _stat_before = staged_file.stat()
+        relocate_all(results, _LINUX, (Relocation(dest="ffmpeg"),), write=True,
+                     runner=_RelocationRunner(readback="$ORIGIN"))
+        _record(
+            "relocate_all: the published file's MODE and mtime survive the rewrite round trip - "
+            "relocation is a new publish path over a file whose dropped +x the module docstring "
+            "calls load-bearing (it surfaces as a misleading startup 'integrity failed'). The "
+            "mtime is what makes this observable on a host with no exec bit to lose: `copy2` seeds "
+            "the sibling, the TOOL then touches it, and only the closing `copystat` puts the "
+            "original stamp back",
+            staged_file.stat().st_mode == _stat_before.st_mode
+            and int(staged_file.stat().st_mtime) == _stamp,
+        )
+        _bad_check = _RELOCATORS[_LINUX]
+        try:
+            _RELOCATORS[_LINUX] = lambda pth, r: [["patchelf", str(pth), "--set-rpath", "$ORIGIN"]]
+            _record(
+                "relocate_all: --CHECK reaches the argv contract too - it is byte-free, so a check "
+                "pass that skipped it would validate less than the run for a reason that has "
+                "nothing to do with the bytes",
+                _raises(lambda: relocate_all(results, _LINUX, (Relocation(dest="ffmpeg"),),
+                                             write=False, runner=e2e),
+                        "does not end in the target path"),
+            )
+        finally:
+            _RELOCATORS[_LINUX] = _bad_check
+        _record(
+            "relocate_all: an engine the cache does not carry is nothing to do, not a violation",
+            relocate_all(absent, _LINUX, (Relocation(dest="ffmpeg"),), write=True, runner=e2e)
+            == [],
+        )
+        _record(
+            "relocate_all: an unrelocatable target is refused BEFORE any path is resolved",
+            _raises(lambda: relocate_all(results, "riscv64-unknown-linux-gnu", (), write=False,
+                                         runner=e2e),
+                    "no declared load-path relocation"),
+        )
+
+    # The WIRING, not the mechanism. Every leg above drives `relocate_all` / `relocate_one`
+    # DIRECTLY, and a mutation battery showed that deleting the tail call from either `stage_all`
+    # branch survived all of them - the fallback would simply stop happening while the suite stayed
+    # green. It is the same unpinned-seam shape the P4.29.1 review measured one box earlier, so
+    # both branches get a leg that drives the real entry point and observes the tool it must spawn.
+    # `RELOCATIONS` is patched the way `STAGED_ENGINES` already is, restored in `finally`.
+    for _label, _triple, _fixture, _rows, _needle in (
+        ("PER-ARCH", _LINUX, _fixture_tree, (EngineStaging("ffmpeg", StagingKind.SIDECAR, "ffmpeg"),),
+         ["patchelf", "--set-rpath"]),
+        ("UNIVERSAL", UNIVERSAL_TRIPLE, _universal_fixture, None, ["install_name_tool", "-change"]),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            _root, _cache = _fixture(Path(tmp).resolve())
+            # ONE readback string serving BOTH wiring legs: the Linux tail looks for `$ORIGIN`,
+            # the macOS one for the `-change` target its row declared.
+            _wired = _RelocationRunner(readback="$ORIGIN\n@loader_path/libmp3lame.0.dylib\n")
+            _saved = RELOCATIONS
+            try:
+                globals()["RELOCATIONS"] = (
+                    Relocation(dest="ffmpeg",
+                               references=(("/opt/build/lib/libmp3lame.0.dylib",
+                                            "libmp3lame.0.dylib"),)),
+                )
+                stage_all(_root, _cache, _triple, _rows or _UNIVERSAL_ROWS, runner=_wired)
+            finally:
+                globals()["RELOCATIONS"] = _saved
+            _record(
+                f"wiring: stage_all's {_label} branch runs the relocation tail - deleting the call "
+                "survives every leg that drives relocate_all directly",
+                any(call[: len(_needle)] == _needle for call in _wired.calls),
+            )
+
+    # `stage_all` gained THREE new lines this box; the two above pinned two of them, and a round-3
+    # mutation showed the third - the binder call - could be deleted with all 169 legs still green,
+    # letting a typo'd `dest` fall through `relocate_all`'s absent-row `continue` and silently skip
+    # the rewrite. Same for the runner default: every other leg passes `runner=` explicitly, so the
+    # one production path that reaches `run_tool` for the tail was untested. Both seams, both
+    # pinned. [Build-Session-Entscheidung: P4.30]
+    with tempfile.TemporaryDirectory() as tmp:
+        _seam_root, _seam_cache = _fixture_tree(Path(tmp).resolve())
+        _seam_rows = (EngineStaging("ffmpeg", StagingKind.SIDECAR, "ffmpeg"),)
+        _saved_rel, _saved_tool = RELOCATIONS, run_tool
+        try:
+            globals()["RELOCATIONS"] = (Relocation(dest="ffmpg"),)  # a typo'd dest, on purpose
+            _record(
+                "wiring: stage_all runs the BINDER - a relocation naming no staged row is refused "
+                "there, not silently skipped later by relocate_all's absent-row arm",
+                _raises(lambda: stage_all(_seam_root, _seam_cache, _LINUX, _seam_rows,
+                                          runner=_RelocationRunner()),
+                        "name no staged row"),
+            )
+            globals()["RELOCATIONS"] = (Relocation(dest="ffmpeg"),)
+            _defaulted = _RelocationRunner(readback="$ORIGIN")
+            globals()["run_tool"] = _defaulted
+            stage_all(_seam_root, _seam_cache, _LINUX, _seam_rows)
+            _record(
+                "wiring: stage_all DEFAULTS the runner for the relocation tail - the one production "
+                "path that reaches `run_tool` passes no runner of its own",
+                any(call[:2] == ["patchelf", "--set-rpath"] for call in _defaulted.calls),
+            )
+        finally:
+            globals()["RELOCATIONS"], globals()["run_tool"] = _saved_rel, _saved_tool
 
     failed = [n for n, ok in _results if not ok]
     print(f"\n[stage-engines --selftest] {len(_results) - len(failed)}/{len(_results)} passed")

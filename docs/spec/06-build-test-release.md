@@ -127,6 +127,64 @@ build-time mechanics that realise them**:
     libs, fonts, pandoc data) → `bundle.resources`, resolved at runtime via the
     Tauri resource path (§3.5 owns the working-dir/env wiring; §7.2 owns startup
     presence-verification of these files).
+- **Beside-the-exe load-path rewrite (the mechanic §3.5's closing clause depends on)
+  `[DECIDED]`:** §3.5 clears `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_INSERT_LIBRARIES`/
+  `DYLD_LIBRARY_PATH` from the engine environment and §3.3.3 resolves programs by absolute
+  bundled path rather than `PATH`, so **no environment channel is left for the dynamic
+  loader**: the only way a component lib shipped *beside* the exe (§3.9.1's v1 preference)
+  resolves is a **relative load path baked into the binary**. Upstream/distro/gyan/BtbN
+  builds carry **absolute** `install_name`/`RUNPATH` entries, so as staged they resolve to
+  paths that do not exist on the user's machine. `scripts/stage-engines` therefore rewrites
+  them, per OS, as a step that runs **after** staging and — on macOS — **after** the
+  `lipo -create` merge above, which re-emits the Mach-O and would clobber an earlier rewrite:
+  - **macOS** — `install_name_tool -id @loader_path/<name>` on each shipped component lib
+    (its own install name, which is what a dependent records when it links) plus
+    `-change <absolute> @loader_path/<lib>` on the binary that references them. **Per FILE, one
+    invocation:** every operation declared for a given file travels together (the tool applies
+    them atomically), and a file that both ships as a lib and references others — the ordinary
+    shape in a chain like `libvorbisenc` — carries its `-id` and its `-change`es in that one
+    call. Two different files are two calls; the rule is not "one call for `-id`, one for
+    `-change`".
+  - **Linux** — `patchelf --set-rpath '$ORIGIN'`, so `DT_RUNPATH` resolves against the
+    directory of the binary itself. **Every dynamically-linked file gets its own rewrite, not
+    just the top-level executable:** `DT_RUNPATH` is searched only for the DIRECT dependencies
+    of the object that carries it and is **not** inherited down the chain (`ld.so(8)`), so on a
+    chain like `ffmpeg → libvorbisenc → libvorbis → libogg` a rewrite applied to `ffmpeg` alone
+    leaves `libvorbisenc`'s own lookup of `libvorbis` unresolved. `DT_RUNPATH` is also consulted
+    **after** `LD_LIBRARY_PATH` (unlike the legacy `DT_RPATH`, which precedes it), so on this
+    platform the beside-the-exe guarantee rests on §3.5's loader-variable strip holding — that
+    strip is the load-bearing precondition here, not a belt-and-braces extra.
+  - **Windows** — a **recorded no-op**: the PE loader searches the starting executable's own
+    directory first, so a DLL beside the exe already resolves and PE has no `install_name`/
+    `RUNPATH` analogue to fix. Declared rather than omitted, so "nothing to do here" is
+    distinguishable from "nobody considered it".
+
+  What is rewritten is **data** (the per-engine box that stages a dynamically-linked set
+  declares it; the absolute references are per-build facts only that binary's load commands
+  carry), and the three legs are **independent per-OS toolchains** so a failure is
+  CI-attributable to one platform. The rewrite is atomic per file and asserts, at the step
+  that produced it, that the tool succeeded and left a same-format non-empty binary, reading
+  the result back: EVERY declared operation has an expectation, and the tool per half is
+  `patchelf --print-rpath` on Linux, `otool -D` for the macOS install name and `otool -L`
+  for each rewritten reference — stated as a rule, because an enumeration of the halves is
+  what went stale here once already. The `-change` half matters most: `install_name_tool`
+  matches its old path LITERALLY and exits 0 when it matches nothing, so the check asserts
+  both that the new load path is present and that the absolute one it replaced is gone. It does **not** assert dependency **closure** — that
+  every reference resolves inside the bundle is **G37b**'s assertion, which runs at release
+  over these *relocated* binaries, never the as-downloaded ones.
+
+  **It changes the bytes, which is why the anchor moves:** the per-object `engines.lock`
+  SHA-256 is verified **before staging** (§0.11 T3a's own wording; G37 also re-verifies on
+  cache-restore), so it covers the bytes *entering* staging — upstream of both this rewrite
+  and the `lipo` merge above. What the runtime verifies is the in-bundle hash manifest
+  (§7.2.3), generated **after** final staging. A build-time re-emission of a staged binary is
+  therefore expected, not anomalous — the same reason `universal-apple-darwin` is a `lipo`
+  build output rather than a row key at all — the sidecar bullet above says so in this very
+  section (`[DECIDED — verified vs Tauri v2 docs/tauri#3355]`), and §3.4.5's triple set is
+  where the two per-arch macOS triples a row MAY be keyed by are enumerated. §6.3.3's staged-bundle
+  cross-check does not trip on it either: it asks whether every shipped file **maps to a
+  component** ("no shipped file without an SBOM entry"), which is an attribution question, not
+  a byte one.
 - The whole engine set is **vendored into the build inputs** — never fetched at
   runtime (SSOT offline floor) and, per the supply-chain stance (§6.3.4),
   **pinned by version + checksum**, ideally not fetched at build time from a live

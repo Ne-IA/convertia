@@ -952,7 +952,13 @@ final user path.
   dynamic-loader injection variables** so a hostile input cannot coerce a side-load:
   `LD_PRELOAD`, `LD_LIBRARY_PATH` (Linux), `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`
   (macOS) are cleared; the engine resolves only the bundled shared libs shipped beside
-  it (§3.6.1 / §3.9.1).
+  it (§3.6.1 / §3.9.1). **That last clause is a build-time obligation, not a hope:** with
+  these variables cleared and `PATH` not relied on, no environment channel is left for the
+  dynamic loader, so a beside-the-exe lib resolves only through a **relative load path baked
+  into the binary** — and upstream builds carry absolute ones. `scripts/stage-engines`
+  rewrites them per OS after staging (macOS `install_name_tool` → `@loader_path`, Linux
+  `patchelf --set-rpath '$ORIGIN'`, Windows a recorded no-op); the mechanic is **§6.1.3**'s
+  beside-the-exe load-path rewrite bullet, and **G37b** asserts the resulting closure.
 - **timeout/hang** parameters: mechanism §1.7; per-engine *values* tuned in §3.8
   against the corpus (LibreOffice cold-start is slow → a longer first-spawn grace).
 - **cancellation**: process-group kill (§1.7) — relevant because LibreOffice and

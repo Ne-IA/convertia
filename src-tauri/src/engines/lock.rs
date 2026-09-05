@@ -113,8 +113,16 @@ pub struct EnginesLock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RowKind {
-    /// A file that ships in the bundle: the hash is of the STAGED bytes, and G37 verifies the staged
-    /// file against it before staging and again on cache-restore.
+    /// A file that ships in the bundle: the hash is of the bytes ENTERING staging. G37 checks them
+    /// twice, at two distinct moments — against this row before they are staged, and again
+    /// whenever the cache entry is restored (an Actions cache is not integrity-protected).
+    ///
+    /// Deliberately NOT a post-staging check, and "staged bytes" would be the wrong words for it:
+    /// staging RE-EMITS some binaries — the `lipo -create` universal merge and the §6.1.3
+    /// beside-the-exe load-path rewrite both rewrite load commands — so a published file
+    /// legitimately differs from the row that named its input. The post-staging anchor is the
+    /// §7.2.3 in-bundle hash manifest, generated after final staging and verified against itself;
+    /// the same reasoning is why `universal-apple-darwin` is not a row key at all.
     StagedArtifact,
     /// A component absorbed by a link and shipping no standalone file (§3.7.2 item 4 — e.g. the
     /// statically vendored `libimagequant`): the hash ANCHORS the pinned source, since there are no
