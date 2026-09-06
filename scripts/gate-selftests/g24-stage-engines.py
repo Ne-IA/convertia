@@ -5,12 +5,13 @@ planned L(-1) hand-off, landed 2026-08-31; G37's staging half, G24 discipline).
 Two jobs, both from OUTSIDE the tool so a neutering edit to stage-engines cannot neuter its own
 check (the P4.27 box's hand-off note):
 
-1. RUN the tool's fixture-driven `--selftest` (its 182 legs have a CI runner: this file is
+1. RUN the tool's fixture-driven `--selftest` (its 214 legs have a CI runner: this file is
    discovered by `run-gate-selftests`, so the suite executes at L2 (diff-scoped canary) and L4
-   (3-OS)) and PIN the tally at 182 - the host-stable-count claim, CI-checked. (35 at delivery,
+   (3-OS)) and PIN the tally at 214 - the host-stable-count claim, CI-checked. (35 at delivery,
    P4.27; 53 since P4.28/17808aa; 124 since P4.29/e9dcb14 - the universal lipo/merge legs;
    126 since P4.29.1/8affa89 - the one-slice refusal-message arms split into two needled legs,
    the r2 arm-blind finding; 182 since P4.30/1b644b5 - the per-OS load-path relocation legs;
+   214 since P4.31/8592cb5 - the tauri.conf.json row-to-config binder legs;
    each bump is that box's pre-declared owner-acked tail, and the
    number is READ from the committed tree's own `--selftest` run, never carried from prose.)
 
@@ -47,16 +48,22 @@ the one platform its link shape is constructible on, every push, via the 3-OS ru
 P4.30 relocation guards (own triples and bytes through the public seams: `relocator_for` refuses
 an undeclared triple structurally and resolves every declared one, `relocate_one` refuses a
 rewrite that changed the container format or emptied its input while the published file stays
-byte-identical). The suite call, the planted-positive section AND the P4.30 guard section are
+byte-identical); and the P4.31 row-to-config binder (own rows/entries/keys through the PURE
+`unbound_bundle_entries` seam: both directions, both shape rules, and the three BUILT_SIDECARS
+hatch properties, each violation leg arity- and needle-pinned). The suite call, the
+planted-positive section, the P4.30 guard section AND the P4.31 binder section are
 each exception-guarded: an unhandled traceback out of any is a NAMED failing leg, never a dead
 canary.
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop (the P4.56.3 pattern):
-this file is L(-1)-caged while stage-engines is not, and it PINS the tally (182), the skip-name
+this file is L(-1)-caged while stage-engines is not, and it PINS the tally (214), the skip-name
 inventory, and its OWN leg count - so any box that adds a `--selftest` leg to stage-engines (P4.41
-manifest, P4.51 assertions, the P5-P7 staging boxes; P4.30's relocation bump landed with the 182
-pin above) carries the matching
-tally/inventory bump HERE as a pre-planned owner-acked L(-1) tail of that box. It also carries
+manifest, P4.51 assertions, the P5-P7 staging boxes; the landed bumps P4.28-P4.31 are recorded
+in the chain above, the pin carrying the current value) carries the matching
+tally/inventory bump HERE as a pre-planned owner-acked L(-1) tail of that box. The P4.31 binder
+fixtures additionally PIN the `binaries/`/`resources/` bundle-prefix spellings from outside, so
+a re-home of the staging destinations (`BINARIES_REL`/`RESOURCES_REL`) carries a canary edit in
+the same owner-acked tail (the r1 opus P3 coupling declaration). It also carries
 the recorder-fidelity catcher (the 4a5f359-escalated _record force-green class - see section 3)
 plus the independent suite verdict re-derived from _results (section 1).
 
@@ -164,7 +171,7 @@ if suite_crashed:
     print(f"[g24-stage-engines] --selftest raised: {suite_crashed}")
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
-record("the leg tally is host-stable at 182 (the pinned count)", len(m._results) == 182)
+record("the leg tally is host-stable at 214 (the pinned count)", len(m._results) == 214)
 # The INDEPENDENT verdict, derived from the stored entries rather than the tool's own
 # aggregation: `rc` above comes from selftest()'s `return 1 if failed else 0`, which lives in
 # the same un-caged function - force-greening THAT is a one-line edit the recorder-fidelity
@@ -518,6 +525,105 @@ except Exception as e:  # noqa: BLE001 - same rationale as the suite guard
     print(f"[g24-stage-engines] the P4.30 guard section raised: {reloc_crashed}")
 record("the P4.30 guard section completed without an unhandled exception", not reloc_crashed)
 
+# --- 2c. the P4.31 row-to-config binder (the pre-declared clause (b) of that box's owner tail):
+# `unbound_bundle_entries` and its only other legs live in the same un-caged file - the
+# force-green shape the canary discipline exists for. A PURE seam, driven with this canary's OWN
+# rows, entries and keys; each violation leg pins the ARITY (exactly one problem) and its arm's
+# needle, so a widened or narrowed report cannot pass on a sibling arm. ---------------------------
+bind_crashed = ""
+try:
+    _B_ROWS = (
+        m.EngineStaging("pandoc", m.StagingKind.SIDECAR, "pandoc"),
+        m.EngineStaging("libreoffice", m.StagingKind.RESOURCE_TREE, "libreoffice"),
+    )
+    _B_EXT = ("binaries/pandoc",)
+    _B_RES = {"resources/libreoffice/": "resources/libreoffice"}
+
+    def _bind(rows=_B_ROWS, ext=_B_EXT, res=None, extra_res=None):
+        resources = dict(_B_RES if res is None else res)
+        resources.update(extra_res or {})
+        return m.unbound_bundle_entries(rows, tuple(ext), resources)
+
+    record(
+        "P4.31 binder (no over-fire): a well-formed pair binds clean - incl. a NON-ENGINE map "
+        "entry (the licences text), a `resources-`-PREFIXED non-engine file (the _means_prefix "
+        "end-or-separator boundary, the r1 opus P3 over-fire pin) and the exempt BUILT sidecar "
+        "entry needing NO row (hatch property 1)",
+        _bind(ext=_B_EXT + ("binaries/convertia-imgworker",),
+              extra_res={"../THIRD-PARTY-LICENSES.txt": "",
+                         "resources-readme.md": ""}) == [],
+    )
+    _p = _bind(ext=())
+    record(
+        "P4.31 binder FORWARD (sidecar): a staged row with no `externalBin` entry is the ONE "
+        "reported problem (the silent-miss direction)",
+        len(_p) == 1 and "has no `bundle.externalBin` entry" in _p[0],
+    )
+    _p = _bind(res={})
+    record(
+        "P4.31 binder FORWARD (tree): a resource row with no `bundle.resources` key is the ONE "
+        "reported problem",
+        len(_p) == 1 and "has no `bundle.resources` key" in _p[0],
+    )
+    _p = _bind(ext=_B_EXT + ("binaries/ffprobe",))
+    record(
+        "P4.31 binder REVERSE (sidecar): an `externalBin` entry no row stages is the ONE "
+        "reported problem",
+        len(_p) == 1 and "'binaries/ffprobe' names no staging row" in _p[0],
+    )
+    _p = _bind(extra_res={"resources/libreofice/": "typo"})
+    record(
+        "P4.31 binder REVERSE + shape (tree): a mistyped resource subdir is REPORTED, never "
+        "dropped out of a member-set comparison",
+        len(_p) == 1 and "'resources/libreofice/' names no staging row" in _p[0],
+    )
+    _p = _bind(ext=_B_EXT + ("pandoc",))
+    record(
+        "P4.31 binder shape (sidecar): a BARE entry whose un-prefixed form matches a row is "
+        "refused as not-under-`binaries/`, never treated as bound",
+        len(_p) == 1 and "is not under" in _p[0],
+    )
+    _p = _bind(ext=("pandoc",))
+    record(
+        "P4.31 binder shape (sidecar, ALONE): the bare entry does not COUNT as the row's "
+        "declaration either - BOTH problems report (the r1 opus P2: alongside a well-formed "
+        "entry, a dropped prefix filter was invisible from outside)",
+        len(_p) == 2
+        and any("has no `bundle.externalBin` entry" in p for p in _p)
+        and any("is not under" in p for p in _p),
+    )
+    _p = _bind(extra_res={"resources/libreoffice//": "doubled"})
+    record(
+        "P4.31 binder (one derivation): a DOUBLED-trailing-slash key is NOT a claim on the row - "
+        "it reports as naming no staging row (an rstrip-loosened reverse check reds here)",
+        len(_p) == 1 and "'resources/libreoffice//' names no staging row" in _p[0],
+    )
+    _p = _bind(extra_res={"Resources\\fonts\\": "cased"})
+    record(
+        "P4.31 binder shape (tree): a key that MEANS `resources/` without spelling it (capital + "
+        "backslashes) is reported as the mistyped destination it is",
+        len(_p) == 1 and "MEANS" in _p[0],
+    )
+    _p = _bind(ext=_B_EXT + ("binaries/convertia-imgworkerx",))
+    record(
+        "P4.31 hatch property 2: the BUILT_SIDECARS exemption is a NAME, not a pattern - a "
+        "near-name entry is reported",
+        len(_p) == 1 and "'binaries/convertia-imgworkerx' names no staging row" in _p[0],
+    )
+    _p = _bind(
+        rows=_B_ROWS + (m.EngineStaging("imgworker", m.StagingKind.SIDECAR, "convertia-imgworker"),),
+        ext=_B_EXT + ("binaries/convertia-imgworker",),
+    )
+    record(
+        "P4.31 hatch property 3: a name that is BOTH exempt and staged is itself reported "
+        "(the self-auditing hatch)",
+        len(_p) == 1 and "first-party build product" in _p[0],
+    )
+except Exception as e:  # noqa: BLE001 - same rationale as the suite guard
+    bind_crashed = f"{type(e).__name__}: {e}"
+    print(f"[g24-stage-engines] the P4.31 binder section raised: {bind_crashed}")
+record("the P4.31 binder section completed without an unhandled exception", not bind_crashed)
+
 # --- 3. the recorder-fidelity catcher (the 4a5f359-escalated _record force-green class) ---------
 # Forcing the tool's _record green disarms the whole suite at a PRESERVED tally, and every leg
 # above reads _results, which would look healthy. Not closable from the un-caged tool; caged
@@ -566,7 +672,7 @@ record(
 )
 
 # --- 4. the canary's own leg count --------------------------------------------------------------
-record("the canary's own leg count is pinned (34 + this pin)", len(results) == 34)
+record("the canary's own leg count is pinned (46 + this pin)", len(results) == 46)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-stage-engines] {len(results) - len(failed)}/{len(results)} assertions passed.")
