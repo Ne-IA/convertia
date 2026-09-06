@@ -48,7 +48,9 @@
       "icons/icon.ico"
     ],
     "externalBin": [],
-    "resources": {},
+    "resources": {
+      "../THIRD-PARTY-LICENSES.txt": ""
+    },
     "createUpdaterArtifacts": false,
     "macOS": {
       "minimumSystemVersion": "11.0"

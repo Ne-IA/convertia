@@ -14,6 +14,11 @@ Runs BEFORE `tauri build` and turns the restored, checksum-verified engine-asset
     (`engines/libreoffice/`, `engines/image/`, `fonts/`) are Tauri's mapping, not ours, so the
     §3.3.3 `BaseDirectory::Resource` resolve literals are untouched by where we stage from.
 
+Neither destination ships unless `src-tauri/tauri.conf.json` DECLARES it, so since P4.31 the row
+set and that config are bound in BOTH directions at package time: a row with no declaration stages
+bytes `tauri build` never packages - silently, the app ships without the engine and faults at
+runtime - and a declaration with no row names a path nothing writes.
+
 Per-OS layout (§3.4.5): a `-pc-windows-` triple gets the `.exe` suffix; every other triple gets
 the executable bit set on the staged sidecar (a dropped +x otherwise surfaces at runtime as a
 misleading startup "integrity failed" rather than a packaging error, G37). §3.4.5's macOS `.app`
@@ -45,11 +50,13 @@ launcher-as-externalBin vs launcher-in-resources split to that same §6.1 packag
 The MECHANISM below is live and exercised by --selftest; with no rows declared a run is a
 target-absent no-op that says so - the same skip-with-notice posture `check-build-matrix` (G30)
 holds for its sidecar slice assertion until a sidecar is staged. Each excluded piece is its own
-box: the `tauri.conf.json` externalBin/resources
-wiring (P4.31), the in-bundle hash manifest (P4.41), the §6.1.3 build-assertion framework
+box: the in-bundle hash manifest (P4.41), the §6.1.3 build-assertion framework
 (P4.51). The macOS dual-arch `lipo -create` merge was on that list until P4.29 landed it here,
-and the per-OS rpath/install_name relocation until P4.30 did - a leg below re-reads THIS sentence
-against the plan on every run, so the next piece that lands cannot leave itself listed as absent.
+the per-OS rpath/install_name relocation until P4.30 did, and the `tauri.conf.json`
+externalBin/resources wiring until P4.31 landed its BINDER here - the config itself lives in
+`src-tauri/tauri.conf.json`, and what this file carries is the both-directions check that the two
+declarations cannot drift apart - a leg below re-reads THIS sentence against this file's own
+decision tags on every run, so the next piece that lands cannot leave itself listed as absent.
 Its missing-x86_64-slice from-source fallback is `scripts/compile-engine-asset`'s (P4.29.1), one
 step UPSTREAM of here: that script cross-builds the absent slice into the cache, while this one
 only ever READS the cache - so a one-slice cache stays a refusal naming the fallback rather than
@@ -88,6 +95,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import platform
 import re
@@ -115,6 +123,34 @@ DEFAULT_CACHE_REL = ".engine-cache"
 
 # The §3.7.2 manifest the staging rows are bound against (the (A′) binder).
 LOCK_REL = "src-tauri/engines.lock"
+
+# The §3.3.1 bundling declaration the staging rows are bound against (the P4.31 binder). Its
+# `externalBin`/`resources` paths are relative to the config's OWN directory, so the two prefixes
+# are DERIVED from the staging destinations above rather than restated: re-homing where this script
+# writes would otherwise leave the config side pointing at the old tree, which is the exact
+# both-sides-must-move failure the binder exists to catch. [Build-Session-Entscheidung: P4.31]
+TAURI_CONF_REL = "src-tauri/tauri.conf.json"
+_CONF_DIR = TAURI_CONF_REL.rsplit("/", 1)[0] + "/"
+BUNDLE_BIN_PREFIX = BINARIES_REL.removeprefix(_CONF_DIR) + "/"
+BUNDLE_RES_PREFIX = RESOURCES_REL.removeprefix(_CONF_DIR) + "/"
+
+# The declared escape hatch to the binder's reverse direction. §3.3.1 lists SIX `externalBin`
+# sidecars; five are third-party engines staged out of the §6.1.3 cache, and `convertia-imgworker`
+# is not one of them - it is the first-party crate `crates/imgworker` (§3.5.5 / §0.7), compiled by
+# cargo and placed beside the others by the build that produced it (P4.34). It can never carry a
+# staging row: a row binds to an `engines.lock` entry (`assert_rows_bound_to_manifest`), and that
+# manifest is the THIRD-PARTY inventory - every row carries an `upstream_url` and a `source_ref`
+# naming an upstream tag/commit, which a first-party build product has none of. Without this,
+# P4.34 would meet a landed guard whose only exits are a fake manifest row or weakening the guard.
+# NAMED rather than pattern-matched, so a real typo cannot hide behind the exemption; and a name
+# that appears here AND in a staging row is itself reported, since the exemption exists only for
+# sidecars this script does not produce.
+# What still catches an exempt sidecar that was never actually built: `tauri-build`'s own
+# `copy_binaries` fails the COMPILE with "<path> does not exist". That is the later, file-shaped
+# message this binder's reverse direction exists to pre-empt - so the exemption is a deliberate
+# trade of the earlier diagnostic for a check that can be satisfied at all, not a hole.
+# [Build-Session-Entscheidung: P4.31]
+BUILT_SIDECARS = ("convertia-imgworker",)
 
 # §3.3.1's `bundle.resources` map fixes the SOURCE keys, so this set is closed: a resource row
 # naming anything else would stage a tree Tauri never bundles. P5-P7 fill rows INTO these three,
@@ -833,6 +869,183 @@ def assert_no_escaping_links(src: Path, row: EngineStaging) -> None:
                 continue
             if path.is_dir():
                 stack.append(path)
+
+
+def bundle_entries(conf_path: Path) -> tuple[tuple[str, ...], dict[str, str]]:
+    """`bundle.externalBin` and `bundle.resources` out of `tauri.conf.json` (§3.3.1's two shapes).
+
+    Fails CLOSED on an absent or malformed file, unlike the `engines.lock` reader beside it: the
+    manifest legitimately declares nothing yet, whereas `tauri.conf.json` is a committed, required
+    file and its absence means a broken checkout rather than an empty phase.
+
+    `bundle.resources` is required to be the MAP form. Tauri also accepts a bare list, but §3.3.1
+    fixes the map: the engine trees need an explicit bundle-internal target (`engines/libreoffice/`)
+    that the list form cannot express, and accepting both would give the binder two shapes to
+    reconcile for a spelling the spec does not permit. The narrowing is deliberate, not an
+    oversight. [Build-Session-Entscheidung: P4.31]
+    """
+    try:
+        conf = json.loads(conf_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise StagingError(
+            f"cannot read the Tauri config at {conf_path} - it is the §3.3.1 bundling declaration "
+            "every staged sidecar and resource tree has to appear in",
+            structural=True,
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise StagingError(f"{conf_path} is not valid JSON - {exc}", structural=True) from exc
+    bundle = conf.get("bundle")
+    if not isinstance(bundle, dict):
+        raise StagingError(f"{conf_path}: `bundle` must be an object (§3.3.1)", structural=True)
+    # A JSON `null` is how Tauri's own `Option<…>` spells "absent", so it reads as absent here
+    # rather than as a type error: refusing it would reject a config Tauri accepts.
+    external = bundle.get("externalBin")
+    resources = bundle.get("resources")
+    external = [] if external is None else external
+    resources = {} if resources is None else resources
+    if not isinstance(external, list) or not all(isinstance(e, str) for e in external):
+        raise StagingError(
+            f"{conf_path}: `bundle.externalBin` must be an array of strings (§3.3.1)",
+            structural=True,
+        )
+    if not isinstance(resources, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in resources.items()
+    ):
+        raise StagingError(
+            f"{conf_path}: `bundle.resources` must be a source->target object of strings (§3.3.1)",
+            structural=True,
+        )
+    return tuple(external), dict(resources)
+
+
+def _tree_key(name: str) -> str:
+    """The ONE spelling of a RESOURCE_TREE row's `bundle.resources` source key (§3.3.1).
+
+    Every site that needs it reads this - both directions of the binder AND the diagnostic that
+    tells the author what to write - because the rule having had TWO spellings is exactly what let
+    a doubled trailing slash count as a claim on a row the other half simultaneously called
+    undeclared. Three literals agreeing today is the same drift one commit away.
+    [Build-Session-Entscheidung: P4.31]
+    """
+    return f"{BUNDLE_RES_PREFIX}{name}/"
+
+
+def _means_prefix(path: str, prefix: str) -> bool:
+    """Does `path` MEAN `prefix` without spelling it exactly - a capital, a `\\`, a missing slash?
+
+    Only the OWNERSHIP question is asked case- and separator-insensitively; the reported key stays
+    verbatim. A Windows-authored `Resources\\libreoffice\\` resolves on the authoring host and
+    breaks on the Linux runner, and without this it would leave the check as an unrecognised
+    non-engine key rather than as the mistyped destination it is.
+
+    Matched against the prefix WITHOUT its trailing slash, then end-or-separator: the bare
+    `resources` spelling means the whole staging tree - Tauri would walk all of it into the
+    resource root under the wrong internal paths - while `resources-readme.md` means nothing of
+    the sort and stays a non-engine key. [Build-Session-Entscheidung: P4.31]
+    """
+    normalized = path.replace("\\", "/").lower()
+    root = prefix.rstrip("/").lower()
+    return normalized == root or normalized.startswith(root + "/")
+
+
+def unbound_bundle_entries(
+    rows: tuple[EngineStaging, ...], external: tuple[str, ...], resources: dict[str, str]
+) -> list[str]:
+    """Every way a staging row and the §3.3.1 bundle declaration can disagree, in BOTH directions.
+
+    A row with no declaration stages bytes `tauri build` never packages; a declaration with no row
+    names a path Tauri looks for and does not find. Both are silent until far downstream, and each
+    is a one-token typo away, so both are checked here.
+
+    The `externalBin` entry carries the BARE name under `binaries/` (`binaries/ffmpeg`) - Tauri
+    appends the target triple and the `.exe` itself, which is why `sidecar_filename`'s suffix is a
+    STAGE-time convention only. Both prefixes are asserted as a SHAPE rule rather than matched
+    name-by-name: a bare `"ffmpeg"` entry would resolve `<src-tauri>/ffmpeg-<triple>` and a
+    `resources/libreofice/` typo would name a subdir nothing stages, and a check that only compared
+    the members either side declares would let the first through and skip the second entirely.
+
+    Which map entries the reverse direction OWNS is the one boundary here: keys under `resources/`
+    are the staging step's own destinations (§3.3.1's closed source-key set, §3.3.2 step 3), so an
+    unclaimed one is a defect; everything else in the same map is a non-engine resource no staging
+    row will ever produce (§3.3.1 lists `THIRD-PARTY-LICENSES.txt`, §3.3.2 step 4 adds the per-build
+    SBOM + NOTICE and the §3.4 patent-disposition record), owned by the boxes that generate those
+    files. On the sidecar side the same boundary is the NAMED `BUILT_SIDECARS` set rather than a
+    prefix. [Build-Session-Entscheidung: P4.31]
+    """
+    problems: list[str] = []
+    sidecars = {row.dest for row in rows if row.kind is StagingKind.SIDECAR}
+    trees = {row.dest for row in rows if row.kind is StagingKind.RESOURCE_TREE}
+    declared_bins = {
+        entry.removeprefix(BUNDLE_BIN_PREFIX)
+        for entry in external
+        if entry.startswith(BUNDLE_BIN_PREFIX)
+    }
+    # ONE derivation - `_tree_key` - read by BOTH directions and by the diagnostic. The reverse
+    # check used to `rstrip("/")` its key, which is LOOSER than the forward check's exact spelling:
+    # a doubled trailing slash read as a claim on the row while the forward half still called that
+    # row undeclared, so the two halves disagreed about what a key is.
+    # [Build-Session-Entscheidung: P4.31]
+    claimed_trees = {_tree_key(name) for name in trees}
+
+    problems += [
+        f"'{name}' is declared a first-party build product (BUILT_SIDECARS) AND staged by a row - "
+        "one of the two is wrong, since the exemption is only for sidecars this script does not "
+        "produce"
+        for name in sorted(sidecars.intersection(BUILT_SIDECARS))
+    ]
+    problems += [
+        f"sidecar row '{name}' has no `bundle.externalBin` entry (expected "
+        f"'{BUNDLE_BIN_PREFIX}{name}')"
+        for name in sorted(sidecars - declared_bins)
+    ]
+    for entry in sorted(set(external)):
+        if not entry.startswith(BUNDLE_BIN_PREFIX):
+            problems.append(
+                f"`bundle.externalBin` entry '{entry}' is not under `{BUNDLE_BIN_PREFIX}` - "
+                "§3.3.2 step 2 stages every sidecar there, so Tauri would resolve it against a "
+                "path nothing writes"
+            )
+            continue
+        name = entry.removeprefix(BUNDLE_BIN_PREFIX)
+        if name not in sidecars and name not in BUILT_SIDECARS:
+            problems.append(f"`bundle.externalBin` entry '{entry}' names no staging row")
+
+    problems += [
+        f"resource row '{name}' has no `bundle.resources` key (expected '{_tree_key(name)}')"
+        for name in sorted(trees)
+        if _tree_key(name) not in resources
+    ]
+    for key in sorted(resources):
+        if key in claimed_trees:
+            continue
+        if key.startswith(BUNDLE_RES_PREFIX):
+            problems.append(f"`bundle.resources` key '{key}' names no staging row")
+        elif _means_prefix(key, BUNDLE_RES_PREFIX):
+            problems.append(
+                f"`bundle.resources` key '{key}' MEANS `{BUNDLE_RES_PREFIX}` but does not spell "
+                "it - the source side is case- and separator-sensitive on Linux even where the "
+                "authoring host resolves it, and a key that only means it would slip past this "
+                "check as a non-engine resource"
+            )
+    return problems
+
+
+def assert_rows_bound_to_bundle(rows: tuple[EngineStaging, ...], conf_path: Path) -> None:
+    """Fail if the staging rows and §3.3.1's bundle declaration disagree.
+
+    Called from `stage_all`, for the reason its sibling binder states: a binder nothing invokes at
+    package time is documentation, not a check. Fail-OPEN while neither side declares anything -
+    there is nothing to bind - and fail-CLOSED the moment either side does, in EITHER direction,
+    because "staged but not bundled" and "bundled but not staged" are the same typo seen from two
+    ends. [Build-Session-Entscheidung: P4.31]
+    """
+    external, resources = bundle_entries(conf_path)
+    problems = unbound_bundle_entries(rows, external, resources)
+    if problems:
+        raise StagingError(
+            "the staging rows and the §3.3.1 bundle declaration disagree (checked against "
+            f"{conf_path}):\n  - " + "\n  - ".join(problems)
+        )
 
 
 def assert_rows_bound_to_manifest(rows: tuple[EngineStaging, ...], lock_path: Path) -> None:
@@ -1624,6 +1837,7 @@ def stage_all(
     *,
     write: bool = True,
     lock_path: Path | None = None,
+    conf_path: Path | None = None,
     runner=None,
 ) -> list[StagedResult]:
     """Stage every declared row for `triple` from `cache_root` into `root`.
@@ -1634,6 +1848,8 @@ def stage_all(
     """
     if lock_path is not None:
         assert_rows_bound_to_manifest(rows, lock_path)
+    if conf_path is not None:
+        assert_rows_bound_to_bundle(rows, conf_path)
     assert_relocations_bound(rows, RELOCATIONS)
     # Defaulted ONCE, here, rather than inside the universal branch: since P4.30 the per-arch
     # branch spawns tools too (the relocation tail), so a default that lived on one branch would
@@ -1752,6 +1968,19 @@ def _write(path: Path, text: str) -> Path:
     """Write a fixture file and hand its path straight back, for one-line self-test legs."""
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def _conf(path: Path, external: list[str], resources: dict[str, str]) -> Path:
+    """Write a minimal `tauri.conf.json` fixture carrying just the two §3.3.1 bundle keys.
+
+    Only `bundle` is written: the binder reads nothing else, and a fixture that mirrored the real
+    config would drift from it. The REAL config is driven by its own leg, against the real row set.
+    [Build-Session-Entscheidung: P4.31]
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return _write(
+        path, json.dumps({"bundle": {"externalBin": external, "resources": resources}})
+    )
 
 
 def _gate_constant(name: str) -> int | None:
@@ -2634,6 +2863,15 @@ def selftest() -> int:
         # unions both slice triples. Driven through `main` with a patched row set, the way the
         # per-triple form is already covered.
         (ucache / f"libheif-1.0-{UNIVERSAL_SLICES[1]}").mkdir()
+        # `main()` binds the row set against the tree's `tauri.conf.json` since P4.31, so a fixture
+        # root driven through `main` needs one - declared BOUND to `_UNIVERSAL_ROWS`, since this
+        # leg is about the unclaimed-entry scan and not about the binder.
+        # [Build-Session-Entscheidung: P4.31]
+        _conf(
+            uroot / TAURI_CONF_REL,
+            [f"{BUNDLE_BIN_PREFIX}ffmpeg"],
+            {f"{BUNDLE_RES_PREFIX}libreoffice/": "engines/libreoffice/"},
+        )
         _saved_rows = STAGED_ENGINES
         buffer = io.StringIO()
         try:
@@ -3453,6 +3691,12 @@ def selftest() -> int:
         main_root, main_cache = _fixture_tree(main_base)
         (main_root / "src-tauri").mkdir(parents=True, exist_ok=True)
         main_lock = main_root / LOCK_REL
+        # The P4.31 bundle binder runs on this same path, so the fixture tree needs the config the
+        # real repo has. Declared BOUND here, so the legs below that move the manifest still test
+        # the manifest. [Build-Session-Entscheidung: P4.31]
+        _main_res = {f"{BUNDLE_RES_PREFIX}libreoffice/": "engines/libreoffice/"}
+        _main_bin = [f"{BUNDLE_BIN_PREFIX}ffmpeg", f"{BUNDLE_BIN_PREFIX}ffprobe"]
+        _conf(main_root / TAURI_CONF_REL, _main_bin, _main_res)
         argv = [
             "--root", str(main_root),
             "--cache-root", str(main_cache),
@@ -3471,6 +3715,28 @@ def selftest() -> int:
             unbound_rc = main([*argv])
             main_lock.write_bytes(b"# no rows yet\n")
             open_rc = main([*argv])
+            # The CONFIG side of the same wiring. The manifest is left fail-OPEN by the line
+            # above, so nothing but the bundle binder can decide this run - which is what makes it
+            # a leg for `main()` passing `conf_path` rather than for the manifest binder again.
+            # [Build-Session-Entscheidung: P4.31]
+            _conf(main_root / TAURI_CONF_REL, [f"{BUNDLE_BIN_PREFIX}ffmpeg"], {})
+            conf_unbound_rc = main([*argv])
+        finally:
+            globals()["STAGED_ENGINES"] = declared
+        # The NO-ROWS early return is its OWN wiring: `main` returns before `stage_all`, so the
+        # binder inside `stage_all` can never speak there - yet a config entry naming bytes nothing
+        # stages is refused already, which is what makes the reverse direction live before the
+        # first P5 row exists. Driven with an EXPLICITLY empty row set rather than by relying on
+        # the real one still being empty: the first P5-P7 row would otherwise send these two legs
+        # down the staging path and red them under names that no longer describe what they
+        # exercise. (That the REAL set is empty today is the separate live leg above, which reads
+        # the real config against `STAGED_ENGINES` directly.) [Build-Session-Entscheidung: P4.31]
+        globals()["STAGED_ENGINES"] = ()
+        try:
+            _conf(main_root / TAURI_CONF_REL, [f"{BUNDLE_BIN_PREFIX}ffmpeg"], {})
+            norows_unbound_rc = main([*argv])
+            _conf(main_root / TAURI_CONF_REL, [], {})
+            norows_open_rc = main([*argv])
         finally:
             globals()["STAGED_ENGINES"] = declared
         _record("main(): a fully bound row set stages cleanly", bound_rc == 0)
@@ -3479,6 +3745,21 @@ def selftest() -> int:
             unbound_rc == 1,
         )
         _record("main(): an empty manifest is fail-OPEN at package time too", open_rc == 0)
+        _record(
+            "main(): a row set unbound to `tauri.conf.json` is refused at package time too - the "
+            "bundle binder is wired, not just written",
+            conf_unbound_rc == 1,
+        )
+        _record(
+            "main(): the NO-ROWS early return checks the config as well - an `externalBin` entry "
+            "nothing stages is refused while STAGED_ENGINES is still empty",
+            norows_unbound_rc == 1,
+        )
+        _record(
+            "main(): the NO-ROWS early return stays fail-OPEN when the config declares nothing "
+            "either - the leg above cannot be passing for the wrong reason",
+            norows_open_rc == 0,
+        )
 
         _record(
             "binder: a row that names NO cache entry fails CLOSED, not fail-open",
@@ -3525,6 +3806,311 @@ def selftest() -> int:
                 lock_path=_write(base / "empty2.lock", "# none\n"),
             )
             == [StagedResult(row, None, None) for row in _FIXTURE_ROWS],
+        )
+
+        # --- the STAGED_ENGINES <-> tauri.conf.json bundle binder (P4.31) --------------------
+        # The forward direction is the SILENT one: bytes staged into src-tauri/binaries/ that no
+        # `externalBin` entry names are simply not packaged, `tauri build` succeeds, and the miss
+        # surfaces as a runtime EngineMissing in a shipped artifact. The reverse direction does
+        # reach `tauri-build`'s own copy step, but one compile later and phrased as a missing file
+        # rather than as two declarations having drifted. [Build-Session-Entscheidung: P4.31]
+        _BOUND_BIN = [f"{BUNDLE_BIN_PREFIX}ffmpeg", f"{BUNDLE_BIN_PREFIX}ffprobe"]
+        _BOUND_RES = {f"{BUNDLE_RES_PREFIX}libreoffice/": "engines/libreoffice/"}
+        conf_dir = base / "conf"
+        _record(
+            "bundle binder: the two §3.3.1 keys are READ back as declared",
+            bundle_entries(_conf(conf_dir / "ok.json", _BOUND_BIN, _BOUND_RES))
+            == (tuple(_BOUND_BIN), _BOUND_RES),
+        )
+        _record(
+            "bundle binder: a config with NEITHER key present reads as two empty declarations, "
+            "not as an error - the keys are optional in Tauri's own schema",
+            bundle_entries(_write(conf_dir / "bare.json", '{"bundle": {}}')) == ((), {}),
+        )
+        _record(
+            "bundle binder: an ABSENT config fails CLOSED, unlike the engines.lock reader - a "
+            "committed required file that is missing means a broken checkout, not an empty phase",
+            _raises(lambda: bundle_entries(conf_dir / "no-such.json"), "cannot read the Tauri config"),
+        )
+        _record(
+            "bundle binder: malformed JSON fails CLOSED",
+            _raises(
+                lambda: bundle_entries(_write(conf_dir / "broken.json", "{not json")),
+                "is not valid JSON",
+            ),
+        )
+        _record(
+            "bundle binder: a non-object `bundle` fails CLOSED",
+            _raises(
+                lambda: bundle_entries(_write(conf_dir / "scalar.json", '{"bundle": 7}')),
+                "`bundle` must be an object",
+            ),
+        )
+        _record(
+            "bundle binder: a non-string-array `externalBin` fails CLOSED",
+            _raises(
+                lambda: bundle_entries(
+                    _write(conf_dir / "badbin.json", '{"bundle": {"externalBin": [1]}}')
+                ),
+                "must be an array of strings",
+            ),
+        )
+        _record(
+            "bundle binder: a non-string-map `resources` fails CLOSED",
+            _raises(
+                lambda: bundle_entries(
+                    _write(conf_dir / "badres.json", '{"bundle": {"resources": {"a": 1}}}')
+                ),
+                "must be a source->target object of strings",
+            ),
+        )
+        _record(
+            "bundle binder: a fully bound pair reports NOTHING (no over-fire)",
+            unbound_bundle_entries(_FIXTURE_ROWS, tuple(_BOUND_BIN), _BOUND_RES) == [],
+        )
+        _record(
+            "bundle binder (forward, sidecar): a SIDECAR row no `externalBin` entry names is "
+            "reported - the silent half, since Tauri simply does not package what it is not told "
+            "about",
+            unbound_bundle_entries(
+                _FIXTURE_ROWS, (f"{BUNDLE_BIN_PREFIX}ffmpeg",), _BOUND_RES
+            )
+            == ["sidecar row 'ffprobe' has no `bundle.externalBin` entry (expected "
+                f"'{BUNDLE_BIN_PREFIX}ffprobe')"],
+        )
+        _record(
+            "bundle binder (forward, tree): a RESOURCE_TREE row no `resources` key names is "
+            "reported",
+            unbound_bundle_entries(_FIXTURE_ROWS, tuple(_BOUND_BIN), {})
+            == ["resource row 'libreoffice' has no `bundle.resources` key (expected "
+                f"'{BUNDLE_RES_PREFIX}libreoffice/')"],
+        )
+        _record(
+            "bundle binder (reverse, sidecar): an `externalBin` entry no row stages is reported",
+            unbound_bundle_entries(
+                _FIXTURE_ROWS, (*_BOUND_BIN, f"{BUNDLE_BIN_PREFIX}pandoc"), _BOUND_RES
+            )
+            == [f"`bundle.externalBin` entry '{BUNDLE_BIN_PREFIX}pandoc' names no staging row"],
+        )
+        _record(
+            "bundle binder (reverse, tree): a `resources/<subdir>/` key no row stages is reported",
+            unbound_bundle_entries(
+                _FIXTURE_ROWS,
+                tuple(_BOUND_BIN),
+                {**_BOUND_RES, f"{BUNDLE_RES_PREFIX}image/": "engines/image/"},
+            )
+            == [f"`bundle.resources` key '{BUNDLE_RES_PREFIX}image/' names no staging row"],
+        )
+        # The two SHAPE legs. A binder that only compared the member sets either side declares
+        # would pass both of these: the first because the bare name matches a row, the second
+        # because a mistyped subdir is not a member of anything and would fall out of the
+        # comparison entirely. Prefix-as-a-rule is what makes them reachable at all.
+        _record(
+            "bundle binder (shape): an `externalBin` entry OUTSIDE `binaries/` is refused even "
+            "though its bare name matches a staging row - Tauri would resolve it against a path "
+            "this script never writes",
+            unbound_bundle_entries(_FIXTURE_ROWS, ("ffmpeg", *_BOUND_BIN), _BOUND_RES)
+            == [f"`bundle.externalBin` entry 'ffmpeg' is not under `{BUNDLE_BIN_PREFIX}` - "
+                "§3.3.2 step 2 stages every sidecar there, so Tauri would resolve it against a "
+                "path nothing writes"],
+        )
+        _record(
+            "bundle binder (shape): an un-prefixed entry does not COUNT as the row's declaration "
+            "either - the row is ALSO reported undeclared, so the diagnostic says what to write "
+            "and not only what is wrong. Measured: without this leg, dropping the prefix filter "
+            "from the declared set survived the whole suite, because the leg above hands it a "
+            "correctly-prefixed entry as well",
+            unbound_bundle_entries((_FIXTURE_ROWS[0],), ("ffmpeg",), {})
+            == ["sidecar row 'ffmpeg' has no `bundle.externalBin` entry (expected "
+                f"'{BUNDLE_BIN_PREFIX}ffmpeg')",
+                f"`bundle.externalBin` entry 'ffmpeg' is not under `{BUNDLE_BIN_PREFIX}` - "
+                "§3.3.2 step 2 stages every sidecar there, so Tauri would resolve it against a "
+                "path nothing writes"],
+        )
+        _record(
+            "bundle binder (shape): a MISTYPED resource subdir is reported, not skipped as an "
+            "unrecognised key",
+            unbound_bundle_entries(
+                _FIXTURE_ROWS,
+                tuple(_BOUND_BIN),
+                {f"{BUNDLE_RES_PREFIX}libreofice/": "engines/libreoffice/"},
+            )
+            == ["resource row 'libreoffice' has no `bundle.resources` key (expected "
+                f"'{BUNDLE_RES_PREFIX}libreoffice/')",
+                f"`bundle.resources` key '{BUNDLE_RES_PREFIX}libreofice/' names no staging row"],
+        )
+        _record(
+            "bundle binder: NON-engine map entries are not claimed - the same map carries the "
+            "§3.3.1 licences text and the §3.3.2 step 4 SBOM/NOTICE + patent-disposition record, "
+            "which no staging row produces",
+            unbound_bundle_entries(
+                _FIXTURE_ROWS,
+                tuple(_BOUND_BIN),
+                {**_BOUND_RES, "../THIRD-PARTY-LICENSES.txt": "", "../NOTICE": ""},
+            )
+            == [],
+        )
+        # The sidecar side's own boundary. §3.3.1 lists six externalBin entries and one of them,
+        # `convertia-imgworker`, is a first-party cargo product (P4.34) that can never carry a
+        # staging row - a row binds to an `engines.lock` entry, and that manifest requires an
+        # `upstream_url` + `source_ref` a first-party build has none of. Without the exemption this
+        # guard would meet P4.34 with no exit but a fake row or a weakened check; without the
+        # collision leg the exemption could quietly shadow a real drift.
+        _record(
+            "bundle binder: a BUILT_SIDECARS entry needs no staging row - the reverse direction's "
+            "declared escape hatch, so §3.3.1's own `binaries/convertia-imgworker` does not red a "
+            "guard that cannot be satisfied",
+            unbound_bundle_entries(
+                _FIXTURE_ROWS,
+                (*_BOUND_BIN, f"{BUNDLE_BIN_PREFIX}{BUILT_SIDECARS[0]}"),
+                _BOUND_RES,
+            )
+            == [],
+        )
+        _record(
+            "bundle binder: the hatch is NAMED, not a pattern - a sidecar entry outside "
+            "BUILT_SIDECARS is still refused, so a typo cannot hide behind the exemption",
+            unbound_bundle_entries(
+                _FIXTURE_ROWS, (*_BOUND_BIN, f"{BUNDLE_BIN_PREFIX}imgworker"), _BOUND_RES
+            )
+            == [f"`bundle.externalBin` entry '{BUNDLE_BIN_PREFIX}imgworker' names no staging row"],
+        )
+        _record(
+            "bundle binder: a name that is BOTH exempt and staged is itself reported - the "
+            "exemption exists for sidecars this script does not produce, so the collision means "
+            "one of the two declarations is wrong",
+            unbound_bundle_entries(
+                (EngineStaging("x", StagingKind.SIDECAR, BUILT_SIDECARS[0]),),
+                (f"{BUNDLE_BIN_PREFIX}{BUILT_SIDECARS[0]}",),
+                {},
+            )
+            == [f"'{BUILT_SIDECARS[0]}' is declared a first-party build product (BUILT_SIDECARS) "
+                "AND staged by a row - one of the two is wrong, since the exemption is only for "
+                "sidecars this script does not produce"],
+        )
+        _record(
+            "bundle binder: the reverse resource check uses the FORWARD check's exact spelling - "
+            "a doubled trailing slash claims no row, where an rstrip would have read it as a "
+            "claim while the forward half still called the row undeclared",
+            unbound_bundle_entries(
+                _FIXTURE_ROWS, tuple(_BOUND_BIN), {f"{BUNDLE_RES_PREFIX}libreoffice//": "x/"}
+            )
+            == ["resource row 'libreoffice' has no `bundle.resources` key (expected "
+                f"'{BUNDLE_RES_PREFIX}libreoffice/')",
+                f"`bundle.resources` key '{BUNDLE_RES_PREFIX}libreoffice//' names no staging row"],
+        )
+        _separator_problems = unbound_bundle_entries(
+            (), (), {"resources\\image\\": "engines/image/"}
+        )
+        _separator_arm = len(_separator_problems)
+        _record(
+            "bundle binder: a key that MEANS `resources/` without spelling it (a capital, a "
+            "backslash) is reported as the mistyped destination it is, not skipped as a "
+            "non-engine resource - it resolves on the authoring host and breaks on the runner",
+            len(
+                unbound_bundle_entries(
+                    (), (), {"Resources/image/": "engines/image/"}
+                )
+            )
+            == 1
+            and "MEANS" in unbound_bundle_entries(
+                (), (), {"Resources/image/": "engines/image/"}
+            )[0]
+            # BOTH enumerated arms carry the needle, not just the case one: `!= []` alone would
+            # not say WHICH arm spoke, and a separator arm that fell through to some other message
+            # would still satisfy it.
+            and _separator_arm == 1
+            and "MEANS" in _separator_problems[0]
+            and unbound_bundle_entries((), (), {"../THIRD-PARTY-LICENSES.txt": ""}) == [],
+        )
+        _record(
+            "bundle binder: the BARE `resources` spelling means the whole staging tree and is "
+            "reported too - Tauri would walk all of it into the resource root under the wrong "
+            "internal paths - while a key that merely STARTS with the word stays non-engine",
+            unbound_bundle_entries((), (), {"resources": ""}) != []
+            and unbound_bundle_entries((), (), {"resources-readme.md": ""}) == [],
+        )
+        _record(
+            "bundle binder: a JSON `null` reads as ABSENT, the way Tauri's own Option spells it - "
+            "refusing it would reject a config Tauri accepts",
+            bundle_entries(
+                _write(conf_dir / "nulls.json",
+                       '{"bundle": {"externalBin": null, "resources": null}}')
+            )
+            == ((), {}),
+        )
+        _record(
+            "bundle binder: a DUPLICATE externalBin entry is reported once, not once per "
+            "occurrence - JSON arrays permit duplicates where object keys do not",
+            unbound_bundle_entries(
+                _FIXTURE_ROWS,
+                (*_BOUND_BIN, f"{BUNDLE_BIN_PREFIX}pandoc", f"{BUNDLE_BIN_PREFIX}pandoc"),
+                _BOUND_RES,
+            )
+            == [f"`bundle.externalBin` entry '{BUNDLE_BIN_PREFIX}pandoc' names no staging row"],
+        )
+        _record(
+            "bundle binder: the two prefixes are DERIVED from the staging destinations, so a "
+            "re-home of where this script writes cannot leave the config side behind",
+            BUNDLE_BIN_PREFIX == BINARIES_REL.split("/", 1)[1] + "/"
+            and BUNDLE_RES_PREFIX == RESOURCES_REL.split("/", 1)[1] + "/"
+            and BINARIES_REL.startswith(_CONF_DIR)
+            and RESOURCES_REL.startswith(_CONF_DIR),
+        )
+        _both_conf = _conf(conf_dir / "both.json", [f"{BUNDLE_BIN_PREFIX}pandoc"], {})
+        _record(
+            "bundle binder: assert_rows_bound_to_bundle names EVERY problem it found, not the "
+            "first - both directions arrive in one message",
+            # ONE fixture, driven twice: `_raises` takes a single mandatory needle, so "the
+            # message carries BOTH" is spelled as two calls over the same config rather than as
+            # two configs that only look independent.
+            _raises(
+                lambda: assert_rows_bound_to_bundle(_FIXTURE_ROWS, _both_conf),
+                "names no staging row",
+            )
+            and _raises(
+                lambda: assert_rows_bound_to_bundle(_FIXTURE_ROWS, _both_conf),
+                "has no `bundle.externalBin` entry",
+            ),
+        )
+        _record(
+            "bundle binder: the REAL repo config parses and binds against the REAL row set - the "
+            "live leg, which reds the moment a P5-P7 row is staged without its declaration",
+            (ROOT / TAURI_CONF_REL).is_file()
+            and unbound_bundle_entries(STAGED_ENGINES, *bundle_entries(ROOT / TAURI_CONF_REL))
+            == [],
+        )
+        # The SEAM. Every guard above is driven directly; these two drive `stage_all`, which is
+        # where the binder has to be reached to be a check at all. The manifest binder one section
+        # up shipped GREEN while disconnected, and the P4.30 relocation tail did the same thing a
+        # box later, so the wiring gets its own legs rather than being assumed from the guards'.
+        bundle_cache = base / "cache-bundle"
+        bundle_cache.mkdir()
+        _record(
+            "bundle binder: stage_all REFUSES an unbound row (the check runs on the real path)",
+            _raises(
+                lambda: stage_all(
+                    root,
+                    bundle_cache,
+                    _LINUX,
+                    _FIXTURE_ROWS,
+                    write=False,
+                    conf_path=_conf(conf_dir / "stage.json", [], {}),
+                ),
+                "has no `bundle.externalBin` entry",
+            ),
+        )
+        _record(
+            "bundle binder: stage_all is fail-OPEN when NEITHER side declares anything",
+            stage_all(
+                root,
+                bundle_cache,
+                _LINUX,
+                (),
+                write=False,
+                conf_path=_conf(conf_dir / "empty.json", [], {}),
+            )
+            == [],
         )
 
     # (N) the §3.5 beside-the-exe load-path rewrite (P4.30). Every leg drives the injected runner
@@ -3639,12 +4225,15 @@ def selftest() -> int:
     # mechanic applied to this file: pull the ids out of that sentence and refuse any that the plan
     # already marks `[x]`. [Build-Session-Entscheidung: P4.30]
     # The PROPERTY is "a piece listed as not-carried-here has not since landed HERE" - which is
-    # NOT the same as "that box is done somewhere". Keying on the plan's `[x]` would red at P4.31,
-    # a box that wires `tauri.conf.json` and never touches this file, and the only way to green it
-    # would be deleting a cross-reference that is still true. So it keys on THIS FILE: a box that
-    # landed work here leaves a `[Build-Session-Entscheidung: <id>]` tag at the code site, which is
-    # the repo's own marker for exactly that. P4.29 and P4.30 both have one; the three still listed
-    # have none. [Build-Session-Entscheidung: P4.30]
+    # NOT the same as "that box is done somewhere". Keying on the plan's `[x]` would red on any box
+    # whose work lands elsewhere, and the only way to green that would be deleting a cross-reference
+    # that is still true. So it keys on THIS FILE: a box that landed work here leaves a
+    # `[Build-Session-Entscheidung: <id>]` tag at the code site, which is the repo's own marker for
+    # exactly that. P4.29, P4.30 and P4.31 all have one; the two still listed have none.
+    # (P4.31 was the example this comment once used for "a box that never touches this file" - and
+    # it turned out to touch it, because the config's binder has to live in an un-caged file that
+    # package time actually reaches. The tag-keyed form was right for a reason that outlived its
+    # illustration.) [Build-Session-Entscheidung: P4.30]
     _scope_parts = __doc__.split("Each excluded piece is its own")
     # Guarded, not indexed: a reworded sentinel would otherwise raise IndexError at suite top
     # level and kill every later leg with a traceback - the shape `_raises` just fixed one scope
@@ -3666,9 +4255,9 @@ def selftest() -> int:
     _record(
         "SCOPE freshness: the leg is non-vacuous - it finds ids in that sentence AND finds boxes "
         "that DID decide here, so an empty either side cannot pass it silently",
-        # Bounded at 1, not at the current 3: the P4.41 forward note this same commit adds
-        # schedules REMOVING one of the listed ids, and a leg pinned to today's length would
-        # red on that correct future edit. Emptiness is what vacuity means here.
+        # Bounded at 1, not at the current 2: the P4.41 forward note schedules REMOVING one of the
+        # listed ids, and a leg pinned to today's length would red on that correct future edit
+        # (P4.31 has since removed a third the same way). Emptiness is what vacuity means here.
         len(_excluded_ids) >= 1 and len(_decided_here) >= 1,
     )
     _record(
@@ -3676,7 +4265,7 @@ def selftest() -> int:
         "that DID decide here is refused, one that did not is accepted (no listed id is currently "
         "decided here, so the live evaluation alone cannot tell a working check from a dropped one)",
         scope_ids_still_absent(["4.30"], ["4.27", "4.30"]) is False
-        and scope_ids_still_absent(["4.31"], ["4.27", "4.30"]) is True
+        and scope_ids_still_absent(["4.41"], ["4.27", "4.30"]) is True
         and scope_ids_still_absent([], ["4.30"]) is False,
     )
     _record(
@@ -4133,7 +4722,16 @@ def main(argv: list[str]) -> int:
         # With zero declared rows there is nothing to resolve AGAINST the cache, so demanding a
         # restored cache root would be a spurious failure on a P1-P4 tree that has none. Every
         # per-row check lives in stage_all and arms itself with the first P5-P7 row.
+        conf_path = root / TAURI_CONF_REL
         if not STAGED_ENGINES:
+            # The ROW side is empty; the CONFIG side is not necessarily. An `externalBin` entry or
+            # a `resources/<subdir>/` key that no row stages names bytes this script will never
+            # produce - and while `tauri-build` does fail on the missing path, it fails one step
+            # later, in a compile whose error is about a file rather than about the two
+            # declarations having drifted apart. Checked here too, so the binder is live from
+            # P4.31 rather than arming only with the first P5 row.
+            # [Build-Session-Entscheidung: P4.31]
+            assert_rows_bound_to_bundle((), conf_path)
             report([], triple, write=write, verbose=args.verbose)
             return 0
         results = stage_all(
@@ -4143,6 +4741,7 @@ def main(argv: list[str]) -> int:
             STAGED_ENGINES,
             write=write,
             lock_path=root / LOCK_REL,
+            conf_path=conf_path,
         )
         # On the universal run the cache holds no `-universal-apple-darwin` entry - it is keyed
         # per real triple - so scanning for that suffix would always report nothing, silencing the

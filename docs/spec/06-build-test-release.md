@@ -185,6 +185,25 @@ build-time mechanics that realise them**:
   cross-check does not trip on it either: it asks whether every shipped file **maps to a
   component** ("no shipped file without an SBOM entry"), which is an attribution question, not
   a byte one.
+- **The staging rows and the `tauri.conf.json` declaration are BOUND, in both directions
+  `[DECIDED]`:** a staged sidecar or resource tree only ships if `bundle.externalBin` /
+  `bundle.resources` names it, and a name there only resolves if the staging step produced it —
+  so `scripts/stage-engines` asserts the two agree at package time, before `tauri build` runs.
+  The **forward** miss is the silent one: bytes staged under a name no entry declares are simply
+  not packaged, the build succeeds, and the shipped app faults at runtime as a missing engine
+  (§7.2.3). The **reverse** miss does reach `tauri-build`'s own **compile-time** resource/sidecar
+  copy — which is why `--no-bundle` does not hide it — but one step later and phrased as a missing
+  file rather than as two declarations having drifted apart. Both sides are checked as a **shape**
+  (`binaries/<name>` per §3.3.2 step 2, `resources/<subdir>/` per step 3), never as a name list, so
+  a bare or mistyped path cannot fall out of the comparison instead of failing it. Map entries
+  outside `resources/` are the **non-engine** bundled resources of §3.3.1 / §3.3.2 step 4 (the
+  licences text, the per-build SBOM + NOTICE, the §3.4 patent-disposition record) and are not the
+  staging step's to claim. The sidecar side's boundary is a **named set**, not a prefix: §3.3.1's
+  `convertia-imgworker` is the first-party image-worker crate (§3.5.5 / §0.7), compiled by the
+  build rather than staged out of the cache, so it has no `engines.lock` row to bind against —
+  that manifest is the third-party inventory, and every row carries an upstream URL and source
+  ref a first-party build product has none of. Naming the exemption keeps a real typo from
+  hiding behind it, and a name that is both exempt and staged is itself a failure.
 - The whole engine set is **vendored into the build inputs** — never fetched at
   runtime (SSOT offline floor) and, per the supply-chain stance (§6.3.4),
   **pinned by version + checksum**, ideally not fetched at build time from a live
