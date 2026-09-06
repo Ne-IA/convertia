@@ -5,12 +5,13 @@ planned L(-1) hand-off, landed 2026-08-31; G37's staging half, G24 discipline).
 Two jobs, both from OUTSIDE the tool so a neutering edit to stage-engines cannot neuter its own
 check (the P4.27 box's hand-off note):
 
-1. RUN the tool's fixture-driven `--selftest` (its 126 legs have a CI runner: this file is
+1. RUN the tool's fixture-driven `--selftest` (its 182 legs have a CI runner: this file is
    discovered by `run-gate-selftests`, so the suite executes at L2 (diff-scoped canary) and L4
-   (3-OS)) and PIN the tally at 126 - the host-stable-count claim, CI-checked. (35 at delivery,
+   (3-OS)) and PIN the tally at 182 - the host-stable-count claim, CI-checked. (35 at delivery,
    P4.27; 53 since P4.28/17808aa; 124 since P4.29/e9dcb14 - the universal lipo/merge legs;
    126 since P4.29.1/8affa89 - the one-slice refusal-message arms split into two needled legs,
-   the r2 arm-blind finding; each bump is that box's pre-declared owner-acked tail, and the
+   the r2 arm-blind finding; 182 since P4.30/1b644b5 - the per-OS load-path relocation legs;
+   each bump is that box's pre-declared owner-acked tail, and the
    number is READ from the committed tree's own `--selftest` run, never carried from prose.)
 
 2. The per-OS skip INVENTORY (the 2026-08-31 owner ruling: no silent skips - every OS-gated leg
@@ -42,14 +43,19 @@ target is refused by the absolute-symlink rule even with the containment guard d
 same masking class - plus an absolute in-entry symlink; Windows: escaping junction +
 ancestor-cycle junction; each a MUST-run probe on its OS, never a skip, message-discriminated
 where a sibling rule could raise the same type; each guard is thereby independently covered on
-the one platform its link shape is constructible on, every push, via the 3-OS runs). The suite
-call AND the planted-positive section are both exception-guarded: an unhandled traceback out of
-either is a NAMED failing leg, never a dead canary.
+the one platform its link shape is constructible on, every push, via the 3-OS runs); and the
+P4.30 relocation guards (own triples and bytes through the public seams: `relocator_for` refuses
+an undeclared triple structurally and resolves every declared one, `relocate_one` refuses a
+rewrite that changed the container format or emptied its input while the published file stays
+byte-identical). The suite call, the planted-positive section AND the P4.30 guard section are
+each exception-guarded: an unhandled traceback out of any is a NAMED failing leg, never a dead
+canary.
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop (the P4.56.3 pattern):
-this file is L(-1)-caged while stage-engines is not, and it PINS the tally (126), the skip-name
-inventory, and its OWN leg count - so any box that adds a `--selftest` leg to stage-engines (P4.30
-relocation, P4.41 manifest, P4.51 assertions, the P5-P7 staging boxes) carries the matching
+this file is L(-1)-caged while stage-engines is not, and it PINS the tally (182), the skip-name
+inventory, and its OWN leg count - so any box that adds a `--selftest` leg to stage-engines (P4.41
+manifest, P4.51 assertions, the P5-P7 staging boxes; P4.30's relocation bump landed with the 182
+pin above) carries the matching
 tally/inventory bump HERE as a pre-planned owner-acked L(-1) tail of that box. It also carries
 the recorder-fidelity catcher (the 4a5f359-escalated _record force-green class - see section 3)
 plus the independent suite verdict re-derived from _results (section 1).
@@ -65,6 +71,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "stage-engines"
@@ -157,7 +164,7 @@ if suite_crashed:
     print(f"[g24-stage-engines] --selftest raised: {suite_crashed}")
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
-record("the leg tally is host-stable at 126 (the pinned count)", len(m._results) == 126)
+record("the leg tally is host-stable at 182 (the pinned count)", len(m._results) == 182)
 # The INDEPENDENT verdict, derived from the stored entries rather than the tool's own
 # aggregation: `rc` above comes from selftest()'s `return 1 if failed else 0`, which lives in
 # the same un-caged function - force-greening THAT is a one-line edit the recorder-fidelity
@@ -437,6 +444,80 @@ except Exception as e:  # noqa: BLE001 - same rationale as the suite guard
     print(f"[g24-stage-engines] the planted-positive section raised: {fixture_crashed}")
 record("the planted-positive section completed without an unhandled exception", not fixture_crashed)
 
+# --- 2b. the P4.30 guards (the pre-declared clause (b) of that box's owner tail): both live in
+# the un-caged tool, whose only other legs live in that same un-caged file - the force-green
+# shape the canary discipline exists for. Driven with this canary's OWN triples, rows and bytes,
+# never the suite's fixtures. --------------------------------------------------------------------
+reloc_crashed = ""
+try:
+    raised, structural, msg = _refused(lambda: m.relocator_for("riscv64gc-unknown-linux-gnu"))
+    record(
+        "P4.30 guard: an UNDECLARED target triple is refused STRUCTURALLY by relocator_for, "
+        "never defaulted to a silent no-op (message-discriminated)",
+        raised and structural and "no declared load-path relocation for target" in msg,
+    )
+    # The canary's OWN spelling of the declared set (the four §3.4.5 v1 triples + the universal
+    # merge target), never read from the tool's table - a table that lost a member reds here.
+    _DECLARED_RELOCATION_TRIPLES = (
+        "x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu", "universal-apple-darwin",
+    )
+    def _resolves(t: str) -> bool:
+        """Non-raising per-triple resolve: a dropped table member must red the no-over-fire leg
+        BY NAME and let the section run to completion, not abort it (the r1 opus P2 - a raw
+        relocator_for here masked the two relocate_one legs behind the section guard)."""
+        try:
+            return callable(m.relocator_for(t))
+        except Exception as e:  # noqa: BLE001 - a named FAIL beats an aborted section
+            print(f"[g24-stage-engines] relocator_for({t!r}) raised: {type(e).__name__}: {e}")
+            return False
+
+    record(
+        "P4.30 guard (no over-fire): every declared relocation triple resolves to an argv builder",
+        all([_resolves(t) for t in _DECLARED_RELOCATION_TRIPLES]),
+    )
+    record(
+        "P4.30 guard (both directions): the tool's relocator table declares EXACTLY the "
+        "canary-pinned set - an ADDED triple (a silent no-op relocation) reds here too "
+        "(the r1 opus P3)",
+        sorted(getattr(m, "_RELOCATORS", {})) == sorted(_DECLARED_RELOCATION_TRIPLES),
+    )
+
+    with tempfile.TemporaryDirectory() as reloc_tmp:
+        _published = Path(reloc_tmp) / "libg24canary.so"
+        _ORIGINAL = b"MAGKcanary-bytes-the-published-file-must-keep"
+        _published.write_bytes(_ORIGINAL)
+        _REL = m.Relocation(dest="g24-canary", member="", set_id=False, references=(), origin=".")
+
+        def _reloc_with(mutate):
+            """Drive relocate_one with a runner that MUTATES the staging sibling (the injected
+            tool misbehaving), exit 0 - so only the guards under test can refuse."""
+            def _runner(step):
+                mutate(Path(step[-1]))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return m.relocate_one(_published, _REL, _LINUX, runner=_runner)
+
+        raised, _, msg = _refused(
+            lambda: _reloc_with(lambda p: p.write_bytes(b"XXXX" + _ORIGINAL[4:]))
+        )
+        record(
+            "P4.30 guard: a rewrite that changed the container FORMAT (leading magic) is refused "
+            "AND the published file stays byte-identical",
+            raised and "changed the file's FORMAT" in msg
+            and _published.read_bytes() == _ORIGINAL,
+        )
+        raised, _, msg = _refused(lambda: _reloc_with(lambda p: p.write_bytes(b"")))
+        record(
+            "P4.30 guard: a rewrite that EMPTIED its input is refused AND the published file "
+            "stays byte-identical",
+            raised and "left no usable file" in msg
+            and _published.read_bytes() == _ORIGINAL,
+        )
+except Exception as e:  # noqa: BLE001 - same rationale as the suite guard
+    reloc_crashed = f"{type(e).__name__}: {e}"
+    print(f"[g24-stage-engines] the P4.30 guard section raised: {reloc_crashed}")
+record("the P4.30 guard section completed without an unhandled exception", not reloc_crashed)
+
 # --- 3. the recorder-fidelity catcher (the 4a5f359-escalated _record force-green class) ---------
 # Forcing the tool's _record green disarms the whole suite at a PRESERVED tally, and every leg
 # above reads _results, which would look healthy. Not closable from the un-caged tool; caged
@@ -485,7 +566,7 @@ record(
 )
 
 # --- 4. the canary's own leg count --------------------------------------------------------------
-record("the canary's own leg count is pinned (28 + this pin)", len(results) == 28)
+record("the canary's own leg count is pinned (34 + this pin)", len(results) == 34)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-stage-engines] {len(results) - len(failed)}/{len(results)} assertions passed.")
