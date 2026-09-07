@@ -470,7 +470,12 @@ fn ensure_executable(p: &Path) -> io::Result<()> {
   security. Open System Settings → Privacy & Security and click \"Open Anyway\" next to
   {engine name}, then try again."* The `{engine name}` is the friendly sidecar name (e.g.
   "FFmpeg", "LibreOffice", "pandoc") so the user knows **which** "Open Anyway" to click; the
-  §2.8 catalog owns the string (this is the fixed text it carries). The Sequoia
+  §2.8 catalog owns the string (this is the fixed text it carries). *(Reconciled
+  2026-09-07, Co-Pilot ruling, owner may overturn: the §2.8.2 row carried a sidecar-LESS
+  string with no substitution, so the cross-claim in the previous sentence did not hold;
+  the ruling kept §2.8's ownership and this section's wording, and §2.8.2 now carries this
+  literal with the `{engine name}` substitution. No normative content of this section
+  changed.)* The Sequoia
   final-confirmation step (the OS shows a final "click **Open** to confirm" dialog after
   "Open Anyway") is part of the §6.2.4 step-by-step.
   The §7.2.3 macOS-ordering caveat ensures this surfaces **in a window**, not as a
@@ -554,7 +559,11 @@ Two concrete facts shape the design:
    process that first *creates* that `.part` and performs the §2.1 exclusive publish,
    so the first write is still core-initiated — but a write into a beside-source
    destination dir **can** still be TCC-gated, and a denial there **fails that item**
-   per §2.8 (the `QuarantinedByOs`/unreadable-or-denied kind) while the batch
+   per §2.8 (the unreadable-or-denied kinds — `Unreadable` on the read side,
+   `WriteFailed` on the publish side; NOT `QuarantinedByOs`, which the §2.8.2 row
+   scopes to a bundled *sidecar* Gatekeeper blocked from spawning and whose
+   reconciled message names that sidecar — there is none at a folder-permission
+   denial. Corrected 2026-09-07 alongside that reconcile) while the batch
    continues. There is therefore **no claim that "a TCC chain-break can never block a
    conversion" on the write side** — only that engines never *touch* a protected path
    directly (read via staged scratch, write via the core's publish). This dovetails

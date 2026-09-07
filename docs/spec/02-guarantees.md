@@ -1304,8 +1304,9 @@ enum ConversionErrorKind {
 
 A `ConversionError` carries the kind, the **owning source path** (for the summary),
 optional **detected-type detail** (for `UnsupportedType`), an optional **residue
-path** (for `CleanupResidue`), and the **offending constructed token** (for
-`UnopenableOutputName`, §2.2.4). It deliberately carries **no** stack trace,
+path** (for `CleanupResidue`), the **offending constructed token** (for
+`UnopenableOutputName`, §2.2.4), and the **blocked sidecar's friendly name** (for
+`QuarantinedByOs`, §7.2.4 — per raise site, never ambient). It deliberately carries **no** stack trace,
 no Rust `Debug` of the underlying error, no engine command line (that goes to the
 local log §7.5 if enabled, never to the user — SSOT "no stack traces").
 
@@ -1322,7 +1323,11 @@ rows).
 ### 2.8.2 The message catalog `[DECIDED]`
 
 The **exact canonical English strings**. One row per kind. `{x}` are runtime
-substitutions filled by `crate::outcome` (the type name, the path, the size). Tone:
+substitutions filled by `crate::outcome`: in the kind rows below the detected type
+name, the platform, the residue path, the offending constructed output component
+and the blocked sidecar's friendly name; in the residue-annotation row the
+residue path again; in the batch-summary table the item counts; in the
+guessed-`Uncertain` skip line the retained best-guess name. Tone:
 plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 **conversion-outcome** strings; UI-chrome strings live in §5.
 
@@ -1347,7 +1352,7 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 | `EngineHang` | **"This file took too long to convert and was stopped."** | — | §1.7 timeout. |
 | `EngineError` | **"ConvertIA couldn't convert this file."** | — | clean nonzero exit; generic calm fallback. |
 | `PlatformUnavailable` | **"This conversion isn't available on {platform} because the required format support can't be included here."** | `{platform}` | the §3.4 honest per-platform gap; SSOT v1-DoD exception 1. |
-| `QuarantinedByOs` | **"macOS is blocking one of ConvertIA's built-in tools with a security check. Open System Settings → Privacy & Security and choose "Open Anyway", then try again."** | — | macOS Sequoia per-sidecar quarantine — a bundled engine couldn't spawn because Gatekeeper quarantined it (§7.2.3); distinct from a missing/corrupt engine. |
+| `QuarantinedByOs` | **"Could not launch {engine name} — blocked by macOS security. Open System Settings → Privacy & Security and click "Open Anyway" next to {engine name}, then try again."** | `{engine name}` = friendly sidecar name (e.g. "FFmpeg", "LibreOffice", "pandoc") | macOS Sequoia per-sidecar quarantine — a bundled engine couldn't spawn because Gatekeeper quarantined it (§7.2.3); distinct from a missing/corrupt engine. **Naming the sidecar is load-bearing, not stylistic:** approving the app does not approve the sidecars, so the user must find *that* row in Privacy & Security (§7.2.4). *(Reconciled 2026-09-07, Co-Pilot ruling, owner may overturn: this row previously carried a sidecar-LESS string with no substitution, contradicting §7.2.4's `[DECIDED]` "MUST name the specific blocked sidecar" and its claim that this catalog carries that text. The catalog keeps ownership of the string; §7.2.4 supplies the wording.)* |
 | `CleanupResidue` | **"This file couldn't be converted, and a temporary file may remain at {path}."** | `{path}` | the only **failure** that names a path of residue (§2.6.4 **case 2** — the item failed AND its partial could not be cleaned). A *succeeded*-with-residue item (case 1) is **not** a failure and takes the residue-annotation row below instead. |
 | `InternalError` | **"Something unexpected went wrong, so this file was skipped. The rest of your files will continue."** | — | §2.13; never a stack trace. |
 

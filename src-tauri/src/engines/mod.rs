@@ -219,6 +219,20 @@ pub enum Platform {
     Linux,
 }
 
+impl Platform {
+    /// The user-facing OS name that fills the §2.8.2 `PlatformUnavailable` `{platform}` slot — the plain
+    /// name a person uses, never the `camelCase` wire form (`win` is a machine identifier). Exhaustive with
+    /// no wildcard arm (G4/G14), so a fourth `Platform` fails to compile here. [Build-Session-Entscheidung: P4.33]
+    #[must_use]
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Platform::Win => "Windows",
+            Platform::MacOS => "macOS",
+            Platform::Linux => "Linux",
+        }
+    }
+}
+
 /// Conversion direction of a capability cell (§3.2.2) — matches the §04 matrices' arrows: which way the
 /// declaring engine can carry the cell's `(source, target)` pair on this platform.
 ///
@@ -1958,8 +1972,9 @@ mod tests {
 
     // §6.4.1 unit (G15): the §0.6/§3.2 `EngineId` WIRE form (P2.13) — the stable discriminant rides
     // `EngineStatus.id` in the C12 `EngineHealth` return (§7.2). Pinned to its lowercase wire string per
-    // variant (the §3.2 `id()` "ffmpeg"/"libreoffice" convention); the count == 8 + the exhaustive match
-    // below lock the set against §0.6 drift. A SERIALIZE pin (EngineId is outbound-only — no round-trip).
+    // variant (the §3.2 `id()` "ffmpeg"/"libreoffice" convention). The exhaustive match below forces an ARM for a
+    // new variant; the length assert is a tautology over the `; 8]`-typed array, so array completeness is not
+    // asserted here. A SERIALIZE pin (EngineId is outbound-only — no round-trip).
     #[test]
     fn engine_id_wire_form_is_lowercase() {
         let all: [(EngineId, &str); 8] = [
@@ -1988,7 +2003,9 @@ mod tests {
 
     // The COMPILE-TIME variant lock (the established dependency-free exhaustive-match pattern, cf.
     // `crate::outcome`'s `conversion_error_kind_exhaustive`): adding/removing an `EngineId` variant without
-    // updating this match fails to compile, so the wire-form array above can never silently drift from §0.6.
+    // updating this match fails to compile. It forces an ARM for a new variant, not a ROW in the hand-written
+    // array above: array completeness is not asserted here. [Test-Change: P4.33 — old-obsolete+new-correct,
+    // §0.6: the removed clause claimed the match kept the array from drifting, which a match cannot do.]
     fn engine_id_exhaustive(id: &EngineId) {
         match id {
             EngineId::FFmpeg
@@ -2198,9 +2215,9 @@ mod tests {
 
     // §6.4.1 unit (G15): the §3.2.2 `Platform` WIRE form (P2.132) — the leaf rides `AppInfo.platform` in
     // the C11 `get_app_info` return (§7.2.3). Pinned to its camelCase wire string per variant (the §0.6
-    // "camelCase on the wire" default its `AppInfo` embedder carries); the count == 3 + the exhaustive
-    // match below lock the set against §3.2.2 drift. A SERIALIZE pin (Platform is outbound-only — no
-    // round-trip).
+    // "camelCase on the wire" default its `AppInfo` embedder carries). The exhaustive match below forces an
+    // ARM for a new variant; the length assert is a tautology over the `; 3]`-typed array, so array
+    // completeness is not asserted here. A SERIALIZE pin (Platform is outbound-only — no round-trip).
     #[test]
     fn platform_wire_form_is_camel_case() {
         let all: [(Platform, &str); 3] = [
@@ -2224,7 +2241,9 @@ mod tests {
 
     // The COMPILE-TIME variant lock (the established dependency-free exhaustive-match pattern, cf.
     // `engine_id_exhaustive`): adding/removing a `Platform` variant without updating this match fails to
-    // compile, so the wire-form array above can never silently drift from §3.2.2.
+    // compile. It forces an ARM for a new variant, not a ROW in the hand-written array above: array
+    // completeness is not asserted here. [Test-Change: P4.33 — old-obsolete+new-correct, §3.2.2: the removed
+    // clause claimed the match kept the array from drifting, which a match cannot do.]
     fn platform_exhaustive(platform: &Platform) {
         match platform {
             Platform::Win | Platform::MacOS | Platform::Linux => {}

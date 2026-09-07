@@ -354,20 +354,29 @@ pub struct TerminalProjection {
 /// `ConversionErrorKind` (P2.10). The substantive work is the MESSAGE: [`conversion_failure`] renders the
 /// §2.8.2 catalog row (P3.68) with **`arg = ""`** — every kind reachable from a Running→Failed `InvocationResult`
 /// (Corrupt / Gone / Unreadable / WriteFailed / EngineHang / EngineCrash / EngineError / InternalError …) is a
-/// per-item conversion-outcome kind with NO substitution slot. The §2.2.4 `UnopenableOutputName` (P3.88) is the
-/// FIRST slotted kind that IS a Running→Failed outcome, but it arises on the §2.1.1 publish / §1.8 output-plan
-/// path (`map_publish_error` / `compute_output_plan`), NOT this engine-`InvocationResult` projection — the
-/// conductor's INLINE render (`failure_message` + `item_base_reason`) takes its `name_arg`; the other slotted
-/// kinds (UnsupportedType `{detected}`, PlatformUnavailable `{platform}`, CleanupResidue `{path}`) stay
-/// pre-flight / app-level, never a Running→Failed outcome. **Forward constraint (a P4 `classify_failure()`
+/// per-item conversion-outcome kind with NO substitution slot.
+///
+/// **The rule for slotted rows on the Running→Failed path:** a §2.8.2 row that carries a `{x}` slot and fails
+/// an item has its arg supplied at its own RAISE SITE and threaded as `name_arg` (`fail_cleanup_named` →
+/// `WriteOutcome::name_arg` → `ItemRunOutcome::Failed.name_arg`), which both the live (`failure_message`) and
+/// terminal (`item_base_reason`) renders read. THIS projection renders `arg = ""`, so a slotted kind must never
+/// arrive here un-argued: `str::replace` deletes the token and the line reads as if its subject were missing
+/// ("Could not launch  — … next to , then try again."). `QuarantinedByOs` `{engine name}` is the slotted kind
+/// whose raise site does not exist yet — P4.46.1 owns it and supplies the friendly sidecar name (its plan
+/// note carries the duty). Outside the rule: `UnsupportedType` `{detected}` is a pre-flight SKIP filled by the
+/// §1.12 skip projection (`skipped_message`), and `CleanupResidue` `{path}` is not reachable through this
+/// projection at all (a residue rides `IpcError.residue_display`; the combined line is the §1.12 summary
+/// projection's, §2.6.4).
+///
+/// **Forward constraint (a P4 `classify_failure()`
 /// consumer):** since `InvocationResult::Failed` is untyped over the full `ConversionErrorKind` set, and THIS
 /// projection still renders `arg = ""`, a P4 engine's `classify_failure()` MUST NOT route a slotted kind through
 /// this path with the empty `arg` (it would render an empty slot, e.g. "…it looks like ."), or must extend this
-/// projection to supply the slot's `arg` — P3.88 already did exactly that on the conductor's inline path (so the
-/// "first slotted Running→Failed kind" arrived earlier than this P4 note anticipated); the `arg = ""` correctness
+/// projection to supply the slot's `arg` — the rule above; the `arg = ""` correctness
 /// here remains a slice invariant, not a compiler-checked one. A kind §2.8.2 homes elsewhere (a mis-route →
 /// [`conversion_failure`] `None`) falls back to the always-available `InternalError` row so a failed item is
-/// never message-less. Exhaustive over [`InvocationResult`] (no `_`, G4/G14). [Build-Session-Entscheidung: P3.46, P3.88]
+/// never message-less. Exhaustive over [`InvocationResult`] (no `_`, G4/G14).
+/// [Build-Session-Entscheidung: P3.46, P3.88, P4.33]
 pub fn project_outcome(result: InvocationResult) -> TerminalProjection {
     match result {
         InvocationResult::Succeeded => TerminalProjection {
@@ -996,9 +1005,9 @@ fn item_base_reason(job: &ConversionJob, name_arg: Option<&str>) -> Option<Outco
             };
             Some(crate::outcome::skipped_message(reason, detected))
         }
-        // §2.2.4 (P3.88): `name_arg` fills the `UnopenableOutputName` `{name}` slot with the offending token so
-        // the terminal reason NAMES it, matching the live message; `None` (every other Failed kind is a
-        // no-substitution row) renders the full string with the empty `arg`. §2.8 / §1.12 (P3.75 sweep): a
+        // §2.8.2: `name_arg` fills the slot of whichever row carries one, so the terminal reason names its
+        // subject exactly as the live message does; `None` is correct only for a slot-free row (a slotted row
+        // rendered with `None` shows a blank where its subject belongs). §2.8 / §1.12 (P3.75 sweep): a
         // mis-homed app-level kind ({EngineMissing, WebviewFault, BundleDamaged, MixedDrop}) has no §2.8.2 row →
         // `conversion_failure` returns `None`; the same `InternalError` fallback the live `failure_message` /
         // `project_outcome` siblings carry keeps this TERMINAL projection never-message-less too (a failed item
@@ -1022,8 +1031,9 @@ fn item_base_reason(job: &ConversionJob, name_arg: Option<&str>) -> Option<Outco
 /// `item_residues` ([`split_residue_records`], P3.25), so the run is never reported a clean success while a
 /// temp may remain. The real roots + per-item output/residue `PathBuf`s ride the off-wire `RunResultPaths`
 /// (C9 resolves its `OpenTarget` against it, P3.79); the wire carries only their `to_string_lossy` displays
-/// (§2.10.1 / 2026-07-06 ruling). §2.2.4 (P3.88): `failed_name_args` supplies the per-item offending token for an
-/// `UnopenableOutputName` failure so the terminal reason NAMES it (empty for a run with none). PURE — the P3.48
+/// (§2.10.1 / 2026-07-06 ruling). `failed_name_args` supplies the per-item §2.8.2 slot arg of a failure whose row
+/// carries one (`UnopenableOutputName`'s offending token, P3.88; `PlatformUnavailable`'s OS name, P4.33) so the
+/// terminal reason NAMES its subject (empty for a run with none). PURE — the P3.48
 /// conductor supplies `item_outputs`/`failed_name_args`/`residues`/roots from the live run. [Build-Session-Entscheidung: P3.50, P3.88]
 pub fn project_run_result(
     batch: &Batch,
@@ -1238,10 +1248,10 @@ pub struct WriteOutcome {
     /// `Some` when §2.6 cleanup left a temp behind (§2.6.4) — recorded for `cleanup_incomplete` + the off-wire
     /// residue table so the summary never reports a clean success. `None` when every temp was removed.
     pub residue: Option<ResidueRecord>,
-    /// §2.2.4 (P3.88): the offending CONSTRUCTED token when `disposition` is `Failed(UnopenableOutputName)` — the
-    /// leaf name Windows cannot open (a reserved DOS device / trailing dot-space), threaded so the §2.8 message
-    /// NAMES it (§2.2.4). `None` for every other outcome. `write_outcome_to_run` rides it onto
-    /// `ItemRunOutcome::Failed.name_arg`; a non-`Failed`/non-unopenable outcome leaves it `None`.
+    /// The §2.8.2 slot arg of a `Failed` disposition whose row carries one — `UnopenableOutputName`'s offending
+    /// CONSTRUCTED token (§2.2.4, P3.88), `PlatformUnavailable`'s OS name (§3.4, P4.33) — threaded so the §2.8
+    /// message NAMES its subject. `None` for a slot-free row and for every non-`Failed` outcome.
+    /// `write_outcome_to_run` rides it onto `ItemRunOutcome::Failed.name_arg`.
     pub name_arg: Option<String>,
 }
 
@@ -1503,9 +1513,10 @@ fn fail_cleanup(
 }
 
 /// §2.1.1 step 7 with the §2.2.4 offending token (P3.88) — the [`fail_cleanup`] variant that threads a
-/// `name_arg` (the leaf name Windows cannot open) onto [`WriteOutcome::name_arg`], so the §2.8
-/// `UnopenableOutputName` message NAMES it. Every other failure passes `None` via [`fail_cleanup`]. The token
-/// rides `write_outcome_to_run` → `ItemRunOutcome::Failed.name_arg` → the live/terminal render.
+/// `name_arg` onto [`WriteOutcome::name_arg`], so a §2.8.2 row that carries a slot names its subject
+/// (`UnopenableOutputName`'s offending leaf, P3.88; `PlatformUnavailable`'s OS name, P4.33). A slot-free
+/// row passes `None` via [`fail_cleanup`]. The arg rides `write_outcome_to_run` →
+/// `ItemRunOutcome::Failed.name_arg` → the live/terminal render. [Build-Session-Entscheidung: P3.88, P4.33]
 fn fail_cleanup_named(
     item: ItemId,
     temps: impl IntoIterator<Item = TempPath>,
@@ -1744,11 +1755,10 @@ enum ItemRunOutcome {
     Failed {
         kind: ConversionErrorKind,
         residue: Option<ResidueRecord>,
-        /// §2.2.4 (P3.88): the offending CONSTRUCTED token when `kind` is `UnopenableOutputName` — the leaf/
-        /// subtree name Windows cannot open, threaded so BOTH the live `ItemFinished` `IpcError.message` and the
-        /// terminal `RunResult.items[].reason` NAME it (§2.2.4 "naming the offending token"; the first slotted
-        /// kind reachable on the Running→Failed path — see the `project_outcome` forward-constraint note). `None`
-        /// for every non-slotted failure (the vast majority), rendered with the empty `arg`.
+        /// The §2.8.2 slot arg when `kind`'s row carries one — `UnopenableOutputName`'s offending CONSTRUCTED
+        /// token (§2.2.4, P3.88), `PlatformUnavailable`'s OS name (§3.4, P4.33) — threaded so BOTH the live
+        /// `ItemFinished` `IpcError.message` and the terminal `RunResult.items[].reason` NAME the subject (the
+        /// raise-site rule in `project_outcome`). `None` for every slot-free failure, rendered with the empty `arg`.
         name_arg: Option<String>,
     },
     /// User-cancelled (§1.7/§1.11) — nothing published. The per-job `out_tmp` is removed by the §1.7 step-3
@@ -1784,14 +1794,13 @@ fn write_outcome_to_run(outcome: WriteOutcome) -> ItemRunOutcome {
 /// substituted per-item failure line for `kind`, falling back to the always-homed `InternalError` row so a
 /// failed item is never message-less. `arg` fills the row's substitution slot: **almost** every kind a conductor
 /// per-item write produces (WriteFailed / Empty / InternalError / OutOfDisk / PathTooLong / TooManyCollisions /
-/// EngineHang / … + the §3.5.6 transform kinds) is a NO-substitution row rendered with `arg = ""`. The **one
-/// §2.2.4 exception (P3.88)** is `UnopenableOutputName`, the FIRST slotted kind reachable on the Running→Failed
-/// path — its `{name}` slot is filled with the offending CONSTRUCTED token (the `project_outcome`
-/// forward-constraint note: "a slotted kind … must extend this projection to supply the slot's arg"). The other
-/// slotted kinds (UnsupportedType `{detected}` / PlatformUnavailable `{platform}`) stay pre-flight/app-level,
-/// never a Running→Failed outcome; a residue rides `IpcError.residue_display`, NOT a combined CleanupResidue
-/// message — that combination is the §1.12 SUMMARY-projection's job, §2.6.4 / P3.50). Exhaustive over
-/// [`OutcomeMsg`] (no `_`, G4/G14). [Build-Session-Entscheidung: P3.48, P3.88]
+/// EngineHang / … + the §3.5.6 transform kinds) is a NO-substitution row rendered with `arg = ""`. A slotted
+/// row that fails an item has its arg supplied at its raise site and rides `name_arg` here (the rule
+/// [`project_outcome`] states), so this render names its subject instead of leaving a blank. `UnsupportedType`
+/// `{detected}` is a pre-flight skip (`skipped_message`, §1.12), never rendered here; `CleanupResidue`
+/// `{path}` is not reachable through this projection: a residue rides `IpcError.residue_display`, and the
+/// combined line is the §1.12 SUMMARY-projection's job (§2.6.4 / P3.50). Exhaustive over
+/// [`OutcomeMsg`] (no `_`, G4/G14). [Build-Session-Entscheidung: P3.48, P3.88, P4.33]
 fn failure_message(kind: ConversionErrorKind, arg: &str) -> String {
     let rendered = conversion_failure(kind, arg)
         .or_else(|| conversion_failure(ConversionErrorKind::InternalError, ""));
@@ -2161,10 +2170,14 @@ async fn convert_item(
         ));
     };
     let Some(engine_id) = registry.select(*format, target) else {
-        return write_outcome_to_run(fail_cleanup(
+        // §2.8.2: this row carries a `{platform}` slot, so its arg is supplied HERE — the `fail_cleanup`
+        // default (`None`) would render "isn't available on  because…", naming no OS.
+        // [Build-Session-Entscheidung: P4.33]
+        return write_outcome_to_run(fail_cleanup_named(
             item,
             [tmp],
             ConversionErrorKind::PlatformUnavailable,
+            Some(crate::engines::current_platform().display_name().to_owned()),
         ));
     };
     let Some(engine) = registry.engine(engine_id) else {
@@ -6741,6 +6754,41 @@ mod tests {
         );
     }
 
+    // §6.4.1 unit (G15) / §2.8.2 / §3.4: the RENDERED PlatformUnavailable line names the OS — asserted on the
+    // text, not the arg, because the defect this closes (the raise site passing the `fail_cleanup` default
+    // `None`) was invisible at the arg level. The un-argued render is pinned in the same test so the
+    // assertion spells out the shape it protects against. [Build-Session-Entscheidung: P4.33]
+    #[test]
+    fn a_platform_unavailable_reason_names_the_platform() {
+        let job = job_in(
+            0,
+            JobState::Failed(ConversionErrorKind::PlatformUnavailable),
+        );
+        let named = crate::engines::current_platform().display_name();
+        let reason = item_base_reason(&job, Some(named));
+        let text = match reason {
+            Some(OutcomeMsg::Failure { ref text, .. }) => text.clone(),
+            _ => String::new(),
+        };
+        assert!(
+            text.contains(named),
+            "§2.8.2/§3.4: the rendered line must name the platform, got: {text}"
+        );
+        assert!(
+            !text.contains("on  because"),
+            "§2.8.2: the {{platform}} slot must not render blank, got: {text}"
+        );
+        // The defect's own shape, pinned so a regression to the `fail_cleanup` default is recognisable.
+        let unnamed = match item_base_reason(&job, None) {
+            Some(OutcomeMsg::Failure { text, .. }) => text,
+            _ => String::new(),
+        };
+        assert!(
+            unnamed.contains("on  because"),
+            "the un-argued render is the blank-OS line this raise site must never produce, got: {unnamed}"
+        );
+    }
+
     // §2.8 / §1.12 (P3.75 sweep): the TERMINAL `item_base_reason` projection mirrors the live
     // `project_outcome` / `failure_message` InternalError fallback — a per-item `Failed` carrying a mis-homed
     // app-level kind ({EngineMissing, WebviewFault, BundleDamaged, MixedDrop}, none of which has a §2.8.2 row)
@@ -6800,8 +6848,10 @@ mod tests {
     #[test]
     fn ingest_funnel_is_origin_independent_and_empty_for_an_empty_set() {
         // Compile-time variant lock (the established `exhaustive`-match pattern): a new `IntakeOrigin` variant
-        // breaks this match, forcing the `all` array below to grow with it, so the test can never silently miss
-        // a new origin. [Build-Session-Entscheidung: P2.62]
+        // breaks this match. It forces an ARM, not a ROW in the hand-written `all` array below — array
+        // completeness is not asserted here. [Build-Session-Entscheidung: P2.62] [Test-Change: P4.33 —
+        // old-obsolete+new-correct, §1.1: the removed clause claimed the match forced the array to grow, which
+        // a match cannot do.]
         fn exhaustive(o: IntakeOrigin) {
             match o {
                 IntakeOrigin::Drop
@@ -11837,6 +11887,82 @@ mod run_conversion_tests {
         include_str!("mod.rs")
             .split_once(concat!("#[cfg", "(test)]"))
             .map_or("", |(prefix, _)| prefix)
+    }
+
+    // §6.4.1 (G15) / §2.8.2 / §3.4 — the registry-miss raise site SUPPLIES the `{platform}` arg, driven through
+    // `convert_item` itself: a source the v1 registry pairs with no slice target passes the target-only slice
+    // gate and misses `select`. On the LIVE path the C6 handler's source-side `resolve_slice_target`
+    // validation precedes the conductor, so the arm is reached here directly, as the cancelled-arm test above
+    // reaches its own. [Build-Session-Entscheidung: P4.33]
+    #[tokio::test]
+    async fn the_registry_miss_raise_site_supplies_the_platform_arg() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return;
+        };
+        let (mut dropped, paths, _identity) =
+            eligible(src_dir.path(), "photo.webp", 0, b"not a webp");
+        dropped.detected = DetectionOutcome::Recognized {
+            format: UserFacingFormat::Webp,
+            confidence: Confidence::High,
+            dims: None,
+        };
+        let source = paths.resolved_path.clone();
+        let scratch_base = tempfile::tempdir().expect("scratch base dir");
+        let instance = InstanceId::mint();
+        let run_id = RunId::mint();
+        let scratch =
+            RunScratch::acquire(scratch_base.path(), instance, std::process::id(), run_id)
+                .expect("acquire the run scratch");
+        let mut cache = LocationCache::new();
+        let pool = Pool::new();
+        let (channel, _events) = capture_channel();
+        let probe_name = move || crate::run::PublishTemp::probe_name(instance);
+        let item = dropped.item;
+
+        let outcome = convert_item(
+            &dropped,
+            &source,
+            tsv_target().id,
+            &[],
+            None,
+            &ResolvedDestination::BesideSource,
+            src_dir.path(),
+            &scratch,
+            &mut cache,
+            probe_name,
+            &pool,
+            CancellationToken::new(),
+            run_id,
+            item,
+            &channel,
+        )
+        .await;
+
+        let expected = crate::engines::current_platform().display_name();
+        assert!(
+            matches!(
+                &outcome,
+                ItemRunOutcome::Failed {
+                    kind: ConversionErrorKind::PlatformUnavailable,
+                    name_arg: Some(name),
+                    ..
+                } if name == expected
+            ),
+            "§2.8.2/§3.4: a registry miss fails PlatformUnavailable WITH the OS name as its slot arg"
+        );
+        // §2.1/§2.6: the pre-picked publish temp is removed by `fail_cleanup_named`, nothing is published.
+        assert!(
+            !src_dir.path().join("photo.tsv").exists(),
+            "§2.1: a registry miss publishes no output"
+        );
+        let leftover_part = std::fs::read_dir(src_dir.path())
+            .expect("the source dir lists")
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".part"));
+        assert!(
+            !leftover_part,
+            "§2.6.4: the publish temp picked before the registry miss is removed — no `.part` residue"
+        );
     }
 
     // §6.4.1 (G15) / §3.5.0 step 2 / §0.11 T11 — the STRUCTURAL pin on the one thing this box exists to do:

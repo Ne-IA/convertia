@@ -1677,10 +1677,12 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): `UserFacingFormat` IS the §0.6 SSOT *What It Converts* set (the §1.3 grouping
-    // key). This locks (a) the §0.4.3 camelCase wire form of every variant via a serialize→deserialize
-    // round-trip, and (b) the set membership in BOTH directions — a REMOVED variant fails to compile in
-    // `all` below, and an ADDED variant fails to compile in the no-wildcard `exhaustive` match — so the
-    // SSOT set cannot silently drift away from §0.6.
+    // key). This locks (a) the §0.4.3 camelCase wire form of every variant LISTED in `all` via a
+    // serialize→deserialize round-trip, and (b) the enum's membership: a REMOVED variant fails to compile in
+    // `all` below, and an ADDED variant fails to compile in the no-wildcard `exhaustive` match — which forces
+    // an ARM there, not a ROW in `all`, so the wire pin's completeness in the ADD direction is not asserted.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §0.6: the removed clause claimed both directions kept
+    // the SSOT set from drifting, which the match cannot do for the hand-written list.]
     #[test]
     fn user_facing_format_is_the_ssot_set_with_camelcase_wire() {
         use UserFacingFormat as F;
@@ -1752,9 +1754,10 @@ mod tests {
             );
         }
 
-        // Compiler-enforced membership (the ADD direction): a variant added to the enum without a row
-        // in `all` fails to compile here — no wildcard arm (the crate also denies
-        // wildcard_enum_match_arm), so the match is non-exhaustive until the new variant is listed.
+        // Compiler-enforced membership (the ADD direction): a variant added to the enum fails to compile
+        // HERE until it gains an arm — no wildcard arm (the crate also denies wildcard_enum_match_arm).
+        // The arm is what the compiler forces; a row in `all` above is not. [Test-Change: P4.33 —
+        // old-obsolete+new-correct, §0.6: the removed wording claimed a missing `all` row fails to compile.]
         fn exhaustive(f: UserFacingFormat) {
             match f {
                 F::Jpg
@@ -3157,7 +3160,9 @@ mod tests {
     // carried by `ItemProgress.stage`, each in its camelCase wire form. JobStage is OUTBOUND-ONLY (no
     // `Deserialize`), so this is a SERIALIZE pin (like `ConversionErrorKind`'s), not a round-trip. The
     // `exhaustive` match is the COMPILE-TIME variant lock: a stage added/removed without updating it fails
-    // to compile, so the wire-name pins can never silently fall behind the enum.
+    // to compile. It forces an ARM for a new variant, not a ROW in this hand-written list: pin completeness
+    // is not asserted here. [Test-Change: P4.33 — old-obsolete+new-correct, §0.6: the removed clause
+    // claimed the match kept the pins from falling behind the enum, which a match cannot do.]
     #[test]
     fn job_stage_wire_form_is_camelcase() {
         for (stage, wire) in [

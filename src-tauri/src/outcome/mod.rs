@@ -15,7 +15,7 @@
 //! the surfacing leg owned by the scheduled boxes:
 //!  - the §2.8.2 `ConversionErrorKind → canonical-English` message catalog — **P3.68 (built below):**
 //!    `conversion_message_template` (the single-home 22-row table + `None` for the 4 kinds homed elsewhere),
-//!    `conversion_failure` (the `{detected}`/`{platform}`/`{path}`-substituting `OutcomeMsg::Failure`
+//!    `conversion_failure` (the `{detected}`/`{platform}`/`{path}`/`{name}`/`{engine name}`-substituting `OutcomeMsg::Failure`
 //!    producer), and the 5 batch-summary strings (`BatchSummary` + `WITH_RESIDUE_TAIL`); **P3.59 adds**
 //!    the §2.6.4 case-1 `RESIDUE_ANNOTATION_TEMPLATE` + its `residue_annotation` producer — a NON-failure
 //!    row, so it is deliberately NOT keyed by a `ConversionErrorKind` and lives outside the table above.
@@ -396,7 +396,7 @@ pub fn read_failure_to_error_kind(failure: ReadFailure) -> ConversionErrorKind {
 
 // ─── §2.8.2 the conversion-outcome message catalog — the single home of the canonical English strings ──
 /// The §2.8.2 canonical-English message TEMPLATE for a conversion-outcome kind — the raw string with any
-/// `{detected}` / `{platform}` / `{path}` slot still literal. This is the **single home** of the §2.8.2
+/// `{detected}` / `{platform}` / `{path}` / `{name}` / `{engine name}` slot still literal. This is the **single home** of the §2.8.2
 /// strings (§2.8 owns the set): `crate::orchestrator` (P3.46) maps an `ErrorKind` into it, its §2.6.4
 /// cleanup-honesty leg (P3.25) reads the `CleanupResidue` row (homed in `crate::orchestrator`, not
 /// `crate::run` — the tier-2 domain-only leaf cannot produce the orchestrator `CleanupResidue`/`RunResult`,
@@ -457,8 +457,10 @@ pub fn conversion_message_template(kind: ConversionErrorKind) -> Option<&'static
         ConversionErrorKind::PlatformUnavailable => {
             "This conversion isn't available on {platform} because the required format support can't be included here."
         }
+        // §7.2.4 `[DECIDED]`: the line MUST name the sidecar — approving the app does not approve the
+        // sidecars, so the user has to find THAT row in Privacy & Security (reconciled 2026-09-07).
         ConversionErrorKind::QuarantinedByOs => {
-            "macOS is blocking one of ConvertIA's built-in tools with a security check. Open System Settings → Privacy & Security and choose \"Open Anyway\", then try again."
+            "Could not launch {engine name} — blocked by macOS security. Open System Settings → Privacy & Security and click \"Open Anyway\" next to {engine name}, then try again."
         }
         ConversionErrorKind::CleanupResidue => {
             "This file couldn't be converted, and a temporary file may remain at {path}."
@@ -507,10 +509,11 @@ pub fn residue_annotation(residue_display: &str) -> OutcomeMsg {
 
 /// Build the §2.8.2 [`OutcomeMsg::Failure`] for a conversion-outcome `kind`, filling the kind's single `{x}`
 /// slot from `arg`: the friendly detected type for `UnsupportedType`, the platform name for
-/// `PlatformUnavailable`, the residue path display for `CleanupResidue` — ignored (pass `""`) for the majority
-/// with no slot. Returns `None` for a kind §2.8.2 does not home (see [`conversion_message_template`]).
-/// Panic-free (a single `str::replace`, no formatting fallibility). Substitutes ONLY the one slot the template
-/// carries — never a chain of three replaces — so `arg`'s own content can never be re-scanned into a second
+/// `PlatformUnavailable`, the residue path display for `CleanupResidue`, the offending CONSTRUCTED token for
+/// `UnopenableOutputName`, the friendly sidecar name for `QuarantinedByOs` (§7.2.4) — ignored (pass `""`) for
+/// the majority with no slot. Returns `None` for a kind §2.8.2 does not home (see [`conversion_message_template`]).
+/// Panic-free (a single `str::replace`, no formatting fallibility). Substitutes ONLY the one slot token the
+/// template carries (never a chain of replaces over every catalog slot), so `arg`'s own content can never be re-scanned into a second
 /// substitution even if it happens to contain another slot token (a user residue path literally reading
 /// `{platform}`, say); `str::replace` never re-matches its own output. [Build-Session-Entscheidung: P3.68]
 pub fn conversion_failure(kind: ConversionErrorKind, arg: &str) -> Option<OutcomeMsg> {
@@ -518,12 +521,13 @@ pub fn conversion_failure(kind: ConversionErrorKind, arg: &str) -> Option<Outcom
     Some(OutcomeMsg::Failure { kind, text })
 }
 
-/// Render the §2.8.2 template for `kind` with its single `{x}` slot filled from `arg` — the shared
-/// substitution both [`conversion_failure`] (→ [`OutcomeMsg::Failure`]) and [`skipped_message`] (→
-/// [`OutcomeMsg::Skipped`]) use, so the ONE catalog + ONE substitution serve both surfaces (§2.8.2). `None`
-/// for a kind §2.8.2 does not home (see [`conversion_message_template`]). Panic-free (a single `str::replace`);
-/// substitutes ONLY the one slot the template carries — never a chain — so `arg`'s own content can never be
-/// re-scanned into a second substitution. [Build-Session-Entscheidung: P3.68 → P3.50]
+/// Render the §2.8.2 template for `kind` with its single `{x}` slot TOKEN filled from `arg` (every occurrence
+/// of that token — `{engine name}` appears twice) — the shared substitution both [`conversion_failure`] (→
+/// [`OutcomeMsg::Failure`]) and [`skipped_message`] (→ [`OutcomeMsg::Skipped`]) use, so the ONE catalog + ONE
+/// substitution serve both surfaces (§2.8.2). `None` for a kind §2.8.2 does not home (see
+/// [`conversion_message_template`]). Panic-free (a single `str::replace`); substitutes ONLY the one slot token
+/// the template carries — never a chain — so `arg`'s own content can never be re-scanned into a second
+/// substitution. [Build-Session-Entscheidung: P3.68 → P3.50]
 fn render_conversion_template(kind: ConversionErrorKind, arg: &str) -> Option<String> {
     let template = conversion_message_template(kind)?;
     let text = if template.contains("{detected}") {
@@ -532,6 +536,10 @@ fn render_conversion_template(kind: ConversionErrorKind, arg: &str) -> Option<St
         template.replace("{platform}", arg)
     } else if template.contains("{path}") {
         template.replace("{path}", arg)
+    } else if template.contains("{engine name}") {
+        // §7.2.4: the friendly sidecar name. The one `str::replace` fills both occurrences — the "single
+        // slot" contract is per TOKEN, not per occurrence. [Build-Session-Entscheidung: P4.33]
+        template.replace("{engine name}", arg)
     } else if template.contains("{name}") {
         // §2.2.4: the UnopenableOutputName row names the offending CONSTRUCTED component (§2.8 honesty).
         template.replace("{name}", arg)
@@ -541,6 +549,18 @@ fn render_conversion_template(kind: ConversionErrorKind, arg: &str) -> Option<St
     };
     Some(text)
 }
+
+/// The §2.5.3 re-run skip line (`SkipReason::AlreadyConverted`, the P3.48 ruling) — one of the two
+/// skip-specific lines §2.8.2 keeps in prose rather than in the table. Slot-free. A `const` so the string has
+/// one home and can be bound to its spec sentence. [Build-Session-Entscheidung: P4.33]
+pub const ALREADY_CONVERTED_SKIP: &str =
+    "This file was already converted in this session, so it was skipped.";
+
+/// The §2.8.2 guessed-`Uncertain` skip line — the other skip-specific prose line, carrying the `{guess}` slot
+/// (the retained best-guess display, SSOT principle 6). A `const` template filled by one `str::replace`
+/// (the kind rows' contract), so a bindable `&str` exists for the spec pin. [Build-Session-Entscheidung: P4.33]
+pub const UNCERTAIN_GUESS_SKIP_TEMPLATE: &str =
+    "ConvertIA isn't sure what kind of file this is — it might be {guess} — so it can't convert it.";
 
 /// Build the §2.8.2 [`OutcomeMsg::Skipped`] for a skip `reason` — the §1.12 skip projection's per-item line
 /// (P3.50). For the four DETECTION `SkipReason`s the `text` is sourced from the SAME §2.8.2 catalog as a
@@ -564,12 +584,11 @@ pub fn skipped_message(reason: SkipReason, detected_display: Option<&str>) -> Ou
         // The §2.5.3 re-run skip (`AlreadyConverted`, the P3.48 ruling) renders its §2.8.2 line DIRECTLY —
         // NEVER through the `skip_reason_to_error_kind` bridge (it is not a detection ineligibility, so it has
         // no honest `ErrorKind` row); `detected_display` is irrelevant (a re-run item has no detected-type slot).
-        (SkipReason::AlreadyConverted, _) => {
-            "This file was already converted in this session, so it was skipped.".to_owned()
-        }
-        // SSOT principle 6 "names what it believes the file is" — the mapping's ONE skip-specific line.
+        (SkipReason::AlreadyConverted, _) => ALREADY_CONVERTED_SKIP.to_owned(),
+        // SSOT principle 6 "names what it believes the file is" — the slotted one of the two skip-specific
+        // lines. One `str::replace`, matching the kind rows' substitution contract.
         (SkipReason::Uncertain, Some(guess)) => {
-            format!("ConvertIA isn't sure what kind of file this is — it might be {guess} — so it can't convert it.")
+            UNCERTAIN_GUESS_SKIP_TEMPLATE.replace("{guess}", guess)
         }
         // Every other skip renders its bridged §2.8.2 kind row (the UnsupportedType `{detected}` slot filled
         // from the retained name; a guessless Uncertain bridges to the Unrecognized "can't tell" row).
@@ -811,8 +830,12 @@ mod tests {
     // §6.4.1 unit (G15/G23): the §2.8.1 ↔ §0.4.3 byte-identical wire mirror (P2.18.3 anti-drift). Pins
     // every variant's exact camelCase wire string (a renamed/added/removed variant changes a pin) AND the
     // total count == 26 (22 item-level + 3 run/app-level + MixedDrop). The companion exhaustive match
-    // (`conversion_error_kind_exhaustive`) is the COMPILE-TIME half: a variant added without a row in this
-    // array fails to compile there, so the array can never silently fall behind the enum. ErrorKind/
+    // (`conversion_error_kind_exhaustive`) forces an ARM for a new variant, not a ROW in this hand-written
+    // list, and `assert_eq!(all.len(), 26)` is a tautology over a `; 26]`-typed array — array completeness
+    // is not asserted here (an enum→list index mapping would; out of scope, named in the commit body).
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §2.8.2: the removed clause claimed the match kept this
+    // array from falling behind the enum, which a match cannot do — the sibling pin below had done exactly
+    // that.] ErrorKind/
     // ConversionErrorKind are outbound-only (no Deserialize), so this is a serialize pin, not a round-trip.
     #[test]
     fn conversion_error_kind_wire_names_byte_identical_to_catalog() {
@@ -866,8 +889,10 @@ mod tests {
 
     // The COMPILE-TIME variant-count lock (the established dependency-free exhaustive-match pattern, cf.
     // `crate::domain`'s `*_exhaustive` helpers). Adding or removing a `ConversionErrorKind` variant without
-    // updating this match fails to compile — so the wire-name array above can never silently drift from the
-    // enum. (§2.8.2 option 1 means there is ONE enum; this guards it against the §2.8.1/§0.4.3 catalog.)
+    // updating this match fails to compile. It forces an ARM, not a ROW in the wire-name array above.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §2.8.2: the removed clause claimed the match kept that
+    // array from drifting, which a match cannot do.]
+    // (§2.8.2 option 1 means there is ONE enum; this guards it against the §2.8.1/§0.4.3 catalog.)
     fn conversion_error_kind_exhaustive(k: &ConversionErrorKind) {
         match k {
             ConversionErrorKind::Corrupt
@@ -998,8 +1023,8 @@ mod tests {
     }
 
     // §6.4.1 unit (G15) / §2.8.2: an INDEPENDENT second transcription of the §2.6.4 case-1 residue-annotation
-    // row (P3.59), mirroring `catalog_rows_match_the_exact_canonical_english` (the 21 kind rows) and
-    // `batch_summary_strings_are_canonical` (the 5 batch strings) — the module's convention for every §02-owned
+    // row (P3.59), mirroring this module's exact-string pins over the 22 kind rows and the 5 batch
+    // strings — the module's convention for every §02-owned
     // string it homes. Without it the row would be MUTATION-SURVIVABLE: every other assertion on it is either
     // self-referential (comparing `residue_item_reason`'s output to `residue_annotation`'s own) or
     // substitution-only, so a reworded row would drift from §2.8.2 / §2.6.4:944 with the suite still green —
@@ -1072,15 +1097,15 @@ mod tests {
         }
     }
 
-    // §6.4.1 unit (G15) / §2.8.2 / G23 completeness: EVERY ConversionErrorKind is homed — the 22 §2.8.2
-    // conversion-outcome kinds each carry a non-empty catalog row, and the 4 non-conversion kinds
-    // ({EngineMissing, WebviewFault, BundleDamaged} → §2.13.3 app-fault; MixedDrop → §5.2 pre-flight) return
-    // None (homed elsewhere — one string, one home), NOT an unhomed kind. The exhaustive match in
-    // conversion_message_template is the compile-time guard; this asserts the current 26 are correctly split.
-    #[test]
-    fn every_conversion_kind_is_homed() {
+    // The §2.8.2 conversion-outcome kinds in catalog order — the ONE list every catalog walk in this module
+    // iterates or is audited against, so no kind can be covered by one walk and missed by another (the
+    // exact-string pin below carried its own transcription and had silently dropped a row). This list does
+    // not ENUMERATE the enum: a variant added to the enum and to neither list still passes; closing that
+    // needs a compile-time enum→list index mapping (out of scope, named in the commit body).
+    // [Build-Session-Entscheidung: P4.33]
+    const CONVERSION_CATALOG_KINDS: [ConversionErrorKind; 22] = {
         use ConversionErrorKind as K;
-        let conversion = [
+        [
             K::Corrupt,
             K::Empty,
             K::Unrecognized,
@@ -1103,7 +1128,18 @@ mod tests {
             K::QuarantinedByOs,
             K::CleanupResidue,
             K::InternalError,
-        ];
+        ]
+    };
+
+    // §6.4.1 unit (G15) / §2.8.2 / G23 completeness: EVERY ConversionErrorKind is homed — the 22 §2.8.2
+    // conversion-outcome kinds each carry a non-empty catalog row, and the 4 non-conversion kinds
+    // ({EngineMissing, WebviewFault, BundleDamaged} → §2.13.3 app-fault; MixedDrop → §5.2 pre-flight) return
+    // None (homed elsewhere — one string, one home), NOT an unhomed kind. The exhaustive match in
+    // conversion_message_template is the compile-time guard; this asserts the current 26 are correctly split.
+    #[test]
+    fn every_conversion_kind_is_homed() {
+        use ConversionErrorKind as K;
+        let conversion = CONVERSION_CATALOG_KINDS;
         assert_eq!(
             conversion.len(),
             22,
@@ -1130,14 +1166,14 @@ mod tests {
         }
     }
 
-    // §6.4.1 unit (G15) / §2.8.2: PIN every one of the 21 catalog rows to its EXACT canonical-English string
-    // (templates carry the literal `{x}` slot for the 3 substituting kinds). This is an independent second
+    // §6.4.1 unit (G15) / §2.8.2: PIN every one of the 22 catalog rows to its EXACT canonical-English string
+    // (templates carry the literal `{x}` slot for the 5 substituting kinds). This is an independent second
     // transcription of the §2.8.2 table, so a single-character/word mutation to any catalog string (the whole
     // deliverable of this box) fails here — closing the mutation-survival gap the non-empty check leaves.
     #[test]
     fn catalog_rows_match_the_exact_canonical_english() {
         use ConversionErrorKind as K;
-        let expected: [(ConversionErrorKind, &str); 21] = [
+        let expected: [(ConversionErrorKind, &str); 22] = [
             (K::Corrupt, "This file looks damaged and couldn't be converted."),
             (K::Empty, "This file is empty — there's nothing to convert."),
             (
@@ -1182,6 +1218,14 @@ mod tests {
                 K::TooManyCollisions,
                 "There are already too many files with this name in that folder, so this one couldn't be saved. Try a different folder.",
             ),
+            // [Test-Change: P4.33 — old-obsolete+new-correct, §2.8.2: the array was `; 21]` and had omitted
+            // this row since P3.88 added it; the new entry is transcribed from §2.8.2's table (at the
+            // table's own position), not from the production string it pins. The completeness loop below
+            // makes an omission fail.]
+            (
+                K::UnopenableOutputName,
+                "The output name \"{name}\" can't be used as a file on Windows, so this file was skipped. Rename the original so its name isn't a reserved word (like CON or NUL) and doesn't end with a dot or space.",
+            ),
             (
                 K::EngineCrash,
                 "Something went wrong while converting this file, so it was skipped.",
@@ -1195,9 +1239,12 @@ mod tests {
                 K::PlatformUnavailable,
                 "This conversion isn't available on {platform} because the required format support can't be included here.",
             ),
+            // [Test-Change: P4.33 — old-obsolete+new-correct, §2.8.2/§7.2.4: the old expectation was the
+            // sidecar-less row the 2026-09-07 ruling reconciled away; the new one is §7.2.4's `[DECIDED]`
+            // literal, transcribed from the spec, not from the production string it pins.]
             (
                 K::QuarantinedByOs,
-                "macOS is blocking one of ConvertIA's built-in tools with a security check. Open System Settings → Privacy & Security and choose \"Open Anyway\", then try again.",
+                "Could not launch {engine name} — blocked by macOS security. Open System Settings → Privacy & Security and click \"Open Anyway\" next to {engine name}, then try again.",
             ),
             (
                 K::CleanupResidue,
@@ -1215,9 +1262,148 @@ mod tests {
                 "§2.8.2: {kind:?} must match its exact canonical-English row"
             );
         }
+        // COMPLETENESS from the shared list, not from this array's own length: a catalog kind missing here
+        // reds instead of silently narrowing what "every row" means. [Build-Session-Entscheidung: P4.33]
+        for kind in CONVERSION_CATALOG_KINDS {
+            assert!(
+                expected.iter().any(|(pinned, _)| *pinned == kind),
+                "§2.8.2: {kind:?} is a catalog row but carries no exact-string pin here"
+            );
+        }
     }
 
-    // §6.4.1 unit (G15) / §2.8.2: the three substituting kinds fill their single `{x}` slot from `arg`
+    // §6.4.1 unit (G15) / §2.8.2 — the spec↔code bind (the P3.87 `include_str!` pattern): the exact-string
+    // pin above compares code against code, so a catalog string and its spec row could rot together
+    // (`QuarantinedByOs` did, and no gate saw it — `plan-lint` carries no §2.8.2 leg). Bound per ROW, not
+    // file-wide, so a string present in the file under a different kind cannot vouch for this one. SCOPE:
+    // containment within the row's line — it catches a changed or missing message, not a spec-side append
+    // inside the cell; the exact-string pin fixes the PRODUCTION message's full extent, and only one
+    // production text satisfies both.
+    // [Build-Session-Entscheidung: P4.33]
+    #[test]
+    fn every_catalog_row_is_bound_to_its_spec_table_row() {
+        const SPEC: &str = include_str!("../../../docs/spec/02-guarantees.md");
+        // Squashed only where a claim is compared against PROSE: a table row is one physical line, a prose
+        // sentence hard-wraps. Table-row comparisons stay byte-exact.
+        fn squash(s: &str) -> String {
+            s.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+        let squash_spec = squash(SPEC);
+        for kind in CONVERSION_CATALOG_KINDS {
+            let template = conversion_message_template(kind)
+                .expect("§2.8.2: every catalog kind carries a template");
+            let marker = format!("| `{kind:?}` |");
+            let found = SPEC.lines().find(|line| line.starts_with(&marker));
+            assert!(
+                found.is_some(),
+                "§2.8.2: no spec table row starts with {marker}"
+            );
+            let row = found.expect("the assertion above proves the row was found");
+            assert!(
+                row.contains(template),
+                "§2.8.2: the {kind:?} spec row does not carry the production string verbatim.\n\
+                 production: {template}\n\
+                 spec row:   {row}"
+            );
+        }
+        // The §2.8.2-owned strings NOT keyed by a `ConversionErrorKind` that exist as a bindable `&str`: the
+        // residue annotation, the with-residue tail, and the two skip-specific prose lines. The
+        // `BatchSummary` lines are `format!` arguments and stay unbound (the residual named below).
+        let residue_marker = "| `residue_annotation` |";
+        let residue_row = SPEC.lines().find(|line| line.starts_with(residue_marker));
+        assert!(
+            residue_row.is_some(),
+            "§2.8.2: no spec table row starts with {residue_marker}"
+        );
+        assert!(
+            residue_row
+                .expect("the assertion above proves the row was found")
+                .contains(RESIDUE_ANNOTATION_TEMPLATE),
+            "§2.8.2: the residue_annotation spec row does not carry {RESIDUE_ANNOTATION_TEMPLATE} verbatim"
+        );
+        // PER ROW, not file-wide: this string appears TWICE in the spec — its §2.8.2 batch-table row and a
+        // §2.6.4 prose quote — so a file-wide `contains` would let the prose vouch for a changed row.
+        let tail_marker = "| With residue |";
+        let tail_row = SPEC.lines().find(|line| line.starts_with(tail_marker));
+        assert!(
+            tail_row.is_some(),
+            "§2.8.2: no spec table row starts with {tail_marker}"
+        );
+        assert!(
+            tail_row
+                .expect("the assertion above proves the row was found")
+                .contains(WITH_RESIDUE_TAIL),
+            "§2.8.2: the with-residue row does not carry {WITH_RESIDUE_TAIL} verbatim"
+        );
+        // The §2.9.1 lossy catalog is the same class in the same module (hand-transcribed from this file, its
+        // own pin code↔code), so it is bound here too. The row marker comes from serde's `snake_case` wire
+        // name rather than a second transcription, which also pins the wire name to the spec row.
+        // [Build-Session-Entscheidung: P4.33]
+        for kind in ALL_LOSSY_KINDS {
+            let wire = serde_json::to_string(&kind).expect("§2.9.1: LossyKind serializes");
+            let marker = format!("| `{}` |", wire.trim_matches('"'));
+            let found = SPEC.lines().find(|line| line.starts_with(&marker));
+            assert!(
+                found.is_some(),
+                "§2.9.1: no spec table row starts with {marker}"
+            );
+            let row = found.expect("the assertion above proves the row was found");
+            let template = lossy_note_template(kind);
+            assert!(
+                row.contains(template),
+                "§2.9.1: the {kind:?} spec row does not carry the production note verbatim.\n\
+                 production: {template}\n\
+                 spec row:   {row}"
+            );
+        }
+
+        // The two skip-specific lines. Their spec home is §2.8.2 PROSE, not a table row, so they bind
+        // squashed (the sentences hard-wrap) against the whole file rather than against a `|`-row.
+        assert!(
+            squash_spec.contains(&squash(ALREADY_CONVERTED_SKIP)),
+            "§2.8.2: the re-run skip line must be carried verbatim by the spec: {ALREADY_CONVERTED_SKIP}"
+        );
+        assert!(
+            squash_spec.contains(&squash(UNCERTAIN_GUESS_SKIP_TEMPLATE)),
+            "§2.8.2: the guessed-Uncertain skip template must be carried verbatim by the spec: {UNCERTAIN_GUESS_SKIP_TEMPLATE}"
+        );
+
+        // RESIDUAL: the `BatchSummary::text` lines exist only as `format!` arguments, so there is no `&str`
+        // to bind without hoisting them to consts (not this ruling's scope); their code↔code guard is this
+        // module's batch-summary canonical-string pin.
+
+        // The spec↔SPEC direction: the cross-file restatements of a production message literal, found by a
+        // mechanical whitespace-squashed sweep over `docs/spec/**/*.md` (an enumerated site list, not a shape
+        // rule — the general rule needs files this crate does not read and belongs in `plan-lint`, L(-1),
+        // named in the commit body). Prose restatements, hence squashed. [Build-Session-Entscheidung: P4.33]
+        const CROSS_CATEGORY: &str =
+            include_str!("../../../docs/spec/04-formats/cross-category.md");
+        const UI_UX: &str = include_str!("../../../docs/spec/05-ui-ux.md");
+        const APP_SHELL: &str = include_str!("../../../docs/spec/07-app-shell.md");
+        let no_audio = conversion_message_template(ConversionErrorKind::NoAudioTrack)
+            .expect("§2.8.2: NoAudioTrack carries a template");
+        assert!(
+            squash(CROSS_CATEGORY).contains(&squash(no_audio)),
+            "§2.8.2/§4: cross-category.md restates the NoAudioTrack string, so it must match verbatim: {no_audio}"
+        );
+        assert!(
+            squash(UI_UX).contains(&squash(RESIDUE_ANNOTATION_TEMPLATE)),
+            "§2.8.2/§5: 05-ui-ux.md restates the residue annotation, so it must match verbatim: {RESIDUE_ANNOTATION_TEMPLATE}"
+        );
+        // §7.2.4 quotes the row inside a markdown emphasis span, so its inner quotes are BACKSLASH-escaped
+        // (`click \"Open Anyway\"`). Only that escape is undone — a blanket backslash strip would also
+        // tolerate spellings like `next\ to` that render differently, which is more than the claim needs.
+        let quarantined = conversion_message_template(ConversionErrorKind::QuarantinedByOs)
+            .expect("§2.8.2: QuarantinedByOs carries a template");
+        assert!(
+            squash(APP_SHELL)
+                .replace("\\\"", "\"")
+                .contains(&squash(quarantined)),
+            "§2.8.2/§7.2.4: 07-app-shell.md, which supplies this wording, must still carry it verbatim: {quarantined}"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.8.2: every substituting kind fills its single `{x}` slot from `arg`
     // (pinned to the exact substituted string — proving no slot leaks and the wiring is applied).
     #[test]
     fn conversion_failure_substitutes_the_single_slot() {
@@ -1256,6 +1442,18 @@ mod tests {
             }),
             "§2.2.4/§2.8.2: {{name}} is substituted with the offending CONSTRUCTED token"
         );
+        // §7.2.4: the row whose slot occurs twice — the EXACT-WORDING pin over the whole rendered sentence,
+        // both substitutions included (a `replacen(…, 1)` is already caught by the leak guard, which sees
+        // the second `{engine name}` left standing). [Build-Session-Entscheidung: P4.33]
+        assert_eq!(
+            conversion_failure(ConversionErrorKind::QuarantinedByOs, "LibreOffice"),
+            Some(OutcomeMsg::Failure {
+                kind: ConversionErrorKind::QuarantinedByOs,
+                text: "Could not launch LibreOffice — blocked by macOS security. Open System Settings → Privacy & Security and click \"Open Anyway\" next to LibreOffice, then try again."
+                    .to_owned(),
+            }),
+            "§7.2.4/§2.8.2: BOTH {{engine name}} occurrences are substituted with the friendly sidecar name"
+        );
     }
 
     // §6.4.1 unit (G15) / §2.8.2: a kind with NO slot ignores `arg` (verbatim), and a non-§2.8.2 kind
@@ -1275,6 +1473,37 @@ mod tests {
             None,
             "§2.8.2: a non-conversion kind is not produced as a per-item OutcomeMsg::Failure"
         );
+    }
+
+    // §6.4.1 unit (G15) / §2.8.2: no RENDERED conversion message carries a leftover `{…}` slot — the twin
+    // of this module's lossy-side leak guard, asserted through the producer so a template
+    // whose slot token has no arm in `render_conversion_template`'s if-chain cannot leak the raw token.
+    // SCOPE: it renders with a NON-EMPTY arg, so it proves the slot is substitutable, never that a caller
+    // supplies a real value (`arg = ""` renders slot-free but blank-worded — the raise-site rule in
+    // `crate::orchestrator::project_outcome`). [Build-Session-Entscheidung: P4.33]
+    #[test]
+    fn no_rendered_conversion_message_leaks_an_unsubstituted_slot() {
+        // Exhaustive (crate `wildcard_enum_match_arm` deny): only the Failure arm carries a rendered
+        // conversion message — the skip-side precedent in this module's tests, so a wrong variant surfaces
+        // as a named assertion failure rather than through a panic-macro family member.
+        fn failure_text(msg: &OutcomeMsg) -> Option<&str> {
+            match msg {
+                OutcomeMsg::Failure { text, .. } => Some(text),
+                OutcomeMsg::Skipped { .. }
+                | OutcomeMsg::Lossy { .. }
+                | OutcomeMsg::Residue { .. } => None,
+            }
+        }
+        for kind in CONVERSION_CATALOG_KINDS {
+            let msg = conversion_failure(kind, "SUBSTITUTED")
+                .expect("§2.8.2: every catalog kind produces a Failure message");
+            let text = failure_text(&msg)
+                .expect("§2.8.2: conversion_failure surfaces the Failure variant");
+            assert!(
+                !text.contains('{') && !text.contains('}'),
+                "§2.8.2: the rendered {kind:?} message still carries a slot: {text}"
+            );
+        }
     }
 
     // §6.4.1 unit (G15) / §2.8.2: the §1.12 skip projection's `skipped_message` (P3.50) sources every skip
@@ -1554,6 +1783,14 @@ mod tests {
                 lossy_note_template(kind),
                 canonical,
                 "§2.9.1: the {kind:?} note drifted from its canonical English"
+            );
+        }
+        // COMPLETENESS from the shared list (the twin of the conversion side's): a lossy kind missing here
+        // reds instead of the array's own length redefining "every row". [Build-Session-Entscheidung: P4.33]
+        for kind in ALL_LOSSY_KINDS {
+            assert!(
+                expected.iter().any(|(pinned, _)| *pinned == kind),
+                "§2.9.1: {kind:?} is a lossy row but carries no exact-string pin here"
             );
         }
     }
