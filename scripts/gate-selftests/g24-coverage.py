@@ -11,6 +11,9 @@ import importlib.util
 import sys
 import tempfile
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-coverage"
 _loader = importlib.machinery.SourceFileLoader("ccov", str(SCRIPT))
@@ -263,6 +266,37 @@ record("_diff_counts: exempt=None is backward-compatible (an uncovered line stil
        m._diff_counts({"f.rs": {10, 11, 12}}, _eh) == (1, 3))
 record("_diff_counts: an uncovered EXEMPT boot-glue line stops counting (only the non-exempt line remains)",
        m._diff_counts({"f.rs": {10, 11, 12}}, _eh, {"f.rs": {11, 12}}) == (1, 1))
+
+# --- the `+++`-as-header class (2026-09-08): `+++` re-keys a file only before its first @@ ---------------
+record("diff: an ADDED body line beginning `+++ ` does not re-key the file onto a phantom path - the later hunks stay"
+       " with the real file",
+       m.changed_lines_of("diff --git a/src/x.rs b/src/x.rs\n--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,0 +2,1 @@\n"
+                          "+++ a doc-comment continuation line\n@@ -10,0 +20,3 @@\n+fn a() {}\n+fn b() {}\n+fn c() {}\n")
+       == {"src/x.rs": {2, 20, 21, 22}}
+       and m.changed_lines_of("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,0 +1,1 @@\n+x\n"
+                              "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1,0 +5,1 @@\n+y\n") == {"a.rs": {1}, "b.rs": {5}})
+
+record("diff: a git-QUOTED `+++` path is C-unquoted before it keys the file (the round-12 G70 fix swept to this sibling, the round-13 P3)",
+       m.changed_lines_of('diff --git "a/src-tauri/src/a\\"b.rs" "b/src-tauri/src/a\\"b.rs"\n--- "a/src-tauri/src/a\\"b.rs"\n'
+                          '+++ "b/src-tauri/src/a\\"b.rs"\n@@ -1,0 +1,1 @@\n+x\n') == {'src-tauri/src/a"b.rs': {1}})
+record("line model: a lone CR inside a `+` line is ONE changed line (git's `\\n` model), and the git reads return BYTES decoded as UTF-8;"
+       " the range diff is scoped to the product paths so `--text` never renders an asset",
+       m._lines("a\rb\n") == ["a\rb"]
+       and m.changed_lines_of("diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,0 +1,2 @@\n+// a \r// b\n+x\n") == {"src/a.ts": {1, 2}}
+       and SCRIPT.read_text(encoding="utf-8").count("capture_output=True)") == 2
+       and '["git", *GIT_DIFF_SYNTAX, "diff", "--unified=0", *GIT_DIFF_FLAGS, base, "HEAD", "--", *PRODUCT_PATHSPECS]' in SCRIPT.read_text(encoding="utf-8")
+       and m.PRODUCT_PATHSPECS == (":/src/", ":/src-tauri/src/", ":/crates/imgworker/src/")
+       and SCRIPT.read_text(encoding="utf-8").replace("str.splitlines()", "").count("splitlines()") == 0)
+record("source pin: the range diff is read with the diff-SYNTAX pins (non-ASCII literal, `a/`/`b/` prefixes forced, blank context never"
+       " elided, hunks never merged, paths never relative, no external driver, no textconv, every file read as text) and the env knob"
+       " that outranks the command line (GIT_DIFF_OPTS) is scrubbed on both git reads",
+       m.GIT_DIFF_SYNTAX == ("-c", "core.quotepath=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+                             "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.suppressBlankEmpty=false",
+                             "-c", "diff.relative=false", "-c", "diff.interHunkContext=0")
+       and m.GIT_DIFF_FLAGS == ("--no-ext-diff", "--no-textconv", "--text", "--no-color")
+       and m.SCRUBBED_GIT_ENV == ("GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF")
+       and SCRIPT.read_text(encoding="utf-8").count("env=_git_env()") == 2
+       and '["git", *GIT_DIFF_SYNTAX, "diff", "--unified=0", *GIT_DIFF_FLAGS, base, "HEAD", "--", *PRODUCT_PATHSPECS]' in SCRIPT.read_text(encoding="utf-8"))
 
 passed = sum(1 for _, ok in results if ok)
 print(f"\n[g24-coverage] {passed}/{len(results)} assertions passed.")

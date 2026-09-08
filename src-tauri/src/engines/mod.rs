@@ -1968,60 +1968,44 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    use crate::domain::{Confidence, DetectionOutcome, ItemId};
+    use crate::domain::{complete_kind_list, Confidence, DetectionOutcome, ItemId};
 
     // §6.4.1 unit (G15): the §0.6/§3.2 `EngineId` WIRE form (P2.13) — the stable discriminant rides
     // `EngineStatus.id` in the C12 `EngineHealth` return (§7.2). Pinned to its lowercase wire string per
-    // variant (the §3.2 `id()` "ffmpeg"/"libreoffice" convention). The exhaustive match below forces an ARM for a
-    // new variant; the length assert is a tautology over the `; 8]`-typed array, so array completeness is not
-    // asserted here. A SERIALIZE pin (EngineId is outbound-only — no round-trip).
+    // variant (the §3.2 `id()` "ffmpeg"/"libreoffice" convention). The list is COMPLETE by construction:
+    // `complete_kind_list!` generates an exhaustive match from it, so a variant added to `EngineId` and not
+    // pinned here is a compile error (the P4.33 class closure — a hand-written list beside a hand-written
+    // match could fall behind the enum). A SERIALIZE pin (EngineId is outbound-only — no round-trip).
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §3.2: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        ENGINE_ID_WIRE_NAMES, engine_id_wire_list_is_complete: EngineId = [
+            FFmpeg => "ffmpeg",
+            FFprobe => "ffprobe",
+            LibreOffice => "libreoffice",
+            Poppler => "poppler",
+            Pandoc => "pandoc",
+            ImageMagick => "imagemagick",
+            ImageCore => "imagecore",
+            NativeCsvTsv => "nativecsvtsv",
+        ],
+    );
+
     #[test]
     fn engine_id_wire_form_is_lowercase() {
-        let all: [(EngineId, &str); 8] = [
-            (EngineId::FFmpeg, "ffmpeg"),
-            (EngineId::FFprobe, "ffprobe"),
-            (EngineId::LibreOffice, "libreoffice"),
-            (EngineId::Poppler, "poppler"),
-            (EngineId::Pandoc, "pandoc"),
-            (EngineId::ImageMagick, "imagemagick"),
-            (EngineId::ImageCore, "imagecore"),
-            (EngineId::NativeCsvTsv, "nativecsvtsv"),
-        ];
+        let all = ENGINE_ID_WIRE_NAMES;
         assert_eq!(
             all.len(),
             8,
             "§0.6: EngineId is exactly the eight bundled-engine discriminants (Ghostscript not shipped v1)"
         );
-        for (id, wire) in all {
+        for &(id, wire) in all {
             assert_eq!(
                 serde_json::to_string(&id).expect("EngineId serializes"),
                 format!("\"{wire}\""),
                 "§0.6/§3.2: each EngineId serializes to its lowercase wire discriminant"
             );
         }
-    }
-
-    // The COMPILE-TIME variant lock (the established dependency-free exhaustive-match pattern, cf.
-    // `crate::outcome`'s `conversion_error_kind_exhaustive`): adding/removing an `EngineId` variant without
-    // updating this match fails to compile. It forces an ARM for a new variant, not a ROW in the hand-written
-    // array above: array completeness is not asserted here. [Test-Change: P4.33 — old-obsolete+new-correct,
-    // §0.6: the removed clause claimed the match kept the array from drifting, which a match cannot do.]
-    fn engine_id_exhaustive(id: &EngineId) {
-        match id {
-            EngineId::FFmpeg
-            | EngineId::FFprobe
-            | EngineId::LibreOffice
-            | EngineId::Poppler
-            | EngineId::Pandoc
-            | EngineId::ImageMagick
-            | EngineId::ImageCore
-            | EngineId::NativeCsvTsv => {}
-        }
-    }
-
-    #[test]
-    fn engine_id_exhaustive_match_is_exercised() {
-        engine_id_exhaustive(&EngineId::ImageCore);
     }
 
     // §6.4.1 unit (G15): `EngineId` is usable as the §0.9 `HashMap<EngineId, bool>` serialised-flag key
@@ -2077,7 +2061,7 @@ mod tests {
     // The COMPILE-TIME §0.9 CLASSIFICATION LOCK: every `EngineId` is mapped to the row(s) §0.9's engine
     // table allows that engine to declare, so a NEW engine variant cannot be added without deciding its
     // §0.9 row here — the no-silent-default discipline the REQUIRED (undefaulted) trait method exists for,
-    // and the same dependency-free exhaustive-match pattern as `engine_id_exhaustive` above. FFmpeg is the
+    // and the same compile-time exhaustive-match discipline as the `complete_kind_list!` pins above. FFmpeg is the
     // one id §0.9 gives TWO rows (video re-encode 1–2 vs audio / extract-audio / remux up to the degree),
     // which is precisely why the seam is per-JOB rather than a per-engine descriptor field.
     fn allowed_parallelism_rows(id: EngineId) -> &'static [EngineParallelism] {
@@ -2215,44 +2199,34 @@ mod tests {
 
     // §6.4.1 unit (G15): the §3.2.2 `Platform` WIRE form (P2.132) — the leaf rides `AppInfo.platform` in
     // the C11 `get_app_info` return (§7.2.3). Pinned to its camelCase wire string per variant (the §0.6
-    // "camelCase on the wire" default its `AppInfo` embedder carries). The exhaustive match below forces an
-    // ARM for a new variant; the length assert is a tautology over the `; 3]`-typed array, so array
-    // completeness is not asserted here. A SERIALIZE pin (Platform is outbound-only — no round-trip).
+    // "camelCase on the wire" default its `AppInfo` embedder carries). The list is COMPLETE by construction
+    // (`complete_kind_list!`, the P4.33 class closure): a fourth `Platform` variant not pinned here is a
+    // compile error at the generated match. A SERIALIZE pin (Platform is outbound-only — no round-trip).
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §3.2.2: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        PLATFORM_WIRE_NAMES, platform_wire_list_is_complete: Platform = [
+            Win => "win",
+            MacOS => "macOS",
+            Linux => "linux",
+        ],
+    );
+
     #[test]
     fn platform_wire_form_is_camel_case() {
-        let all: [(Platform, &str); 3] = [
-            (Platform::Win, "win"),
-            (Platform::MacOS, "macOS"),
-            (Platform::Linux, "linux"),
-        ];
+        let all = PLATFORM_WIRE_NAMES;
         assert_eq!(
             all.len(),
             3,
             "§3.2.2: Platform is exactly the three shipped desktop OSes (no mobile/web/CLI build in v1)"
         );
-        for (platform, wire) in all {
+        for &(platform, wire) in all {
             assert_eq!(
                 serde_json::to_string(&platform).expect("Platform serializes"),
                 format!("\"{wire}\""),
                 "§0.6/§3.2.2: each Platform serializes to its camelCase wire discriminant"
             );
         }
-    }
-
-    // The COMPILE-TIME variant lock (the established dependency-free exhaustive-match pattern, cf.
-    // `engine_id_exhaustive`): adding/removing a `Platform` variant without updating this match fails to
-    // compile. It forces an ARM for a new variant, not a ROW in the hand-written array above: array
-    // completeness is not asserted here. [Test-Change: P4.33 — old-obsolete+new-correct, §3.2.2: the removed
-    // clause claimed the match kept the array from drifting, which a match cannot do.]
-    fn platform_exhaustive(platform: &Platform) {
-        match platform {
-            Platform::Win | Platform::MacOS | Platform::Linux => {}
-        }
-    }
-
-    #[test]
-    fn platform_exhaustive_match_is_exercised() {
-        platform_exhaustive(&Platform::MacOS);
     }
 
     // §6.4.1 unit (G15): the §7.2.3 `AppInfo` WIRE form (P2.112) — the C11 `get_app_info` return. Pins the
@@ -3501,13 +3475,19 @@ mod tests {
 
     // ─── P4.3: §3.2.2 leaf types — Direction / PatentDisposition / CodecPosture / EngineCapability ──
 
+    // The §3.2.2 `Direction` roster: `complete_kind_list!` generates an exhaustive match from it, so a
+    // fourth arrow added to the enum and not listed here is a compile error (the P4.33 class closure -
+    // the let-bound array below could fall behind the enum while its pairwise check stayed green).
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §3.2.2: the test's inline array is the list-driven
+    // roster now; the pairwise-distinctness assertion is unchanged.]
+    complete_kind_list!(ALL_DIRECTIONS, direction_list_is_complete: Direction = [Decode, Encode, Both]);
+
     // §6.4.1 unit (G15): the §3.2.2 `Direction` models the three capability arrows (P4.3) — pairwise
     // distinct, matching the §04 matrices' cell directions.
     #[test]
     fn direction_models_the_three_capability_arrows() {
-        let variants = [Direction::Decode, Direction::Encode, Direction::Both];
-        for (i, a) in variants.iter().enumerate() {
-            for (j, b) in variants.iter().enumerate() {
+        for (i, a) in ALL_DIRECTIONS.iter().enumerate() {
+            for (j, b) in ALL_DIRECTIONS.iter().enumerate() {
                 assert_eq!(
                     i == j,
                     a == b,

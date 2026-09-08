@@ -522,3 +522,36 @@ fn the_driven_targets_survive_the_g48_adversarial_path_and_byte_shapes() {
         }
     }
 }
+
+#[cfg(test)]
+mod roster_tests {
+    use super::InCoreTarget;
+    use crate::domain::complete_kind_list;
+
+    // The harness roster `InCoreTarget::ALL` (this module is `#[cfg(test)]`) is a hand-written array beside
+    // the hand-written `key` match: a target added to both compiles while the roster silently falls behind
+    // (the P4.33 class). The list below is COMPLETE by construction and the test binds the roster to it,
+    // so `ALL` keeps its plain-array shape for the harness code that indexes it.
+    complete_kind_list!(
+        ALL_IN_CORE_TARGETS, in_core_target_list_is_complete: InCoreTarget = [
+            Detect,
+            FsGuardResolveIdentity,
+            FsGuardIsSafeOutput,
+            CsvTsv,
+        ]
+    );
+    #[test]
+    fn all_roster_covers_every_in_core_target() {
+        for target in ALL_IN_CORE_TARGETS {
+            assert!(
+                InCoreTarget::ALL.contains(target),
+                "§6.4.2: the ALL roster omits {target:?} — a target the enum has is never driven"
+            );
+        }
+        assert_eq!(
+            InCoreTarget::ALL.len(),
+            ALL_IN_CORE_TARGETS.len(),
+            "§6.4.2: the ALL roster is exactly the target set, once each"
+        );
+    }
+}

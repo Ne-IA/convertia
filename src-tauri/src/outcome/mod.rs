@@ -620,19 +620,39 @@ pub enum BatchSummary {
     Cancelled { ok: usize },
 }
 
+// The §2.8.2 batch-summary templates — `const`s rather than `format!` literals so each has ONE home and a
+// bindable `&str` the spec table row can be checked against (they were the last §2.8.2-owned strings bound
+// by nothing but their own rendered pin). The slots are item COUNTS, so a `str::replace` chain cannot
+// re-scan an arg into a second slot (a number carries no braces). [Build-Session-Entscheidung: P4.33]
+/// The §2.8.2 `All succeeded` row — `{n}` is the batch size.
+pub const BATCH_ALL_SUCCEEDED_TEMPLATE: &str = "All {n} files converted.";
+/// The §2.8.2 `Partial` row — `{ok}` converted, `{fail}` failed, `{n}` the batch size.
+pub const BATCH_PARTIAL_TEMPLATE: &str =
+    "{ok} of {n} files converted. {fail} couldn't be converted — see details.";
+/// The §2.8.2 `All failed` row — `{n}` is the batch size.
+pub const BATCH_ALL_FAILED_TEMPLATE: &str = "None of the {n} files could be converted.";
+/// The §2.8.2 `Cancelled` row — `{ok}` is the count already converted and kept.
+pub const BATCH_CANCELLED_TEMPLATE: &str =
+    "Stopped. {ok} files were already converted and kept; the rest were not started.";
+
 impl BatchSummary {
     /// The §2.8.2 canonical-English summary line for this situation, counts substituted (English-only, G57).
-    /// [Build-Session-Entscheidung: P3.68]
+    /// [Build-Session-Entscheidung: P3.68, P4.33]
     #[must_use]
     pub fn text(&self) -> String {
         match *self {
-            BatchSummary::AllSucceeded { n } => format!("All {n} files converted."),
-            BatchSummary::Partial { ok, n, fail } => {
-                format!("{ok} of {n} files converted. {fail} couldn't be converted — see details.")
+            BatchSummary::AllSucceeded { n } => {
+                BATCH_ALL_SUCCEEDED_TEMPLATE.replace("{n}", &n.to_string())
             }
-            BatchSummary::AllFailed { n } => format!("None of the {n} files could be converted."),
+            BatchSummary::Partial { ok, n, fail } => BATCH_PARTIAL_TEMPLATE
+                .replace("{ok}", &ok.to_string())
+                .replace("{n}", &n.to_string())
+                .replace("{fail}", &fail.to_string()),
+            BatchSummary::AllFailed { n } => {
+                BATCH_ALL_FAILED_TEMPLATE.replace("{n}", &n.to_string())
+            }
             BatchSummary::Cancelled { ok } => {
-                format!("Stopped. {ok} files were already converted and kept; the rest were not started.")
+                BATCH_CANCELLED_TEMPLATE.replace("{ok}", &ok.to_string())
             }
         }
     }
@@ -759,6 +779,7 @@ pub fn lossy_note(kind: LossyKind, raster_size: Option<(u32, u32)>) -> Option<Ou
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::complete_kind_list;
 
     // §6.4.1 unit (G15): the §1.1 turn-time `ReadFailure → ErrorKind` projection (P2.73) — a file readable at
     // the §2.4 freeze but unreadable/gone WHEN ITS TURN COMES mid-run is a per-item `Failed` (§1.9):
@@ -830,49 +851,46 @@ mod tests {
     // §6.4.1 unit (G15/G23): the §2.8.1 ↔ §0.4.3 byte-identical wire mirror (P2.18.3 anti-drift). Pins
     // every variant's exact camelCase wire string (a renamed/added/removed variant changes a pin) AND the
     // total count == 26 (22 item-level + 3 run/app-level + MixedDrop). The companion exhaustive match
-    // (`conversion_error_kind_exhaustive`) forces an ARM for a new variant, not a ROW in this hand-written
-    // list, and `assert_eq!(all.len(), 26)` is a tautology over a `; 26]`-typed array — array completeness
-    // is not asserted here (an enum→list index mapping would; out of scope, named in the commit body).
-    // [Test-Change: P4.33 — old-obsolete+new-correct, §2.8.2: the removed clause claimed the match kept this
-    // array from falling behind the enum, which a match cannot do — the sibling pin below had done exactly
-    // that.] ErrorKind/
+    // is the `complete_kind_list!` match generated FROM this list: a variant the enum has but the list does
+    // not is a compile error there, so the list cannot fall behind the enum (the sibling pin below once had,
+    // by one row, when list and match were written by hand side by side). [Test-Change: P4.33 —
+    // old-obsolete+new-correct, §2.8.2: the hand-written array + separate match were replaced by the
+    // list-driven match; the wire pins are unchanged.] ErrorKind/
     // ConversionErrorKind are outbound-only (no Deserialize), so this is a serialize pin, not a round-trip.
+    complete_kind_list!(
+        CONVERSION_ERROR_KIND_WIRE_NAMES, conversion_error_kind_wire_list_is_complete: ConversionErrorKind = [
+            Corrupt => "corrupt",
+            Empty => "empty",
+            Unrecognized => "unrecognized",
+            UnsupportedType => "unsupportedType",
+            UnsupportedPair => "unsupportedPair",
+            Unreadable => "unreadable",
+            Gone => "gone",
+            PasswordProtected => "passwordProtected",
+            NoAudioTrack => "noAudioTrack",
+            TooBig => "tooBig",
+            OutOfDisk => "outOfDisk",
+            WriteFailed => "writeFailed",
+            PathTooLong => "pathTooLong",
+            TooManyCollisions => "tooManyCollisions",
+            UnopenableOutputName => "unopenableOutputName",
+            EngineCrash => "engineCrash",
+            EngineHang => "engineHang",
+            EngineError => "engineError",
+            PlatformUnavailable => "platformUnavailable",
+            QuarantinedByOs => "quarantinedByOs",
+            CleanupResidue => "cleanupResidue",
+            InternalError => "internalError",
+            EngineMissing => "engineMissing",
+            WebviewFault => "webviewFault",
+            BundleDamaged => "bundleDamaged",
+            MixedDrop => "mixedDrop",
+        ],
+    );
+
     #[test]
     fn conversion_error_kind_wire_names_byte_identical_to_catalog() {
-        let all: [(ConversionErrorKind, &str); 26] = [
-            (ConversionErrorKind::Corrupt, "corrupt"),
-            (ConversionErrorKind::Empty, "empty"),
-            (ConversionErrorKind::Unrecognized, "unrecognized"),
-            (ConversionErrorKind::UnsupportedType, "unsupportedType"),
-            (ConversionErrorKind::UnsupportedPair, "unsupportedPair"),
-            (ConversionErrorKind::Unreadable, "unreadable"),
-            (ConversionErrorKind::Gone, "gone"),
-            (ConversionErrorKind::PasswordProtected, "passwordProtected"),
-            (ConversionErrorKind::NoAudioTrack, "noAudioTrack"),
-            (ConversionErrorKind::TooBig, "tooBig"),
-            (ConversionErrorKind::OutOfDisk, "outOfDisk"),
-            (ConversionErrorKind::WriteFailed, "writeFailed"),
-            (ConversionErrorKind::PathTooLong, "pathTooLong"),
-            (ConversionErrorKind::TooManyCollisions, "tooManyCollisions"),
-            (
-                ConversionErrorKind::UnopenableOutputName,
-                "unopenableOutputName",
-            ),
-            (ConversionErrorKind::EngineCrash, "engineCrash"),
-            (ConversionErrorKind::EngineHang, "engineHang"),
-            (ConversionErrorKind::EngineError, "engineError"),
-            (
-                ConversionErrorKind::PlatformUnavailable,
-                "platformUnavailable",
-            ),
-            (ConversionErrorKind::QuarantinedByOs, "quarantinedByOs"),
-            (ConversionErrorKind::CleanupResidue, "cleanupResidue"),
-            (ConversionErrorKind::InternalError, "internalError"),
-            (ConversionErrorKind::EngineMissing, "engineMissing"),
-            (ConversionErrorKind::WebviewFault, "webviewFault"),
-            (ConversionErrorKind::BundleDamaged, "bundleDamaged"),
-            (ConversionErrorKind::MixedDrop, "mixedDrop"),
-        ];
+        let all = CONVERSION_ERROR_KIND_WIRE_NAMES;
         assert_eq!(
             all.len(),
             26,
@@ -885,48 +903,6 @@ mod tests {
                 "§2.8/§0.4.3: each kind serializes to its byte-identical camelCase wire name"
             );
         }
-    }
-
-    // The COMPILE-TIME variant-count lock (the established dependency-free exhaustive-match pattern, cf.
-    // `crate::domain`'s `*_exhaustive` helpers). Adding or removing a `ConversionErrorKind` variant without
-    // updating this match fails to compile. It forces an ARM, not a ROW in the wire-name array above.
-    // [Test-Change: P4.33 — old-obsolete+new-correct, §2.8.2: the removed clause claimed the match kept that
-    // array from drifting, which a match cannot do.]
-    // (§2.8.2 option 1 means there is ONE enum; this guards it against the §2.8.1/§0.4.3 catalog.)
-    fn conversion_error_kind_exhaustive(k: &ConversionErrorKind) {
-        match k {
-            ConversionErrorKind::Corrupt
-            | ConversionErrorKind::Empty
-            | ConversionErrorKind::Unrecognized
-            | ConversionErrorKind::UnsupportedType
-            | ConversionErrorKind::UnsupportedPair
-            | ConversionErrorKind::Unreadable
-            | ConversionErrorKind::Gone
-            | ConversionErrorKind::PasswordProtected
-            | ConversionErrorKind::NoAudioTrack
-            | ConversionErrorKind::TooBig
-            | ConversionErrorKind::OutOfDisk
-            | ConversionErrorKind::WriteFailed
-            | ConversionErrorKind::PathTooLong
-            | ConversionErrorKind::TooManyCollisions
-            | ConversionErrorKind::UnopenableOutputName
-            | ConversionErrorKind::EngineCrash
-            | ConversionErrorKind::EngineHang
-            | ConversionErrorKind::EngineError
-            | ConversionErrorKind::PlatformUnavailable
-            | ConversionErrorKind::QuarantinedByOs
-            | ConversionErrorKind::CleanupResidue
-            | ConversionErrorKind::InternalError
-            | ConversionErrorKind::EngineMissing
-            | ConversionErrorKind::WebviewFault
-            | ConversionErrorKind::BundleDamaged
-            | ConversionErrorKind::MixedDrop => {}
-        }
-    }
-
-    #[test]
-    fn conversion_error_kind_exhaustive_match_is_exercised() {
-        conversion_error_kind_exhaustive(&ConversionErrorKind::InternalError);
     }
 
     // §0.4.3/§2.8.2 option 1: `ErrorKind` IS `ConversionErrorKind` (the wire mirror is the same type, so
@@ -1099,37 +1075,39 @@ mod tests {
 
     // The §2.8.2 conversion-outcome kinds in catalog order — the ONE list every catalog walk in this module
     // iterates or is audited against, so no kind can be covered by one walk and missed by another (the
-    // exact-string pin below carried its own transcription and had silently dropped a row). This list does
-    // not ENUMERATE the enum: a variant added to the enum and to neither list still passes; closing that
-    // needs a compile-time enum→list index mapping (out of scope, named in the commit body).
+    // exact-string pin below carried its own transcription and had silently dropped a row). The list is
+    // COMPLETE by construction: `complete_kind_list!` generates an exhaustive match from it, so a variant
+    // added to the enum and not listed here — or not declared `elsewhere` — is a compile error.
     // [Build-Session-Entscheidung: P4.33]
-    const CONVERSION_CATALOG_KINDS: [ConversionErrorKind; 22] = {
-        use ConversionErrorKind as K;
-        [
-            K::Corrupt,
-            K::Empty,
-            K::Unrecognized,
-            K::UnsupportedType,
-            K::UnsupportedPair,
-            K::Unreadable,
-            K::Gone,
-            K::PasswordProtected,
-            K::NoAudioTrack,
-            K::TooBig,
-            K::OutOfDisk,
-            K::WriteFailed,
-            K::PathTooLong,
-            K::TooManyCollisions,
-            K::UnopenableOutputName,
-            K::EngineCrash,
-            K::EngineHang,
-            K::EngineError,
-            K::PlatformUnavailable,
-            K::QuarantinedByOs,
-            K::CleanupResidue,
-            K::InternalError,
-        ]
-    };
+    complete_kind_list!(
+        CONVERSION_CATALOG_KINDS, conversion_catalog_list_is_complete: ConversionErrorKind = [
+            Corrupt,
+            Empty,
+            Unrecognized,
+            UnsupportedType,
+            UnsupportedPair,
+            Unreadable,
+            Gone,
+            PasswordProtected,
+            NoAudioTrack,
+            TooBig,
+            OutOfDisk,
+            WriteFailed,
+            PathTooLong,
+            TooManyCollisions,
+            UnopenableOutputName,
+            EngineCrash,
+            EngineHang,
+            EngineError,
+            PlatformUnavailable,
+            QuarantinedByOs,
+            CleanupResidue,
+            InternalError,
+        ],
+        // The four kinds §2.8.2 homes elsewhere ({EngineMissing, WebviewFault, BundleDamaged} → §2.13.3
+        // app-fault; MixedDrop → §5.2 pre-flight): declared, so the split is a spelled decision.
+        elsewhere KINDS_HOMED_ELSEWHERE = [EngineMissing, WebviewFault, BundleDamaged, MixedDrop],
+    );
 
     // §6.4.1 unit (G15) / §2.8.2 / G23 completeness: EVERY ConversionErrorKind is homed — the 22 §2.8.2
     // conversion-outcome kinds each carry a non-empty catalog row, and the 4 non-conversion kinds
@@ -1138,26 +1116,20 @@ mod tests {
     // conversion_message_template is the compile-time guard; this asserts the current 26 are correctly split.
     #[test]
     fn every_conversion_kind_is_homed() {
-        use ConversionErrorKind as K;
         let conversion = CONVERSION_CATALOG_KINDS;
         assert_eq!(
             conversion.len(),
             22,
             "§2.8.2 defines 22 conversion-outcome rows"
         );
-        for kind in conversion {
+        for kind in conversion.iter().copied() {
             let row = conversion_message_template(kind);
             assert!(
                 matches!(row, Some(s) if !s.is_empty()),
                 "§2.8.2: {kind:?} must have a non-empty catalog row, got {row:?}"
             );
         }
-        for kind in [
-            K::EngineMissing,
-            K::WebviewFault,
-            K::BundleDamaged,
-            K::MixedDrop,
-        ] {
+        for kind in KINDS_HOMED_ELSEWHERE.iter().copied() {
             assert_eq!(
                 conversion_message_template(kind),
                 None,
@@ -1264,7 +1236,7 @@ mod tests {
         }
         // COMPLETENESS from the shared list, not from this array's own length: a catalog kind missing here
         // reds instead of silently narrowing what "every row" means. [Build-Session-Entscheidung: P4.33]
-        for kind in CONVERSION_CATALOG_KINDS {
+        for kind in CONVERSION_CATALOG_KINDS.iter().copied() {
             assert!(
                 expected.iter().any(|(pinned, _)| *pinned == kind),
                 "§2.8.2: {kind:?} is a catalog row but carries no exact-string pin here"
@@ -1289,7 +1261,7 @@ mod tests {
             s.split_whitespace().collect::<Vec<_>>().join(" ")
         }
         let squash_spec = squash(SPEC);
-        for kind in CONVERSION_CATALOG_KINDS {
+        for kind in CONVERSION_CATALOG_KINDS.iter().copied() {
             let template = conversion_message_template(kind)
                 .expect("§2.8.2: every catalog kind carries a template");
             let marker = format!("| `{kind:?}` |");
@@ -1307,8 +1279,8 @@ mod tests {
             );
         }
         // The §2.8.2-owned strings NOT keyed by a `ConversionErrorKind` that exist as a bindable `&str`: the
-        // residue annotation, the with-residue tail, and the two skip-specific prose lines. The
-        // `BatchSummary` lines are `format!` arguments and stay unbound (the residual named below).
+        // residue annotation, the with-residue tail, the two skip-specific prose lines and, further down,
+        // the four `BatchSummary` templates (hoisted out of `BatchSummary::text` so they bind per row).
         let residue_marker = "| `residue_annotation` |";
         let residue_row = SPEC.lines().find(|line| line.starts_with(residue_marker));
         assert!(
@@ -1339,7 +1311,7 @@ mod tests {
         // own pin code↔code), so it is bound here too. The row marker comes from serde's `snake_case` wire
         // name rather than a second transcription, which also pins the wire name to the spec row.
         // [Build-Session-Entscheidung: P4.33]
-        for kind in ALL_LOSSY_KINDS {
+        for kind in ALL_LOSSY_KINDS.iter().copied() {
             let wire = serde_json::to_string(&kind).expect("§2.9.1: LossyKind serializes");
             let marker = format!("| `{}` |", wire.trim_matches('"'));
             let found = SPEC.lines().find(|line| line.starts_with(&marker));
@@ -1368,14 +1340,30 @@ mod tests {
             "§2.8.2: the guessed-Uncertain skip template must be carried verbatim by the spec: {UNCERTAIN_GUESS_SKIP_TEMPLATE}"
         );
 
-        // RESIDUAL: the `BatchSummary::text` lines exist only as `format!` arguments, so there is no `&str`
-        // to bind without hoisting them to consts (not this ruling's scope); their code↔code guard is this
-        // module's batch-summary canonical-string pin.
+        // The four batch-summary rows, per row like the kind rows: the `Situation` cell is the marker.
+        for (marker, template) in [
+            ("| All succeeded |", BATCH_ALL_SUCCEEDED_TEMPLATE),
+            ("| Partial |", BATCH_PARTIAL_TEMPLATE),
+            ("| All failed |", BATCH_ALL_FAILED_TEMPLATE),
+            ("| Cancelled |", BATCH_CANCELLED_TEMPLATE),
+        ] {
+            let row = SPEC.lines().find(|line| line.starts_with(marker));
+            assert!(
+                row.is_some(),
+                "§2.8.2: no batch-summary row starts with {marker}"
+            );
+            assert!(
+                row.expect("the assertion above proves the row was found")
+                    .contains(template),
+                "§2.8.2: the {marker} batch-summary row does not carry {template} verbatim"
+            );
+        }
 
         // The spec↔SPEC direction: the cross-file restatements of a production message literal, found by a
-        // mechanical whitespace-squashed sweep over `docs/spec/**/*.md` (an enumerated site list, not a shape
-        // rule — the general rule needs files this crate does not read and belongs in `plan-lint`, L(-1),
-        // named in the commit body). Prose restatements, hence squashed. [Build-Session-Entscheidung: P4.33]
+        // mechanical whitespace-squashed sweep over `docs/spec/**/*.md`. An enumerated site list here; the
+        // general rule (any restatement anywhere under `docs/spec/**` must be verbatim) is `plan-lint`
+        // check 30, which reads the files this crate does not. Prose restatements, hence squashed.
+        // [Build-Session-Entscheidung: P4.33]
         const CROSS_CATEGORY: &str =
             include_str!("../../../docs/spec/04-formats/cross-category.md");
         const UI_UX: &str = include_str!("../../../docs/spec/05-ui-ux.md");
@@ -1494,7 +1482,7 @@ mod tests {
                 | OutcomeMsg::Residue { .. } => None,
             }
         }
-        for kind in CONVERSION_CATALOG_KINDS {
+        for kind in CONVERSION_CATALOG_KINDS.iter().copied() {
             let msg = conversion_failure(kind, "SUBSTITUTED")
                 .expect("§2.8.2: every catalog kind produces a Failure message");
             let text = failure_text(&msg)
@@ -1617,47 +1605,49 @@ mod tests {
     }
 
     // ─── §2.9.1 the lossy-note catalog (P3.69) ──────────────────────────────────
-    /// Every `LossyKind` the §2.9.1 catalog defines, in the spec table's own order (`audio_downmix` last).
-    /// The exhaustive `match` in [`lossy_note_template`] (crate-level `deny(clippy::wildcard_enum_match_arm)`)
-    /// is the COMPILE-TIME guard that no variant can ship without a string; this list asserts the current 27
-    /// are the ones pinned below. A 28th variant compiles against this array unchanged, so a variant added
-    /// without extending it would still be forced to carry a row — it would simply escape these pins.
-    const ALL_LOSSY_KINDS: [LossyKind; 27] = [
-        LossyKind::ImageLossyCodec,
-        LossyKind::ImagePalette,
-        LossyKind::ImageDownscale,
-        LossyKind::ImageAlphaFlatten,
-        LossyKind::ImageAnimationFlatten,
-        LossyKind::ImageSvgRaster,
-        LossyKind::DocPdfReflow,
-        LossyKind::DocPdfToText,
-        LossyKind::DocHtmlRender,
-        LossyKind::DocToText,
-        LossyKind::DocSimplified,
-        LossyKind::SheetToDelimited,
-        LossyKind::XlsLegacyLimits,
-        LossyKind::TextEncodingNarrowed,
-        LossyKind::SlidesToPdfFlatten,
-        LossyKind::OfficeRoundtripApprox,
-        LossyKind::PptxToPptLegacy,
-        LossyKind::AudioLossyTarget,
-        LossyKind::AudioTranscode,
-        LossyKind::AudioLossyOrigin,
-        LossyKind::AudioBitdepth,
-        LossyKind::AudioTagsDropped,
-        LossyKind::VideoReencode,
-        LossyKind::VideoAlphaLost,
-        LossyKind::VideoSubsDropped,
-        LossyKind::VideoToGif,
-        LossyKind::AudioDownmix,
-    ];
+    // Every `LossyKind` the §2.9.1 catalog defines, in the spec table's own order (`audio_downmix` last).
+    // The exhaustive `match` in `lossy_note_template` (crate-level `deny(clippy::wildcard_enum_match_arm)`)
+    // is the COMPILE-TIME guard that no variant can ship without a string; this list is what the pins below
+    // walk, and `complete_kind_list!` makes IT complete too — a 28th variant that is not listed here is a
+    // compile error at the generated match, so it can no longer escape the pins. [Build-Session-Entscheidung: P4.33]
+    complete_kind_list!(
+        ALL_LOSSY_KINDS, lossy_kind_list_is_complete: LossyKind = [
+            ImageLossyCodec,
+            ImagePalette,
+            ImageDownscale,
+            ImageAlphaFlatten,
+            ImageAnimationFlatten,
+            ImageSvgRaster,
+            DocPdfReflow,
+            DocPdfToText,
+            DocHtmlRender,
+            DocToText,
+            DocSimplified,
+            SheetToDelimited,
+            XlsLegacyLimits,
+            TextEncodingNarrowed,
+            SlidesToPdfFlatten,
+            OfficeRoundtripApprox,
+            PptxToPptLegacy,
+            AudioLossyTarget,
+            AudioTranscode,
+            AudioLossyOrigin,
+            AudioBitdepth,
+            AudioTagsDropped,
+            VideoReencode,
+            VideoAlphaLost,
+            VideoSubsDropped,
+            VideoToGif,
+            AudioDownmix,
+        ],
+    );
 
     /// §2.9.1 completeness: EVERY `LossyKind` variant has a non-empty note row — no unhomed kind (the box's
     /// own bar). §2.9 makes `crate::outcome` the single home of every lossy-note string, so a kind without
     /// a row would leave `OutcomeMsg::Lossy.text` with nothing to produce.
     #[test]
     fn every_lossy_kind_has_a_non_empty_catalog_row() {
-        for kind in ALL_LOSSY_KINDS {
+        for kind in ALL_LOSSY_KINDS.iter().copied() {
             let note = lossy_note_template(kind);
             assert!(
                 !note.trim().is_empty(),
@@ -1787,7 +1777,7 @@ mod tests {
         }
         // COMPLETENESS from the shared list (the twin of the conversion side's): a lossy kind missing here
         // reds instead of the array's own length redefining "every row". [Build-Session-Entscheidung: P4.33]
-        for kind in ALL_LOSSY_KINDS {
+        for kind in ALL_LOSSY_KINDS.iter().copied() {
             assert!(
                 expected.iter().any(|(pinned, _)| *pinned == kind),
                 "§2.9.1: {kind:?} is a lossy row but carries no exact-string pin here"
@@ -1799,7 +1789,8 @@ mod tests {
     #[test]
     fn image_svg_raster_is_the_only_templated_row_and_substitutes_its_dimensions() {
         let templated: Vec<LossyKind> = ALL_LOSSY_KINDS
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|kind| lossy_note_template(*kind).contains("{w}"))
             .collect();
         assert_eq!(
@@ -1825,7 +1816,7 @@ mod tests {
     /// ready-to-show (§2.9.1 "a calm single line"), never a half-substituted template.
     #[test]
     fn no_rendered_lossy_note_leaks_an_unsubstituted_slot() {
-        for kind in ALL_LOSSY_KINDS {
+        for kind in ALL_LOSSY_KINDS.iter().copied() {
             let text = lossy_note_template(kind)
                 .replace("{w}", "320")
                 .replace("{h}", "240");
@@ -1852,7 +1843,8 @@ mod tests {
             "§2.9.1: the templated row must not surface an unsubstituted slot"
         );
         for kind in ALL_LOSSY_KINDS
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|kind| *kind != LossyKind::ImageSvgRaster)
         {
             assert!(

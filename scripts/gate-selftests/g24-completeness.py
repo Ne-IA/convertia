@@ -14,6 +14,9 @@ import importlib.util
 import sys
 import tempfile
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-completeness"
 _loader = importlib.machinery.SourceFileLoader("cc", str(SCRIPT))
@@ -150,6 +153,45 @@ with tempfile.TemporaryDirectory() as td:
         record("e2e: git unavailable -> fail-closed exit 2", m.main(["--root", td]) == 2)
     finally:
         m._git_tracked = saved
+
+# --- the tracked-file list is read `-z --full-name -- :/` (2026-09-08, the residual-closure review's round-16 finding: this gate's
+# `ls-files` was newline-split and quotepath-default, so a handler in a non-ASCII-named file was skipped by the CONTENT scan and its
+# missing partner test passed silently) - a REAL git repo, the real `_git_tracked` -------------------------------------------------
+import os
+import subprocess
+
+_GIT_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k == "GIT_EXEC_PATH"}
+
+
+def _real_repo(td: str, files: dict) -> None:
+    def g(*a):
+        subprocess.run(["git", "-C", td, "-c", "commit.gpgsign=false", *a], check=True, capture_output=True, env=_GIT_ENV)
+    g("init", "-q", "-b", "main")
+    (Path(td) / "nohooks").mkdir()
+    g("config", "core.hooksPath", str(Path(td) / "nohooks"))
+    g("config", "user.email", "g24@example.invalid")
+    g("config", "user.name", "g24")
+    g("config", "core.quotepath", "true")
+    for rel, content in files.items():
+        p = Path(td) / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+    g("add", "-A")
+    g("commit", "-q", "-m", "base")
+
+
+with tempfile.TemporaryDirectory() as td:
+    _real_repo(td, {"src-tauri/src/ü.rs": CMD})
+    record("e2e (real git): a conversion command in a NON-ASCII-named file with NO partner test -> exit 1 - the tracked list is read"
+           " `-z --full-name -- :/`, never quoted, even with core.quotepath on (the round-16 finding)",
+           m.main(["--root", td]) == 1)
+with tempfile.TemporaryDirectory() as td:
+    _real_repo(td, {"src-tauri/src/ü.rs": CMD, "tests/convert.rs": "#[test] fn t() { start_conversion(); }\n"})
+    record("e2e (real git): the same handler WITH a partner test -> exit 0 (the walk sees both files)",
+           m.main(["--root", td]) == 0)
+record("source pin: `_git_tracked` reads `ls-files -z --full-name -- :/<pattern>` with core.quotepath off, from bytes",
+       '["git", "-c", "core.quotepath=false", "ls-files", "-z", "--full-name", "--", *[f":/{p}" for p in patterns]]' in SCRIPT.read_text(encoding="utf-8")
+       and "splitlines()" not in SCRIPT.read_text(encoding="utf-8"))
 
 record("e2e: the real repo passes (start_conversion + its partner suite tracked - G23 LIVE since P3.63)",
        m.main([]) == 0)

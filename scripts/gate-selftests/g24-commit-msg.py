@@ -11,6 +11,9 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-commit-msg"
 _loader = importlib.machinery.SourceFileLoader("ccm", str(SCRIPT))

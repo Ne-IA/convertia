@@ -3,7 +3,7 @@
 
 FORMAT-check coverage: for each of the 8 format checks, a CLEAN box yields no finding and a VIOLATING
 box IS flagged (so no check is green-by-vacuity). Plus the base-case golden invariant: the real plan
-passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..29
+passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..30
 get their own legs as they are built. stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import hashlib
@@ -13,6 +13,9 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "plan-lint"
 ROOT = Path(__file__).resolve().parents[2]
@@ -806,6 +809,122 @@ _real_pf = _gp27.get("posture_flag", [])
 _stripped27 = {p: "run: python3 scripts/check-l-neg1-ack\n" for pf in _real_pf for p in pf.get("planes", [])}
 record("27 doc27: the REAL committed registry ARMS (real rows + stripped wiring -> caught)",
        bool(_real_pf) and len(m._gate_posture_findings(_real_pf, set(), {"P1"}, _stripped27)) > 0)
+
+# --- check 30: spec-restatement fidelity (the P4.33 QuarantinedByOs reconcile's class) ----------------
+# Own inline catalog: two §2.8.2 rows (one carrying inner quotes, the markdown `\"`-escape case) + a §2.8.3
+# heading closing the section, so the section slice is exercised too. `_g30_run` scans the given files
+# against it. The span-shape clauses (glued mark / emphasis mark / table cell / the 400-char cap) each get a
+# leg that fails when ONLY that clause is dropped — the fixtures carry no other blocker.
+_g30 = ("# t\n### 2.8.2 The message catalog\n"
+        "| `Corrupt` | **\"This file looks damaged and couldn't be converted.\"** | — |\n"
+        "| `Quarantined` | **\"Could not launch it - click \"Open Anyway\" next to it, then try again.\"** | — |\n"
+        "### 2.8.3 next\n")
+
+
+def _g30_run(files):
+    return m.doc30_spec_restatement_fidelity(dctx({"docs/spec/02-guarantees.md": _g30, **files}))
+
+
+record("30 restatement: a DRIFTED restatement (same opening words, different wording) -> caught",
+       any(f.file == "docs/spec/05-ui-ux.md" for f in _g30_run({
+           "docs/spec/05-ui-ux.md": "the toast reads *\"This file looks damaged and could not be converted.\"*\n"})))
+record("30 restatement: a drift in the OPENING word only -> caught (the anchor slides, it is not a head)",
+       _g30_run({"docs/spec/05-ui-ux.md": "*\"That file looks damaged and couldn't be converted.\"*\n"}) != [])
+record("30 restatement: a VERBATIM restatement, hard-wrapped and `\\\"`-escaped -> NOT caught",
+       _g30_run({"docs/spec/07-app-shell.md": "*\"Could not launch it - click \\\"Open Anyway\\\" next to it,\n"
+                                              "  then try again.\"* and *\"This file looks damaged\n"
+                                              "  and couldn't be converted.\"*\n"}) == [])
+record("30 restatement: a DRIFTED quotation that KEEPS its inner quote (the QuarantinedByOs shape) -> caught",
+       _g30_run({"docs/spec/07-app-shell.md": "*\"Could not launch it - click \\\"Open Anyway\\\" beside it,\n"
+                                              "  then try once more.\"*\n"}) != [])
+record("30 restatement: the HISTORICAL §2.8.2 <-> §7.2.4 QuarantinedByOs pair (92eeb2b^) replays as a finding",
+       m.doc30_spec_restatement_fidelity(dctx({
+           "docs/spec/02-guarantees.md": ("# t\n### 2.8.2 c\n| `QuarantinedByOs` | **\"macOS is blocking one of "
+               "ConvertIA's built-in tools with a security check. Open System Settings → Privacy & Security and "
+               "choose \"Open Anyway\", then try again.\"** | — |\n### 2.8.3 n\n"),
+           "docs/spec/07-app-shell.md": ("  **Canonical `QuarantinedByOs` message:** *\"Could not launch {engine name} — blocked by macOS\n"
+               "  security. Open System Settings → Privacy & Security and click \\\"Open Anyway\\\" next to\n"
+               "  {engine name}, then try again.\"* The `{engine name}` is the friendly sidecar name.\n")})) != [])
+record("30 restatement: a file quoting the string verbatim ONCE and drifted in a SECOND quotation -> caught",
+       _g30_run({"docs/spec/05-ui-ux.md": "*\"This file looks damaged and couldn't be converted.\"* and later\n"
+                                          "the calm form \"This file looks damaged and could not be converted.\"\n"}) != [])
+record("30 restatement: a paraphrase sharing no five-word run, and a docs/plan file, are out of scope",
+       _g30_run({"docs/spec/05-ui-ux.md": "a damaged file is refused with a calm line\n",
+                 "docs/plan/P9.md": "*\"This file looks damaged and could not be converted.\"*\n"}) == [])
+record("30 restatement: a run shared with ANOTHER canonical string quoted verbatim is not a drift",
+       m.doc30_spec_restatement_fidelity(dctx({
+           "docs/spec/02-guarantees.md": ("# t\n### 2.8.2 c\n"
+               "| `A` | **\"This file couldn't be converted, and a temporary file may remain at {path}.\"** |\n"
+               "| `B` | **\"Converted — a temporary file may remain at {path}.\"** |\n### 2.8.3 n\n"),
+           "docs/spec/05-ui-ux.md": "the note reads \"Converted — a temporary file may remain at {path}.\"\n"})) == [])
+record("30 restatement: bold prose carrying a run BETWEEN two unrelated quote marks (a mis-paired pair) -> NOT caught",
+       _g30_run({"docs/spec/06-build-test-release.md": "on a 12\" display: **click the button next to it, then try again** —\n"
+                                                       "  the dialog \"shows once more and then vanishes\" afterwards\n"}) == [])
+record("30 restatement: span shape - a `12\"` mark glued to a word never OPENS a span",
+       _g30_run({"docs/spec/06-build-test-release.md":
+                 "a 12\" display; the notice next to it, then try again appears; then a lone \" mark\n"}) == [])
+record("30 restatement: span shape - a span never crosses a markdown emphasis mark",
+       _g30_run({"docs/spec/06-build-test-release.md":
+                 "the notice reads \"ConvertIA can't be opened — **click next to it, then try again** — and stays\"\n"}) == [])
+record("30 restatement: span shape - a span never crosses a table cell boundary",
+       _g30_run({"docs/spec/06-build-test-release.md":
+                 "| a lone \" mark | next to it, then try again | and a closing \" mark |\n"}) == [])
+record("30 restatement: span shape - two marks over 400 characters apart bound a sweep, not a quotation",
+       _g30_run({"docs/spec/06-build-test-release.md":
+                 "a lone \" mark " + "filler " * 60 + "next to it, then try again " + "filler " * 5 + "and a closing \" mark\n"}) == [])
+_g30n = ("# t\n### 2.8.2 c\n| `UnopenableOutputName` | **\"The output name \"{name}\" can't be used as a file on "
+         "Windows, so this file was skipped.\"** | — |\n### 2.8.3 n\n")
+record("30 restatement: a VERBATIM quotation whose inner fragment opens with a NON-word char (`\"{name}\"`, the span "
+       "splits) -> NOT caught: the string is blanked before the spans are cut",
+       m.doc30_spec_restatement_fidelity(dctx({
+           "docs/spec/02-guarantees.md": _g30n,
+           "docs/spec/05-ui-ux.md": "the row reads *\"The output name \\\"{name}\\\" can't be used as a file on Windows,\n"
+                                    "  so this file was skipped.\"* and plain: \"The output name \"{name}\" can't be used as a\n"
+                                    "  file on Windows, so this file was skipped.\"\n"})) == [])
+record("30 restatement: a DRIFTED quotation of the `\"{name}\"` shape (the split halves still carry the runs) -> caught",
+       m.doc30_spec_restatement_fidelity(dctx({
+           "docs/spec/02-guarantees.md": _g30n,
+           "docs/spec/05-ui-ux.md": "*\"The output name \"{name}\" cannot be used as a file on Windows, so this file was skipped.\"*\n"})) != [])
+record("30 restatement: a drifted quotation keeping a 120-character inner fragment is still seen (the fragment bound is 200)",
+       _g30_run({"docs/spec/07-app-shell.md": "*\"Could not launch it - click \"" + "x" * 120 + "\" beside it, then try once more.\"*\n"}) != [])
+record("30 restatement: a MID-WORD drift of a SHORT (8-word) string, which no five-word run can see -> caught by word similarity",
+       _g30_run({"docs/spec/05-ui-ux.md": "the toast reads \"This file looks broken and couldn't be converted.\"\n"}) != [])
+record("30 restatement: a short quotation sharing only some words with a short string is prose, not a drift -> NOT caught",
+       _g30_run({"docs/spec/05-ui-ux.md": "the toast reads \"This file is fine and was converted.\"\n"}) == [])
+record("30 restatement: a quotation carrying the string VERBATIM plus authored text inside the same marks is not verbatim -> caught",
+       _g30_run({"docs/spec/05-ui-ux.md": "the toast reads \"This file looks damaged and couldn't be converted. Try again.\"\n"}) != [])
+record("30 restatement: a short string drifted by one word AND case AND punctuation (the 05-ui-ux:821 shape) -> caught "
+       "(runs and similarity compare NORMALISED tokens)",
+       _g30_run({"docs/spec/05-ui-ux.md": "the note reads (\"this file looks broken and couldn't be converted\")\n"}) != [])
+record("30 restatement: a CURLY-quoted drifted quotation (U+201C/U+201D) is judged like a straight one -> caught",
+       _g30_run({"docs/spec/05-ui-ux.md": "the toast reads \u201cThis file looks damaged and could not be converted.\u201d\n"}) != [])
+_g30esc = ("# t\n### 2.8.2 c\n| `U` | **\"The output name \\\"{name}\\\" can't be used as a file on Windows.\"** | — |\n### 2.8.3 n\n")
+record("30 restatement: a catalog row carrying a markdown-ESCAPED inner quote is unescaped like a quoting file - its verbatim quotation"
+       " is clean, a drifted one is caught",
+       m.doc30_spec_restatement_fidelity(dctx({"docs/spec/02-guarantees.md": _g30esc,
+           "docs/spec/05-ui-ux.md": "*\"The output name \\\"{name}\\\" can't be used as a file on Windows.\"*\n"})) == []
+       and m.doc30_spec_restatement_fidelity(dctx({"docs/spec/02-guarantees.md": _g30esc,
+           "docs/spec/05-ui-ux.md": "*\"The output name \\\"{name}\\\" cannot be used as a file on Windows.\"*\n"})) != [])
+_g30_real = m._canonical_strings((SCRIPT.parents[1] / "docs" / "spec" / "02-guarantees.md").read_text(encoding="utf-8"))
+record("30 restatement: precondition on the REAL catalog - no canonical string of nine tokens or fewer carries an inner quote, so the"
+       " split-span residual (a short string's quotation cut in two by its own inner fragment) stays dormant (the round-12 P3)",
+       len(_g30_real) >= 50 and not any(len(m._tokens(s)) <= 9 and '"' in s for s in _g30_real))
+_ssot = "docs/SINGLE-SOURCE-OF-TRUTH.md"
+record("30 restatement: the SSOT is in scope (it OUTRANKS the spec - the round-15 finding: a drifted quotation survived there);"
+       " a drifted SSOT quotation is caught, a verbatim one is clean",
+       m.doc30_spec_restatement_fidelity(dctx({"docs/spec/02-guarantees.md": _g30,
+           _ssot: "shown as a note (\"Could not launch it - click \"Open Anyway\" beside it, then try again.\")\n"})) != []
+       and m.doc30_spec_restatement_fidelity(dctx({"docs/spec/02-guarantees.md": _g30,
+           _ssot: "shown as a note (\"Could not launch it - click \"Open Anyway\" next to it, then try again.\")\n"})) == [])
+record("30 restatement: docs/plan is OUT of scope (history quotes - the named residual)",
+       m.doc30_spec_restatement_fidelity(dctx({"docs/spec/02-guarantees.md": _g30,
+           "docs/plan/P5-images.md": "> \"Could not launch it - click \"Open Anyway\" beside it, then try again.\"\n"})) == [])
+record("30 restatement: target-absent (no catalog section) -> clean skip",
+       m.doc30_spec_restatement_fidelity(dctx({"docs/spec/05-ui-ux.md": "This file looks damaged and could not\n"})) == [])
+record("30 restatement: non-vacuity - the REAL 02-guarantees.md yields a full catalog (>= 50 canonical strings)",
+       len(m._canonical_strings((ROOT / "docs/spec/02-guarantees.md").read_text(encoding="utf-8"))) >= 50)
+record("30 restatement: the REAL spec set passes (every cross-file quotation is verbatim)",
+       m.doc30_spec_restatement_fidelity(m.build_ctx(ROOT)) == [])
 
 # --- base-case golden invariant ---------------------------------------------------------------
 rc_real = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, encoding="utf-8", errors="replace").returncode

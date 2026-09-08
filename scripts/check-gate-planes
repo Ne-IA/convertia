@@ -38,6 +38,9 @@ import re
 import sys
 import tomllib
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]   # repo root (for posture_flag script/plane existence)
 REQUIRED_PLANES = ("L(-1)", "L0", "L1", "L2", "L3", "L4", "L5")

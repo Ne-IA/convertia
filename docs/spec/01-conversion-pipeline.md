@@ -279,7 +279,7 @@ batch grouping (§1.3).
    - **`animated source present`** (images) — a bounded descriptor-count peek: GIF
      image-descriptor count, WEBP `VP8X` animation flag / `ANMF` chunks, APNG `acTL`
      chunk, AVIF `avis` brand; cross-ref images.md animation policy. Drives the
-     "animated — only the first frame is converted" note (§2.9
+     "Animated — only the first frame is converted." note (§2.9
      `image_animation_flatten`) at the summary level.
    - **`>1 icon size`** (ICO source) — a bounded read of the **`ICONDIR`** header's
      **entry count** (the 6-byte header's `idCount` field + the fixed-size `ICONDIRENTRY`

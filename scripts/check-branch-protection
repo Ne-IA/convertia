@@ -60,6 +60,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # The agreed required status-check contexts that MUST be present-and-required on `main`. Kept in
 # sync with the ci.yml job matrix (DoD item 2); a SUBSET assertion, so P0.3/P0.4 adding heavier

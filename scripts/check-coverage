@@ -59,11 +59,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 FLOORS = ROOT / "coverage-floors.toml"
@@ -163,14 +167,14 @@ def _prior_floors(base: str) -> dict | None:
     """The coverage-floors.toml as of `base` (git show), or None if it does not resolve (no prior /
     git absent / file not in that ref) — fail-OPEN without a base, the G8/G70 diff-base posture."""
     try:
-        r = subprocess.run(["git", "show", f"{base}:coverage-floors.toml"], cwd=str(ROOT),
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        r = subprocess.run(["git", "show", f"{base}:coverage-floors.toml"], cwd=str(ROOT), env=_git_env(),
+                           capture_output=True)
     except OSError:
         return None
-    if r.returncode != 0 or not r.stdout.strip():
+    if r.returncode != 0 or not _decode(r.stdout).strip():
         return None
     try:
-        return tomllib.loads(r.stdout)
+        return tomllib.loads(_decode(r.stdout))
     except (tomllib.TOMLDecodeError, ValueError):
         return None
 
@@ -253,7 +257,7 @@ def _parse_lcov(text: str) -> dict[str, dict[int, int]]:
     out: dict[str, dict[int, int]] = {}
     roots = str(ROOT).replace("\\", "/")
     cur: str | None = None
-    for raw in text.splitlines():
+    for raw in _lines(text):
         if raw.startswith("SF:"):
             p = raw[3:].strip().replace("\\", "/")
             if p.startswith(roots + "/"):
@@ -275,37 +279,128 @@ def _parse_lcov(text: str) -> dict[str, dict[int, int]]:
     return out
 
 
+# The diff SYNTAX the parsers rely on, pinned on the command line: a `-c` outranks every config file and the
+# flags outrank the attributes, so the keys below cannot be re-shaped by a user's or the repo's git config (the
+# 2026-09-08 residual-closure review, rounds 12-13: `diff.noprefix=true` left every `diff --git` line unseedable
+# and a pair-less deletion passed SILENTLY; `diff.mnemonicPrefix=true` re-keyed a deleted file to `c/...`;
+# `diff.suppressBlankEmpty=true` elided blank context lines and compressed a tag window; a `diff.external`
+# driver or a textconv filter replaced the patch text or failed the read into a skip-with-notice; git's own
+# binary detection - one NUL byte - or a `binary` attribute hid a modified file behind `Binary files differ`):
+# non-ASCII paths literal, `a/`/`b/` prefixes forced, blank context lines never elided, hunks never merged, paths
+# never relative, no external driver, no textconv, every file read as text, no colour. The one environment knob
+# git honours OVER the command line, GIT_DIFF_OPTS (it overrides an explicit `--unified`), is scrubbed from every
+# git read (`_git_env`). Named residual: `diff.algorithm`/`diff.indentHeuristic` choose between EQUIVALENT
+# renderings of an ambiguous change - every removed line is still a `-` line and every added line a `+` line,
+# so no verdict flips. One constant pair + one scrub list on every DIFF read; every NAME LIST is read `-z`
+# (NUL-separated, never quoted - the round-15 finding: the fail-closed --full mirrors listed `ls-files` newline-split
+# and a quoted non-ASCII name failed their extension test) - both pinned by the canary.
+# Lines are split on git's `\n` ONLY and every git read is decoded from BYTES (`_lines` / `_decode`): under
+# `str.splitlines()` + a text-mode pipe's universal newlines, a lone CR or form feed inside a line opened a new
+# line: a CR-joined comment forged a definition line and an added-line map desynced from its blob's numbering
+# (the round-14 finding); the CR byte itself is G52's to reject at L1.
+# The range diff is scoped to the PRODUCT paths (the domains _rust_domain / the TS domain know): `--text` renders
+# every file as text, so an unscoped range would feed each touched icon or corpus blob to the parser.
+PRODUCT_PATHSPECS = (":/src/", ":/src-tauri/src/", ":/crates/imgworker/src/")     # :/ = repo-root-anchored
+GIT_DIFF_SYNTAX = ("-c", "core.quotepath=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+                   "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.suppressBlankEmpty=false",
+                   "-c", "diff.relative=false", "-c", "diff.interHunkContext=0")
+GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--text", "--no-color")
+SCRUBBED_GIT_ENV = ("GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF")
+
+
+def _git_env() -> dict[str, str]:
+    """The git child's environment without the knobs git honours OVER the command line (SCRUBBED_GIT_ENV)."""
+    return {k: v for k, v in os.environ.items() if k not in SCRUBBED_GIT_ENV}
+
+
+def _lines(text: str) -> list[str]:
+    """(pure) git's line model: split on `\\n` ONLY - a lone CR or form feed stays inside its line (under
+    `str.splitlines()` it opened a new line, and a CR-joined pseudo-line forged a tag / a definition: the 2026-09-08
+    review's round 14); a trailing newline ends the last line without opening an empty one."""
+    parts = text.split("\n")
+    if parts and parts[-1] == "":
+        parts.pop()
+    return parts
+
+
+def _decode(raw: bytes) -> str:
+    """(pure) A git child's bytes as text - decoded here, never through a text-mode pipe, so no universal-newline
+    translation turns a lone CR into a line break before `_lines` sees it."""
+    return raw.decode("utf-8", errors="replace")
+
+
 def _changed_lines(base: str) -> dict[str, set[int]] | None:
     """The added/modified NEW-side line numbers per file in `base..HEAD`, or None if the range does not
     resolve (git absent / an all-zeros or unknown base) — fail-OPEN without a base (the G8/G70 diff-base
     posture). Repo-relative forward-slash paths (git's native form)."""
     try:
-        # -c core.quotepath=false: show non-ASCII paths literally (UTF-8), unquoted, so the `+++ b/<path>`
-        # strip below never sees git's octal-escaped `"b/\xxx"` form. Product paths are ASCII module names
-        # (no quote/backslash/control chars, the only remaining quoting triggers), so a `+++` path is never
-        # quoted — the diff gate cannot silently miss a changed product file. [Build-Session-Entscheidung: P1.54]
-        r = subprocess.run(["git", "-c", "core.quotepath=false", "diff", "--unified=0", "--no-color", base, "HEAD"],
-                           cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        # The diff-SYNTAX pins (GIT_DIFF_SYNTAX / GIT_DIFF_FLAGS): non-ASCII paths literal so the `+++ b/<path>`
+        # strip below never sees git's octal-escaped `"b/\xxx"` form (product paths are ASCII module names - no
+        # quote/backslash/control chars, the only remaining quoting triggers - so a `+++` path is never quoted
+        # and the diff gate cannot silently miss a changed product file [Build-Session-Entscheidung: P1.54]),
+        # `a/`/`b/` prefixes forced, no external driver, no textconv (the 2026-09-08 round-12 class).
+        r = subprocess.run(["git", *GIT_DIFF_SYNTAX, "diff", "--unified=0", *GIT_DIFF_FLAGS, base, "HEAD", "--", *PRODUCT_PATHSPECS],
+                           cwd=str(ROOT), env=_git_env(), capture_output=True)
     except OSError:
         return None
     if r.returncode != 0:
         return None
+    return changed_lines_of(_decode(r.stdout))
+
+
+def _unquote(s: str) -> str:
+    """(pure) Undo git's C-style path quoting: `\\"`, `\\\\`, `\\t`, `\\n`, `\\r` and `\\ooo` octal bytes (UTF-8)."""
+    out = bytearray()
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            if i + 3 < len(s) and all(ch in "01234567" for ch in s[i + 1:i + 4]):
+                out.append(int(s[i + 1:i + 4], 8))
+                i += 4
+                continue
+            n = s[i + 1]
+            out.extend({"n": b"\n", "t": b"\t", "r": b"\r"}.get(n, n.encode("utf-8")))
+            i += 2
+            continue
+        out.extend(c.encode("utf-8"))
+        i += 1
+    return out.decode("utf-8", errors="replace")
+
+
+def _header_path(s: str) -> str:
+    """(pure) The path of a `--- `/`+++ ` header line, C-unquoted when git quoted it (a `"`, a `\\` or a control
+    char in the name; the G70 refinement fix swept to this sibling - the 2026-09-08 review's round 13)."""
+    s = s.strip()
+    return _unquote(s[1:-1]) if len(s) >= 2 and s[0] == '"' and s[-1] == '"' else s
+
+
+def changed_lines_of(diff_text: str) -> dict[str, set[int]]:
+    """(pure) The NEW-side line numbers per file of a `--unified=0` diff. `+++` is a file header only
+    BEFORE a chunk's first `@@` (reset at `diff --git`): an added body line whose content begins `++`
+    renders as `+++ …` and must not re-key the file (the 2026-09-08 residual-closure review's sweep of the
+    `+++`-as-header class - it re-keyed every later hunk of the file onto a phantom path)."""
     out: dict[str, set[int]] = {}
     cur: str | None = None
-    for line in r.stdout.splitlines():
-        if line.startswith("+++ "):
-            path = line[4:].strip()
+    in_hunk = False
+    for line in _lines(diff_text):
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif not in_hunk and line.startswith("+++ "):
+            path = _header_path(line[4:])
             if path == "/dev/null":
                 cur = None
             else:
                 cur = (path[2:] if path.startswith("b/") else path).replace("\\", "/")
                 out.setdefault(cur, set())
-        elif line.startswith("@@") and cur is not None:
-            m = _HUNK_RE.match(line)
-            if m:
-                start = int(m.group(1))
-                length = int(m.group(2)) if m.group(2) else 1
-                out[cur].update(range(start, start + length))   # length 0 (pure deletion) => empty
+        elif line.startswith("@@"):
+            in_hunk = True
+            if cur is not None:
+                m = _HUNK_RE.match(line)
+                if m:
+                    start = int(m.group(1))
+                    length = int(m.group(2)) if m.group(2) else 1
+                    out[cur].update(range(start, start + length))   # length 0 (pure deletion) => empty
     return out
 
 

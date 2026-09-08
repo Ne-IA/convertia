@@ -21,6 +21,54 @@ refinement, owner-acked L(-1)):
   - the net-new form              [Test-Change: <box-id> - new-test:<reason>, <ref>]
         (a brand-NEW test with no prior expectation to obsolete - a legitimate net-new #[should_panic]
          panic-path test, a deliberately #[ignore]d not-yet-runnable harness scaffold).
+  A DELETED file (2026-09-08, the residual-closure review's sibling sweep of the ACMR class): the staged
+  file list includes deletions and typechanges (`--diff-filter=ACMRDT` - the earlier `ACMR` kept a removed file out of this
+  leg entirely, so `git rm tests/x.rs` silently retired every assertion in it). A deleted file takes its
+  OWN path, not the hunk scan: its assertions are read from the HEAD blob and only inside its TEST scope
+  (a whole tests/ or *.test.* file, else the #[cfg(test)] blocks - a deleted production module's plain
+  `.expect(` is no test change), the tags the file itself carried do not count (they justified earlier
+  edits, and a whole-file hunk's deletion-run window would otherwise span the entire file), and the
+  deletion EVENT is justified only by a [Test-Change] tag on an ADDED line of the staged diff that NAMES
+  the file INSIDE its brackets (the <ref> slot; a name after the closing `]` is not read) - its path, or
+  its basename only when no other file in HEAD's tree or among the staged new
+  paths shares it (eleven `mod.rs` do; a commit that deletes `tests/b.rs` and adds `src/b.rs` makes
+  `b.rs` ambiguous - every staged chunk's identity is seeded from its `diff --git a/<old> b/<new>` line,
+  so an empty or binary add, a mode-only change or a content-identical rename counts too; path-only, with
+  a notice, when HEAD's tree cannot be listed), matched on path-token
+  boundaries on
+  BOTH sides (`tests/ab.rs` does not cover `tests/b.rs`, `tests/b.rs.bak` does not cover `tests/b.rs`);
+  one tag per retired file, never one tag for all - otherwise every test assertion of the file flags
+  with its own message.
+  The staged diff is read ONCE (`-M --diff-filter=ACMRDT`; a file replaced by a symlink is a T whose old
+  lines show as `-`, the round-11 review) and split per file: a per-path diff of a renamed
+  file's NEW name renders it as brand-new (every line `+`) and a removed assertion never appears (the
+  round-6 G1 finding), while the combined diff keeps git's rename pairing and the `-` line; `-M` forces
+  rename detection regardless of `diff.renames`, and every git read carries the diff-SYNTAX pins (`a/`/`b/`
+  prefixes forced, no external driver, no textconv, non-ASCII literal - a user's `diff.noprefix`/
+  `diff.mnemonicPrefix`/`diff.external` otherwise re-shapes or replaces the patch the parsers read: the round-12
+  G1 finding, a SILENT pass); a chunk whose `diff --git` line still cannot be seeded is skipped with a notice;
+  the header paths are C-unquoted like the seed; the tree list (`ls-tree`) is read `-z`, never quoted; every file
+  is read `--text` (git's own binary detection - one NUL byte - or a `binary` attribute otherwise hides a modified
+  file behind `Binary files differ`, the round-13 P0); an empty hunk line is a blank context line; GIT_DIFF_OPTS
+  is scrubbed from the git reads (it outranks an explicit `--unified`); lines are split on git's `\n` only, from
+  bytes (line COUNTING follows git - a CR-joined pseudo-line under `str.splitlines()` lost or gained its `+`,
+  the round-14 review; a tag inside an added line counts, TAG_RE being a substring search by design, and the
+  CR byte is G52's to reject); the staged diff
+  is scoped to the paths this gate parses (SCOPE_PATHSPECS, one list with TEST_TS_RE), so `--text` never
+  renders an icon or a corpus blob.
+  Recorded residual: a move git does not pair as a rename
+  (a rewrite below the similarity threshold) is a deletion to this leg and needs a tag naming the OLD
+  path. The added-line tags are collected per file, so an unclosed tag opener in one file cannot borrow
+  a `]` from another; the diff reads run with `core.quotepath` off and every name list (`ls-files`, `ls-tree`) is
+  read `-z`, so a non-ASCII path arrives unquoted in both planes
+  and its HEAD blob is found; a HEAD blob git still cannot show skips with a notice, never a silent
+  pass. A rename stays within the parsed set (the pathspec limits both sides) and a move out of it arrives
+  as a deletion whose HEAD blob is read on the test-scope-filtered deleted-file path (the round-15 probe:
+  a separate old-path scope clause was equivalent and is gone); every pathspec is `:/`-anchored and the
+  tracked list is `ls-files --full-name -- :/` and HEAD's tree `ls-tree --full-tree`, so the gate reads the same set from any CWD (a bare
+  pathspec and a bare `ls-files` are CWD-relative - the round-16 probe). The added-line tag join treats
+  `+++` as a header only
+  before a chunk's first `@@`, so an added body line beginning `++ ` cannot split a wrapped tag.
 
 WHAT IT FLAGS (in a TEST file - *.test.*/*.spec.* or a *.rs under tests/ or a #[cfg(test)] block):
   Rust markers:  #[ignore]  #[cfg(ignore)]  #[should_panic]
@@ -45,15 +93,28 @@ Exit:  0 = no unjustified suppression (or no test files yet); 1 = an unjustified
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 
 # --- test-file scope --------------------------------------------------------------------------
-TEST_TS_RE = re.compile(r"\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs)$")
+_TEST_KINDS = ("test", "spec")
+_TEST_EXTS = ("ts", "tsx", "js", "jsx", "mjs", "cjs")
+TEST_TS_RE = re.compile(r"\.(?:" + "|".join(_TEST_KINDS) + r")\.(?:" + "|".join(_TEST_EXTS) + r")$")
+# The staged-diff pathspec = exactly the paths this gate parses (`.rs` + the TS test files), derived from the same
+# lists as TEST_TS_RE: `--text` renders every file as text, so an UNSCOPED diff would feed each staged icon or
+# corpus blob to the parsers (the round-14 finding); a rename OUT of this set shows as a deletion - the safe
+# direction (its HEAD blob is read and a tag naming the old path is required).
+# `:/` anchors each pathspec at the repo root - a bare pathspec (and a bare `ls-files`) is CWD-relative, so a gate
+# run from a sub-directory would read a subtree only (the round-16 probe from `src-tauri/`).
+SCOPE_PATHSPECS = (":/*.rs", *(f":/*.{k}.{e}" for k in _TEST_KINDS for e in _TEST_EXTS))
 TESTS_DIR_RE = re.compile(r"(?:^|/)tests/")        # a *.rs under tests/ is wholly test code
 
 # --- suppression markers (CODE tokens, not prose) ---------------------------------------------
@@ -236,7 +297,7 @@ def _cfg_test_ranges(text: str) -> set[int]:
     or a lifetime-eaten `{` never miscounts the depth. The `#[cfg(test)]` attribute itself is detected
     over _rs_attr_joined, so even a line-wrapped `#[cfg(\n test\n)]` is scope-detected. Multiple blocks
     supported; an unterminated block scopes to EOF (safe over-include)."""
-    lines = text.splitlines()
+    lines = _lines(text)
     code = _rs_structural(lines)                          # literals/comments blanked -> structural braces
     joined = _rs_attr_joined(lines)                       # multi-line attrs collapsed -> detect a wrapped #[cfg(test)]
     out: set[int] = set()
@@ -266,7 +327,7 @@ def test_scope_lines(text: str, relpath: str) -> set[int] | None:
     #[cfg(test)] block(s)."""
     p = relpath.replace("\\", "/")
     if TEST_TS_RE.search(p) or (p.endswith(".rs") and TESTS_DIR_RE.search(p)):
-        return set(range(1, len(text.splitlines()) + 1))
+        return set(range(1, len(_lines(text)) + 1))
     if p.endswith(".rs"):
         return _cfg_test_ranges(text)
     return None
@@ -325,7 +386,7 @@ def scan_markers(text: str, relpath: str, only_lines: set[int] | None = None) ->
     scope = test_scope_lines(text, relpath)
     if not scope:
         return []
-    lines = text.splitlines()
+    lines = _lines(text)
     rust = relpath.replace("\\", "/").endswith(".rs")
     markers = RUST_MARKERS if rust else TS_MARKERS
     match_text = _rs_attr_joined(lines) if rust else [_line_comment_stripped(ln) for ln in lines]
@@ -342,17 +403,67 @@ def scan_markers(text: str, relpath: str, only_lines: set[int] | None = None) ->
     return out
 
 
+def _lines(text: str) -> list[str]:
+    """(pure) git's line model: split on `\\n` ONLY - a lone CR or form feed stays inside its line (under
+    `str.splitlines()` it opened a new line, and a CR-joined pseudo-line forged a tag / a definition: the 2026-09-08
+    review's round 14); a trailing newline ends the last line without opening an empty one."""
+    parts = text.split("\n")
+    if parts and parts[-1] == "":
+        parts.pop()
+    return parts
+
+
+def _decode(raw: bytes) -> str:
+    """(pure) A git child's bytes as text - decoded here, never through a text-mode pipe, so no universal-newline
+    translation turns a lone CR into a line break before `_lines` sees it."""
+    return raw.decode("utf-8", errors="replace")
+
+
 def git(*args: str) -> tuple[int, str]:
-    p = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return p.returncode, p.stdout
+    p = subprocess.run(["git", *args], env=_git_env(), capture_output=True)
+    return p.returncode, _decode(p.stdout)
+
+
+# The diff SYNTAX the parsers rely on, pinned on the command line: a `-c` outranks every config file and the
+# flags outrank the attributes, so the keys below cannot be re-shaped by a user's or the repo's git config (the
+# 2026-09-08 residual-closure review, rounds 12-13: `diff.noprefix=true` left every `diff --git` line unseedable
+# and a pair-less deletion passed SILENTLY; `diff.mnemonicPrefix=true` re-keyed a deleted file to `c/...`;
+# `diff.suppressBlankEmpty=true` elided blank context lines and compressed a tag window; a `diff.external`
+# driver or a textconv filter replaced the patch text or failed the read into a skip-with-notice; git's own
+# binary detection - one NUL byte - or a `binary` attribute hid a modified file behind `Binary files differ`):
+# non-ASCII paths literal, `a/`/`b/` prefixes forced, blank context lines never elided, hunks never merged, paths
+# never relative, no external driver, no textconv, every file read as text, no colour. The one environment knob
+# git honours OVER the command line, GIT_DIFF_OPTS (it overrides an explicit `--unified`), is scrubbed from every
+# git read (`_git_env`). Named residual: `diff.algorithm`/`diff.indentHeuristic` choose between EQUIVALENT
+# renderings of an ambiguous change - every removed line is still a `-` line and every added line a `+` line,
+# so no verdict flips. One constant pair + one scrub list on every DIFF read; every NAME LIST is read `-z`
+# (NUL-separated, never quoted - the round-15 finding: the fail-closed --full mirrors listed `ls-files` newline-split
+# and a quoted non-ASCII name failed their extension test) - both pinned by the canary.
+# Lines are split on git's `\n` ONLY and every git read is decoded from BYTES (`_lines` / `_decode`): under
+# `str.splitlines()` + a text-mode pipe's universal newlines, a lone CR or form feed inside a line opened a new
+# line: a CR-joined comment forged a definition line and an added-line map desynced from its blob's numbering
+# (the round-14 finding); the CR byte itself is G52's to reject at L1.
+GIT_DIFF_SYNTAX = ("-c", "core.quotepath=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+                   "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.suppressBlankEmpty=false",
+                   "-c", "diff.relative=false", "-c", "diff.interHunkContext=0")
+GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--text", "--no-color")
+SCRUBBED_GIT_ENV = ("GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF")
+
+
+def _git_env() -> dict[str, str]:
+    """The git child's environment without the knobs git honours OVER the command line (SCRUBBED_GIT_ENV)."""
+    return {k: v for k, v in os.environ.items() if k not in SCRUBBED_GIT_ENV}
 
 
 def _candidate_test_files() -> list[str]:
-    rc, out = git("ls-files")
-    if rc != 0:
+    rc, out = git("ls-files", "-z", "--full-name", "--", ":/")      # -z: never quoted (the round-15 finding: a quoted non-ASCII name
+    if rc != 0:                             # failed the extension test and this fail-closed mirror scanned nobody);
+                                            # --full-name -- :/ lists the whole tree from any CWD
         return []
     files = []
-    for f in out.splitlines():
+    for f in out.split("\0"):
+        if not f:
+            continue
         p = f.replace("\\", "/")
         if TEST_TS_RE.search(p) or p.endswith(".rs"):     # any .rs may carry a #[cfg(test)] block
             files.append(f)
@@ -373,7 +484,9 @@ def _scan_hunks(diff_text: str, relpath: str) -> list[str]:
     # split into hunks; within a hunk, index every body line so the +/-WINDOW tag window is precise
     hunks = re.split(r"(?m)^(?=@@ )", diff_text)
     for hunk in hunks:
-        body = [ln for ln in hunk.splitlines() if ln[:1] in (" ", "+", "-")]
+        # An EMPTY line inside a hunk is a blank context line (`diff.suppressBlankEmpty=true` renders ' ' as '';
+        # the round-13 finding: dropping them compressed the +/-WINDOW tag window) - kept as ' '.
+        body = [ln or " " for ln in _lines(hunk) if ln[:1] in (" ", "+", "-") or ln == ""]
         if not body:
             continue
         flagged: list[tuple[int, str]] = []     # (body-index, label)
@@ -449,22 +562,267 @@ def run_full() -> int:
     return 0
 
 
+def deleted_file_assertions(text: str, relpath: str) -> list[str]:
+    """(pure) The assertion lines a DELETED file's HEAD blob carried inside its TEST scope (a whole tests/ or
+    *.test.* file, else its #[cfg(test)] blocks) - string/comment-blanked like the hunk scan, so a prose
+    `expect(` is not one. A production module's plain `.expect(` outside any test scope is NOT a test
+    change and yields nothing. Tags the file carried are irrelevant here: they justified earlier edits."""
+    scope = test_scope_lines(text, relpath)
+    if not scope:
+        return []
+    rust = relpath.replace("\\", "/").endswith(".rs")
+    return [line.strip()[:80] for i, line in enumerate(_lines(text), 1)
+            if i in scope and ASSERT_RE.search(_string_blanked(_line_comment_stripped(line), tick=not rust))]
+
+
+def added_line_tags(diff_text: str) -> list[str]:
+    """(pure) Every [Test-Change] tag found in the ADDED lines of a unified diff, the added lines joined PER
+    FILE (a tag wrapped over two comment lines is still one tag; an unclosed opener in one file cannot
+    borrow a `]` from another). `+++` headers and removed lines are not added lines. The input is a git
+    unified diff: every file section is introduced by `diff --git`, which resets the header state."""
+    tags: list[str] = []
+    buf: list[str] = []
+    in_hunk = False                       # `+++` is a header only BEFORE a chunk's first `@@`
+
+    def flush() -> None:
+        if buf:
+            tags.extend(mt.group(0) for mt in TAG_RE.finditer("\n".join(buf)))
+            buf.clear()
+
+    for ln in _lines(diff_text):
+        if ln.startswith("diff --git "):
+            flush()
+            in_hunk = False
+        elif ln.startswith("@@"):
+            in_hunk = True
+        elif not in_hunk and ln.startswith("+++ "):
+            flush()
+        elif in_hunk and ln.startswith("+"):
+            buf.append(ln[1:])
+    flush()
+    return tags
+
+
+def _names(needle: str, text: str, after_slash_ok: bool) -> bool:
+    """Does `text` carry `needle` as a whole path token? Bounded on BOTH sides so `tests/ab.rs` never covers
+    `b.rs` or `tests/b.rs`, and `tests/b.rs.bak` / `tests/b.rs-old` never cover `tests/b.rs` (a `.` may
+    follow only as sentence punctuation, not as an extension); a basename may follow a `/` (the tag spelled
+    a path), a path may not."""
+    before = r"(?<![A-Za-z0-9_.\-])" if after_slash_ok else r"(?<![A-Za-z0-9_.\-/])"
+    return re.search(before + re.escape(needle) + r"(?![A-Za-z0-9_\-/]|\.[A-Za-z0-9_])", text) is not None
+
+
+def deletion_justified(tags: list[str], relpath: str, shared_basenames: set[str] | None) -> bool:
+    """(pure) Does one of the added-line tags NAME the deleted file - its path, or its basename when no other
+    tracked file shares it (`shared_basenames`: the basenames HEAD's tree carries more than once; None when
+    the tree could not be listed, and then ONLY the path names the file - fail-closed, never permissive)?
+    One tag per retired file - a tag that names none of them justifies none of them."""
+    p = relpath.replace("\\", "/")
+    base = p.rsplit("/", 1)[-1]
+    if any(_names(p, t, False) for t in tags):
+        return True
+    if shared_basenames is None or base in shared_basenames:
+        return False
+    return any(_names(base, t, True) for t in tags)
+
+
+_DIFF_GIT_QUOTED = re.compile(r'^diff --git "a/((?:[^"\\]|\\.)*)" "b/((?:[^"\\]|\\.)*)"')
+
+
+def _unquote(s: str) -> str:
+    """(pure) Undo git's C-style path quoting: `\\"`, `\\\\`, `\\t`, `\\n`, `\\r` and `\\ooo` octal bytes (UTF-8)."""
+    out = bytearray()
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            if i + 3 < len(s) and all(ch in "01234567" for ch in s[i + 1:i + 4]):
+                out.append(int(s[i + 1:i + 4], 8))
+                i += 4
+                continue
+            n = s[i + 1]
+            out.extend({"n": b"\n", "t": b"\t", "r": b"\r"}.get(n, n.encode("utf-8")))
+            i += 2
+            continue
+        out.extend(c.encode("utf-8"))
+        i += 1
+    return out.decode("utf-8", errors="replace")
+
+
+def _diff_git_paths(line: str) -> tuple[str, str]:
+    """(pure) The (old, new) paths of a `diff --git a/<old> b/<new>` line; ('', '') when the line is not that
+    header. git quotes a path only when it carries a `"`, a `\\` or a control char (non-ASCII too unless
+    `core.quotepath` is off, as it is on this gate's reads) - a SPACE is NOT quoted, so the plain form can
+    carry ` b/` inside a path. For a non-rename chunk old == new, so the line is split at the ` b/` whose
+    halves agree (the round-11 G1 finding: the first ` b/` truncated `tests/notes b/x.rs` to `tests/notes`,
+    and a binary-marked deletion of it - no `---`/`+++` pair to refine - fell out of scope unseen); a rename
+    (old != new) has no agreeing split and takes the first ` b/`, which its mandatory `rename from`/`rename
+    to` lines then correct."""
+    m = _DIFF_GIT_QUOTED.match(line)
+    if m:
+        return _unquote(m.group(1)), _unquote(m.group(2))
+    rest = line[len("diff --git "):] if line.startswith("diff --git ") else ""
+    if rest.startswith("a/"):
+        for i in [k for k in range(len(rest)) if rest.startswith(" b/", k)]:
+            if rest[2:i] == rest[i + 3:]:
+                return rest[2:i], rest[i + 3:]
+        if " b/" in rest:
+            old, new = rest.split(" b/", 1)
+            return old[2:], new
+    return "", ""
+
+
+def _header_path(s: str) -> str:
+    """(pure) The path of a `--- `/`+++ `/`rename from `/`rename to ` header line: C-unquoted when git quoted it
+    (the round-12 G1 finding: the refinements stripped the marks but kept the escapes, so a quoted path with a
+    content hunk or a rename overwrote the correctly unquoted seed and its HEAD blob was unreadable - skipped)."""
+    s = s.strip()
+    return _unquote(s[1:-1]) if len(s) >= 2 and s[0] == '"' and s[-1] == '"' else s
+
+
+def split_staged_diff(diff_text: str) -> list[tuple[str, str, bool, str]]:
+    """(pure) [(old_path, new_path, is_deletion, chunk)] per file of ONE unified diff. A chunk starts at its
+    `diff --git a/<old> b/<new>` line and its identity is SEEDED from that line - git emits it for EVERY
+    chunk, whereas the `--- `/`+++ ` pair is absent from a content-identical rename, an empty or binary
+    add, a mode-only change and an empty deletion (the round-9 and round-10 G1 findings: two shape-by-shape
+    patches before this SHAPE rule) - then refined by the headers `--- a/...` / `+++ b/...` (a `+++
+    /dev/null` or a `deleted file mode` line marks a deletion, whose identity is the old path) and by
+    `rename from` / `rename to`, all read only BEFORE the chunk's first `@@` (position, not shape). A
+    rename carries both paths, so a move OUT of the test namespace is still scanned (the round-7 G1
+    finding). The input is a git unified diff: every file section is introduced by `diff --git`, which is
+    what resets the header state. One combined diff keeps git's rename pairing - a per-path diff of a
+    renamed file's new name renders it as brand-new (every line `+`), and a removed assertion never
+    appears (the round-6 G1 finding). The header paths are C-unquoted like the seed (the round-12 finding). A
+    chunk that seeds nothing (a `diff --git` line without the `a/` prefix the syntax pins force) is kept with
+    EMPTY paths so run_diff can notice it - never dropped silently."""
+    out: list[tuple[str, str, bool, str]] = []
+    cur: list[str] = []
+
+    def flush() -> None:
+        if not cur:
+            return
+        old, new = _diff_git_paths(cur[0])
+        deleted = False
+        for ln in cur[1:]:
+            if ln.startswith("@@"):
+                break                                 # headers precede the first hunk; a body line never re-keys
+            if ln.startswith("--- "):
+                p = _header_path(ln[4:])
+                if p != "/dev/null":
+                    old = p[2:] if p.startswith("a/") else p
+            elif ln.startswith("+++ "):
+                p = _header_path(ln[4:])
+                if p == "/dev/null":
+                    deleted = True
+                else:
+                    new = p[2:] if p.startswith("b/") else p
+            elif ln.startswith("rename from "):
+                old = _header_path(ln[12:])
+            elif ln.startswith("rename to "):
+                new = _header_path(ln[10:])
+            elif ln.startswith("deleted file mode"):
+                deleted = True
+        text = "\n".join(cur) + "\n"
+        if not (old or new):
+            out.append(("", "", False, text))     # unseeded: run_diff notices it, never drops it silently
+            return
+        if deleted:
+            out.append((old or new, old or new, True, text))
+        else:
+            out.append((old or new, new or old, False, text))
+
+    for ln in _lines(diff_text):
+        if ln.startswith("diff --git "):
+            flush()
+            cur = [ln]
+        else:
+            cur.append(ln)
+    flush()
+    return out
+
+
+def shared_basenames_of(paths: list[str]) -> set[str]:
+    """(pure) The basenames that occur more than once in `paths`."""
+    seen: dict[str, int] = {}
+    for line in paths:
+        base = line.replace("\\", "/").rsplit("/", 1)[-1]
+        seen[base] = seen.get(base, 0) + 1
+    return {b for b, n in seen.items() if n > 1}
+
+
+def _shared_basenames(staged_new_paths: list[str]) -> set[str] | None:
+    """The basenames HEAD's tree UNION the staged new paths carry more than once (a tag naming one of these
+    alone names nothing) - the union, because a commit that deletes `tests/b.rs` and adds `src/b.rs` makes
+    `b.rs` ambiguous in the resulting tree although HEAD had it once (the round-8 G1 finding); None - with a
+    notice - when the tree cannot be listed, which makes the naming rule PATH-only."""
+    # -z: NUL-separated, never quoted; --full-tree: the whole tree from any CWD (the round-16 finding: a CWD-relative
+    # list from a sub-directory holding one of two `mod.rs` called the basename unique)
+    rc, out = git("ls-tree", "-r", "-z", "--full-tree", "--name-only", "HEAD")
+    if rc != 0:
+        print("[G70] HEAD tree unlistable - the basename rule is off (a deleted file is named by its path only) "
+              "with notice")
+        return None
+    head = [p for p in out.split("\0") if p]
+    return shared_basenames_of(head + [p for p in staged_new_paths if p not in head])
+
+
 def run_diff() -> int:
     rc, _ = git("rev-parse", "--verify", "--quiet", "HEAD")
     if rc != 0:
         print("[G70] no diff base (fresh repo) — pass (fail-open; the L2/L4 full-tree mirror is fail-closed)")
         return 0
-    rc, out = git("diff", "--cached", "--name-only", "--diff-filter=ACMR")
-    changed = []
-    if rc == 0:
-        for f in out.splitlines():
-            p = f.replace("\\", "/")
-            if TEST_TS_RE.search(p) or p.endswith(".rs"):
-                changed.append(f)
+    # ONE combined diff, rename detection forced, deletions included - then split per file (a per-path diff
+    # of a renamed file's new name would render it as brand-new and lose every `-` line; the round-6 G1
+    # finding).
+    rc, whole = git(*GIT_DIFF_SYNTAX, "diff", "--cached", f"--unified={WINDOW}", *GIT_DIFF_FLAGS, "-M",
+                    "--diff-filter=ACMRDT", "--", *SCOPE_PATHSPECS)
+    if rc != 0:
+        print(f"[G70] git diff --cached failed ({whole.strip()[:120]}) - skipped with notice")
+        return 0
+    tags: list[str] | None = None                 # the added-line tags, resolved once if a deletion needs them
+    shared: set[str] | None = None                # the shared basenames, resolved once for the naming rule
+    shared_known = False
+    chunks = split_staged_diff(whole)
+    staged_new = [new for old, new, is_del, _ in chunks if new and not is_del]
     violations = []
-    for f in changed:
-        rc, dt = git("diff", "--cached", f"--unified={WINDOW}", "--no-color", "--", f)
-        if rc != 0 or not dt:
+    for old, f, is_deletion, dt in chunks:
+        if not (old or f):
+            print(f"[G70] a staged chunk's header could not be seeded ({_lines(dt)[0][:80]}) - skipped with notice")
+            continue
+        p = f.replace("\\", "/")
+        # The NEW path decides: the pathspec limits BOTH sides of a rename to the parsed set, and a move OUT
+        # of it arrives as a deletion (its HEAD blob is read, a tag naming the old path is required) - the
+        # round-15 probe found a separate old-path clause equivalent under SCOPE_PATHSPECS, so it is gone.
+        in_scope = TEST_TS_RE.search(p) or p.endswith(".rs")
+        if not in_scope:
+            continue
+        if is_deletion:
+            # A DELETED file takes its own path (2026-09-08, the residual-closure review): the hunk scan's
+            # deletion-run window would span the whole file, so any historical tag inside it cleared every
+            # assertion; and only the file's TEST scope counts (a production module's `.expect(` is no test
+            # change). The deletion EVENT is justified by a [Test-Change] tag on an ADDED line that NAMES the
+            # file - its path, or its basename when no other tracked file shares it.
+            rc, blob = git("show", f"HEAD:{f}")
+            if rc != 0:
+                print(f"[G70] deleted file {f}: HEAD blob unreadable - skipped with notice")
+                continue
+            found = deleted_file_assertions(blob, f)
+            if not found:
+                continue
+            if tags is None:
+                tags = added_line_tags(whole)
+            if not shared_known:
+                shared = _shared_basenames(staged_new)
+                shared_known = True
+            if deletion_justified(tags, f, shared):
+                print(f"[G70] deleted test file {f}: its {len(found)} test assertion(s) are justified by a "
+                      "[Test-Change] tag on an added line of the staged diff that names the file")
+                continue
+            how = "its path" if shared is None or p.rsplit("/", 1)[-1] in shared else "its basename or path"
+            for v in found:
+                violations.append(f"{f}: removed test assertion of a DELETED file: {v} (add a [Test-Change: …] "
+                                  f"tag on an added line of the staged diff naming the file INSIDE the tag's "
+                                  f"<ref> slot, by {how})")
             continue
         for v in _scan_hunks(dt, f):
             violations.append(f"{f}: {v}")

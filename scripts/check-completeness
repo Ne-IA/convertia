@@ -41,6 +41,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -166,14 +169,17 @@ def g22_membership_gaps(supported: set[str], has_fixture: set[str], has_test: se
 
 def _git_tracked(root: Path, *patterns: str) -> list[str] | None:
     """The tracked file paths matching the git pathspecs, or None if git could not be consulted."""
+    # -z --full-name -- :/<pattern>, from bytes (the 2026-09-08 residual-closure review's round-16 finding: this list was
+    # newline-split and quotepath-default, so a handler in a non-ASCII-named file was skipped by the CONTENT scan below
+    # and its missing partner test passed silently); `:/` anchors each pattern at the repo root from any CWD.
     try:
-        r = subprocess.run(["git", "ls-files", *patterns], cwd=str(root),
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        r = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z", "--full-name", "--", *[f":/{p}" for p in patterns]],
+                           cwd=str(root), capture_output=True)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0:
         return None
-    return [p for p in r.stdout.splitlines() if p.strip()]
+    return [p for p in r.stdout.decode("utf-8", errors="replace").split("\0") if p.strip()]
 
 
 def check_g23(root: Path) -> tuple[list[str], int]:

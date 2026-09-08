@@ -13,6 +13,9 @@ import importlib.machinery
 import importlib.util
 import sys
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-rs-test-refs"
 _loader = importlib.machinery.SourceFileLoader("crtr", str(SCRIPT))
@@ -108,6 +111,10 @@ record("(o') plain-string phantom: a strand whose name reappears at line-start i
 # --- (m) LIVE real-repo regression guard ----------------------------------------------------------
 record("(m) LIVE: check-rs-test-refs passes on the real repo (every ipc/** ref resolves; the glob excluded)",
        m.main([]) == 0)
+
+record("source pin: the tracked-file list is read `ls-files -z` (NUL-separated, never quoted), so a non-ASCII IPC path cannot dodge"
+       " the scan by arriving octal-quoted (the 2026-09-08 review's round-15 class on the sibling gates)",
+       '_git("ls-files", "-z", "--full-name", "--", ":/")' in SCRIPT.read_text(encoding="utf-8") and '_git("ls-files")' not in SCRIPT.read_text(encoding="utf-8"))
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-rs-test-refs] {len(results) - len(failed)}/{len(results)} assertions passed (G73).")

@@ -87,6 +87,9 @@ import urllib.parse
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Callable, NamedTuple
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1618,7 +1621,6 @@ def run(
         return 0
 
     plans = plan_compiles(targeted, seam, triple, cache_root)
-    built = 0
     hits = 0
     for plan in plans:
         # Every row the entry yields, not just the ones that declared a configure line: `ffmpeg`
@@ -1647,12 +1649,12 @@ def run(
                 "- ours discarded"
             )
             continue
-        built += 1
         note(f"compiled {plan.entry_name} [{members}] from {len(plan.sources)} verified source(s)")
 
     verb = "would compile" if check_only else "compiled"
-    # `built` and `len(plans) - hits` are equal on the non-check path, so the ternary was an
-    # equivalent mutant - the sibling uses the unconditional form and so does this now.
+    # A `built` counter and `len(plans) - hits` are equal on the non-check path, so a ternary
+    # over them was an equivalent mutant - the sibling uses the unconditional form and so does
+    # this; the counter itself went with the ternary (G9 invariant h caught its remains).
     note(f"{triple}: {hits} cache hit(s), {verb} {len(plans) - hits} entr(ies)")
     return 0
 

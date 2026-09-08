@@ -79,6 +79,9 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "stage-engines"

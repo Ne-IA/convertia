@@ -7,7 +7,7 @@ docs/process/, docs/plan/). It enforces TWO families of checks:
   * FORMAT checks (_format.md §7) — the plan-box grammar: marker validity, sub-box consistency,
     header well-formedness, tag validity, reference resolution, needs:-targets exist + acyclic,
     annotation pairing, numbering gap-freeness.
-  * DOC checks 1..29 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
+  * DOC checks 1..30 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
     hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
     parity, the G68 doc-graph leg, the G69 struct-map leg, the check-27 gate-posture-transition leg, etc.
 
@@ -16,8 +16,8 @@ and flip to fail-closed the moment the target lands — e.g. the format-membersh
 stay target-absent until their phase fills the §04 handlers; G24a made exactly that flip at P3.30
 when `tests/corpus/manifest.toml` landed. This file is L(-1) security-critical (G71).
 
-Build status: foundation + the 8 FORMAT checks are implemented + self-tested. The doc-wide checks
-1..29 are added incrementally (P0.3.5 onward, each with its G24 negative fixture); until a doc check is
+Build status: foundation + the 9 FORMAT checks are implemented + self-tested. The doc-wide checks
+1..30 are added incrementally (P0.3.5 onward, each with its G24 negative fixture); until a doc check is
 implemented it is listed in CHECKS as a NotImplemented placeholder that the meta-self-test asserts.
 
 Usage: plan-lint [--check <id>] [--json] [--quiet] [--max-per-check N] [--root <dir>]
@@ -27,15 +27,20 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import hashlib
 import json
 import posixpath
 import re
+import string
 import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -348,7 +353,7 @@ def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  DOC checks (build-gates.md §6, checks 1..29) — added incrementally; active-now ones first.
+#  DOC checks (build-gates.md §6, checks 1..30) — added incrementally; active-now ones first.
 # =============================================================================================
 _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
 # the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 19 classes
@@ -1866,8 +1871,154 @@ def doc29_stale_liveness(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  Check registry — FORMAT checks live; doc checks 1..29 added incrementally (P0.3.5 + P1.66).
+#  Check registry — FORMAT checks live; doc checks 1..30 added incrementally (P0.3.5 + P1.66).
 # =============================================================================================
+# --- check 30: spec-restatement fidelity (the P4.33 QuarantinedByOs reconcile's class catcher) ---------
+# One canonical user-facing string has ONE home — the §2.8.2 / §2.9.1 tables in 02-guarantees.md — and every
+# other docs/spec/** file - or the SSOT, which outranks the spec - that quotes it must quote it VERBATIM
+# (docs/plan quotes are history, out of scope - a named residual) (whitespace-squashed, the markdown `\"` escape
+# undone). The drift this catches reached `main` once: §7.2.4 restated the QuarantinedByOs row in different
+# words, both texts claimed to be canonical, and no gate compared them. The in-crate bind in `crate::outcome`
+# covers the three cross-file sites it enumerates; this is the general rule over the files that crate does
+# not read. A RESTATEMENT has quotation shape: a `"…"` span in the other file carrying any five CONSECUTIVE
+# tokens of a canonical string (words case-folded with their punctuation stripped — a case- or
+# punctuation-only difference is a drift to the verbatim test and must not hide a run from this one, the
+# round-4 G1 finding: `text only — layout and images are dropped` sat in 05-ui-ux unseen), without the
+# whole string being present, is quoting it and has drifted (a sliding window sees a change wherever some
+# five-token run excludes it; a string of NINE tokens or fewer has positions every run shares — a change
+# at token i is invisible iff N-5 <= i <= 4 — so its quotations are judged by token similarity AS WELL:
+# the same length within one token and all but one token in common, the round-3 G1 finding that 16 of
+# the 53 strings had an unseen middle). Bold or plain prose that shares the
+# words — a UI path spelled out as steps, a format's
+# feature list, a paraphrase — is description, not restatement, and is left alone (calibrated on the live
+# tree: the §6.2.4 "Open System Settings → Privacy & Security" steps and the presentations matrix's
+# "SmartArt, modern charts, and newer transitions" description are exactly those). Stdlib-only; skip
+# (target-absent) while 02-guarantees.md carries no catalog section, fail-closed once it does.
+_CANON_BOLD_RE = re.compile(r'\*\*"(.+?)"\*\*')
+_CANON_SECTIONS = ("### 2.8.2", "### 2.9.1")
+# A quotation span is the SHORTEST `"…"` run that is word-bounded outside (a `"` glued to a word, like
+# `12"`, is not a quote mark) and crosses no markdown mark (`*`, `|`). It MAY contain inner `"…"` fragments
+# of up to 200 characters, because two catalog strings carry one (`click "Open Anyway" next to`, `The
+# output name "{name}"`) and a DRIFTED quotation of either keeps it — the first cut of this check forbade
+# an inner quote and so saw NEITHER string, the historical §7.2.4 drift included (the round-1 G1 finding;
+# the nested-drift and historical-replay legs pin the fix). Lazy matching takes the first valid closing
+# mark, so an inner fragment is consumed only when the mark after it is glued to a word (`"Open`); a
+# fragment opening with a non-word char (`"{name}"`) closes the span early and splits the quotation in
+# two — harmless for a DRIFTED quotation (its halves still carry the runs) and harmless for a VERBATIM one
+# only because every verbatim-present canonical string is blanked out of the body BEFORE the spans are cut
+# (the round-2 G1 finding: blanking the span text instead let a correct `"{name}"` quotation fire). A
+# span over 400 characters (the longest catalog string is under 200) is a sweep between two unrelated
+# marks, not a quotation, and is discarded — a naive pairing pairs a CLOSING mark with the next OPENING
+# one after any odd mark and sweeps the prose between two unrelated quotations into a bogus span. Every
+# clause has its own canary leg. Named residuals (each measured; none occurs in docs/spec today): a
+# drifted quotation whose inner fragment exceeds 200 characters, or that carries a `*`/`|` inside the
+# marks, or that is set in underscore italics (`_"…"_` — `_` is a word char, so the mark does not open),
+# or whose closing mark is glued to a word, cuts no span and is not seen; a two-token change to a string
+# of nine tokens or fewer that leaves no five-token run intact is a paraphrase to both rules; a canonical string
+# of nine tokens or fewer that ITSELF carries an inner quote would split its quotation into two halves too short
+# for either rule - none exists (the short strings carry no inner quote; the canary pins that precondition on the
+# real catalog, the round-12 review). Curly quotes are normalised to the straight mark before the spans are cut.
+_QUOTE_SPAN_RE = re.compile(r'(?<!\w)"((?:[^"*|]|"[^"*|]{1,200}")+?)"(?!\w)')
+_SPAN_MAX = 400
+_ANCHOR_WORDS = 5
+_SHORT_WORDS = 9      # at most nine tokens: every five-token run shares a position, so runs cannot see a mid drift
+
+
+def _tokens(s: str) -> list[str]:
+    """The comparison tokens of a string: each whitespace-separated word case-folded with its leading and
+    trailing ASCII punctuation stripped; a word that was only punctuation (a bare `-`, `&`) drops out. An
+    em dash is not ASCII punctuation and stays a token on both sides alike."""
+    return [t for t in (w.strip(string.punctuation).casefold() for w in s.split()) if t]
+
+
+def _restates(span_tokens: list[str], canonical: str) -> bool:
+    """Does any span (given as its space-joined tokens) carry any `_ANCHOR_WORDS`-token run of `canonical`?"""
+    words = _tokens(canonical)
+    runs = [" ".join(words[i:i + _ANCHOR_WORDS]) for i in range(len(words) - _ANCHOR_WORDS + 1)]
+    return any(f" {run} " in f" {st} " for st in span_tokens for run in runs)
+
+
+def _short_drift(span_tokens: str, canonical: str) -> bool:
+    """Is the span (its space-joined tokens) a one-token-off quotation of the SHORT `canonical` string? Same
+    token count within one, and all but one of the canonical tokens matched in order (difflib's matching
+    blocks) — a two-token change is a paraphrase and is left to the run anchor; a verbatim quotation never
+    reaches here (blanked first)."""
+    a, b = span_tokens.split(), _tokens(canonical)
+    if abs(len(a) - len(b)) > 1:
+        return False
+    matched = sum(bl.size for bl in difflib.SequenceMatcher(None, a, b).get_matching_blocks())
+    return matched >= len(b) - 1
+
+
+def _squash_ws(s: str) -> str:
+    return " ".join(s.split())
+
+
+def _canonical_strings(guarantees: str) -> list[str]:
+    """Every `**"…"**` literal inside the §2.8.2 and §2.9.1 sections of 02-guarantees.md (a section runs to
+    the next `### ` heading), whitespace-squashed and unescaped the same way a quoting file is (the markdown
+    `\\"` escape undone, curly quotes straightened) so a row and its quotation compare alike; strings
+    shorter than one anchor are not bindable."""
+    out: list[str] = []
+    lines = guarantees.splitlines()
+    for i, line in enumerate(lines):
+        if not any(line.startswith(h) for h in _CANON_SECTIONS):
+            continue
+        j = i + 1
+        while j < len(lines) and not lines[j].startswith("### "):
+            j += 1
+        out.extend(_squash_ws(m.group(1)).replace('\\"', '"').replace("\u201c", '"').replace("\u201d", '"')
+                   for m in _CANON_BOLD_RE.finditer("\n".join(lines[i:j])))
+    return [s for s in out if len(s.split()) >= _ANCHOR_WORDS]
+
+
+def doc30_spec_restatement_fidelity(ctx: Ctx) -> list[Finding]:
+    """Check 30: every quotation of a §2.8.2/§2.9.1 canonical string in a docs/spec/** file or the SSOT (a `"…"` span
+    carrying any five consecutive tokens of it — or, for a string of nine tokens or fewer, one token off;
+    tokens are case-folded, punctuation-stripped words) must be verbatim (squashed, `\\"` unescaped)."""
+    out: list[Finding] = []
+    source = "docs/spec/02-guarantees.md"
+    canon = _canonical_strings(ctx.docs.get(source, ""))
+    if not canon:
+        return out
+    for rel, text in sorted(ctx.docs.items()):
+        # The SSOT is in scope: it OUTRANKS the spec, so a drifted quotation there is the worse home (the round-15
+        # finding); docs/plan quotes are history (blockquote-wrapped, partial) - out of scope, a named residual.
+        if rel == source or not (rel.startswith("docs/spec/") or rel == "docs/SINGLE-SOURCE-OF-TRUTH.md"):
+            continue
+        # Curly quotes (U+201C/U+201D) are normalised to the straight mark first, so a curly-quoted quotation
+        # is judged like a straight one (the round-5 G1 residual, closed rather than named).
+        body = _squash_ws(text).replace('\\"', '"').replace("\u201c", '"').replace("\u201d", '"')
+        # Every string quoted VERBATIM — the exact string between two quote marks — is blanked out of the body
+        # BEFORE the spans are cut, so a correct quotation leaves no span whatever its inner shape (a
+        # `"{name}"` fragment would otherwise split it into two spans that a blanking of the span text can
+        # never match — the round-2 G1 finding), while authored text inside the same marks is NOT verbatim
+        # and stays visible (a body-wide blanking hid it — the round-3 G1 finding). Canonical strings can
+        # SHARE a run (the CleanupResidue and residue-annotation lines end alike), so a run found only inside
+        # another string that IS quoted verbatim vanishes with it. What remains is searched for EVERY string,
+        # the blanked ones included — a file that quotes a string correctly once and drifts in a second
+        # quotation is still a drift (one string, one home, every quotation verbatim).
+        reduced = body
+        for s in sorted(canon, key=len, reverse=True):
+            quoted_s = '"' + s + '"'
+            if quoted_s in reduced:
+                reduced = reduced.replace(quoted_s, '" "')
+        spans = [" ".join(_tokens(m.group(1))) for m in _QUOTE_SPAN_RE.finditer(reduced)
+                 if len(m.group(1)) <= _SPAN_MAX]
+        spans = [st for st in spans if st]
+        if not spans:
+            continue
+        for s in canon:
+            short = len(_tokens(s)) <= _SHORT_WORDS
+            if not _restates(spans, s) and not (short and any(_short_drift(st, s) for st in spans)):
+                continue
+            out.append(Finding("30:spec-restatement-fidelity", rel, 0,
+                               "quotes a §2.8.2/§2.9.1 canonical string but NOT verbatim - the catalog "
+                               f"row reads: \"{s}\" (one string, one home: quote it exactly, or paraphrase "
+                               "without a five-word run of it)"))
+    return out
+
+
 FORMAT_CHECKS = {
     "format:box-parse-completeness": fmt_box_parse_completeness,
     "format:marker-validity": fmt_marker_validity,
@@ -1910,8 +2061,9 @@ DOC_CHECKS = {
     "26:struct-map": doc26_struct_map,
     "27:gate-posture-transition": doc27_gate_posture_transition,
     "29:stale-liveness": doc29_stale_liveness,
+    "30:spec-restatement-fidelity": doc30_spec_restatement_fidelity,
 }
-CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # remaining doc checks 1..29 inserted as built
+CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # doc checks 1..30
 
 
 def run(ctx: Ctx, only: str | None = None, max_per_check: int | None = None) -> list[Finding]:

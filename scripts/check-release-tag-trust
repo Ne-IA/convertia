@@ -41,6 +41,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # check-run conclusions that DO NOT block a release (a green/irrelevant outcome).
 OK_CONCLUSIONS = {"success", "neutral", "skipped"}

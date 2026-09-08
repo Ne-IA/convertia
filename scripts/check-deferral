@@ -29,10 +29,14 @@ Exit:  0 = no unsuppressed marker (or no production files yet); 1 = a deferral/d
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -152,7 +156,7 @@ def is_suppressed(lines: list[str], idx: int, relpath: str) -> bool:
 def scan_text(text: str, relpath: str, only_lines: set[int] | None = None) -> list[tuple[int, str, str]]:
     """(pure) Return [(lineno, marker, line)] for unsuppressed markers. `only_lines` (1-based) limits
     reporting to those lines (the L1 new-added-lines mode); None = report all (the full-tree mode)."""
-    lines = text.splitlines()
+    lines = _lines(text)
     out: list[tuple[int, str, str]] = []
     in_block = False
     for i, line in enumerate(lines):
@@ -167,36 +171,103 @@ def scan_text(text: str, relpath: str, only_lines: set[int] | None = None) -> li
     return out
 
 
+def _lines(text: str) -> list[str]:
+    """(pure) git's line model: split on `\\n` ONLY - a lone CR or form feed stays inside its line (under
+    `str.splitlines()` it opened a new line, and a CR-joined pseudo-line forged a tag / a definition: the 2026-09-08
+    review's round 14); a trailing newline ends the last line without opening an empty one."""
+    parts = text.split("\n")
+    if parts and parts[-1] == "":
+        parts.pop()
+    return parts
+
+
+def _decode(raw: bytes) -> str:
+    """(pure) A git child's bytes as text - decoded here, never through a text-mode pipe, so no universal-newline
+    translation turns a lone CR into a line break before `_lines` sees it."""
+    return raw.decode("utf-8", errors="replace")
+
+
 def git(*args: str) -> tuple[int, str]:
-    p = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return p.returncode, p.stdout
+    p = subprocess.run(["git", *args], env=_git_env(), capture_output=True)
+    return p.returncode, _decode(p.stdout)
+
+
+# The diff SYNTAX the parsers rely on, pinned on the command line: a `-c` outranks every config file and the
+# flags outrank the attributes, so the keys below cannot be re-shaped by a user's or the repo's git config (the
+# 2026-09-08 residual-closure review, rounds 12-13: `diff.noprefix=true` left every `diff --git` line unseedable
+# and a pair-less deletion passed SILENTLY; `diff.mnemonicPrefix=true` re-keyed a deleted file to `c/...`;
+# `diff.suppressBlankEmpty=true` elided blank context lines and compressed a tag window; a `diff.external`
+# driver or a textconv filter replaced the patch text or failed the read into a skip-with-notice; git's own
+# binary detection - one NUL byte - or a `binary` attribute hid a modified file behind `Binary files differ`):
+# non-ASCII paths literal, `a/`/`b/` prefixes forced, blank context lines never elided, hunks never merged, paths
+# never relative, no external driver, no textconv, every file read as text, no colour. The one environment knob
+# git honours OVER the command line, GIT_DIFF_OPTS (it overrides an explicit `--unified`), is scrubbed from every
+# git read (`_git_env`). Named residual: `diff.algorithm`/`diff.indentHeuristic` choose between EQUIVALENT
+# renderings of an ambiguous change - every removed line is still a `-` line and every added line a `+` line,
+# so no verdict flips. One constant pair + one scrub list on every DIFF read; every NAME LIST is read `-z`
+# (NUL-separated, never quoted - the round-15 finding: the fail-closed --full mirrors listed `ls-files` newline-split
+# and a quoted non-ASCII name failed their extension test) - both pinned by the canary.
+# Lines are split on git's `\n` ONLY and every git read is decoded from BYTES (`_lines` / `_decode`): under
+# `str.splitlines()` + a text-mode pipe's universal newlines, a lone CR or form feed inside a line opened a new
+# line: a CR-joined comment forged a definition line and an added-line map desynced from its blob's numbering
+# (the round-14 finding); the CR byte itself is G52's to reject at L1.
+GIT_DIFF_SYNTAX = ("-c", "core.quotepath=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+                   "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.suppressBlankEmpty=false",
+                   "-c", "diff.relative=false", "-c", "diff.interHunkContext=0")
+GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--text", "--no-color")
+SCRUBBED_GIT_ENV = ("GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF")
+
+
+def _git_env() -> dict[str, str]:
+    """The git child's environment without the knobs git honours OVER the command line (SCRUBBED_GIT_ENV)."""
+    return {k: v for k, v in os.environ.items() if k not in SCRUBBED_GIT_ENV}
 
 
 def _tracked_production_files() -> list[str]:
-    rc, out = git("ls-files")
-    return [f for f in out.splitlines() if is_production_file(f)] if rc == 0 else []
+    # -z: NUL-separated, never quoted (the round-15 finding: a quoted non-ASCII production file failed the
+    # production test and this fail-closed mirror scanned nobody)
+    rc, out = git("ls-files", "-z", "--full-name", "--", ":/")     # --full-name -- :/ lists the whole tree from any CWD
+    return [f for f in out.split("\0") if f and is_production_file(f)] if rc == 0 else []
 
 
-def _added_lines(relpath: str, base: str | None) -> set[int]:
-    """1-based line numbers ADDED in the working/staged diff of relpath (for the L1 new-only mode)."""
-    diff_args = ["diff", "--unified=0", "--no-color"]
-    if base:
-        diff_args.append(base)
-    diff_args += ["--", relpath]
-    rc, out = git(*diff_args)
+def added_lines_of(diff_text: str) -> set[int]:
+    """(pure) 1-based NEW-side line numbers of the `+` lines of ONE file's unified diff. Inside a hunk EVERY
+    `+` line is an added line - one whose content begins `++` renders as `+++…` and is NOT a header (the
+    2026-09-08 residual-closure review's sweep of the `+++`-as-header class: the old `not startswith('+++')`
+    exclusion let a marker on such a line through the L1 leg); `---`/`+++` headers precede the first `@@`
+    and are skipped by position, not by shape. The `\\ No newline at end of file` marker is not a new-side
+    line (it shifted every later line of its hunk by one, so a marker on a file's unterminated last
+    line escaped the L1 leg)."""
     added: set[int] = set()
     new_ln = 0
-    for line in out.splitlines():
+    in_hunk = False
+    for line in _lines(diff_text):
         m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
         if m:
             new_ln = int(m.group(1))
+            in_hunk = True
             continue
-        if line.startswith("+") and not line.startswith("+++"):
+        if not in_hunk or line.startswith("\\"):
+            continue
+        if line.startswith("+"):
             added.add(new_ln)
             new_ln += 1
         elif not line.startswith("-"):
             new_ln += 1
     return added
+
+
+def _added_lines(relpath: str, base: str | None) -> set[int]:
+    """1-based line numbers ADDED in the working/staged diff of relpath (for the L1 new-only mode)."""
+    diff_args = [*GIT_DIFF_SYNTAX, "diff", "--unified=0", *GIT_DIFF_FLAGS]
+    if base:
+        diff_args.append(base)
+    # :(top,literal): repo-root-anchored (a bare pathspec is CWD-relative) AND literal — a bare `:/` pathspec reads a
+    # name bearing a metacharacter (`[`/`*`/`?`) as a wildmatch pattern (git-version/platform-dependent), so the literal
+    # magic makes the match exact (the round-16 review; the round-18 review corrected the empirical over-claim)
+    diff_args += ["--", f":(top,literal){relpath}"]
+    rc, out = git(*diff_args)
+    return added_lines_of(out)
 
 
 def run_full() -> int:
@@ -225,9 +296,16 @@ def run_diff() -> int:
     if base is None:
         print("[G8] no diff base (fresh repo) — pass (fail-open; the L2/L4 full-tree mirror is fail-closed)")
         return 0
-    rc, out = git("diff", "--cached", "--name-only", "--diff-filter=ACMR")
-    changed = [f for f in out.splitlines() if is_production_file(f)] if rc == 0 else []
+    # -z: NUL-separated and NEVER quoted - with core.quotepath on, a non-ASCII new production file arrived
+    # octal-quoted, failed the production-file test and its marker passed L1 (the round-12 G1 finding).
+    # the syntax pins apply to a name list too: `diff.relative=true` would make the names CWD-relative
+    rc, out = git(*GIT_DIFF_SYNTAX, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+    changed = [f for f in out.split("\0") if f and is_production_file(f)] if rc == 0 else []
     violations = []
+    # Recorded residual (the round-13 review): the per-path diff of a RENAMED file renders it as brand-new (every
+    # line `+`), so a marker the file already carried is re-flagged - the safe direction, and unreachable while the
+    # fail-closed --full mirror holds the tree marker-free (a tracked production file cannot carry an unsuppressed
+    # marker for a rename to carry forward).
     for f in changed:
         added = _added_lines(f, "--cached")
         if not added:

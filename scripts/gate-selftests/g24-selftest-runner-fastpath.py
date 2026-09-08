@@ -25,10 +25,14 @@ import importlib.machinery
 import importlib.util
 import io
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "run-gate-selftests"
@@ -191,6 +195,20 @@ record("purge survivor ARM (real fn, rmtree injected to no-op): an unremovable c
        _survivor_arm_leg())
 
 
+class _FakeProc:
+    """The stubbed canary child: its transcript as an iterable stdout, then an exit code."""
+    def __init__(self, text: str, rc: int = 0) -> None:
+        self.stdout = io.StringIO(text)
+        self._rc = rc
+
+    def wait(self) -> int:
+        return self._rc
+
+
+def _fake_subprocess(popen):
+    return SimpleNamespace(Popen=popen, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT)
+
+
 def _wiring_leg() -> bool:
     saved = m.SELFTEST_DIR, m.ROOT, m.subprocess
     # The runner builds child_env FROM os.environ, so an ambient PYTHONDONTWRITEBYTECODE=1
@@ -200,13 +218,13 @@ def _wiring_leg() -> bool:
     ambient = os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
     calls: list[dict] = []
 
-    def _run(cmd, **kwargs):
+    def _popen(cmd, **kwargs):
         # cache_gone is observed AT SPAWN TIME: the leg's ordering claim ("purges BEFORE the
         # first canary") is asserted, not narrated - a purge relocated below the canary loop
         # leaves the stale cache visible to this first call and reds the leg (the r1 opus P1).
-        calls.append({"cmd": cmd, "env": kwargs.get("env"),
+        calls.append({"cmd": cmd, "env": kwargs.get("env"), "kwargs": kwargs,
                       "cache_gone": not (m.ROOT / "scripts" / "__pycache__").exists()})
-        return SimpleNamespace(returncode=0)
+        return _FakeProc("[g24-fake] 1/1 assertions passed.\n")
 
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -222,7 +240,7 @@ def _wiring_leg() -> bool:
             selftests.mkdir()
             (selftests / "g24-fake.py").write_text("", encoding="utf-8")
             m.SELFTEST_DIR, m.ROOT = selftests, root
-            m.subprocess = SimpleNamespace(run=_run)
+            m.subprocess = _fake_subprocess(_popen)
             with contextlib.redirect_stdout(io.StringIO()):
                 rc = m.main([])
             return (
@@ -230,6 +248,10 @@ def _wiring_leg() -> bool:
                 and len(calls) == 1
                 and calls[0]["env"] is not None
                 and calls[0]["env"].get("PYTHONDONTWRITEBYTECODE") == "1"
+                and calls[0]["env"].get("PYTHONIOENCODING") == "utf-8"
+                and calls[0]["env"].get("PYTHONUNBUFFERED") == "1"
+                and calls[0]["kwargs"].get("stdout") is subprocess.PIPE
+                and calls[0]["kwargs"].get("stderr") is subprocess.STDOUT
                 and calls[0]["cache_gone"]
                 and not (root / "scripts" / "__pycache__").exists()
                 and (root / "other" / "__pycache__" / "keep.pyc").exists()
@@ -245,8 +267,9 @@ def _wiring_leg() -> bool:
 
 record("wiring: main() purges the gate plane's caches BEFORE the first canary (observed at "
        "spawn time), scoped to scripts/ in BOTH directions (an outside cache survives), and "
-       "spawns every canary with PYTHONDONTWRITEBYTECODE=1 proven from the wiring, not ambient "
-       "inheritance (hermetic: dir globals patched, subprocess stubbed)",
+       "spawns every canary with PYTHONDONTWRITEBYTECODE=1 + PYTHONIOENCODING=utf-8 + PYTHONUNBUFFERED=1 proven from "
+       "the wiring, not ambient inheritance, its transcript piped with stderr merged into stdout "
+       "(hermetic: dir globals patched, subprocess stubbed)",
        _wiring_leg())
 
 
@@ -254,9 +277,9 @@ def _survivor_leg() -> bool:
     saved = m.SELFTEST_DIR, m.ROOT, m.subprocess, m._purge_bytecode_caches
     calls: list = []
 
-    def _run(cmd, **kwargs):
+    def _popen(cmd, **kwargs):
         calls.append(cmd)
-        return SimpleNamespace(returncode=0)
+        return _FakeProc("")
 
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -265,7 +288,7 @@ def _survivor_leg() -> bool:
             selftests.mkdir(parents=True)
             (selftests / "g24-fake.py").write_text("", encoding="utf-8")
             m.SELFTEST_DIR, m.ROOT = selftests, root
-            m.subprocess = SimpleNamespace(run=_run)
+            m.subprocess = _fake_subprocess(_popen)
             m._purge_bytecode_caches = lambda d: ([], [d / "__pycache__"])
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -282,6 +305,133 @@ record("fail-closed: a __pycache__ that SURVIVES the purge refuses the whole run
        "canary spawns (PYTHONDONTWRITEBYTECODE cannot prevent reads of a stale cache - the "
        "r1 sonnet P0)", _survivor_leg())
 
+# --- the build-gates.md leg-count cross-check (2026-09-08, the round-12 G1 class: three row counts went stale in ONE
+# commit, one of them `= 51 legs` against a live 220 - the runner is the only plane that KNOWS every canary's live
+# total, so it reads the rows and reds a claim that disagrees) -------------------------------------------------------
+record("live count: the LAST `N/N assertions passed` / `N/N legs passed` line of a canary's output; none -> None",
+       m.live_count_of("[PASS] a\n[g24-x] 3/3 assertions passed.\n") == 3
+       and m.live_count_of("50/50 legs passed\n") == 50
+       and m.live_count_of("[g24-x] 2/3 assertions passed.\n[g24-x] 3/3 assertions passed.\n") == 3
+       and m.live_count_of("[g24-x] SKIP - tool absent\n") is None)
+_lc = lambda stem, prefix: {("g24-x", "30 r"): 25}.get((stem, prefix))
+record("row counts: every `` `g24-x.py` = N legs `` / `` `g24-x.py` (N legs `` claim must equal the canary's live total; a dated"
+       " history after the first number is not a claim",
+       m.row_count_mismatches("| `g24-x.py` = 3 legs | `g24-y.py` (7 legs; 5 at P1.1) |", {"g24-x": 3, "g24-y": 7}, {"g24-x", "g24-y"}, _lc)
+       == ([], [])
+       and m.row_count_mismatches("`g24-x.py` = 4 legs", {"g24-x": 3}, {"g24-x"}, _lc)[0] == ["4 legs: the canary `g24-x.py` counts 3"]
+       and m.row_count_mismatches("`g24-y.py` (5 legs", {"g24-y": 7}, {"g24-y"}, _lc)[0] == ["5 legs: the canary `g24-y.py` counts 7"])
+record("row counts: a stem with no self-test file is a phantom (fail); a canary that printed no count is a NOTICE, neither pass nor fail",
+       m.row_count_mismatches("`g24-zz.py` = 3 legs", {}, {"g24-x"}, _lc)[0] == ["3 legs: no such self-test file `g24-zz.py`"]
+       and m.row_count_mismatches("`g24-x.py` = 3 legs", {}, {"g24-x"}, _lc)
+       == ([], ["3 legs (`g24-x.py`): its canary printed no count this run - unverified"]))
+record("row counts: the per-check shape `` N `prefix` legs in `g24-x.py` `` is checked against the file's `record(\"prefix` lines",
+       m.row_count_mismatches("25 `30 r` legs in `g24-x.py`", {}, {"g24-x"}, _lc) == ([], [])
+       and m.row_count_mismatches("24 `30 r` legs in `g24-x.py`", {}, {"g24-x"}, _lc)[0]
+       == ["24 `30 r` legs in `g24-x.py`: the file carries 25 `record(\"30 r` legs"]
+       and m.row_count_mismatches("2 `30 r` legs in `g24-nope.py`", {}, {"g24-x"}, lambda s, p: None)[0]
+       == ["2 `30 r` legs in `g24-nope.py`: no such self-test file"])
+record("row counts: prose numbers outside the two checkable shapes are not claims to this check (`twenty legs`, `canary 21/21`), nor is a"
+       " word-glued number in the per-check shape (`X30 `30 r` legs in …`)",
+       m.row_count_mismatches("twenty legs in the canary; canary 21/21; `g24-x.py` = 3 legs (was 2)", {"g24-x": 3}, {"g24-x"}, _lc) == ([], [])
+       and m.row_count_mismatches("X30 `30 r` legs in `g24-x.py`", {}, {"g24-x"}, _lc) == ([], []))
+record("row counts (shape rule): `= N <adjectives> legs` / `(N <adjectives> legs` is a total claim too (the round-14 finding:"
+       " `= 56 planted-positive legs` escaped the adjacent form); a sub-count in prose (`the 9 temp-dir-backstop legs`) is not",
+       m.row_count_mismatches("`g24-a.py` = 4 planted-positive legs", {"g24-a": 3}, {"g24-a"}, _lc)[0] == ["4 legs: the canary `g24-a.py` counts 3"]
+       and m.row_count_mismatches("`g24-a.py` (4 planted positive legs)", {"g24-a": 3}, {"g24-a"}, _lc)[0] == ["4 legs: the canary `g24-a.py` counts 3"]
+       and m.row_count_mismatches("`g24-a.py` = 3 legs (44 after the 9 temp-dir-backstop legs; 70 after the P2.135 boot-glue-exemption legs)",
+                                  {"g24-a": 3}, {"g24-a"}, _lc) == ([], []))
+
+
+def _cp1252_stream_leg() -> tuple[int, bytes]:
+    """main() under a cp1252-encoded stdout (a Windows console pipe) streaming a transcript line that carries `→`: the
+    parent reconfigures its own stdout to UTF-8 at entry, so the line streams instead of raising (the round-14 P1)."""
+    saved = m.SELFTEST_DIR, m.ROOT, m.subprocess
+
+    def _popen(cmd, **kwargs):
+        return _FakeProc("[PASS] a `N→M` history\n[g24-fake] 1/1 assertions passed.\n")
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            selftests = root / "scripts" / "gate-selftests"
+            selftests.mkdir(parents=True)
+            (selftests / "g24-fake.py").write_text("", encoding="utf-8")
+            m.SELFTEST_DIR, m.ROOT = selftests, root
+            m.subprocess = _fake_subprocess(_popen)
+            raw = io.BytesIO()
+            stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict", write_through=True)
+            with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(io.StringIO()):
+                rc = m.main([])
+            stream.flush()
+            return rc, raw.getvalue()
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        return -1, repr(e).encode()
+    finally:
+        m.SELFTEST_DIR, m.ROOT, m.subprocess = saved
+
+
+_rc_cp, _bytes_cp = _cp1252_stream_leg()
+record("wiring: under a cp1252 stdout a transcript line carrying `→` streams (the parent's own stdout is reconfigured to UTF-8 at"
+       " entry) instead of raising UnicodeEncodeError - rc 0 and the arrow reaches the stream as UTF-8",
+       _rc_cp == 0 and "→".encode("utf-8") in _bytes_cp)
+record("scope: build-gates.md in the push range -> RUN (its leg counts are cross-checked by this very run)",
+       m.fastpath_decision(True, ["docs/security/build-gates.md"])[0] == "run")
+
+
+def _row_check_wiring_leg(claim: str) -> tuple[int, str]:
+    """Hermetic: dir globals patched, subprocess stubbed to a canary that reports 3/3; the temp root carries a
+    build-gates.md with the given claim and a self-test file with two `record("30 r` legs."""
+    saved = m.SELFTEST_DIR, m.ROOT, m.subprocess
+
+    def _popen(cmd, **kwargs):
+        return _FakeProc("[g24-fake] 3/3 assertions passed.\n")
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            selftests = root / "scripts" / "gate-selftests"
+            selftests.mkdir(parents=True)
+            (selftests / "g24-fake.py").write_text('record("30 r: a")\nrecord("30 r: b")\n', encoding="utf-8")
+            (root / "docs" / "security").mkdir(parents=True)
+            (root / "docs" / "security" / "build-gates.md").write_text(claim, encoding="utf-8")
+            m.SELFTEST_DIR, m.ROOT = selftests, root
+            m.subprocess = _fake_subprocess(_popen)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                rc = m.main([])
+            return rc, buf.getvalue()
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        return -1, f"raised: {type(e).__name__}: {e}"
+    finally:
+        m.SELFTEST_DIR, m.ROOT, m.subprocess = saved
+
+
+_rc1, _out1 = _row_check_wiring_leg("`g24-fake.py` = 4 legs and 1 `30 r` legs in `g24-fake.py`")
+_rc0, _out0 = _row_check_wiring_leg("`g24-fake.py` = 3 legs and 2 `30 r` legs in `g24-fake.py`")
+record("wiring: main() reads each canary's live total from its captured output and reds a stale build-gates.md claim in EITHER"
+       " shape, green when both claims hold (hermetic: dir globals patched, subprocess stubbed)",
+       _rc1 == 1 and "counts 3" in _out1 and "the file carries 2" in _out1 and _rc0 == 0)
+record("row counts (shape rule): EVERY `N legs` number on a line is a live claim of the NEAREST self-test mention on that line - backticked"
+       " or not, `scripts/gate-selftests/`-prefixed or not, `= N` or `(N` or bare - and a line with a number but no mention FAILS as"
+       " unresolvable (the round-13 P1: `g24 self-test = 30 legs` and `` `g24-core-deps.py` 12 legs `` escaped the two regexes)",
+       m.row_count_mismatches("| **G1** | x | `scripts/gate-selftests/g24-a.py` (3 legs incl. the E2E) | c | d |", {"g24-a": 3}, {"g24-a"}, _lc) == ([], [])
+       and m.row_count_mismatches("g24-a.py 4 legs.", {"g24-a": 3}, {"g24-a"}, _lc)[0] == ["4 legs: the canary `g24-a.py` counts 3"]
+       and m.row_count_mismatches("g24 self-test = 4 legs (shared)", {"g24-a": 3}, {"g24-a"}, _lc)[0]
+       == ["4 legs: no self-test file is named on this line - name the file (a bare count is unresolvable)"]
+       and m.row_count_mismatches("`g24-a.py` self-test (3 legs incl. an E2E); then `g24-b.py` = 7 legs", {"g24-a": 3, "g24-b": 7}, {"g24-a", "g24-b"}, _lc)
+       == ([], []))
+record("row counts (shape rule): `N legs at <when>` is a dated snapshot, `+N legs` a delta and `N→M` a history - none is a live claim; the"
+       " per-check shape is still checked by its own rule",
+       m.row_count_mismatches("`g24-a.py` = 3 legs (2 legs at P0.4; +1 legs since; 2→3)", {"g24-a": 3}, {"g24-a"}, _lc) == ([], [])
+       and m.row_count_mismatches("`g24-a.py` = 3 legs, 9 legs at delivery", {"g24-a": 3}, {"g24-a"}, _lc) == ([], [])
+       and m.row_count_mismatches("25 `30 r` legs in `g24-x.py`", {}, {"g24-x"}, _lc) == ([], []))
+record("wiring: a canary's transcript is streamed AND kept, so it still reaches the console",
+       "[g24-fake] 3/3 assertions passed." in _out0)
+record("real rows: every per-check `` N `prefix` legs in `g24-x.py` `` claim in build-gates.md holds against the real self-test"
+       " files, and every total-shape claim names a real file (the live totals are checked by the runner's own run)",
+       m.row_count_mismatches((REPO / "docs" / "security" / "build-gates.md").read_text(encoding="utf-8"), {},
+                              {p.stem for p in (REPO / "scripts" / "gate-selftests").glob("*.py")}, m._leg_counter)[0] == [])
+
 # --- the real plane files satisfy the rules ----------------------------------------------------
 record("lefthook.yml wires `run-gate-selftests --changed` per the L2 rule",
        lefthook_ok((REPO / "lefthook.yml").read_text(encoding="utf-8")))
@@ -290,7 +440,7 @@ record("ci.yml keeps the FULL --require-network prelude and never passes --chang
 
 # The sibling-canary convention (the r2 opus P3): the last leg pins the others, so a
 # silently-deleted canary leg reds the canary itself - this file newly carries a P0 closure.
-record("the canary's own leg count is pinned (28 + this pin)", len(results) == 28)
+record("the canary's own leg count is pinned (41 + this pin)", len(results) == 41)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-selftest-runner-fastpath] {len(results) - len(failed)}/{len(results)} assertions passed.")

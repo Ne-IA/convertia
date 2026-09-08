@@ -23,6 +23,9 @@ import argparse
 import re
 import subprocess
 import sys
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 TRAILER_RE = re.compile(r"^Dual-Review: opus=(GO|NOGO) sonnet=(GO|NOGO)$", re.M)
 # the check-off commit: a TODO tick in docs only (the shared skip shape — build-loop.md P0.6)

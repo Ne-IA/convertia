@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """g24-repo-invariants.py - G24 self-test for check-repo-invariants (P0.3.10, G9).
 
-Positive+negative legs PER invariant (a..f), the row-mandated machine proof of both the catch and
+Positive+negative legs PER invariant (a..i), the row-mandated machine proof of both the catch and
 the carve-out. The load-bearing legs are invariant (e)'s prose-vs-invocation discrimination: a real
 `run: cargo vet update` YAML step FAILS, while the same phrase as PROSE (a comment, a Python string, a
 subprocess LIST, this gate's own pattern definition + docstring, and THIS self-test's own fixtures)
@@ -11,6 +11,10 @@ stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 import importlib.machinery
 import importlib.util
 from pathlib import Path
+import sys
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-repo-invariants"
 _loader = importlib.machinery.SourceFileLoader("cri", str(SCRIPT))
@@ -320,6 +324,58 @@ record("(g) an upward path in a PLAIN `//` comment or in code NOT flagged (doc-c
 
 # === live: the real repo is clean today =======================================================
 record("main() exits 0 today (all invariants a-g live over the real repo source; clean)", m.main() == 0)
+
+# === (h) assigned-never-read plain local in a gate script (edit debris) =========================
+H = inv("h")
+record("(h) scripts/check-x in scope", H.in_scope("scripts/check-x"))
+record("(h) scripts/plan-lint + scripts/run-gate-selftests in scope", H.in_scope("scripts/plan-lint") and H.in_scope("scripts/run-gate-selftests"))
+record("(h) a class body inside a function is NOT the function's scope (its attributes are read as `C.attr`); a nested function's own"
+       " dead local is reported ONCE, attributed to the inner function; `del name` and a `locals()` call count as reads",
+       scan("h", "scripts/check-x", "def f():\n    class C:\n        attr = 1\n    return C\n") == []
+       and scan("h", "scripts/check-x", "def outer():\n    def inner():\n        z = 1\n        return 2\n    return inner\n")
+       == [(3, "`z` is assigned but never read in `inner` (edit debris)")]
+       and scan("h", "scripts/check-x", "def f():\n    po = 1\n    del po\n    return 2\n") == []
+       and scan("h", "scripts/check-x", "def f():\n    po = 1\n    return locals()\n") == [])
+record("(h)/(i) scope: EVERY top-level Python script under scripts/ (the L(-1) drivers `run-gitleaks`, `setup-dev`, `stage-corpus`,"
+       " `install-gate-tools` included) and the top-level canaries; a TOML beside them is not a script",
+       H.in_scope("scripts/run-gitleaks") and H.in_scope("scripts/setup-dev") and H.in_scope("scripts/stage-corpus")
+       and H.in_scope("scripts/install-gate-tools") and not H.in_scope("scripts/gate-planes.toml")
+       and not H.in_scope("scripts/l-neg1-files.toml"))
+# === (i) the console-encoding pin at entry ======================================================
+I = inv("i")
+record("(i) shares (h)'s scope: a gate script, a canary and a driver are in; a fixture tree and a TOML are not",
+       I.in_scope("scripts/check-x") and I.in_scope("scripts/gate-selftests/g24-x.py") and I.in_scope("scripts/run-gitleaks")
+       and not I.in_scope("scripts/gate-selftests/typos-fixtures/x.py") and not I.in_scope("scripts/gate-tools.toml"))
+record("(i) a gate-plane script WITHOUT the stdout/stderr UTF-8 pin is flagged at line 1; one carrying the exact idiom is clean",
+       scan("i", "scripts/check-x", "import sys\nprint('§')\n") != []
+       and scan("i", "scripts/check-x", "import sys\nfor _stream in (sys.stdout, sys.stderr):\n    if hasattr(_stream, \"reconfigure\"):\n"
+                "        _stream.reconfigure(encoding=\"utf-8\", errors=\"replace\")\nprint('§')\n") == [])
+record("(i) the REAL gate plane carries the pin in every in-scope file (a `→` in a leg title crashed a direct canary run on a cp1252"
+       " pipe - the round-16 finding)",
+       all(not scan("i", f, (m.ROOT / f).read_text(encoding="utf-8", errors="replace")) for f in m._git_ls_files() if I.in_scope(f))
+       and sum(1 for f in m._git_ls_files() if I.in_scope(f)) >= 80)
+record("(h) scripts/gate-selftests/g24-x.py in scope; a fixture two levels down is NOT",
+       H.in_scope("scripts/gate-selftests/g24-x.py") and not H.in_scope("scripts/gate-selftests/typos-fixtures/x.py"))
+record("(h) scripts/semgrep-rules/fixtures/x.py NOT in scope (planted fixtures); src-tauri/x.rs NOT in scope",
+       not H.in_scope("scripts/semgrep-rules/fixtures/x.py") and not H.in_scope("src-tauri/x.rs"))
+record("(h) a plain local assigned and never read is caught, named with its function",
+       [(ln, s) for ln, s in scan("h", "scripts/check-x", "def f(old):\n    po = old.replace('a', 'b')\n    return old\n")]
+       == [(2, "`po` is assigned but never read in `f` (edit debris)")])
+record("(h) a local read later, read in a closure, declared nonlocal in a closure, or `_`-prefixed is NOT flagged; a tuple-unpacking"
+       " target and a loop target are outside the shape (carve-outs)",
+       scan("h", "scripts/check-x", "def f():\n    a = 1\n    return a\n") == []
+       and scan("h", "scripts/check-x", "def f():\n    a = 1\n    def g():\n        return a\n    return g\n") == []
+       and scan("h", "scripts/check-x", "def f():\n    a = 1\n    def g():\n        nonlocal a\n        a = 2\n    g()\n") == []
+       and scan("h", "scripts/check-x", "def f():\n    _a = 1\n    return 0\n") == []
+       and scan("h", "scripts/check-x", "def f(x):\n    a, b = x\n    return a\n") == []
+       and scan("h", "scripts/check-x", "def f(x):\n    for i in x:\n        pass\n") == [])
+record("(h) module-level assignments are not locals (not scanned); an unparsable file yields nothing (the gate itself would fail)",
+       scan("h", "scripts/check-x", "a = 1\n") == [] and scan("h", "scripts/check-x", "def f(:\n") == [])
+record("(h) the REAL gate plane is clean - every in-scope tracked file scans to zero hits",
+       all(not scan("h", f, (m.ROOT / f).read_text(encoding="utf-8", errors="replace")) for f in m._git_ls_files() if H.in_scope(f))
+       and sum(1 for f in m._git_ls_files() if H.in_scope(f)) >= 60)
+record("(h) the tracked list is read `ls-files -z` (never quoted)",
+       '"ls-files", "-z"' in GATE_SRC)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-repo-invariants] {len(results) - len(failed)}/{len(results)} assertions passed.")

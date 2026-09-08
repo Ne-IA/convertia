@@ -635,6 +635,29 @@ fn viable_agreement(sample: &[RecordCounts], index: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::complete_kind_list;
+
+    // The PRODUCTION roster `Delimiter::CANDIDATES` is a hand-written array beside the hand-written
+    // `as_char` match: a fifth variant added to both compiles while the roster silently falls behind (the
+    // P4.33 class, its production form). The list below is COMPLETE by construction (`complete_kind_list!`
+    // is test-only, so the binding lives here) and the test binds the roster to it.
+    complete_kind_list!(
+        ALL_DELIMITERS, delimiter_list_is_complete: Delimiter = [Comma, Semicolon, Tab, Pipe]
+    );
+    #[test]
+    fn candidates_roster_covers_every_delimiter() {
+        for delimiter in ALL_DELIMITERS {
+            assert!(
+                Delimiter::CANDIDATES.contains(delimiter),
+                "§1.2: the CANDIDATES roster omits {delimiter:?} — a variant the enum has is never tried"
+            );
+        }
+        assert_eq!(
+            Delimiter::CANDIDATES.len(),
+            ALL_DELIMITERS.len(),
+            "§1.2: the CANDIDATES roster is exactly the variant set, once each"
+        );
+    }
 
     // §6.4.1 unit (G15): `read_header` is bounded to the §1.2 4-KiB window — a source larger than the window
     // yields EXACTLY `MAX_HEADER_WINDOW` bytes (a FIFO / huge file can never pull more into the core, §2.12.4).

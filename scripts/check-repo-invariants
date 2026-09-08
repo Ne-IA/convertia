@@ -84,10 +84,14 @@ Exit: 0 = no invariant violated (or target-absent); 1 = a violation; 2 = bad inv
 """
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -577,6 +581,82 @@ def _g_scan(relpath: str, text: str) -> list[tuple[int, str]]:
 # True at P1.67 — their target source classes (Rust / TS test / CSS) all landed in P1, so the gate
 # IS armed over real files; the old `live=False` made the status line falsely claim "target-absent
 # until P1" while it was already enforcing (a green-but-blind-adjacent miss the P1.67 audit caught).
+# --- (h) assigned-never-read plain local in the gate plane (2026-09-08, the residual-closure review's rounds 9
+# and 15: a dead `staged_new`, then a dead `po`, each left behind when the clause reading it was removed - no
+# Python lint exists in this repo, so the class had no catcher). The SHAPE is deliberately narrow: a plain
+# `name = …` target in a function's OWN scope (nested defs, classes and lambdas are their own scopes - a class
+# attribute is read as `C.attr`, an inner function's dead local is reported once, for the inner function) that no
+# Name-Load or `del` in the whole function (closures included) reads, no `global`/`nonlocal` declares and no
+# `locals()` call could read; tuple-unpacking, loop, with- and except-targets and `_`-prefixed names are outside it
+# (unpacking commonly discards a half), an augmented assignment is a write, module-level assignments are not
+# locals, and an unparsable file yields nothing (the gate itself would fail). Scope: every top-level Python
+# script under scripts/ (the gates, plan-lint, the runner AND the L(-1) drivers: run-gitleaks, setup-dev,
+# stage-*, install-gate-tools, ...) plus the top-level canaries - never the planted fixture trees.
+def _plane_python(p: str) -> bool:
+    p = _norm(p)
+    if p.startswith("scripts/") and p.count("/") == 1:
+        return not p.endswith((".toml", ".txt", ".md", ".json", ".yml", ".yaml"))
+    return p.startswith("scripts/gate-selftests/") and p.count("/") == 2 and p.endswith(".py")
+
+
+_h_in_scope = _plane_python
+
+
+def _own_scope(fn: ast.AST) -> list[ast.AST]:
+    """(pure) The nodes of a function's OWN scope - its body walked without descending into nested defs, classes
+    or lambdas (each is its own scope)."""
+    own: list[ast.AST] = []
+    stack = list(getattr(fn, "body", []))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue      # a nested scope: neither the node nor anything under it (a class body statement is NOT ours)
+        own.append(node)
+        stack.extend(ast.iter_child_nodes(node))
+    return own
+
+
+def _h_scan(relpath: str, text: str) -> list[tuple[int, str]]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    out: list[tuple[int, str]] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        own = _own_scope(fn)
+        if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "locals" for n in own):
+            continue
+        assigned: dict[str, int] = {}
+        for node in own:
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and not t.id.startswith("_"):
+                        assigned.setdefault(t.id, t.lineno)
+        loads = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Load, ast.Del))}
+        declared = {name for n in ast.walk(fn) if isinstance(n, (ast.Global, ast.Nonlocal)) for name in n.names}
+        for name, ln in assigned.items():
+            if name not in loads and name not in declared:
+                out.append((ln, f"`{name}` is assigned but never read in `{fn.name}` (edit debris)"))
+    return out
+
+
+# --- (i) the console-encoding pin at entry (2026-09-08, the residual-closure review's round-16 finding: a canary
+# leg title carrying `→` crashed a DIRECT run on a cp1252 console pipe with UnicodeEncodeError, pass or fail, and so
+# would any gate script's `§`/`→` message - the runner pins its own streams, but a direct run bypasses it). Every
+# gate-plane Python file (the (h) scope) reconfigures sys.stdout/sys.stderr to UTF-8 at entry with one fixed idiom,
+# so the console's codepage is never a script's concern.
+_UTF8_PIN = 'reconfigure(encoding="utf-8", errors="replace")'
+
+
+def _i_scan(relpath: str, text: str) -> list[tuple[int, str]]:
+    if _UTF8_PIN in text:
+        return []
+    return [(1, "the console-encoding pin is missing: reconfigure sys.stdout/sys.stderr to UTF-8 at entry (a `→` in a "
+                "message crashes a direct run on a cp1252 pipe)")]
+
+
 INVARIANTS = [
     Invariant("a", "hardcoded hex colour outside design/tokens.css", True, _a_in_scope, _a_scan),
     Invariant("b", "process::Command::new outside crate::isolation", True, _b_in_scope,
@@ -590,12 +670,17 @@ INVARIANTS = [
               lambda rel, t: _line_hits(_code_no_comments(rel, t), FC_GEN_RE)),
     Invariant("g", "qualified upward intra-doc link across the spec-0.7 tiers (doc comments)", True,
               _g_in_scope, _g_scan),
+    Invariant("h", "a plain local assigned and never read in a gate-plane script (edit debris)", True,
+              _h_in_scope, _h_scan),
+    Invariant("i", "a gate-plane script without the console-encoding pin at entry", True,
+              _plane_python, _i_scan),
 ]
 
 
 def _git_ls_files() -> list[str]:
-    r = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return r.stdout.splitlines() if r.returncode == 0 else []
+    # -z: NUL-separated, never quoted - a quoted non-ASCII name would fail every in_scope test (the round-15 class)
+    r = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return [f for f in r.stdout.split("\0") if f] if r.returncode == 0 else []
 
 
 def main() -> int:

@@ -1585,8 +1585,9 @@ mod tests {
         );
     }
 
-    // The COMPILE-TIME variant lock (the established dependency-free exhaustive-match pattern, cf.
-    // `crate::engines`' `engine_id_exhaustive`): adding a §0.9 table row without deciding its
+    // The COMPILE-TIME variant lock (the established dependency-free exhaustive-match pattern, cf. the
+    // `complete_kind_list!` pins in `crate::engines`; no pin LIST sits beside this match — the rows are
+    // asserted one by one above — so the hand-written form stays): adding a §0.9 table row without deciding its
     // `per_engine_cap` projection in the test above fails to compile here.
     fn engine_parallelism_exhaustive(row: &EngineParallelism) {
         match row {

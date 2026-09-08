@@ -180,7 +180,7 @@ needs a file in another format without hunting for sketchy online converters.
    continues. Some conversions are inherently **lossy** (pdf→txt drops layout,
    docx→pdf may reflow, a missing font changes a slide); ConvertIA does its
    honest best and signals predictable loss as a **calm, passive inline note next
-   to the chosen target** ("text only — layout and images are dropped") — shown
+   to the chosen target** ("Text only — layout, tables and images are dropped.") — shown
    only for genuinely predictable loss, never a blocking "I understand" dialog or
    a per-conversion nag. *(This fidelity note is about content faithfulness, not
    downstream compatibility — a valid WEBP/AVIF/OPUS may not open everywhere; the

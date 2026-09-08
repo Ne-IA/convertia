@@ -30,6 +30,20 @@ under scripts/ is PURGED (the canaries SourceFileLoader-load their tools, which 
 bytecode - see `_purge_bytecode_caches`), and every canary child runs with
 PYTHONDONTWRITEBYTECODE=1 so a gate run recreates none.
 
+Row leg-count cross-check (2026-09-08, the residual-closure review's round-12/13 class): build-gates.md cites
+canary totals as `N legs` beside a self-test's name and per-check counts as `` N `prefix` legs in `g24-x.py` ``;
+three such counts went stale in ONE commit (one `= 51` against a live 220) and two more hid in spellings a
+name-list regex did not know. The rule is therefore a SHAPE, not a spelling list: EVERY `N legs` number on a
+line is a live claim of the NEAREST self-test mention on that line (backticked or not, path-prefixed or not,
+`= N` or `(N` or bare), a line with a number and no mention fails as unresolvable, and only `N legs at <when>`
+(a dated snapshot), `+N legs` (a delta) and `N->M` (a history) are not claims, and `= N <adjectives> legs` /
+`(N <adjectives> legs` counts as a total too (a prose sub-count without `= `/`(` is the named residual). The
+runner is the one plane that
+knows every canary's LIVE total: it streams each child's transcript to the console AND keeps it, reads the total
+off the last `N/N ... passed` line, and reds any claim that disagrees (a phantom self-test name too; a canary
+that printed no count is a notice). build-gates.md is therefore in the `--changed` scope: an edit to the rows
+arms the run that verifies them.
+
 stdlib-only. Exit 0 iff EVERY discovered (non-skipped) self-test passes; 1 if any fails, none
 are found, or a `__pycache__` SURVIVES the purge (fail-closed: a stale cache the canaries would
 trust refuses the run before any canary spawns). L(-1) security-critical
@@ -40,10 +54,14 @@ Usage: run-gate-selftests [--require-network] [--changed]
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 SELFTEST_DIR = Path(__file__).resolve().parent / "gate-selftests"
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,7 +70,10 @@ ROOT = Path(__file__).resolve().parents[1]
 # second registry; the expensive run lands exactly on the pushes that edit the gate plane. The
 # plane/toolchain files are in scope so a wiring-only push (deleting a slot, re-flagging a CI
 # step) arms the cross-plane pins at L2, not first at L4.
-CHANGED_PREFIXES = ("scripts/", "lefthook.yml", ".github/workflows/", "requirements-ci.txt")
+# docs/security/build-gates.md is in scope because its leg-count claims are verified BY this run (see the
+# module docstring) - a docs-only push that edits a row must not skip the check that reads it.
+CHANGED_PREFIXES = ("scripts/", "lefthook.yml", ".github/workflows/", "requirements-ci.txt",
+                    "docs/security/build-gates.md")
 
 
 def _purge_bytecode_caches(scripts_dir: Path) -> tuple[list[Path], list[Path]]:
@@ -122,9 +143,99 @@ def fastpath_decision(base_resolved: bool, changed: list[str] | None) -> tuple[s
     return "skip", "no gate-plane change in the push range"
 
 
+_PASSED_RE = re.compile(r"(\d+)/(\d+) (?:assertions|legs) passed")
+_MENTION_RE = re.compile(r"(?:scripts/gate-selftests/)?(g24-[a-z0-9-]+)\.py")
+# a live total claim: digits + ` legs`, not a delta (`+N`), a history (`N->M`, `N→M`), a word-glued or backticked
+# number, and not a dated snapshot (`N legs at <when>`)
+# `= N <adjectives> legs` / `(N <adjectives> legs` is a total too (the round-14 finding: `= 56 planted-positive legs`
+# escaped the adjacent form) - the adjectives only behind `= ` or `(`, where a total is introduced; `the 9
+# temp-dir-backstop legs` in prose is a sub-count, not a claim. A dotted number (`P2.135`) is never a claim.
+_ROW_TOTAL_RE = re.compile(r"(?:(?<![\w+>→`.])(\d+) legs\b|(?:(?<=\()|(?<== ))(\d+)(?: [a-z][a-z-]*){1,3} legs\b)(?!\s+at\b)")
+_ROW_PREFIX_RE = re.compile(r"(?<![\w+>→`.])(\d+) `([^`]+)` legs in `(g24-[a-z0-9-]+)\.py`")   # a word-glued number is no claim
+
+
+def live_count_of(output: str) -> int | None:
+    """(pure) The total a canary reports on its LAST `N/N assertions passed` / `N/N legs passed` line; None
+    when it printed none (a skipped canary)."""
+    found = _PASSED_RE.findall(output)
+    return int(found[-1][1]) if found else None
+
+
+def row_count_mismatches(rows_text: str, live: dict[str, int], known: set[str], leg_counter) -> tuple[list[str], list[str]]:
+    """(pure) (failures, notices) over build-gates.md's leg-count claims - a SHAPE rule, not a spelling list (the
+    round-13 finding: two live stale counts hid in spellings a two-regex list did not know). Per LINE: every
+    `N legs` number (_ROW_TOTAL_RE - a delta, a history and a dated `N legs at <when>` snapshot are not claims) is
+    the LIVE total of the NEAREST self-test mention on that line (`g24-x.py`, backticked or not, path-prefixed or
+    not); a line with a number and no mention fails as unresolvable; a stem with no self-test file is a phantom
+    (failure); a file whose canary printed no count this run is a notice, never a pass. The per-check shape
+    `` N `prefix` legs in `g24-x.py` `` is the number of that file's `record("prefix...` legs (leg_counter(stem,
+    prefix) -> int, or None for no such file). Word numbers and prose sub-counts (`the 9 temp-dir-backstop legs`,
+    no `= `/`(` before the number) are the reviewers' to audit - the named residual."""
+    fails: list[str] = []
+    notices: list[str] = []
+    for line in rows_text.splitlines():
+        prefix_spans = [(mt.start(), mt.end()) for mt in _ROW_PREFIX_RE.finditer(line)]
+        mentions = [(mt.start(), mt.end(), mt.group(1)) for mt in _MENTION_RE.finditer(line)]
+        for mt in _ROW_TOTAL_RE.finditer(line):
+            if any(a <= mt.start() < b for a, b in prefix_spans):
+                continue
+            n = int(mt.group(1) or mt.group(2))
+            if not mentions:
+                fails.append(f"{n} legs: no self-test file is named on this line - name the file (a bare count is unresolvable)")
+                continue
+            # the nearest mention by the GAP between the two spans (a mention's end to the claim's start, or the
+            # claim's end to the mention's start) - never by their starts, which favours a long later name
+            stem = min(mentions, key=lambda m_: max(m_[0] - mt.end(), mt.start() - m_[1], 0))[2]
+            if stem not in known:
+                fails.append(f"{n} legs: no such self-test file `{stem}.py`")
+            elif stem not in live:
+                notices.append(f"{n} legs (`{stem}.py`): its canary printed no count this run - unverified")
+            elif live[stem] != n:
+                fails.append(f"{n} legs: the canary `{stem}.py` counts {live[stem]}")
+    for mt in _ROW_PREFIX_RE.finditer(rows_text):
+        n, prefix, stem = int(mt.group(1)), mt.group(2), mt.group(3)
+        count = leg_counter(stem, prefix)
+        if count is None:
+            fails.append(f"{mt.group(0)}: no such self-test file")
+        elif count != n:
+            fails.append(f"{mt.group(0)}: the file carries {count} `record(\"{prefix}` legs")
+    return fails, notices
+
+
+def _leg_counter(stem: str, prefix: str) -> int | None:
+    p = SELFTEST_DIR / f"{stem}.py"
+    if not p.is_file():
+        return None
+    return sum(1 for ln in p.read_text(encoding="utf-8").splitlines() if ln.lstrip().startswith('record("' + prefix))
+
+
+def _check_gate_rows(live: dict[str, int], known: set[str]) -> bool:
+    """Cross-check build-gates.md's leg-count claims against this run's live totals; True when any is stale."""
+    rows = ROOT / "docs" / "security" / "build-gates.md"
+    if not rows.is_file():
+        print("[canary] no docs/security/build-gates.md - the row leg-count cross-check is skipped with notice")
+        return False
+    fails, notices = row_count_mismatches(rows.read_text(encoding="utf-8"), live, known, _leg_counter)
+    for note in notices:
+        print(f"[canary] NOTICE build-gates.md: {note}")
+    for msg in fails:
+        print(f"[canary] FAIL build-gates.md leg count: {msg}", file=sys.stderr)
+    if fails:
+        print(f"[canary] {len(fails)} build-gates.md leg-count claim(s) disagree with the canaries - a row count is a"
+              " LIVE claim, written from the measurement", file=sys.stderr)
+    return bool(fails)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     require_network = "--require-network" in argv
+    # BOTH encode sides of the transcript are pinned to UTF-8: the child's via PYTHONIOENCODING (below) and the
+    # parent's own stdout/stderr here - a canary leg title carrying `→` raised UnicodeEncodeError on a cp1252
+    # console pipe and aborted the run before its tally (the round-14 finding). A stream without `reconfigure`
+    # (a test double) is left as it is.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     if "--changed" in argv:
         base = _resolve_base()
@@ -154,22 +265,39 @@ def main(argv: list[str] | None = None) -> int:
     if purged:
         print(f"[canary] purged {len(purged)} __pycache__ dir(s) under scripts/ "
               "(the runner never trusts bytecode caches - see _purge_bytecode_caches)")
-    child_env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    # Each child's transcript is STREAMED to the console and kept (its live total is read off it), decoded as
+    # UTF-8: PYTHONIOENCODING pins the child's encode side (the parent's is pinned at entry), PYTHONUNBUFFERED
+    # makes the child write line by line into the pipe (a pipe is block-buffered otherwise, so a hung canary's
+    # last lines never appeared - the round-14 finding) and the parent flushes per line; stderr is merged into
+    # stdout so the transcript interleaves as the child wrote it.
+    child_env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
 
     failed: list[str] = []
+    live: dict[str, int] = {}
     for t in tests:
         cmd = [sys.executable, str(t)]
         if require_network and "install-gate-tools" in t.name:
             cmd.append("--require-network")
-        print(f"\n[canary] === {t.name}{' --require-network' if cmd[-1].startswith('--') else ''} ===")
-        if subprocess.run(cmd, env=child_env).returncode != 0:
+        print(f"\n[canary] === {t.name}{' --require-network' if cmd[-1].startswith('--') else ''} ===", flush=True)
+        proc = subprocess.Popen(cmd, env=child_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                encoding="utf-8", errors="replace")
+        lines: list[str] = []
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            lines.append(line)
+        if proc.wait() != 0:
             failed.append(t.name)
+        out = "".join(lines)
+        total = live_count_of(out)
+        if total is not None:
+            live[t.stem] = total
 
+    rows_stale = _check_gate_rows(live, {t.stem for t in tests})
     print(f"\n[canary] {len(tests) - len(failed)}/{len(tests)} gate self-test(s) passed.")
     if failed:
         print("[canary] FAILED: " + ", ".join(failed), file=sys.stderr)
-        return 1
-    return 0
+    return 1 if failed or rows_stale else 0
 
 
 if __name__ == "__main__":

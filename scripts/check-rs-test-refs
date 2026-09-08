@@ -42,6 +42,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 IPC_PREFIX = "src-tauri/src/ipc/"
@@ -227,11 +230,11 @@ def _git(*args: str) -> tuple[int, str]:
 
 
 def _ipc_files() -> list[str]:
-    rc, out = _git("ls-files")
+    rc, out = _git("ls-files", "-z", "--full-name", "--", ":/")     # -z: never quoted; --full-name -- :/: the whole tree from any CWD
     if rc != 0:
         return []
     return sorted(
-        f for f in out.splitlines()
+        f for f in out.split("\0")
         if f.replace("\\", "/").startswith(IPC_PREFIX) and f.endswith(".rs")
     )
 

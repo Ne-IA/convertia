@@ -134,7 +134,7 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-doc-splice --range
     doc-links:       # G74 - rustdoc intra-doc-link integrity (leg (b), the ONE driver CI also runs; host-OS leg - the per-OS L4 matrix stays the 3-OS proof)
       run: python3 scripts/check-doc-links
-    gate-selftests:  # G24/G10 - the full self-test canary, --changed-gated: runs only when the unpushed range touches the gate plane (scripts/**, lefthook.yml, .github/workflows/, requirements-ci.txt; skip-with-notice otherwise; fail-safe RUN without a base)
+    gate-selftests:  # G24/G10 - the full self-test canary, --changed-gated: runs only when the unpushed range touches the gate plane (scripts/**, lefthook.yml, .github/workflows/, requirements-ci.txt, docs/security/build-gates.md - whose leg counts the run cross-checks; skip-with-notice otherwise; fail-safe RUN without a base)
       run: python3 scripts/run-gate-selftests --changed
     build-matrix:    # G30 - build-matrix contract: native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (target-absent until a universal sidecar is staged)
       run: python3 scripts/check-build-matrix

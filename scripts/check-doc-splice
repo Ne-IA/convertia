@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""check-doc-splice - G74 comment-attachment integrity on .rs insertions (P4.18 follow-up).
+"""check-doc-splice - G74 comment integrity on .rs diffs: attachment on insertions (P4.18 follow-up) + deleted-definition references.
 
 THE CLASS (2x recurred before this gate; the Loop-memory entry
 `inserting-a-module-hijacks-the-preceding-doc-comment`): an edit anchored on an item's
@@ -35,7 +35,40 @@ marker.
 CONTEXT WINDOW: both modes diff with -U10 - the attachment source must be visible IN the hunk,
 so a prose comment separated from the insertion by MORE than 10 unchanged carry (blank/attr)
 lines is outside the window (a recorded residual; the in-tree maximum observed is 1 blank line,
-and every hunk boundary honestly RESETS the state rather than guessing).
+and every hunk boundary honestly RESETS the state rather than guessing). `---`/`+++` are read as
+file headers only BEFORE a chunk's first `@@`: an added body line whose content begins `++ `
+renders as `+++ …` and must not re-key the file (2026-09-08, both legs). The input is a git unified diff:
+every file section is introduced by `diff --git`, which is what resets the header state.
+
+LEG (c) - DELETED-DEFINITION DANGLING REFERENCES (2026-09-08): a comment citing, in backticks, an
+item whose definition the scanned diff removes and no tracked first-party `.rs` file still declares
+(three comments cited the `*_exhaustive` helpers the `complete_kind_list!` refactor deleted; rustc
+reads no comment and G73 resolves only the ipc/** `_contract` family). The deleted set exists only
+in a diff, so the leg shares leg (a)'s modes; the resolver is the whole tracked tree, so a name
+re-defined anywhere resolves. Only backticked references count - a plain word in prose is prose. A
+whole-file deletion (`+++ /dev/null`) keys its definitions by the old path. Recorded residuals, over-strict
+in leg (a)'s safe direction: a deliberate same-commit narration of a removed symbol fires, and so does a
+backticked mention of the same NAME meaning something else (a third-party `classify` beside a deleted
+first-party `classify`) - the remedy is to reword to the surviving mechanism or a module anchor, no escape
+marker; the resolver reads the worktree while `--diff` scans the index; a tree git cannot list skips with
+a notice. Both live diffs include DELETIONS and typechanges (`--diff-filter=ACMRDT` - the first cut's `ACMR` kept every
+removed file out of the leg, the round-3 G1 finding; leg (a) skips a `+++ /dev/null` hunk by itself), and both
+carry the diff-SYNTAX pins (`a/`/`b/` prefixes forced, blank context never elided, hunks never merged, paths never
+relative, no external driver, no textconv, every file read as text, non-ASCII literal - a user's `diff.noprefix`/
+`diff.mnemonicPrefix`/`diff.suppressBlankEmpty`/`diff.external` or a `binary` attribute otherwise re-shapes or
+replaces the patch the scans read, the round-12/13 G1 class) and run without GIT_DIFF_OPTS (it outranks the explicit
+-U10 the attachment scan needs); a git-quoted header path is C-unquoted; lines are split on git's `\n` only, from
+bytes - a lone CR inside a comment forged a definition line under `str.splitlines()` (the round-14 finding). The
+definition scan is the keyword forms plus the crate's own `complete_kind_list!` heads (const, test and
+`elsewhere` names); an item any OTHER macro declares is invisible to it - a recorded residual. The
+resolver's source scope is deliberately WIDER than plan-lint check 29's scan (`fuzz/` and `tests/` are in,
+so a name defined there resolves); only the planted `tests/g53-fixture` tree is out, as it is there. The
+removed-side definition scan is line-anchored on the raw `-` lines, not comment-stripped: a
+definition-shaped line inside a removed `/* ... */` body is a phantom deletion (over-strict, the safe
+direction; no such line exists in-tree) - a recorded residual. The resolver is NAME-based: a definition of
+the same name anywhere in the tree - one this very diff adds in another file included - resolves the
+reference, so a comment citing a genuinely removed `helper` stays silent while an unrelated `helper` exists
+(the mirror of the over-strict same-name residual; the safe direction is not available to a name resolver).
 
 MODES
   --diff              L1 (pre-commit): the STAGED diff (`git diff --cached -U10 -- *.rs`).
@@ -49,14 +82,19 @@ MODES
                       absent event field arrives as an empty string, never a missing arg).
 
 stdlib-only. This script is L(-1) security-critical (scripts/l-neg1-files.toml, G71).
-Exit: 0 = clean (or fail-open/skip with notice); 1 = a hijack-shaped insertion; 2 = git error.
+Exit: 0 = clean (or fail-open/skip with notice); 1 = a hijack-shaped insertion or a comment citing a
+      definition the diff removes; 2 = git error.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # An item-introducing keyword - the signal that an added run DECLARES A NEW ITEM. Optional
 # visibility, then the fn/impl/trait modifier chain (default/async/unsafe/const + an
@@ -109,6 +147,33 @@ def _run_declares_item(added: list[str]) -> bool:
     return False
 
 
+def _unquote(s: str) -> str:
+    """(pure) Undo git's C-style path quoting: `\\"`, `\\\\`, `\\t`, `\\n`, `\\r` and `\\ooo` octal bytes (UTF-8)."""
+    out = bytearray()
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            if i + 3 < len(s) and all(ch in "01234567" for ch in s[i + 1:i + 4]):
+                out.append(int(s[i + 1:i + 4], 8))
+                i += 4
+                continue
+            n = s[i + 1]
+            out.extend({"n": b"\n", "t": b"\t", "r": b"\r"}.get(n, n.encode("utf-8")))
+            i += 2
+            continue
+        out.extend(c.encode("utf-8"))
+        i += 1
+    return out.decode("utf-8", errors="replace")
+
+
+def _header_path(s: str) -> str:
+    """(pure) The path of a `--- `/`+++ ` header line, C-unquoted when git quoted it (a `"`, a `\\` or a control
+    char in the name; the G70 refinement fix swept to this sibling - the 2026-09-08 review's round 13)."""
+    s = s.strip()
+    return _unquote(s[1:-1]) if len(s) >= 2 and s[0] == '"' and s[-1] == '"' else s
+
+
 def scan_unified_diff(diff_text: str) -> list[str]:
     """Return one problem string per hijack-shaped added run in a unified diff (any .rs file)."""
     problems: list[str] = []
@@ -146,22 +211,34 @@ def scan_unified_diff(diff_text: str) -> list[str]:
             attach = False
         # 'carry': blank/attr - attachment passes through unchanged
 
-    for raw in diff_text.splitlines():
-        if raw.startswith("+++ "):
+    in_hunk = False                       # `---`/`+++` are headers only BEFORE a chunk's first `@@`
+    for raw in _lines(diff_text):
+        if raw.startswith("diff --git "):
             flush()
-            current_file = raw[4:].strip()
+            in_hunk = False
+            continue
+        if not in_hunk and raw.startswith("--- "):
+            continue
+        if not in_hunk and raw.startswith("+++ "):
+            # An ADDED body line whose content begins `++ ` renders as `+++ …` too; only the pre-hunk
+            # header re-keys the file (the round-8 G1 finding: the guard leg (c) got in round 7, swept here).
+            flush()
+            current_file = _header_path(raw[4:])
             if current_file.startswith("b/"):
                 current_file = current_file[2:]
             in_rs = current_file.endswith(".rs")
             attach = False
             continue
-        if not in_rs:
-            continue
         if raw.startswith("@@"):
+            in_hunk = True
+            if not in_rs:
+                continue
             flush()
             m = re.search(r"\+(\d+)", raw)
             new_lineno = int(m.group(1)) - 1 if m else 0
             attach = False                # hunk boundary: attachment context unknown
+            continue
+        if not in_rs:
             continue
         if raw.startswith("+"):
             new_lineno += 1
@@ -180,6 +257,8 @@ def scan_unified_diff(diff_text: str) -> list[str]:
             flush()
             attach = False
             continue
+        if raw.startswith("\\"):
+            continue                          # the `\ No newline at end of file` marker is not a line
         # context line
         flush()
         new_lineno += 1
@@ -188,16 +267,301 @@ def scan_unified_diff(diff_text: str) -> list[str]:
     return problems
 
 
+# --- leg (c): deleted-definition dangling references (2026-09-08) -----------------------------------
+# THE CLASS: a comment cites a symbol in backticks (`engine_id_exhaustive`) and the same change deletes
+# that symbol's definition - rustc reads no comment, and G73 resolves only the ipc/** `_contract`
+# family. Three comments cited the `*_exhaustive` helpers the `complete_kind_list!` refactor removed
+# (the residual-closure review's P1). The deleted set only exists in a diff, so this leg is
+# diff/range-scoped like leg (a); the RESOLVER is whole-tree - every tracked first-party `.rs` file's
+# definitions, collected over a comment/string-stripped projection - so a name re-defined anywhere
+# resolves. Only a BACKTICKED reference counts (`name`, `path::name`, `name()`, `name!`): a plain word
+# in prose is prose. The definition forms are the item-declaring keywords leg (a) already models.
+_DEF_LINE = re.compile(
+    r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?"
+    r"(?:(?:default|async|unsafe|const)\s+)*"
+    r"(?:extern\s*\"[^\"]*\"\s+)?"
+    r"(?:fn|mod|struct|enum|union|trait|type|const|static|macro_rules!)\s+([A-Za-z_][A-Za-z0-9_]*)",
+    re.ASCII | re.MULTILINE,
+)
+_SOURCE_PREFIXES = ("src-tauri/", "crates/", "xtask/", "fuzz/", "tests/")
+_SOURCE_EXCLUDES = ("tests/g53-fixture/",)          # the planted copyleft fixture: out, as for plan-lint check 29
+# The crate's one item-declaring macro: `complete_kind_list!(NAME, test_name: Ty = [...], elsewhere ENAME = [...])`
+# declares NAME, test_name and ENAME. A keyword scan cannot see them, so a hand-written `const` converted to a
+# macro-generated one would sit in the deleted set although it still exists (the round-3 G1 finding).
+_MACRO_HEAD = re.compile(r"complete_kind_list!\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)", re.ASCII)
+_MACRO_ELSEWHERE = re.compile(r"\belsewhere\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", re.ASCII)
+
+
+def net_deleted_definitions(diff_text: str) -> dict[str, str]:
+    """(pure) {name: file} for every item definition a `-` line of a `.rs` hunk removes that no `+` line
+    anywhere in the diff re-declares (a move/rename-in-place is not a deletion)."""
+    removed: dict[str, str] = {}
+    added: set[str] = set()
+    current = ""
+    old_path = ""
+    in_hunk = False                       # `---`/`+++` are headers only BEFORE a chunk's first `@@`
+    for raw in _lines(diff_text):
+        if raw.startswith("diff --git "):
+            in_hunk = False
+            continue
+        if raw.startswith("@@"):
+            in_hunk = True
+            continue
+        if not in_hunk and raw.startswith("--- "):
+            old_path = _header_path(raw[4:])
+            old_path = old_path[2:] if old_path.startswith("a/") else old_path
+            continue
+        if not in_hunk and raw.startswith("+++ "):
+            current = _header_path(raw[4:])
+            current = current[2:] if current.startswith("b/") else current
+            if current == "/dev/null":            # a WHOLE-FILE deletion: the old path is the identity
+                current = old_path
+            continue
+        if not current.endswith(".rs"):
+            continue
+        if raw.startswith("-"):
+            mt = _DEF_LINE.match(raw[1:])
+            if mt:
+                removed.setdefault(mt.group(1), current)
+        elif raw.startswith("+"):
+            mt = _DEF_LINE.match(raw[1:])
+            if mt:
+                added.add(mt.group(1))
+    return {name: file for name, file in removed.items() if name not in added}
+
+
+def _comment_spans(line: str, in_block: bool) -> tuple[str, bool]:
+    """The comment text of `line` given the prior block-comment state, plus the new state. STATEFUL
+    (so a `/* ... */` body line with no leading `*` is still comment) and STRING-AWARE (so a `//` or
+    `/*` inside a "..."/'...'/`...` literal - e.g. a URL "http://x" - is NOT a comment start). Returns
+    (comment_text, in_block_after). Adapted verbatim from scripts/check-rs-test-refs (P2.136); the
+    stdlib gate scripts are self-contained and do not import one another."""
+    if in_block:
+        end = line.find("*/")
+        if end == -1:
+            return line, True
+        rest_c, nb = _comment_spans(line[end + 2:], False)
+        return line[:end] + "\n" + rest_c, nb
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in "\"'`":
+            j, closed = i + 1, False
+            while j < n:
+                if line[j] == "\\":
+                    j += 2
+                    continue
+                if line[j] == c:
+                    closed = True
+                    break
+                j += 1
+            if closed:
+                i = j + 1
+                continue
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and line[i + 1] == "/":
+            return line[i + 2:], False
+        if c == "/" and i + 1 < n and line[i + 1] == "*":
+            end = line.find("*/", i + 2)
+            if end == -1:
+                return line[i + 2:], True
+            rest_c, nb = _comment_spans(line[end + 2:], False)
+            return line[i + 2:end] + "\n" + rest_c, nb
+        i += 1
+    return "", False
+
+
+def _strip_rust(text: str) -> str:
+    """(pure) `text` with every COMMENT, STRING, CHAR and RAW-STRING body replaced by spaces (newlines
+    preserved), so an item keyword inside a comment or string body is never a phantom definition. Same
+    length + newline positions as the input. Adapted verbatim from scripts/check-rs-test-refs (P2.136)."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            out.append("\n"); i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                out.append(" "); i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            out.append("  "); i += 2; depth = 1
+            while i < n and depth > 0:
+                if text[i] == "\n":
+                    out.append("\n"); i += 1
+                elif text[i] == "/" and i + 1 < n and text[i + 1] == "*":
+                    out.append("  "); i += 2; depth += 1
+                elif text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    out.append("  "); i += 2; depth -= 1
+                else:
+                    out.append(" "); i += 1
+        elif c == "r" and i + 1 < n and (text[i + 1] == '"' or text[i + 1] == "#"):
+            k = i + 1
+            while k < n and text[k] == "#":
+                k += 1
+            if k < n and text[k] == '"':
+                hashes = k - (i + 1)
+                out.append(" " * (k - i + 1)); i = k + 1
+                closer = '"' + "#" * hashes
+                while i < n:
+                    if text[i] == "\n":
+                        out.append("\n"); i += 1
+                    elif text.startswith(closer, i):
+                        out.append(" " * len(closer)); i += len(closer); break
+                    else:
+                        out.append(" "); i += 1
+            else:
+                out.append(c); i += 1
+        elif c == '"':
+            out.append(" "); i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    out.append(" \n" if text[i + 1] == "\n" else "  "); i += 2
+                elif text[i] == '"':
+                    out.append(" "); i += 1; break
+                elif text[i] == "\n":
+                    out.append("\n"); i += 1
+                else:
+                    out.append(" "); i += 1
+        elif c == "'":
+            if i + 1 < n and text[i + 1] == "\\":
+                j = i + 2
+                while j < n and j < i + 12 and text[j] not in ("'", "\n"):
+                    j += 1
+                if j < n and text[j] == "'":
+                    out.append(" " * (j - i + 1)); i = j + 1
+                else:
+                    out.append("'"); i += 1
+            elif i + 2 < n and text[i + 2] == "'":
+                out.append("   "); i += 3
+            else:
+                out.append("'"); i += 1
+        else:
+            out.append(c); i += 1
+    return "".join(out)
+
+
+def collect_definitions(text: str) -> set[str]:
+    """(pure) every item name `text` DEFINES, over the stripped projection (no phantom defs in comments):
+    the keyword forms plus the names `complete_kind_list!` heads declare."""
+    stripped = _strip_rust(text)
+    names = {mt.group(1) for mt in _DEF_LINE.finditer(stripped)}
+    for mt in _MACRO_HEAD.finditer(stripped):
+        names.update(mt.groups())
+    names.update(mt.group(1) for mt in _MACRO_ELSEWHERE.finditer(stripped))
+    return names
+
+
+def dangling_deleted_refs(deleted: dict[str, str], files: dict[str, str]) -> list[str]:
+    """(pure) one problem per backticked COMMENT reference to a deleted name that no file in `files`
+    still defines. `deleted` is net_deleted_definitions' {name: file}; `files` is {rel: text}."""
+    if not deleted:
+        return []
+    defined: set[str] = set()
+    for text in files.values():
+        defined |= collect_definitions(text)
+    gone = {name: file for name, file in deleted.items() if name not in defined}
+    if not gone:
+        return []
+    ref_re = re.compile(
+        r"`(?:[A-Za-z_][A-Za-z0-9_]*::)*(" + "|".join(re.escape(n) for n in sorted(gone)) + r")(?:!|\(\))?`",
+        re.ASCII,
+    )
+    problems: list[str] = []
+    for rel in sorted(files):
+        in_block = False
+        for lineno, line in enumerate(_lines(files[rel]), 1):
+            comment, in_block = _comment_spans(line, in_block)
+            for mt in ref_re.finditer(comment):
+                problems.append(
+                    f"{rel}:{lineno}: the comment cites `{mt.group(1)}`, whose definition this diff removes "
+                    f"({gone[mt.group(1)]}) and no tracked .rs file still declares - repoint the comment at "
+                    "the surviving mechanism (or a module anchor), never at a symbol that no longer exists"
+                )
+    return problems
+
+
+def _tracked_sources() -> dict[str, str]:
+    """{rel: text} for every git-tracked first-party `.rs` file (the definition set + the comment corpus),
+    read from the WORKTREE under the repo root (recorded residual: `--diff` scans the index, so a partially
+    staged file's unstaged comment text is what the resolver sees). Empty when git cannot list the tree -
+    the caller reports that as a skip notice, never as a clean pass."""
+    rc, root = _git("rev-parse", "--show-toplevel")
+    if rc != 0:
+        return {}
+    rc, out = _git("ls-files", "-z", "--full-name", "--", ":/*.rs")
+    if rc != 0:
+        return {}
+    files: dict[str, str] = {}
+    base = root.strip()
+    for rel in out.split("\0"):
+        if rel and rel.startswith(_SOURCE_PREFIXES) and not rel.startswith(_SOURCE_EXCLUDES):
+            try:
+                with open(f"{base}/{rel}", "rb") as fh:
+                    files[rel] = _decode(fh.read())
+            except OSError:
+                continue
+    return files
+
+
+def _lines(text: str) -> list[str]:
+    """(pure) git's line model: split on `\\n` ONLY - a lone CR or form feed stays inside its line (under
+    `str.splitlines()` it opened a new line, and a CR-joined pseudo-line forged a tag / a definition: the 2026-09-08
+    review's round 14); a trailing newline ends the last line without opening an empty one."""
+    parts = text.split("\n")
+    if parts and parts[-1] == "":
+        parts.pop()
+    return parts
+
+
+def _decode(raw: bytes) -> str:
+    """(pure) A git child's bytes as text - decoded here, never through a text-mode pipe, so no universal-newline
+    translation turns a lone CR into a line break before `_lines` sees it."""
+    return raw.decode("utf-8", errors="replace")
+
+
 def _git(*args: str) -> tuple[int, str]:
-    p = subprocess.run(["git", *args], capture_output=True, encoding="utf-8", errors="replace")
-    return p.returncode, (p.stdout or "") + (p.stderr or "")
+    p = subprocess.run(["git", *args], env=_git_env(), capture_output=True)
+    return p.returncode, _decode((p.stdout or b"") + (p.stderr or b""))
+
+
+# The diff SYNTAX the parsers rely on, pinned on the command line: a `-c` outranks every config file and the
+# flags outrank the attributes, so the keys below cannot be re-shaped by a user's or the repo's git config (the
+# 2026-09-08 residual-closure review, rounds 12-13: `diff.noprefix=true` left every `diff --git` line unseedable
+# and a pair-less deletion passed SILENTLY; `diff.mnemonicPrefix=true` re-keyed a deleted file to `c/...`;
+# `diff.suppressBlankEmpty=true` elided blank context lines and compressed a tag window; a `diff.external`
+# driver or a textconv filter replaced the patch text or failed the read into a skip-with-notice; git's own
+# binary detection - one NUL byte - or a `binary` attribute hid a modified file behind `Binary files differ`):
+# non-ASCII paths literal, `a/`/`b/` prefixes forced, blank context lines never elided, hunks never merged, paths
+# never relative, no external driver, no textconv, every file read as text, no colour. The one environment knob
+# git honours OVER the command line, GIT_DIFF_OPTS (it overrides an explicit `--unified`), is scrubbed from every
+# git read (`_git_env`). Named residual: `diff.algorithm`/`diff.indentHeuristic` choose between EQUIVALENT
+# renderings of an ambiguous change - every removed line is still a `-` line and every added line a `+` line,
+# so no verdict flips. One constant pair + one scrub list on every DIFF read; every NAME LIST is read `-z`
+# (NUL-separated, never quoted - the round-15 finding: the fail-closed --full mirrors listed `ls-files` newline-split
+# and a quoted non-ASCII name failed their extension test) - both pinned by the canary.
+# Lines are split on git's `\n` ONLY and every git read is decoded from BYTES (`_lines` / `_decode`): under
+# `str.splitlines()` + a text-mode pipe's universal newlines, a lone CR or form feed inside a line opened a new
+# line: a CR-joined comment forged a definition line and an added-line map desynced from its blob's numbering
+# (the round-14 finding); the CR byte itself is G52's to reject at L1.
+GIT_DIFF_SYNTAX = ("-c", "core.quotepath=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+                   "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.suppressBlankEmpty=false",
+                   "-c", "diff.relative=false", "-c", "diff.interHunkContext=0")
+GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--text", "--no-color")
+SCRUBBED_GIT_ENV = ("GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF")
+
+
+def _git_env() -> dict[str, str]:
+    """The git child's environment without the knobs git honours OVER the command line (SCRUBBED_GIT_ENV)."""
+    return {k: v for k, v in os.environ.items() if k not in SCRUBBED_GIT_ENV}
 
 
 def _staged_diff() -> tuple[int, str]:
     rc, head = _git("rev-parse", "--verify", "HEAD")
     if rc != 0:
         return 0, ""                      # unborn branch: nothing to diff against (fail-open)
-    return _git("diff", "--cached", "-U10", "--diff-filter=ACMR", "--", "*.rs")
+    return _git(*GIT_DIFF_SYNTAX, "diff", "--cached", "-U10", *GIT_DIFF_FLAGS, "--diff-filter=ACMRDT", "--", ":/*.rs")
 
 
 def _range_base(explicit: str | None) -> str | None:
@@ -241,17 +605,26 @@ def main(argv: list[str] | None = None) -> int:
             print("[G74] doc-splice: no resolvable range base (pull_request/schedule/first push) - "
                   "skipped with notice; the L1 staged-diff leg covered each commit at its edit")
             return 0
-        rc, diff = _git("diff", "-U10", "--diff-filter=ACMR", f"{base}..HEAD", "--", "*.rs")
+        rc, diff = _git(*GIT_DIFF_SYNTAX, "diff", "-U10", *GIT_DIFF_FLAGS, "--diff-filter=ACMRDT", f"{base}..HEAD", "--", ":/*.rs")
         if rc != 0:
             print(f"[G74] git diff {base}..HEAD failed: {diff.strip()[:200]}", file=sys.stderr)
             return 2
 
     problems = scan_unified_diff(diff)
+    deleted = net_deleted_definitions(diff)
+    if deleted:
+        sources = _tracked_sources()
+        if sources:
+            problems += dangling_deleted_refs(deleted, sources)
+        else:
+            print("[G74] deleted-definition references: no tracked .rs source readable (git ls-files / the "
+                  "worktree) - leg (c) skipped with notice")
     if problems:
         for p in problems:
             print(f"[G74] FAIL: {p}", file=sys.stderr)
         return 1
-    print("[G74] doc-splice: no comment-attachment hijack in the scanned .rs insertions")
+    print("[G74] doc-splice: no comment-attachment hijack in the scanned .rs insertions and no "
+          "comment citing a definition the diff removes")
     return 0
 
 

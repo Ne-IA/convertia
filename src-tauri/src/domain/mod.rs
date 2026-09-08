@@ -1536,6 +1536,63 @@ pub enum RerunDecision {
     FreshCopy,
 }
 
+/// Declare a kind list — or a `(kind, wire)` pin list — TOGETHER with the exhaustive match that keeps it
+/// complete at compile time. The match is generated FROM the list, so a variant the enum has but the list
+/// does not is a non-exhaustive match here (the crate denies wildcard arms): the list can never fall behind
+/// the enum, which a hand-written list beside a hand-written match could — and one had (the §2.8.2
+/// exact-string pin sat a row short from P3.88 to P4.33). `elsewhere` declares, as a named const, the
+/// variants the list deliberately leaves out, so an omission is a spelled decision, never silence. The
+/// generated `#[test]` drives every listed element through the match, which keeps it live under
+/// `-D warnings`. Unit variants only: a payload-carrying enum (`DetectionOutcome`, `OpenTarget`,
+/// `TargetId`, `Availability`, `OptionKind`/`OptionValue`, `DestinationChoice`, `JobState`, `ItemOutcome`)
+/// keeps its hand-written exhaustive match, whose completeness the compiler forces on its own — the list
+/// such a test iterates is one of VALUES, not of variants, so it has no membership to fall behind. The
+/// third shape — a (variant, exact-string) pin table transcribed from the spec, the `expected` table in
+/// `crate::outcome`'s test module — stays hand-written; its completeness is bound by iterating the
+/// generated `CONVERSION_CATALOG_KINDS` against it, never by its own length. A roster that must stay a
+/// plain const array beside a hand-written match — the production `Delimiter::CANDIDATES`, the
+/// `#[cfg(test)]` harness's `InCoreTarget::ALL` — is not wrapped in place; its test module declares the
+/// complete list here and binds the roster to it, so the roster cannot fall behind either.
+/// [Build-Session-Entscheidung: P4.33]
+#[cfg(test)]
+macro_rules! complete_kind_list {
+    ($name:ident, $test:ident: $ty:ident = [$($v:ident),* $(,)?]
+     $(, elsewhere $ename:ident = [$($e:ident),* $(,)?])? $(,)?) => {
+        const $name: &[$ty] = &[$($ty::$v),*];
+        $(const $ename: &[$ty] = &[$($ty::$e),*];)?
+        #[test]
+        fn $test() {
+            fn exhaustive(kind: $ty) {
+                match kind {
+                    $($ty::$v)|* $($(| $ty::$e)*)? => {}
+                }
+            }
+            for kind in $name.iter().copied() {
+                exhaustive(kind);
+            }
+            $(for kind in $ename.iter().copied() {
+                exhaustive(kind);
+            })?
+        }
+    };
+    ($name:ident, $test:ident: $ty:ident = [$($v:ident => $w:expr),* $(,)?] $(,)?) => {
+        const $name: &[($ty, &str)] = &[$(($ty::$v, $w)),*];
+        #[test]
+        fn $test() {
+            fn exhaustive(kind: $ty) {
+                match kind {
+                    $($ty::$v)|* => {}
+                }
+            }
+            for (kind, _) in $name.iter().copied() {
+                exhaustive(kind);
+            }
+        }
+    };
+}
+#[cfg(test)]
+pub(crate) use complete_kind_list;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1656,15 +1713,22 @@ mod tests {
     // KEEPS (§0.6 defer-registration). [Test-Change: P3.78 — old-obsolete+new-correct, §0.4.1] since P3.78
     // `IntakeOrigin` is CORE-INTERNAL — no command references it (C1 `drain_intake` shed the `origin` arg; the
     // origin travels inside `PendingIntake`, §7.8.1) — so this locks the stable form a future wire consumer would
-    // inherit, not a live frontend contract.
+    // inherit, not a live frontend contract. The pin list is COMPLETE by construction (`complete_kind_list!`,
+    // the P4.33 class closure): a fifth origin not pinned here is a compile error at the generated match
+    // (`crate::orchestrator`'s `INTAKE_ORIGINS` is the bare kind list for the funnel test; this is the wire pin).
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §7.8: the inline array became the list-driven const
+    // `complete_kind_list!` generates the membership match from; the wire pins are unchanged.]
+    complete_kind_list!(
+        INTAKE_ORIGIN_WIRE_NAMES, intake_origin_wire_list_is_complete: IntakeOrigin = [
+            Drop => "\"drop\"",
+            Picker => "\"picker\"",
+            LaunchArg => "\"launchArg\"",
+            SecondInstance => "\"secondInstance\"",
+        ]
+    );
     #[test]
     fn intake_origin_wire_form_is_camelcase_and_roundtrips() {
-        for (origin, wire) in [
-            (IntakeOrigin::Drop, "\"drop\""),
-            (IntakeOrigin::Picker, "\"picker\""),
-            (IntakeOrigin::LaunchArg, "\"launchArg\""),
-            (IntakeOrigin::SecondInstance, "\"secondInstance\""),
-        ] {
+        for &(origin, wire) in INTAKE_ORIGIN_WIRE_NAMES {
             let json = serde_json::to_string(&origin).expect("IntakeOrigin serializes");
             assert_eq!(json, wire, "§0.4.3: IntakeOrigin wire casing is camelCase");
             let back: IntakeOrigin =
@@ -1677,63 +1741,67 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): `UserFacingFormat` IS the §0.6 SSOT *What It Converts* set (the §1.3 grouping
-    // key). This locks (a) the §0.4.3 camelCase wire form of every variant LISTED in `all` via a
-    // serialize→deserialize round-trip, and (b) the enum's membership: a REMOVED variant fails to compile in
-    // `all` below, and an ADDED variant fails to compile in the no-wildcard `exhaustive` match — which forces
-    // an ARM there, not a ROW in `all`, so the wire pin's completeness in the ADD direction is not asserted.
-    // [Test-Change: P4.33 — old-obsolete+new-correct, §0.6: the removed clause claimed both directions kept
-    // the SSOT set from drifting, which the match cannot do for the hand-written list.]
+    // key). This locks (a) the §0.4.3 camelCase wire form of every variant via a serialize→deserialize
+    // round-trip, and (b) the enum's membership in BOTH directions: a REMOVED variant fails to compile in
+    // the pin list, and an ADDED variant fails to compile at the match `complete_kind_list!` generates FROM
+    // that list — so the list, and with it the wire pin, cannot fall behind the enum (the P4.33 class
+    // closure; a hand-written list beside a hand-written match could, and one had).
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §0.6: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        USER_FACING_FORMAT_WIRE_NAMES, user_facing_format_wire_list_is_complete: UserFacingFormat = [
+            Jpg => "jpg",
+            Png => "png",
+            Webp => "webp",
+            Gif => "gif",
+            Bmp => "bmp",
+            Tiff => "tiff",
+            Heic => "heic",
+            Avif => "avif",
+            Ico => "ico",
+            Svg => "svg",
+            Mp3 => "mp3",
+            Wav => "wav",
+            Flac => "flac",
+            Aac => "aac",
+            M4a => "m4a",
+            Ogg => "ogg",
+            Opus => "opus",
+            Wma => "wma",
+            Aiff => "aiff",
+            Alac => "alac",
+            Mp4 => "mp4",
+            Mov => "mov",
+            Mkv => "mkv",
+            Webm => "webm",
+            Avi => "avi",
+            Wmv => "wmv",
+            Flv => "flv",
+            Mpeg => "mpeg",
+            M4v => "m4v",
+            ThreeGp => "threeGp",
+            Pdf => "pdf",
+            Docx => "docx",
+            Doc => "doc",
+            Odt => "odt",
+            Rtf => "rtf",
+            Txt => "txt",
+            Md => "md",
+            Html => "html",
+            Xlsx => "xlsx",
+            Xls => "xls",
+            Ods => "ods",
+            Csv => "csv",
+            Tsv => "tsv",
+            Pptx => "pptx",
+            Ppt => "ppt",
+            Odp => "odp",
+        ],
+    );
+
     #[test]
     fn user_facing_format_is_the_ssot_set_with_camelcase_wire() {
-        use UserFacingFormat as F;
-        let all: &[(UserFacingFormat, &str)] = &[
-            (F::Jpg, "jpg"),
-            (F::Png, "png"),
-            (F::Webp, "webp"),
-            (F::Gif, "gif"),
-            (F::Bmp, "bmp"),
-            (F::Tiff, "tiff"),
-            (F::Heic, "heic"),
-            (F::Avif, "avif"),
-            (F::Ico, "ico"),
-            (F::Svg, "svg"),
-            (F::Mp3, "mp3"),
-            (F::Wav, "wav"),
-            (F::Flac, "flac"),
-            (F::Aac, "aac"),
-            (F::M4a, "m4a"),
-            (F::Ogg, "ogg"),
-            (F::Opus, "opus"),
-            (F::Wma, "wma"),
-            (F::Aiff, "aiff"),
-            (F::Alac, "alac"),
-            (F::Mp4, "mp4"),
-            (F::Mov, "mov"),
-            (F::Mkv, "mkv"),
-            (F::Webm, "webm"),
-            (F::Avi, "avi"),
-            (F::Wmv, "wmv"),
-            (F::Flv, "flv"),
-            (F::Mpeg, "mpeg"),
-            (F::M4v, "m4v"),
-            (F::ThreeGp, "threeGp"),
-            (F::Pdf, "pdf"),
-            (F::Docx, "docx"),
-            (F::Doc, "doc"),
-            (F::Odt, "odt"),
-            (F::Rtf, "rtf"),
-            (F::Txt, "txt"),
-            (F::Md, "md"),
-            (F::Html, "html"),
-            (F::Xlsx, "xlsx"),
-            (F::Xls, "xls"),
-            (F::Ods, "ods"),
-            (F::Csv, "csv"),
-            (F::Tsv, "tsv"),
-            (F::Pptx, "pptx"),
-            (F::Ppt, "ppt"),
-            (F::Odp, "odp"),
-        ];
+        let all = USER_FACING_FORMAT_WIRE_NAMES;
         assert_eq!(
             all.len(),
             46,
@@ -1753,76 +1821,26 @@ mod tests {
                 "§0.6: {fmt:?} round-trips through its wire form"
             );
         }
-
-        // Compiler-enforced membership (the ADD direction): a variant added to the enum fails to compile
-        // HERE until it gains an arm — no wildcard arm (the crate also denies wildcard_enum_match_arm).
-        // The arm is what the compiler forces; a row in `all` above is not. [Test-Change: P4.33 —
-        // old-obsolete+new-correct, §0.6: the removed wording claimed a missing `all` row fails to compile.]
-        fn exhaustive(f: UserFacingFormat) {
-            match f {
-                F::Jpg
-                | F::Png
-                | F::Webp
-                | F::Gif
-                | F::Bmp
-                | F::Tiff
-                | F::Heic
-                | F::Avif
-                | F::Ico
-                | F::Svg
-                | F::Mp3
-                | F::Wav
-                | F::Flac
-                | F::Aac
-                | F::M4a
-                | F::Ogg
-                | F::Opus
-                | F::Wma
-                | F::Aiff
-                | F::Alac
-                | F::Mp4
-                | F::Mov
-                | F::Mkv
-                | F::Webm
-                | F::Avi
-                | F::Wmv
-                | F::Flv
-                | F::Mpeg
-                | F::M4v
-                | F::ThreeGp
-                | F::Pdf
-                | F::Docx
-                | F::Doc
-                | F::Odt
-                | F::Rtf
-                | F::Txt
-                | F::Md
-                | F::Html
-                | F::Xlsx
-                | F::Xls
-                | F::Ods
-                | F::Csv
-                | F::Tsv
-                | F::Pptx
-                | F::Ppt
-                | F::Odp => {}
-            }
-        }
-        exhaustive(F::Jpg);
     }
 
     // §6.4.1 unit (G15): the §1.2 `ReadFailure` wire enum — every freeze/detect read-failure reason
     // exists and serializes in the §0.4.3 camelCase wire form, locked by a serialize→deserialize
-    // round-trip (a silent rename would break the §2.8 projection + the frontend handling). The
-    // no-wildcard `exhaustive` arm locks set MEMBERSHIP: an added/removed variant fails to compile.
+    // round-trip (a silent rename would break the §2.8 projection + the frontend handling). The pin
+    // list is COMPLETE by construction (`complete_kind_list!`, the P4.33 class closure): an added variant
+    // not pinned here is a compile error at the generated match, a removed one in the list itself.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §1.2: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        READ_FAILURE_WIRE_NAMES, read_failure_wire_list_is_complete: ReadFailure = [
+            NotFound => "\"notFound\"",
+            PermissionDenied => "\"permissionDenied\"",
+            Locked => "\"locked\"",
+            IoError => "\"ioError\"",
+        ]
+    );
     #[test]
     fn read_failure_wire_form_is_camelcase_and_roundtrips() {
-        for (reason, wire) in [
-            (ReadFailure::NotFound, "\"notFound\""),
-            (ReadFailure::PermissionDenied, "\"permissionDenied\""),
-            (ReadFailure::Locked, "\"locked\""),
-            (ReadFailure::IoError, "\"ioError\""),
-        ] {
+        for &(reason, wire) in READ_FAILURE_WIRE_NAMES {
             let json = serde_json::to_string(&reason).expect("ReadFailure serializes");
             assert_eq!(json, wire, "§0.4.3: ReadFailure wire casing is camelCase");
             let back: ReadFailure =
@@ -1832,23 +1850,23 @@ mod tests {
                 "§1.2: ReadFailure round-trips through its wire form"
             );
         }
-        fn exhaustive(r: ReadFailure) {
-            match r {
-                ReadFailure::NotFound
-                | ReadFailure::PermissionDenied
-                | ReadFailure::Locked
-                | ReadFailure::IoError => {}
-            }
-        }
-        exhaustive(ReadFailure::NotFound);
     }
 
     // §6.4.1 unit (G15): the §1.2 `Confidence` enum — the one confidence type (High/Low), camelCase on
-    // the wire and round-tripped; the no-wildcard `exhaustive` arm locks the two-value membership so a
-    // re-introduction of the retired 3-valued enum fails to compile here.
+    // the wire and round-tripped; the pin list is COMPLETE by construction (`complete_kind_list!`, the
+    // P4.33 class closure), so a re-introduction of the retired 3-valued enum fails to compile at the
+    // generated match.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §1.2: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        CONFIDENCE_WIRE_NAMES, confidence_wire_list_is_complete: Confidence = [
+            High => "\"high\"",
+            Low => "\"low\"",
+        ]
+    );
     #[test]
     fn confidence_wire_form_is_camelcase_and_roundtrips() {
-        for (confidence, wire) in [(Confidence::High, "\"high\""), (Confidence::Low, "\"low\"")] {
+        for &(confidence, wire) in CONFIDENCE_WIRE_NAMES {
             let json = serde_json::to_string(&confidence).expect("Confidence serializes");
             assert_eq!(json, wire, "§0.4.3: Confidence wire casing is camelCase");
             let back: Confidence =
@@ -1858,12 +1876,6 @@ mod tests {
                 "§1.2: Confidence round-trips through its wire form"
             );
         }
-        fn exhaustive(c: Confidence) {
-            match c {
-                Confidence::High | Confidence::Low => {}
-            }
-        }
-        exhaustive(Confidence::High);
     }
 
     // §6.4.1 unit (G15): the §1.2 `DetectionOutcome` family — assert the §0.4.3 EXTERNALLY-TAGGED
@@ -2023,17 +2035,23 @@ mod tests {
     // §6.4.1 unit (G15): the §0.6 `SkipReason` enum — the four detection-ineligible skip classes PLUS the
     // §2.5.3 re-run skip `AlreadyConverted` (the P3.48 ruling), each serializing in the §0.4.3 camelCase wire
     // form (`unsupportedType`/`uncertain`/`empty`/`unreadable`/`alreadyConverted`), locked by a
-    // serialize→deserialize round-trip. The no-wildcard `exhaustive` arm locks MEMBERSHIP: an added/removed
-    // variant fails to compile here (the anti-drift "lock the contract" discipline).
+    // serialize→deserialize round-trip. The pin list is COMPLETE by construction (`complete_kind_list!`, the
+    // P4.33 class closure): an added/removed variant fails to compile (the anti-drift "lock the contract"
+    // discipline).
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §0.6: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        SKIP_REASON_WIRE_NAMES, skip_reason_wire_list_is_complete: SkipReason = [
+            UnsupportedType => "\"unsupportedType\"",
+            Uncertain => "\"uncertain\"",
+            Empty => "\"empty\"",
+            Unreadable => "\"unreadable\"",
+            AlreadyConverted => "\"alreadyConverted\"",
+        ]
+    );
     #[test]
     fn skip_reason_wire_form_is_camelcase_and_roundtrips() {
-        for (reason, wire) in [
-            (SkipReason::UnsupportedType, "\"unsupportedType\""),
-            (SkipReason::Uncertain, "\"uncertain\""),
-            (SkipReason::Empty, "\"empty\""),
-            (SkipReason::Unreadable, "\"unreadable\""),
-            (SkipReason::AlreadyConverted, "\"alreadyConverted\""),
-        ] {
+        for &(reason, wire) in SKIP_REASON_WIRE_NAMES {
             let json = serde_json::to_string(&reason).expect("SkipReason serializes");
             assert_eq!(json, wire, "§0.4.3: SkipReason wire casing is camelCase");
             let back: SkipReason =
@@ -2043,16 +2061,6 @@ mod tests {
                 "§0.6: SkipReason round-trips through its wire form"
             );
         }
-        fn exhaustive(r: SkipReason) {
-            match r {
-                SkipReason::UnsupportedType
-                | SkipReason::Uncertain
-                | SkipReason::Empty
-                | SkipReason::Unreadable
-                | SkipReason::AlreadyConverted => {}
-            }
-        }
-        exhaustive(SkipReason::Empty);
     }
 
     // §6.4.1 unit (G15): the §1.2/§1.3 `DetectionOutcome → SkipReason` projection (P2.16) — the eligible
@@ -2319,17 +2327,23 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): the §1.4 `CollectedNoteKind` discriminant — the four typed producers + the
-    // reserved `Other`, each serializing in the §0.4.3 camelCase wire form, round-tripped. The no-wildcard
-    // `exhaustive` arm locks MEMBERSHIP (an added/removed variant fails to compile).
+    // reserved `Other`, each serializing in the §0.4.3 camelCase wire form, round-tripped. The pin list is
+    // COMPLETE by construction (`complete_kind_list!`, the P4.33 class closure): an added/removed variant
+    // fails to compile.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §1.4: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        COLLECTED_NOTE_KIND_WIRE_NAMES, collected_note_kind_wire_list_is_complete: CollectedNoteKind = [
+            MultipleSheets => "\"multipleSheets\"",
+            AnimatedSource => "\"animatedSource\"",
+            MultiSizeIcon => "\"multiSizeIcon\"",
+            EmbeddedCoverArt => "\"embeddedCoverArt\"",
+            Other => "\"other\"",
+        ]
+    );
     #[test]
     fn collected_note_kind_wire_form_is_camelcase_and_roundtrips() {
-        for (kind, wire) in [
-            (CollectedNoteKind::MultipleSheets, "\"multipleSheets\""),
-            (CollectedNoteKind::AnimatedSource, "\"animatedSource\""),
-            (CollectedNoteKind::MultiSizeIcon, "\"multiSizeIcon\""),
-            (CollectedNoteKind::EmbeddedCoverArt, "\"embeddedCoverArt\""),
-            (CollectedNoteKind::Other, "\"other\""),
-        ] {
+        for &(kind, wire) in COLLECTED_NOTE_KIND_WIRE_NAMES {
             let json = serde_json::to_string(&kind).expect("CollectedNoteKind serializes");
             assert_eq!(
                 json, wire,
@@ -2342,16 +2356,6 @@ mod tests {
                 "§1.4: CollectedNoteKind round-trips through its wire form"
             );
         }
-        fn exhaustive(k: CollectedNoteKind) {
-            match k {
-                CollectedNoteKind::MultipleSheets
-                | CollectedNoteKind::AnimatedSource
-                | CollectedNoteKind::MultiSizeIcon
-                | CollectedNoteKind::EmbeddedCoverArt
-                | CollectedNoteKind::Other => {}
-            }
-        }
-        exhaustive(CollectedNoteKind::Other);
     }
 
     // §6.4.1 unit (G15): the §1.4 `CollectedNote` record — { kind, detail } in camelCase, with both the
@@ -2642,13 +2646,18 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): the C2a `PickKind` arg — Files/Folder in the §0.4.3 camelCase wire form,
-    // round-tripped; the no-wildcard `exhaustive` arm locks membership.
+    // round-tripped; the pin list is COMPLETE by construction (`complete_kind_list!`, the P4.33 class closure).
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §0.4.1: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        PICK_KIND_WIRE_NAMES, pick_kind_wire_list_is_complete: PickKind = [
+            Files => "\"files\"",
+            Folder => "\"folder\"",
+        ]
+    );
     #[test]
     fn pick_kind_wire_form_is_camelcase_and_roundtrips() {
-        for (kind, wire) in [
-            (PickKind::Files, "\"files\""),
-            (PickKind::Folder, "\"folder\""),
-        ] {
+        for &(kind, wire) in PICK_KIND_WIRE_NAMES {
             let json = serde_json::to_string(&kind).expect("PickKind serializes");
             assert_eq!(json, wire, "§0.4.1: PickKind wire casing is camelCase");
             let back: PickKind =
@@ -2658,12 +2667,6 @@ mod tests {
                 "§0.6: PickKind round-trips through its wire form"
             );
         }
-        fn exhaustive(k: PickKind) {
-            match k {
-                PickKind::Files | PickKind::Folder => {}
-            }
-        }
-        exhaustive(PickKind::Files);
     }
 
     // §6.4.1 unit (G15): the C9 `OpenTarget` arg (P3.79) — the run-scoped id form. Unit variants are bare
@@ -2731,43 +2734,54 @@ mod tests {
 
     // §6.4.1 unit (G15): the §2.9 `LossyKind` catalog discriminant — every one of the 27 §2.9.1 kinds
     // serializes in the SNAKE_CASE wire form the catalog + the 04-formats cross-refs name (NOT camelCase —
-    // §0.4.3 governs field names, this is a fieldless catalog-key enum), round-tripped. The no-wildcard
-    // `exhaustive` arm locks variant MEMBERSHIP: a kind added/removed (or a 04 matrix flag pointing at a
-    // missing kind) fails to compile here. Order matches the §2.9.1 catalog.
+    // §0.4.3 governs field names, this is a fieldless catalog-key enum), round-tripped. The pin list is
+    // COMPLETE by construction (`complete_kind_list!`, the P4.33 class closure): a kind added/removed (or a
+    // 04 matrix flag pointing at a missing kind) fails to compile. Order matches the §2.9.1 catalog.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §2.9.1: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        LOSSY_KIND_WIRE_NAMES, lossy_kind_wire_list_is_complete: LossyKind = [
+            ImageLossyCodec => "image_lossy_codec",
+            ImagePalette => "image_palette",
+            ImageDownscale => "image_downscale",
+            ImageAlphaFlatten => "image_alpha_flatten",
+            ImageAnimationFlatten => "image_animation_flatten",
+            ImageSvgRaster => "image_svg_raster",
+            DocPdfReflow => "doc_pdf_reflow",
+            DocPdfToText => "doc_pdf_to_text",
+            DocHtmlRender => "doc_html_render",
+            DocToText => "doc_to_text",
+            DocSimplified => "doc_simplified",
+            SheetToDelimited => "sheet_to_delimited",
+            XlsLegacyLimits => "xls_legacy_limits",
+            TextEncodingNarrowed => "text_encoding_narrowed",
+            SlidesToPdfFlatten => "slides_to_pdf_flatten",
+            OfficeRoundtripApprox => "office_roundtrip_approx",
+            PptxToPptLegacy => "pptx_to_ppt_legacy",
+            AudioLossyTarget => "audio_lossy_target",
+            AudioTranscode => "audio_transcode",
+            AudioLossyOrigin => "audio_lossy_origin",
+            AudioBitdepth => "audio_bitdepth",
+            AudioTagsDropped => "audio_tags_dropped",
+            VideoReencode => "video_reencode",
+            VideoAlphaLost => "video_alpha_lost",
+            VideoSubsDropped => "video_subs_dropped",
+            VideoToGif => "video_to_gif",
+            AudioDownmix => "audio_downmix",
+        ]
+    );
     #[test]
     fn lossy_kind_snake_case_wire_and_membership() {
-        let all: &[(LossyKind, &str)] = &[
-            (LossyKind::ImageLossyCodec, "image_lossy_codec"),
-            (LossyKind::ImagePalette, "image_palette"),
-            (LossyKind::ImageDownscale, "image_downscale"),
-            (LossyKind::ImageAlphaFlatten, "image_alpha_flatten"),
-            (LossyKind::ImageAnimationFlatten, "image_animation_flatten"),
-            (LossyKind::ImageSvgRaster, "image_svg_raster"),
-            (LossyKind::DocPdfReflow, "doc_pdf_reflow"),
-            (LossyKind::DocPdfToText, "doc_pdf_to_text"),
-            (LossyKind::DocHtmlRender, "doc_html_render"),
-            (LossyKind::DocToText, "doc_to_text"),
-            (LossyKind::DocSimplified, "doc_simplified"),
-            (LossyKind::SheetToDelimited, "sheet_to_delimited"),
-            (LossyKind::XlsLegacyLimits, "xls_legacy_limits"),
-            (LossyKind::TextEncodingNarrowed, "text_encoding_narrowed"),
-            (LossyKind::SlidesToPdfFlatten, "slides_to_pdf_flatten"),
-            (LossyKind::OfficeRoundtripApprox, "office_roundtrip_approx"),
-            (LossyKind::PptxToPptLegacy, "pptx_to_ppt_legacy"),
-            (LossyKind::AudioLossyTarget, "audio_lossy_target"),
-            (LossyKind::AudioTranscode, "audio_transcode"),
-            (LossyKind::AudioLossyOrigin, "audio_lossy_origin"),
-            (LossyKind::AudioBitdepth, "audio_bitdepth"),
-            (LossyKind::AudioTagsDropped, "audio_tags_dropped"),
-            (LossyKind::VideoReencode, "video_reencode"),
-            (LossyKind::VideoAlphaLost, "video_alpha_lost"),
-            (LossyKind::VideoSubsDropped, "video_subs_dropped"),
-            (LossyKind::VideoToGif, "video_to_gif"),
-            (LossyKind::AudioDownmix, "audio_downmix"),
-        ];
-        assert_eq!(all.len(), 27, "§2.9.1: the LossyKind catalog has 27 kinds");
-        for (kind, wire) in all {
-            let json = serde_json::to_string(kind).expect("LossyKind serializes");
+        // [Test-Change: P4.33 — old-obsolete+new-correct, §2.9.1: the inline `all` table became the list-driven
+        // const; the length pin and the serialize call read it (by value, `&kind`) — every expectation is
+        // unchanged.]
+        assert_eq!(
+            LOSSY_KIND_WIRE_NAMES.len(),
+            27,
+            "§2.9.1: the LossyKind catalog has 27 kinds"
+        );
+        for &(kind, wire) in LOSSY_KIND_WIRE_NAMES {
+            let json = serde_json::to_string(&kind).expect("LossyKind serializes");
             assert_eq!(
                 json,
                 format!("\"{wire}\""),
@@ -2776,61 +2790,39 @@ mod tests {
             let back: LossyKind =
                 serde_json::from_str(&json).expect("LossyKind round-trips from its wire form");
             assert_eq!(
-                back, *kind,
+                back, kind,
                 "§2.9: {kind:?} round-trips through its wire form"
             );
         }
-        // Compiler-enforced membership (no wildcard arm): a variant add/remove fails to compile here.
-        fn exhaustive(k: LossyKind) {
-            match k {
-                LossyKind::ImageLossyCodec
-                | LossyKind::ImagePalette
-                | LossyKind::ImageDownscale
-                | LossyKind::ImageAlphaFlatten
-                | LossyKind::ImageAnimationFlatten
-                | LossyKind::ImageSvgRaster
-                | LossyKind::DocPdfReflow
-                | LossyKind::DocPdfToText
-                | LossyKind::DocHtmlRender
-                | LossyKind::DocToText
-                | LossyKind::DocSimplified
-                | LossyKind::SheetToDelimited
-                | LossyKind::XlsLegacyLimits
-                | LossyKind::TextEncodingNarrowed
-                | LossyKind::SlidesToPdfFlatten
-                | LossyKind::OfficeRoundtripApprox
-                | LossyKind::PptxToPptLegacy
-                | LossyKind::AudioLossyTarget
-                | LossyKind::AudioTranscode
-                | LossyKind::AudioLossyOrigin
-                | LossyKind::AudioBitdepth
-                | LossyKind::AudioTagsDropped
-                | LossyKind::VideoReencode
-                | LossyKind::VideoAlphaLost
-                | LossyKind::VideoSubsDropped
-                | LossyKind::VideoToGif
-                | LossyKind::AudioDownmix => {}
-            }
-        }
-        exhaustive(LossyKind::ImageLossyCodec);
     }
+
+    // The `CrossCatOp` wire pins as a list-driven roster: `complete_kind_list!` generates an exhaustive
+    // match from it, so an op added to the enum and not pinned here is a compile error (the P4.33 class
+    // closure - the two hand-written rows below sat beside a hand-written exhaustive fn, which forced an
+    // arm but never a wire row). [Test-Change: P4.33 — old-obsolete+new-correct, §0.6: the inline Op rows
+    // + the separate hand-written exhaustive fn are replaced by the list-driven match the macro generates;
+    // the wire pins and the round-trip assertions are unchanged.]
+    complete_kind_list!(
+        CROSS_CAT_OP_WIRE, cross_cat_op_wire_list_is_complete: CrossCatOp = [
+            ExtractAudio => r#"{"op":"extractAudio"}"#,
+            ToGif => r#"{"op":"toGif"}"#,
+        ],
+    );
 
     // §6.4.1 unit (G15): the §0.6 target scalar/alias layer — TargetId (externally-tagged Format/Op),
     // CrossCatOp, Availability — in camelCase wire form, round-tripped, with no-wildcard membership locks.
     #[test]
     fn target_scalars_wire_forms_and_membership() {
-        // TargetId — externally tagged; Format wraps a FormatId (= UserFacingFormat), Op a CrossCatOp.
-        for (id, wire) in [
-            (
-                TargetId::Format(UserFacingFormat::Webp),
-                r#"{"format":"webp"}"#,
-            ),
-            (
-                TargetId::Op(CrossCatOp::ExtractAudio),
-                r#"{"op":"extractAudio"}"#,
-            ),
-            (TargetId::Op(CrossCatOp::ToGif), r#"{"op":"toGif"}"#),
-        ] {
+        // TargetId — externally tagged; Format wraps a FormatId (= UserFacingFormat), Op a CrossCatOp (every
+        // Op row comes from the list-driven roster above).
+        let format_row = (
+            TargetId::Format(UserFacingFormat::Webp),
+            r#"{"format":"webp"}"#,
+        );
+        let op_rows = CROSS_CAT_OP_WIRE
+            .iter()
+            .map(|(op, wire)| (TargetId::Op(*op), *wire));
+        for (id, wire) in std::iter::once(format_row).chain(op_rows) {
             let json = serde_json::to_string(&id).expect("TargetId serializes");
             assert_eq!(json, wire, "§0.6: TargetId externally-tagged camelCase");
             let back: TargetId = serde_json::from_str(&json).expect("TargetId round-trips");
@@ -2842,12 +2834,6 @@ mod tests {
             }
         }
         target_id_exhaustive(&TargetId::Op(CrossCatOp::ToGif));
-        fn cross_cat_exhaustive(o: CrossCatOp) {
-            match o {
-                CrossCatOp::ExtractAudio | CrossCatOp::ToGif => {}
-            }
-        }
-        cross_cat_exhaustive(CrossCatOp::ExtractAudio);
 
         // Availability — unit `Available` is a bare tag; `Unavailable { reason }` is externally tagged.
         assert_eq!(
@@ -2880,10 +2866,31 @@ mod tests {
         availability_exhaustive(&Availability::Available);
     }
 
+    // The §1.6 `Surface` / `Unit` wire pins — COMPLETE by construction (`complete_kind_list!`, the P4.33 class
+    // closure); the option-model test below iterates them.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §1.6: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        SURFACE_WIRE_NAMES, surface_wire_list_is_complete: Surface = [
+            Basic => "\"basic\"",
+            Advanced => "\"advanced\"",
+        ]
+    );
+    complete_kind_list!(
+        UNIT_WIRE_NAMES, unit_wire_list_is_complete: Unit = [
+            Percent => "\"percent\"",
+            Kbps => "\"kbps\"",
+            Px => "\"px\"",
+            Dpi => "\"dpi\"",
+            Fps => "\"fps\"",
+        ]
+    );
+
     // §6.4.1 unit (G15): the §1.6 option model — OptionKind (all 5 control shapes, externally-tagged
     // camelCase incl. the multi-word `intRange` + the nested `IntRange` fields + the `Enum` EnumChoice),
-    // OptionValue (all 4 value shapes), Surface, Unit — each round-tripped, with no-wildcard membership
-    // locks. This references the OptionKey/LabelKey/EnumChoice/Unit/Surface leaves.
+    // OptionValue (all 4 value shapes), Surface, Unit — each round-tripped, with membership locks (the
+    // payload-carrying OptionKind/OptionValue keep their hand-written no-wildcard matches; Surface/Unit
+    // are the list-driven pins above). This references the OptionKey/LabelKey/EnumChoice/Unit/Surface leaves.
     #[test]
     fn option_model_wire_forms_and_membership() {
         // OptionKind variants.
@@ -2961,42 +2968,21 @@ mod tests {
         }
         option_value_exhaustive(&OptionValue::Bool(false));
 
-        // Surface + Unit wire forms + membership.
-        for (s, wire) in [
-            (Surface::Basic, "\"basic\""),
-            (Surface::Advanced, "\"advanced\""),
-        ] {
+        // Surface + Unit wire forms (membership: the list-driven pins above).
+        for &(s, wire) in SURFACE_WIRE_NAMES {
             assert_eq!(
                 serde_json::to_string(&s).expect("Surface serializes"),
                 wire,
                 "§1.6: Surface camelCase"
             );
         }
-        fn surface_exhaustive(s: Surface) {
-            match s {
-                Surface::Basic | Surface::Advanced => {}
-            }
-        }
-        surface_exhaustive(Surface::Basic);
-        for (u, wire) in [
-            (Unit::Percent, "\"percent\""),
-            (Unit::Kbps, "\"kbps\""),
-            (Unit::Px, "\"px\""),
-            (Unit::Dpi, "\"dpi\""),
-            (Unit::Fps, "\"fps\""),
-        ] {
+        for &(u, wire) in UNIT_WIRE_NAMES {
             assert_eq!(
                 serde_json::to_string(&u).expect("Unit serializes"),
                 wire,
                 "§1.6: Unit camelCase"
             );
         }
-        fn unit_exhaustive(u: Unit) {
-            match u {
-                Unit::Percent | Unit::Kbps | Unit::Px | Unit::Dpi | Unit::Fps => {}
-            }
-        }
-        unit_exhaustive(Unit::Px);
     }
 
     // §6.4.1 unit (G15): the §0.6 composite layer — a full `TargetOffer` (embedding a `Target` with its
@@ -3060,6 +3046,18 @@ mod tests {
         );
     }
 
+    // The §2.7.2 `DivertReason` wire pins — COMPLETE by construction (`complete_kind_list!`, the P4.33 class
+    // closure); the destination-layer test below iterates them.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §2.7.2: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        DIVERT_REASON_WIRE_NAMES, divert_reason_wire_list_is_complete: DivertReason = [
+            Unwritable => r#""unwritable""#,
+            Ephemeral => r#""ephemeral""#,
+            NoAtomicPublish => r#""noAtomicPublish""#,
+        ]
+    );
+
     // §6.4.1 unit (G15): the §0.6 destination / output-plan layer (P2.9). Locks the externally-tagged camelCase
     // WIRE forms of `DestinationChoice` (the C4/C5/C6 arg, §0.4.1) and `DivertReason` (the §2.7.2 divert
     // classification carried by the P2.11 DTOs) + round-trips both, and exercises the INTERNAL `OutputPlan`
@@ -3104,12 +3102,9 @@ mod tests {
         }
         destination_choice_exhaustive(&chosen);
 
-        // DivertReason — all three §2.7.2 variants in their camelCase wire form, round-tripped.
-        for (reason, wire) in [
-            (DivertReason::Unwritable, r#""unwritable""#),
-            (DivertReason::Ephemeral, r#""ephemeral""#),
-            (DivertReason::NoAtomicPublish, r#""noAtomicPublish""#),
-        ] {
+        // DivertReason — all three §2.7.2 variants in their camelCase wire form, round-tripped (the list-driven
+        // pins above).
+        for &(reason, wire) in DIVERT_REASON_WIRE_NAMES {
             assert_eq!(
                 serde_json::to_string(&reason).expect("DivertReason serializes"),
                 wire,
@@ -3118,14 +3113,6 @@ mod tests {
             let back: DivertReason = serde_json::from_str(wire).expect("DivertReason round-trips");
             assert_eq!(back, reason, "§0.6: DivertReason round-trips");
         }
-        fn divert_reason_exhaustive(r: DivertReason) {
-            match r {
-                DivertReason::Unwritable
-                | DivertReason::Ephemeral
-                | DivertReason::NoAtomicPublish => {}
-            }
-        }
-        divert_reason_exhaustive(DivertReason::Unwritable);
 
         // OutputPlan — the internal directory-based plan: Clone + Eq, OsString base-name/extension kept exactly,
         // publish_temp_dir == final_dir in v1 (the §2.14.1 same-volume sibling-dotfile rule). No wire assertion
@@ -3158,40 +3145,44 @@ mod tests {
 
     // §6.4.1 unit (G15): the §0.6/§0.4.2 `JobStage` wire enum (P2.10) — the four coarse progress stages
     // carried by `ItemProgress.stage`, each in its camelCase wire form. JobStage is OUTBOUND-ONLY (no
-    // `Deserialize`), so this is a SERIALIZE pin (like `ConversionErrorKind`'s), not a round-trip. The
-    // `exhaustive` match is the COMPILE-TIME variant lock: a stage added/removed without updating it fails
-    // to compile. It forces an ARM for a new variant, not a ROW in this hand-written list: pin completeness
-    // is not asserted here. [Test-Change: P4.33 — old-obsolete+new-correct, §0.6: the removed clause
-    // claimed the match kept the pins from falling behind the enum, which a match cannot do.]
+    // `Deserialize`), so this is a SERIALIZE pin (like `ConversionErrorKind`'s), not a round-trip. The list
+    // is COMPLETE by construction (`complete_kind_list!`, the P4.33 class closure): a stage added to the
+    // enum and not pinned here is a compile error at the generated match.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §0.6: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        JOB_STAGE_WIRE_NAMES, job_stage_wire_list_is_complete: JobStage = [
+            Spawning => r#""spawning""#,
+            Decoding => r#""decoding""#,
+            Encoding => r#""encoding""#,
+            Writing => r#""writing""#,
+        ],
+    );
+
     #[test]
     fn job_stage_wire_form_is_camelcase() {
-        for (stage, wire) in [
-            (JobStage::Spawning, r#""spawning""#),
-            (JobStage::Decoding, r#""decoding""#),
-            (JobStage::Encoding, r#""encoding""#),
-            (JobStage::Writing, r#""writing""#),
-        ] {
+        for &(stage, wire) in JOB_STAGE_WIRE_NAMES {
             assert_eq!(
                 serde_json::to_string(&stage).expect("JobStage serializes"),
                 wire,
                 "§0.4.2/§1.11: JobStage mirrors to its camelCase wire name (carried by ItemProgress)"
             );
         }
-        fn job_stage_exhaustive(s: JobStage) {
-            match s {
-                JobStage::Spawning
-                | JobStage::Decoding
-                | JobStage::Encoding
-                | JobStage::Writing => {}
-            }
-        }
-        job_stage_exhaustive(JobStage::Writing);
     }
 
     // §6.4.1 unit (G15): the §0.6/§2.5 `RerunPrompt` + `RerunDecision` wire forms (P2.11). `RerunPrompt` is
     // outbound-only (carried in the C4/C5 previews) → a serialize pin (camelCase `equivalentCount`).
-    // `RerunDecision` is the C6 INBOUND choice → round-trips (`skip`/`freshCopy`) + a compile-time variant
-    // lock so the closed set can't silently drift from §2.5.
+    // `RerunDecision` is the C6 INBOUND choice → round-trips (`skip`/`freshCopy`); its pin list is COMPLETE
+    // by construction (`complete_kind_list!`, the P4.33 class closure) so the closed set can't silently
+    // drift from §2.5.
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §2.5: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the wire pins are unchanged.]
+    complete_kind_list!(
+        RERUN_DECISION_WIRE_NAMES, rerun_decision_wire_list_is_complete: RerunDecision = [
+            Skip => r#""skip""#,
+            FreshCopy => r#""freshCopy""#,
+        ]
+    );
     #[test]
     fn rerun_prompt_and_decision_wire_forms() {
         assert_eq!(
@@ -3202,10 +3193,7 @@ mod tests {
             r#"{"equivalentCount":3}"#,
             "§2.5: RerunPrompt carries the equivalent-item count in camelCase"
         );
-        for (decision, wire) in [
-            (RerunDecision::Skip, r#""skip""#),
-            (RerunDecision::FreshCopy, r#""freshCopy""#),
-        ] {
+        for &(decision, wire) in RERUN_DECISION_WIRE_NAMES {
             assert_eq!(
                 serde_json::to_string(&decision).expect("RerunDecision serializes"),
                 wire,
@@ -3218,12 +3206,6 @@ mod tests {
                 "§0.6: RerunDecision round-trips (the C6 inbound arg)"
             );
         }
-        fn rerun_decision_exhaustive(d: RerunDecision) {
-            match d {
-                RerunDecision::Skip | RerunDecision::FreshCopy => {}
-            }
-        }
-        rerun_decision_exhaustive(RerunDecision::Skip);
     }
 
     // ─── P2.14 · §0.6-invariant property tests (§6.4.2 / G16) ────────────────────────────────────────────

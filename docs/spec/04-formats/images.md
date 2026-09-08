@@ -309,8 +309,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **Edge cases:** **Transparency:** GIF supports 1-bit (on/off) transparency only;
   preserved to PNG/WEBP (promoted to full alpha edge), flattened for JPG/BMP.
   **Animation:** preserved on GIF→WEBP and GIF→GIF (passthrough); for **still
-  targets only the first frame** is taken (calm inline note "animated — only the
-  first frame is converted"). Per-frame disposal/timing honoured by the loader.
+  targets only the first frame** is taken (calm inline note "Animated — only the
+  first frame is converted."). Per-frame disposal/timing honoured by the loader.
   **→ video is out** (cross-category, not sanctioned).
 
 ### BMP
@@ -610,8 +610,8 @@ open contradicts "it just works").
   GIF/WEBP passthrough). All animation→animation in v1 is **GIF or animated WEBP**
   as the destination.
 - **Collapsed to the first frame** for every still target (JPG/PNG/BMP/TIFF/HEIC/
-  AVIF-still/ICO) with a calm inline note: *"animated — only the first frame is
-  converted"* (→ §2.9 catalog).
+  AVIF-still/ICO) with a calm inline note: *"Animated — only the first frame is
+  converted."* (→ §2.9 catalog).
 - **No image→video** (cross-category, not in the sanctioned set) and **no
   frame-by-frame fan-out** (parked).
 

@@ -6395,7 +6395,8 @@ mod freeze_gating_contract {
 mod tests {
     use super::*;
     use crate::domain::{
-        Availability, Confidence, DetectionOutcome, DivertReason, InstanceId, RerunPrompt, TargetId,
+        complete_kind_list, Availability, Confidence, DetectionOutcome, DivertReason, InstanceId,
+        RerunPrompt, TargetId,
     };
     use proptest::prelude::*;
     use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
@@ -6839,6 +6840,21 @@ mod tests {
         Channel::new(|_body: InvokeResponseBody| Ok(()))
     }
 
+    // The origin list is COMPLETE by construction (`complete_kind_list!`, the P4.33 class closure): a new
+    // `IntakeOrigin` variant not listed here is a compile error at the generated match, so the funnel test
+    // below cannot silently miss an origin. [Build-Session-Entscheidung: P2.62]
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §1.1: the inline array + separate exhaustive fn were
+    // replaced by the list-driven match `complete_kind_list!` generates; the funnel test's origin set is
+    // unchanged (this is the bare kind list — no wire pins live here).]
+    complete_kind_list!(
+        INTAKE_ORIGINS, intake_origin_list_is_complete: IntakeOrigin = [
+            Drop,
+            Picker,
+            LaunchArg,
+            SecondInstance,
+        ],
+    );
+
     // §6.4.1 unit (G15) / §1.1/§2.4: the `ingest` freeze funnel is ORIGIN-INDEPENDENT — every intake origin
     // funnels the same way (P3.78), so the §1.3 projection keys off DETECTION, not origin. An EMPTY intake set
     // (no roots to walk) yields the zero-collection `Empty` for every origin. [Test-Change: P3.49 —
@@ -6847,27 +6863,7 @@ mod tests {
     // origin-independence + empty-set contract survives, the compile-time variant lock stays.
     #[test]
     fn ingest_funnel_is_origin_independent_and_empty_for_an_empty_set() {
-        // Compile-time variant lock (the established `exhaustive`-match pattern): a new `IntakeOrigin` variant
-        // breaks this match. It forces an ARM, not a ROW in the hand-written `all` array below — array
-        // completeness is not asserted here. [Build-Session-Entscheidung: P2.62] [Test-Change: P4.33 —
-        // old-obsolete+new-correct, §1.1: the removed clause claimed the match forced the array to grow, which
-        // a match cannot do.]
-        fn exhaustive(o: IntakeOrigin) {
-            match o {
-                IntakeOrigin::Drop
-                | IntakeOrigin::Picker
-                | IntakeOrigin::LaunchArg
-                | IntakeOrigin::SecondInstance => {}
-            }
-        }
-        let all = [
-            IntakeOrigin::Drop,
-            IntakeOrigin::Picker,
-            IntakeOrigin::LaunchArg,
-            IntakeOrigin::SecondInstance,
-        ];
-        for origin in all {
-            exhaustive(origin);
+        for origin in INTAKE_ORIGINS.iter().copied() {
             let result = ingest(
                 Vec::new(),
                 origin,
@@ -7275,8 +7271,9 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): the §0.6/§1.9 `JobState` is exactly the SIX lifecycle states, in the §0.6 order.
-    // The `exhaustive` match is the COMPILE-TIME variant lock (the established dependency-free pattern, cf.
-    // `crate::outcome`'s `conversion_error_kind_exhaustive`): adding/removing a variant without updating
+    // The `exhaustive` match is the COMPILE-TIME variant lock (the established dependency-free pattern, in
+    // its hand-written form because `complete_kind_list!` takes unit variants only and `JobState` carries
+    // payloads): adding/removing a variant without updating
     // it fails to compile, so the lifecycle set can never silently drift from §0.6. The payload assertions
     // pin that `Failed` carries the §2.8 kind and `Skipped` the §0.6 `SkipReason`.
     #[test]
@@ -8539,6 +8536,22 @@ mod tests {
             .unwrap();
     }
 
+    // The freeze's four DETECTION skip reasons, the roster the coupling property below draws from — COMPLETE
+    // by construction (`complete_kind_list!`, the P4.33 class closure): a sixth `SkipReason` variant not
+    // listed here or in the spelled omission is a compile error at the generated match. `AlreadyConverted`
+    // is the spelled omission: `build_batch` never mints it (only the C6 §2.5 applier does, post-freeze).
+    // [Test-Change: P4.33 — old-obsolete+new-correct, §0.6: the inline `const REASONS: [SkipReason; 4]` became
+    // the list-driven const with the omission named; the roster's members are unchanged.]
+    crate::domain::complete_kind_list!(
+        REASONS, freeze_skip_reason_roster_is_complete: SkipReason = [
+            UnsupportedType,
+            Uncertain,
+            Empty,
+            Unreadable,
+        ],
+        elsewhere NEVER_MINTED_AT_FREEZE = [AlreadyConverted],
+    );
+
     /// §0.6 coupling invariant (P3.47, REFINED by the P3.48 rerun-skip ruling) over the REAL C6 constructor:
     /// for a `build_batch` result from ANY generated eligible+skipped mix, EVERY job satisfies `source is
     /// Skipped(_) ⟺ state is JobState::Skipped(<detection reason>)` — an eligible item is `Eligible`+`Pending`,
@@ -8557,12 +8570,11 @@ mod tests {
     /// is covered by `run_conversion_tests::rerun_skip_marks_a_seen_item_already_converted_but_fresh_copy_converts_it`.
     #[test]
     fn prop_build_batch_couples_source_arm_with_job_state() {
-        const REASONS: [SkipReason; 4] = [
-            SkipReason::UnsupportedType,
-            SkipReason::Uncertain,
-            SkipReason::Empty,
-            SkipReason::Unreadable,
-        ];
+        assert_eq!(
+            NEVER_MINTED_AT_FREEZE,
+            &[SkipReason::AlreadyConverted],
+            "§0.6/§2.5: the one reason the freeze never mints is the C6 applier's re-run skip"
+        );
         pinned_runner()
             .run(&(0u32..32, 0u32..32), |(n_elig, n_skip)| {
                 // Disjoint ids over ONE space: eligible get EVEN ids, skipped get ODD ids — so build_batch's
@@ -8570,7 +8582,7 @@ mod tests {
                 let items: Vec<DroppedItem> = (0..n_elig).map(|i| dropped_item(2 * i)).collect();
                 let skipped: Vec<SkippedItem> = (0..n_skip)
                     .enumerate()
-                    .map(|(idx, i)| skipped_item(2 * i + 1, REASONS[idx % 4]))
+                    .map(|(idx, i)| skipped_item(2 * i + 1, REASONS[idx % REASONS.len()]))
                     .collect();
                 let frozen = frozen_of(items, skipped);
                 let batch = build_batch(
