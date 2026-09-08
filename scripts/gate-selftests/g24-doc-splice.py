@@ -261,13 +261,26 @@ record("deleted-def: both live git-diff calls include DELETIONS and typechanges 
 
 def _rmtree_git(d: str) -> None:
     """Remove a throwaway repo: git's pack/object files are read-only, which shutil.rmtree cannot delete on
-    Windows - make everything writable first, then remove (nothing may be left behind in the temp dir)."""
+    Windows until the read-only bit is cleared. A DIRECTORY, though, needs its execute/search bit to be
+    traversable AND removable on POSIX - clearing it to a plain rw- (S_IWRITE|S_IREAD) makes the tree
+    un-walkable and `shutil.rmtree(ignore_errors=True)` then silently leaves it behind (the 2026-09-08
+    Lane-B ubuntu/macos red), so directories get S_IRWXU and only files get the file mode - nothing left
+    behind on either platform."""
     for root, dirs, files in os.walk(d):
-        for name in dirs + files:
+        for name in dirs:
+            try:
+                os.chmod(os.path.join(root, name), stat.S_IRWXU)
+            except OSError:
+                pass
+        for name in files:
             try:
                 os.chmod(os.path.join(root, name), stat.S_IWRITE | stat.S_IREAD)
             except OSError:
                 pass
+    try:
+        os.chmod(d, stat.S_IRWXU)          # the walk never visits the top dir as a child - chmod it directly
+    except OSError:
+        pass
     shutil.rmtree(d, ignore_errors=True)
 
 

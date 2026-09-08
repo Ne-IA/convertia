@@ -219,6 +219,25 @@ def _git_unicode_uncovered():
                 return None                          # git setup failed -> skip rather than false-fail
         return m.main(["--root", td])
     finally:
+        # git's loose objects are read-only; a bare rmtree cannot delete them on Windows (read-only bit) and a
+        # dir cleared to a plain rw- is un-traversable on POSIX - make files writable + dirs S_IRWXU first, then
+        # remove, so nothing leaks on either platform (the 2026-09-08 g24-doc-splice `_rmtree_git` sibling fix).
+        import stat
+        for _r, _ds, _fs in os.walk(td):
+            for _n in _ds:
+                try:
+                    os.chmod(os.path.join(_r, _n), stat.S_IRWXU)
+                except OSError:
+                    pass
+            for _n in _fs:
+                try:
+                    os.chmod(os.path.join(_r, _n), stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
+        try:
+            os.chmod(td, stat.S_IRWXU)
+        except OSError:
+            pass
         shutil.rmtree(td, ignore_errors=True)
 
 _rc = _git_unicode_uncovered()
