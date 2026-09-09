@@ -47,5 +47,6 @@
 # owner tail re-blesses this clause)).
 #
 # An empty manifest is VALID (`crate::engines::lock` and its empty-container test): the container
-# landed at P4.56.1 and each engine's rows land with its staging box (P5–P7); the reading gates
+# landed at P4.56.1 and each engine's rows land with its staging box (P5–P7) — except the imgworker's
+# static-link closure, whose rows are authored at P4.89 ahead of P4.34, the first seam fill; the reading gates
 # hold the fail-open-while-empty / fail-closed-on-first-row posture (the P4.56.3 gate semantics).

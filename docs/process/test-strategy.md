@@ -1142,10 +1142,13 @@ delivered *system*.
 
 **The next phase's first box carries a `needs:` on the sweep box** (for the
 final phase, the RC sign-off box `P11.33` carries it). A `[!extern]`
-prerequisite of a non-extern box is a **STOP** for the loop
+prerequisite of a non-extern box STOPs that box's `needs:` closure
 ([`_format.md`](../plan/_format.md) §2 marker table / §6 rule 4;
-roles-and-escalation §4(d)) — so the loop **mechanically hard-stops at every
-phase boundary until the sweep is `[x]`**, with no new loop mechanics. A
+roles-and-escalation §4(d)), and the sweep box is the one `[!extern]` whose
+closure is the WHOLE successor phase (the 2026-09-09 scoping, build-loop.md §3
+step 1, names it as its single carve-out) — so the loop **mechanically hard-stops
+at every phase boundary until the sweep is `[x]`**, expressed in the existing
+marker / `needs:` vocabulary plus that one named exception. A
 DECISION-C early build of a *single* later-phase prerequisite box is **not**
 gated by the boundary stop — that box is swept by its owning phase's sweep.
 
@@ -1182,11 +1185,25 @@ of the next phase** against five surfaces ((e) added 2026-08-27):
   no owning box, and the P4 pre-fill audit's surfaces (a)–(d) could not see it
   (they audit boxes that EXIST; this surface audits mandates/promises for
   MISSING boxes).
+- **(f) realizability probe (added 2026-09-09 — the P4.34 class)** — every box
+  that names an owner / L(-1) tail, an acquisition mode, a signing anchor or an
+  OS mechanism is RUN before it is ruled on, not read: the binder gate on a scratch
+  root (does the caged half land as a tail, or is it a precondition?), the
+  upstream's release/signing survey (release assets, attestations, the signing
+  KEY — a web-flow-signed commit is not a maintainer signature), the library's
+  build closure from its own build system, the OS probe. The P4.34 ruling was
+  written from the design reading alone and was unsatisfiable on three counts;
+  the measured facts go into the box, and its `needs:` / `[!extern]` shape follows
+  from them.
 
 **Resolution.** Findings the Co-Pilot can resolve are landed as **normal
 dual-reviewed plan/spec edits before the next phase's build session starts**;
 genuine forks (roles-and-escalation §4) are brought to the **owner at the
-boundary — batched, never one per box mid-phase**. The audit **builds nothing**:
+boundary — batched, never one per box mid-phase**. **Owner acts the audit finds are
+consolidated into ONE `[!extern]` owner-act box per phase** (appended at max+1; the
+dependent boxes `needs:` it), which the Co-Pilot executes as one owner-acked act
+while the loop builds every box outside that closure (build-loop.md §3 step 1).
+The audit **builds nothing**:
 it edits the plan/spec layer only; an L(-1) surface follows the normal owner-ack
 path (G71). Evidence rides the audit's commit bodies, same as the delivery leg.
 

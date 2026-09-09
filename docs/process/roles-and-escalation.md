@@ -154,7 +154,12 @@ proceed, tagged** (§3).
   that is **not** an escalation. Escalate only when the prerequisite is something the
   loop **cannot** build: it requires an owner action or external input (an
   `[!extern]` prerequisite of a non-extern box), or the plan is an **all-blocked
-  deadlock** with nothing open.
+  deadlock** with nothing open. The escalation is scoped: the loop STOPs for that
+  `needs:` closure only, continues with the open boxes outside it, and the Co-Pilot
+  executes the collected owner acts as one batch per phase
+  ([build-loop.md §3 step 1](build-loop.md#step-1--find-the-next-buildable-box), §9) —
+  except the phase-end sweep box, which blocks its WHOLE successor phase
+  (test-strategy §11.3).
 
 Two further blockers route the same way (their mechanics live in build-loop.md, the
 *who* is here):
@@ -174,7 +179,13 @@ Two further blockers route the same way (their mechanics live in build-loop.md, 
   one is a **hard-stop + escalate** so the **owner** makes/approves it and adds the
   `L-neg1-ack: owner` trailer ([security-concept §2](../security/security-concept.md#2-working-model--two-sessions-one-branch),
   gate **G71**). The explicit, load-bearing case of (c)'s "any decision a doc reserves as
-  an owner decision".
+  an owner decision". Pre-declare it: a caged **tail** that reds nothing until it lands (a
+  build-gates row) is named in the box and lands in the Co-Pilot's per-phase owner-act
+  batch; a caged tail that reds the same push (an equality-pinned canary tally, a fixture
+  pin) stays a same-push owner tail; a caged **precondition** is a `needs:` on an
+  `[!extern]` owner-act box (the P4.89 pattern) — the trigger stops the caged edit, not
+  the loop, which continues outside that closure (except the phase-end sweep box, which
+  blocks its WHOLE successor phase, test-strategy §11.3).
 
 ### NOT escalation (decide yourself, tagged)
 
@@ -281,7 +292,8 @@ view:
 - An **anomalous CI cancel** (a `cancelled` run with no successor —
   [build-loop.md §3 step 6](build-loop.md#step-6--commit--push-gates-run-never-bypass)).
 - A needed **L(-1) security-critical-file edit** (trigger (g)) — the loop never edits the
-  gates' own cage; the **owner** makes/acks it (`L-neg1-ack: owner`, G71).
+  gates' own cage; the **owner** makes/acks it (`L-neg1-ack: owner`, G71) — the stop is
+  scoped to the caged edit; the loop continues outside the blocked `needs:` closure (§4(d)).
 - **GitHub API unreachable mid-session** (during the push-wait / `gh run watch`) beyond the
   bounded retry — the loop cannot confirm its own CI run is green, so it hard-stops rather
   than proceed past an unobserved run ([build-loop.md §3 step 6](build-loop.md#step-6--commit--push-gates-run-never-bypass)).

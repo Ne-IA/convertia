@@ -177,15 +177,31 @@ model depends on every one of them:
 
 ### Step 1 — Find the next buildable box
 
-Scan **all** `docs/plan/P*.md`, **lowest phase first, top to bottom**; the next
-buildable box is the first `[ ]` that is not `[!extern]`/`[!]`-blocked. Concretely:
-the lowest-phase / lowest-position open `[ ]` box whose `needs:` dependencies (if
-any) are all `[x]`.
+Scan **all** `docs/plan/P*.md`, **lowest phase first, top to bottom**; the **target**
+is the first `[ ]` box that is not `[!extern]`/`[!]` — the document-order-next open
+box, picked by position **before** its `needs:` are checked (`_format.md` §6 step 2).
+Concretely: the lowest-phase / lowest-position open `[ ]` box; if its `needs:` are
+not all `[x]`, Step 2's DECISION C builds the prerequisites first and returns — a
+target is not skipped over merely because its `needs:` are unmet (the `[!extern]`
+closure below is the one exception).
 
 - **`[!extern]`** (nothing for the loop to build — an owner/external action) →
-  **skip + collect** into the consolidated `[!extern]` list; the loop continues.
-  **Exception — a real block:** a non-extern box that *names an `[!extern]` box as
-  a prerequisite* → **STOP** instead of skipping.
+  **skip + collect** into the consolidated `[!extern]` list = the **per-phase
+  owner-act batch** the Co-Pilot executes in one act per phase (§9; test-strategy
+  §11.4); the loop continues.
+  **A real block — STOP for that closure, not for the loop (owner refinement,
+  2026-09-09):** a non-extern box that names an `[!extern]` box anywhere in its
+  `needs:` closure (the transitive `needs:` set) cannot be built → report it ONCE
+  as the Co-Pilot line (§8), collect the `[!extern]` box into the batch, and
+  **continue with the next open box OUTSIDE the blocked closure** — one whose own
+  `needs:` closure does not touch the blocked box and whose Step-2/3 reading
+  reveals no undeclared dependency on it (an undeclared one is a
+  roles-and-escalation §4(d) escalation, never a build against an absent
+  prerequisite). The blocked target is re-selected the moment the `[!extern]` box
+  flips `[x]`; the closure is never a hole, because nothing inside it is built out
+  of order. **The one closure that blocks the WHOLE successor phase** is the
+  phase-end sweep box (test-strategy §11.3): the loop never enters `P(n+1)` while
+  `P(n)`'s sweep is open — the phase-boundary stop is unchanged.
 - **`[!]`** (blocked) → read the note under it, skip, mention at the phase end.
 - **Auto-unlock scan:** after each check-off (and at startup), scan for `[!]` boxes
   carrying an `unlocked-by: <box-id>` marker whose dep is now `[x]`, and flip them
@@ -220,7 +236,8 @@ checked off only after every sub-box is done**. The dual review (step 5) fires
 > genuinely **cannot** build (an owner action, an external dependency) — that is a
 > skip-and-report, not a dependency to follow. The distinction: a `needs:` on a
 > *buildable* box ⇒ **build the prerequisite, then return**; a `[!]` / `[!extern]`
-> ⇒ **skip + report** (and STOP if a non-extern box hard-requires it).
+> ⇒ **skip + report** (and STOP — scoped to that box's `needs:` closure, Step 1 — if a
+> non-extern box hard-requires it).
 
 ### Step 3 — Read ALL referenced spec `§§` and gate IDs, fully
 
@@ -327,6 +344,12 @@ build commit. Input: the STAGED diff (git diff --cached, inline). Critique it fo
      open is a P1. (Scope guard: this asks for the CATCHER, not for gold-plating —
      a one-line memory/spec note IS a valid closure when a mechanical gate would be
      disproportionate; name the judgment.)
+  7. PROSE ECONOMY (owner rule, 2026-09-09) — a count, an unmeasured "because"
+     mechanism claim, or a coverage/done-ness claim in a comment, a plan note or the
+     commit body that no mechanical checker cross-checks is a defect in the PROSE,
+     never a request for more prose: the fix is to reword it to the observable
+     EFFECT or to drop it. Rank an unmeasured claim P2 (P1 only where a decision
+     rests on it). Ask for a checker, a hedge or a deletion — not for narrative.
 
 Rank every finding P0 (must-fix, blocks) → P1 (must-fix) → P2 → P3. Give each one a
 one-line reason WITH a spec-§ or file ref. State convergence/divergence explicitly:
@@ -404,6 +427,17 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   reviewer's findings + convergence/divergence are recorded **verbatim** in the
   body. **Rollback convention** (solo on `main`): `chore(scope): roll back —
   <reason>` — **no `revert` type** for build-session commits.
+- **Body economy (owner rule, 2026-09-09).** The body is evidence, not narrative:
+  WHY (what the box builds and the spec `§` that decides it — a few lines), WHAT
+  (one line per file group), the decisions a later reader needs (the
+  `[Build-Session-Entscheidung]` sites, the residuals, the class closure), and the
+  review record as a **findings LIST** — each reviewer's findings verbatim as
+  `severity file:line — summary → resolution`, one line each, plus one
+  convergence/divergence line — never the reviewers' prose. A count appears only
+  where a checker cross-checks it (the runner's `N legs` rows, `--shortstat`); a
+  mechanism is written as its observable effect, never as an unmeasured
+  "because". Aim for ≤ 60 lines; a body past 120 lines is itself a review smell
+  (rubric item 7).
 - **Push exit code MUST be observed reliably.** The agent tool environment does not
   propagate a subprocess exit code the way a plain shell does: `| tee` masks the
   hook's non-zero exit, and a naive `$?` can capture the tool-call's own success
@@ -568,7 +602,13 @@ A change is **done** only when:
 - A needed **L(-1) security-critical-file edit** — the loop NEVER edits a
   security-critical file (the gates' own cage) autonomously; hard-stop + escalate so the
   owner makes/acks it (`L-neg1-ack: owner`, G71; security-concept §2,
-  roles-and-escalation §4(g)).
+  roles-and-escalation §4(g)). The stop is for the caged EDIT, never a reason to idle:
+  a caged **tail** that reds nothing until it lands (a build-gates row describing the
+  new leg) is pre-declared in the box and lands in the Co-Pilot's per-phase owner-act
+  batch (§9); a caged tail that reds the same push (an equality-pinned canary tally, a
+  fixture pin) stays a same-push owner tail; a caged **precondition** is expressed as a
+  `needs:` on an `[!extern]` owner-act box (the P4.89 pattern), and the loop continues
+  outside that `needs:` closure (§3 step 1).
 - **GitHub API unreachable mid-session beyond the bounded retry** — during the push-wait
   or `gh run watch` (§3 step 6), a transient API error / rate-limit / 5xx / timeout is
   retried with backoff; if it cannot be resolved the loop hard-stops + escalates rather than
@@ -684,9 +724,13 @@ on an unreachable GitHub API is the §6 **mid-session hard-stop**, not a silent 
 ## 9. Convergence & crash-recovery
 
 **Convergence report (zero open boxes / end of session):** boxes completed + their
-commit SHAs + the **consolidated `[!extern]` list = the owner/Co-Pilot action list** (the owner rules it; the standing test-strategy §11 phase-end sweep boxes on it are Co-Pilot-executed), so the
-owner has one scannable hand-off. Never loop forever; on zero open boxes, report and
-stop.
+commit SHAs + the **consolidated `[!extern]` list = the owner/Co-Pilot action list**,
+so the owner has one scannable hand-off. The Co-Pilot executes that list as ONE
+owner-acked batch per phase (test-strategy §11.4); the loop never idles on it (§3
+step 1) — except the phase-end sweep box, which blocks its whole successor phase
+(test-strategy §11.3). The owner rules the genuine forks on the list; the standing
+test-strategy §11 phase-end sweep boxes on it are Co-Pilot-executed. Never loop
+forever; on zero open boxes, report and stop.
 
 **Crash-recovery procedure (a session crash mid-box is recoverable without manual
 surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here):**

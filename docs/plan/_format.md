@@ -58,7 +58,7 @@ other bracketed token at a box position — a stray `[X]`, `[-]`, `[~]`, `[wip]`
 | `[ ]` | **open / buildable** | Not yet built. The unit of work. | The selection target (§6) — built when it is the next one and its `needs:` are all `[x]`. |
 | `[x]` | **done** | Built, tested, dual-reviewed, committed, gates green. | Skipped (already done); may **unlock** a `[!]` box via `unlocked-by:` (§5). |
 | `[!]` | **blocked-with-note** | Cannot be built **and is not a dependency to follow** — it waits on something the loop genuinely cannot produce. **Rare.** | **Skip + report** at the phase end; read the `>`-note under it. May be auto-flipped to `[ ]` by an `unlocked-by:` dep going `[x]` (§5). |
-| `[!extern]` | **needs something external** | Waits on an **owner / external** action the loop cannot take (an off-repo asset, a human decision, an external dependency — plus the **standing per-phase Co-Pilot hardening-sweep box**, [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). **Rare outside the standing sweep boxes** for a fully-offline OSS app. | **Skip + collect** into the consolidated `[!extern]` list (the owner/Co-Pilot action list, `build-loop.md` §9). **STOP** instead of skipping if a *non-extern* box names this one as a `needs:` prerequisite. |
+| `[!extern]` | **needs something external** | Waits on an **owner / external** action the loop cannot take (an off-repo asset, a human decision, an external dependency — plus the **standing per-phase Co-Pilot hardening-sweep box**, [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). **Rare outside the standing sweep boxes** for a fully-offline OSS app. | **Skip + collect** into the consolidated `[!extern]` list (the per-phase owner-act batch, `build-loop.md` §9). A *non-extern* box that names this one anywhere in its `needs:` closure → **STOP for that closure** — report once, collect, and continue with the next open box outside it (`build-loop.md` §3 step 1); the phase-end sweep box is the one `[!extern]` that blocks its whole successor phase (test-strategy §11.3). |
 
 > **`[!]` is the exception, not the tool of first resort — prefer dependency-
 > following (DECISION C, §5).** When the next box needs an *unbuilt but buildable*
@@ -68,9 +68,12 @@ other bracketed token at a box position — a stray `[X]`, `[-]`, `[~]`, `[wip]`
 > returns — leaving **no hole**. `[!]` / `[!extern]` are reserved for a block the
 > loop **cannot resolve by building** (an owner action, an external input). The
 > test: *can the loop build the thing it is blocked on?* If yes ⇒ it is a `needs:`
-> dependency, not a `[!]`. If no ⇒ `[!]` (or `[!extern]` if the blocker is
-> off-repo), with a one-line `>`-note saying **why** and (where applicable) an
-> `unlocked-by:` marker (§5).
+> dependency, not a `[!]`. If no ⇒ mark the *blocker*: when the owner/external act is
+> separable, author it as its own `[!extern]` box and keep the dependent box `[ ]` +
+> `needs:` it (the P5.1→P4.81 / P4.34→P4.89 shape, §5.1); mark the blocked box itself
+> `[!]` (or `[!extern]` if the blocker is off-repo) only when there is nothing to build AT
+> the box yet, with a one-line `>`-note saying **why** and (where applicable) an
+> `unlocked-by:` marker naming its releaser (§5).
 
 **Sub-box rule for `[x]`.** A box with sub-boxes (§3) is marked `[x]` **only after
 every sub-box is `[x]`** — the top marker is the AND of its children. The loop
@@ -165,6 +168,13 @@ Under an open `[ ]` box the note is optional (a clarifying constraint, a phasing
 like "`→ activated in P1`"). Notes are **prose, not parsed for acceptance criteria** —
 those are in the spec `§§`.
 
+**Reference, never restate (owner rule, 2026-09-09).** A note names the deciding `§`
+and quotes at most the decided literal it depends on; it does not paraphrase the
+mechanism. A paraphrase is a second copy that drifts — the spec-restatement class
+`plan-lint` check 30 polices inside the spec is authorial here — and every drift is a
+spec-contradiction hard-stop the loop meets mid-box. The pre-fill audit (test-strategy
+§11.4) strips restated prose back to references as it passes.
+
 ---
 
 ## 4. Tag taxonomy
@@ -232,8 +242,12 @@ ConvertIA resolves the dependency **in place**.
   cycle is not.
 - Distinguish from a `[!]`: a `needs:` says *"build that first, then me"*; a `[!]`
   says *"I cannot be built at all right now"*. The same fact is **never** expressed
-  as both — if a box is genuinely blocked on an unbuildable thing it is `[!]` /
-  `[!extern]` with a `>`-note, **not** `[ ]` with a `needs:` the loop cannot satisfy.
+  as both — if a box is genuinely blocked on a separable owner/external act, that act is
+  its own `[!extern]` box (with its `>`-note) and the blocked box names it in `needs:`
+  (§2, §6 step 4 — the loop STOPs for that closure); if there is nothing to build AT the
+  box yet, the box itself is `[!]` / `[!extern]` with its releaser in `unlocked-by:` (the
+  `P5.4` shape, §5.2). A `[ ]` box never carries a `needs:` that points at nothing
+  buildable AND nothing `[!extern]`.
 
 ### 5.2 `unlocked-by:` — the reverse direction (auto-unlock)
 
@@ -265,7 +279,10 @@ selectable again automatically, without a manual edit.
   follow. Had `P5.4` merely needed `P6.1` *staged as an input* to a step it can run,
   it would be `[ ]` + `needs: P6.1`, and DECISION C would build `P6.1` early and
   return. The test is always §2's: *can the loop build the thing it is blocked on?*
-  Yes ⇒ `needs:`; no ⇒ `[!]` / `[!extern]`.
+  Yes ⇒ `needs:`; no ⇒ the *blocker* gets the marker — its own `[!extern]` box named in
+  `needs:` when the owner act is separable (§5.1), else `[!]` / `[!extern]` on the
+  blocked box itself when there is nothing to build AT the box yet — the `P5.4` shape,
+  whose releaser is named in `unlocked-by:` rather than `needs:`.
 - `unlocked-by:` appears **only** under a `[!]` box; `plan-lint` (check: marker /
   annotation pairing) fails an `unlocked-by:` under a `[ ]`/`[x]`/`[!extern]` box. It
   fails a **silent block**: a `[!]` box that carries **neither** a `>`-note **nor**
@@ -293,9 +310,11 @@ this format so a box author knows exactly how their box will be picked:
    `needs:` dep not yet `[x]`** (but **buildable**) → **DECISION C:** build that
    prerequisite first (recurse on *its* `needs:`), then **return** to the target.
    Never skip, never hole.
-4. **`[!extern]`** → skip + collect into the owner/Co-Pilot action list; **STOP** if a
-   non-extern box hard-requires it. **`[!]`** → read the `>`-note, skip, mention at
-   the phase end.
+4. **`[!extern]`** → skip + collect into the per-phase owner-act batch; a non-extern box
+   that names it anywhere in its `needs:` closure → **STOP for that closure** (report
+   once, collect) and continue with the next open box outside it (`build-loop.md` §3
+   step 1) — except the phase-end sweep box, which blocks its whole successor phase
+   (test-strategy §11.3). **`[!]`** → read the `>`-note, skip, mention at the phase end.
 5. **Sub-boxes** are worked top to bottom under their parent before the parent is
    checked off (§2, §3.2).
 6. **Zero open boxes** → emit the convergence report and **stop** (never loop
