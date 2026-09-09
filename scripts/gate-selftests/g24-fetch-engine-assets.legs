@@ -1,0 +1,165 @@
+an empty manifest is a valid container
+a well-formed row parses
+a row's triples are preserved verbatim
+an unknown triple is refused
+an empty triples list is refused
+a missing required field is refused
+a blank required field is refused
+malformed TOML is refused
+a non-array `engine` key is refused
+an `engine` entry that is not a table is refused
+a non-array `corroboration_urls` is refused
+a PREBUILT row without asset_sha256 is refused - there is nothing to verify against
+the group tokens default to the row's own id/version
+a declared group token overrides the default
+the cache key is `<cache_engine>-<cache_version>-<triple>`
+an undeclared group falls back to the row key
+a DECLARED-but-blank group token is refused rather than silently defaulted
+a cache token that is not one path component is refused: '../evil'
+a cache token that is not one path component is refused: 'a/b'
+a cache token that is not one path component is refused: 'a\\b'
+a cache token that is not one path component is refused: '.hidden'
+a cache token that is not one path component is refused: ''
+a cache token that is not one path component is refused: '  '
+the cache_VERSION half of the grammar is checked too, not only cache_engine
+a DEFAULTED token is checked too - the id is the fallback, so it is a path component
+an ordinary versioned token passes the grammar
+a prebuilt staged artifact is fetchable
+a from-source row is NOT fetchable
+a sub-component row is NOT fetchable
+the from-source refusal names P4.28.1's compile path
+the sub-component refusal names the row KIND, not the acquisition mode
+an explicit valid triple resolves to itself
+an unknown explicit triple is a structural error
+this host resolves to a v1 triple, or says plainly that it cannot
+an IMPLICIT target resolves like the host table says, or refuses in so many words
+every mapped host triple is a declared v1 triple
+an https URL is accepted
+the scheme pin refuses file://
+the scheme pin refuses http://
+the scheme pin refuses ftp://
+a hostless URL is refused
+an off-allow-list host is refused even over https
+an allow-listed host passes
+the REAL opener carries the guard itself, not its caller
+the REAL opener refuses an off-allow-list host before opening a socket
+every redirect hop is re-checked - the handler refuses a downgrade to http
+every redirect hop is re-checked - the handler refuses a cross-origin hop
+the per-hop pin is INSTALLED on the opener the fetch actually uses
+the STREAMING ceiling refuses mid-read, before the whole body is buffered
+an oversized download is refused after the fact too, by fetch_asset's own bound
+a body under the ceiling reads back whole
+a multi-chunk payload reads back in ORDER, not as a repeated prefix
+an empty download is refused
+a transport failure is reported as a fetch violation, not a traceback
+a matching digest verifies
+an UPPERCASE pin still verifies
+a mismatching digest is refused, as a MISMATCH
+a short pin is refused as MALFORMED, not as a mismatch
+a non-hex pin is refused as MALFORMED, not as a mismatch
+a 64-char pin of the WRONG bytes still reads as a mismatch
+a plain member is confined
+a hostile member path is refused: '/etc/passwd'
+a hostile member path is refused: '../escape'
+a hostile member path is refused: 'a/../../escape'
+a hostile member path is refused: 'C:evil'
+a hostile member path is refused: '\\\\host\\share'
+a hostile member path is refused: ''
+an interior-NUL member is refused
+a backslash-spelled traversal is refused
+tar magic wins over a wrong name
+zip magic wins over a wrong name
+a bare payload is raw
+an empty-zip EOCD magic is recognised
+a .zip NAME is the fallback when the bytes do not decide
+a .tar.gz NAME is the fallback when the bytes do not decide
+a .tgz NAME is the fallback too
+a tar unpacks as a tree
+a zip unpacks as a tree
+a bare binary is stored under its own name
+a bare-asset NAME that escapes the entry root is refused AS a member violation
+a separator in a bare-asset name is refused CLEANLY, or lands flat in the entry
+a dot bare-asset name is refused too
+the stdlib data filter is applied - a device-node member is refused
+a truncated tar container is a violation, not a traceback
+a truncated zip container is a violation, not a traceback
+a traversing TAR member is refused AS a traversal, before extraction
+a traversing TAR SYMLINK target is refused AS a traversal
+a traversing ZIP member is refused AS a traversal, before extraction
+the refused traversal wrote NOTHING outside the entry
+an archive that unpacks to nothing is refused
+three rows of one entry collapse into ONE plan
+the plan names every member it carries
+the group is NOT keyed on the row's own version
+a group whose members disagree on the entry hash fails closed
+a group whose members disagree on the entry URL fails closed
+a declined row is REPORTED, not silently absent
+a triple no row targets yields no plans
+a multi-triple row plans once per triple, keyed on each
+--engine selects a GROUP
+--engine on an absent group is a structural error
+the plan's allow-list carries the row's own hosts - upstream AND corroboration
+a host from ANOTHER manifest row is not on this group's allow-list
+a compiled group is ONE plan holding every source, not one plan per source
+the entry is `.src`-keyed, which stage-engines structurally cannot match
+each source is verified against its OWN from_source.tarball_sha256
+each source carries the detached signature url its row declares
+the two sources are the two DIFFERENT urls of the one compiled group
+the plan's allow-list carries the row's own hosts - upstream, signature AND corroboration
+a from-source row is invisible to the PREBUILT planner
+a PREBUILT row is invisible to the SOURCE planner
+a from-source row this triple does not target yields no source plan
+a from-source SUB-COMPONENT is not a source plan - only staged artifacts compile
+two rows sharing ONE source fetch it once
+a from-source row with no tarball anchor is refused, not silently skipped
+a from-source row that cannot LOCATE its signature is refused
+a `from_source` that is not a table is refused, not read as an empty one
+two sources whose urls share a filename are refused, not silently overwritten
+a source url with no usable filename is refused
+a group resolving to two source entry names fails closed
+the entry holds the RAW archive bytes - the signature is over the archive as shipped, so nothing is unpacked
+a multi-source group publishes EVERY source; none is discarded
+each detached signature is published beside its own archive
+the entry holds exactly the declared sources and their signatures, nothing else
+a source whose bytes miss the pin is refused, and NOTHING is published
+a malformed SOURCE pin names the from-source key, not the prebuilt one
+the source fetch is bound by the plan's OWN allow-list
+the SIGNATURE fetch is bound by the allow-list too, not only the tarball fetch
+a source url whose tail is drive-relative is refused - it would escape the entry
+a url tail that is a multi-SEGMENT name is refused
+a SIGNATURE url whose tail is drive-relative is refused on the same grammar
+the publish refuses to hand over an entry that is not what the plan declares
+a stray NON-directory at the entry path is never mistaken for a benign race
+a concurrent publish is counted as a HIT in the --source summary
+a concurrently-published entry reports THAT, not a fabricated populate
+run(sources=True) reaches the SOURCE path - a `.src` entry, not a prebuilt one
+run() WITHOUT --source populates nothing here - the two modes are disjoint
+main --source threads the mode through to the SOURCE path
+main WITHOUT --source finds no PREBUILT row in the same manifest
+a from-source cache HIT is reported under -v
+the --source summary counts a HIT as a hit, not as work still to do
+the PREBUILT summary counts a HIT the same way - the arithmetic is one class
+a populated source entry is a cache HIT, not a second download
+an absent entry plans as a MISS
+populate publishes the entry under the stage-engines key
+a published entry plans as a HIT
+no staging residue survives a success
+a hash mismatch refuses to publish, AS a mismatch
+a refused populate leaves the cache EMPTY
+a concurrent publish is reported as such, NOT as a populate of ours
+the concurrently-published entry is left INTACT and ours leaves no residue
+a stray NON-directory at the entry path is never mistaken for a benign race
+...and it either becomes the verified tree or is left untouched by a loud failure
+a hash-VALID but traversing archive is still refused AS a traversal
+the refused traversing archive left no entry and no residue
+an empty manifest is a no-op run
+an empty manifest run creates no cache directory
+--check fetches nothing
+--check creates no cache directory either
+a full run populates the entry
+a second run is a pure cache hit - the opener is never called
+run() REPORTS a concurrent publish rather than letting it escape
+a triple with no row is a no-op, not an error
+main() refuses neither --engine nor --all
+main() refuses BOTH --engine and --all
+a missing manifest is a structural error

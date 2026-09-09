@@ -2643,7 +2643,7 @@ def selftest() -> int:
                 ),
             )
         else:
-            _record("universal staging: symlink-vs-file leg (skipped - host cannot create symlinks)", True)
+            _record("universal staging: a symlink in one slice and a FILE in the other is refused (skipped - host cannot create symlinks)", True)
 
     with tempfile.TemporaryDirectory() as tmp:
         uroot, ucache = _universal_fixture(Path(tmp))
@@ -2712,7 +2712,7 @@ def selftest() -> int:
                 ),
             )
         else:
-            _record("universal staging: dir-vs-dirlink leg (skipped - host cannot create symlinks)", True)
+            _record("universal staging: a real DIR against a symlink-to-dir is refused, not flattened (skipped - host cannot create symlinks)", True)
 
     with tempfile.TemporaryDirectory() as tmp:
         uroot, ucache = _universal_fixture(Path(tmp))
@@ -2996,8 +2996,8 @@ def selftest() -> int:
                 staged_link.is_symlink() and os.readlink(staged_link) == "soffice.bin",
             )
         else:
-            _record("universal staging: symlink-disagreement leg (skipped - host cannot create symlinks)", True)
-            _record("universal staging: symlink-preserve leg (skipped - host cannot create symlinks)", True)
+            _record("universal staging: the two slices pointing one symlink elsewhere is refused (skipped - host cannot create symlinks)", True)
+            _record("universal staging: a symlink agreeing across slices is PRESERVED, not merged (skipped - host cannot create symlinks)", True)
 
     with tempfile.TemporaryDirectory() as tmp:
         uroot, ucache = _universal_fixture(Path(tmp))
@@ -3028,7 +3028,7 @@ def selftest() -> int:
             )
         else:
             _record(
-                "universal staging: escaping-link leg (skipped - host cannot create any link)",
+                "universal staging: an escaping link in EITHER slice is refused, on --check too (skipped - host cannot create any link)",
                 True,
             )
 
@@ -3102,7 +3102,7 @@ def selftest() -> int:
             )
         else:
             _record(
-                "universal staging: tree-walk descent leg (skipped - host cannot create any link)",
+                "universal staging: the tree walk descends exactly as `copytree` does (skipped - host cannot create any link)",
                 True,
             )
 
@@ -3384,10 +3384,11 @@ def selftest() -> int:
         # (5c) symlinks inside a cache entry are PRESERVED (never dereferenced - that would copy
         # an out-of-entry target INTO the bundle), and a link RESOLVING outside the staged tree is
         # REFUSED (preserving is not a refusal; the packers and P4.41's manifest read follow it).
-        # §0.11 T3a. Skipped as a recorded PASS where the OS refuses to create a symlink
-        # (unprivileged Windows), so the leg count stays stable for the g24 canary (landed
-        # 2026-08-31), which asserts the skip REASON per OS, not merely the tally, since these
-        # are the suite's only unconditionally-true legs.
+        # §0.11 T3a. Skipped as a recorded PASS under the REAL leg's name plus a skip suffix where
+        # the OS refuses to create a symlink (unprivileged Windows), so the blessed leg-NAME set
+        # stays host-stable for the g24 canary (landed 2026-08-31; the monotone pin since 2026-09-09),
+        # which asserts the skip REASON per OS on top, since these are the suite's only
+        # unconditionally-true legs.
         outside = base / "outside-the-entry.txt"
         outside.write_bytes(b"out-of-entry sentinel")
         program = cache / f"libreoffice-24.8-{_LINUX}" / "program"
@@ -3399,9 +3400,9 @@ def selftest() -> int:
             inner.symlink_to("soffice.bin")
         except (OSError, NotImplementedError):
             note("this host cannot create a symlink; the three symlink legs have no subject")
-            _record("stage: symlink preserve leg (skipped - host cannot create symlinks)", True)
-            _record("fail-closed: symlink escape leg (skipped - host cannot create symlinks)", True)
-            _record("fail-closed: absolute-symlink leg (skipped - host cannot create symlinks)", True)
+            _record("stage: an internal symlink is preserved, not dereferenced (skipped - host cannot create symlinks)", True)
+            _record("fail-closed: a staged symlink resolving outside the staged tree (skipped - host cannot create symlinks)", True)
+            _record("fail-closed: an absolute symlink, even one pointing inside its own entry (skipped - host cannot create symlinks)", True)
         else:
             stage_all(root, cache, _LINUX, _FIXTURE_ROWS)
             staged_link = root / RESOURCES_REL / "libreoffice" / "program" / "inner.link"
@@ -3479,7 +3480,7 @@ def selftest() -> int:
                     _record("an internal Windows junction is allowed, not falsely refused", allowed)
                     internal.rmdir()
                 else:
-                    _record("junction allow leg (skipped - mklink unavailable)", True)
+                    _record("an internal Windows junction is allowed, not falsely refused (skipped - mklink unavailable)", True)
                 shutil.rmtree(inside)
                 # ...and a junction at its own ANCESTOR passes containment yet would make
                 # `copytree`'s materialisation recurse until the filesystem refuses.
@@ -3499,16 +3500,16 @@ def selftest() -> int:
                     )
                     cycle.rmdir()
                 else:
-                    _record("junction cycle leg (skipped - mklink unavailable)", True)
+                    _record("fail-closed: a junction pointing at its own ancestor (the copy would loop) (skipped - mklink unavailable)", True)
             else:
                 note("this host refused `mklink /J`; the three junction legs have no subject")
-                _record("fail-closed: junction escape leg (skipped - mklink unavailable)", True)
-                _record("junction allow leg (skipped - mklink unavailable)", True)
-                _record("junction cycle leg (skipped - mklink unavailable)", True)
+                _record("fail-closed: a Windows directory junction resolving outside the tree (skipped - mklink unavailable)", True)
+                _record("an internal Windows junction is allowed, not falsely refused (skipped - mklink unavailable)", True)
+                _record("fail-closed: a junction pointing at its own ancestor (the copy would loop) (skipped - mklink unavailable)", True)
         else:
-            _record("fail-closed: junction escape leg (skipped - Windows-only)", True)
-            _record("junction allow leg (skipped - junctions are Windows-only)", True)
-            _record("junction cycle leg (skipped - junctions are Windows-only)", True)
+            _record("fail-closed: a Windows directory junction resolving outside the tree (skipped - Windows-only)", True)
+            _record("an internal Windows junction is allowed, not falsely refused (skipped - junctions are Windows-only)", True)
+            _record("fail-closed: a junction pointing at its own ancestor (the copy would loop) (skipped - junctions are Windows-only)", True)
 
         stage_all(root, cache, _LINUX, _FIXTURE_ROWS)
 

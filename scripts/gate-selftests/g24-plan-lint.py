@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """g24-plan-lint.py - G24 self-test for plan-lint (P0.3.5, G7/G20).
 
-FORMAT-check coverage: for each of the 8 format checks, a CLEAN box yields no finding and a VIOLATING
+FORMAT-check coverage: for each of the 9 format checks, a CLEAN box yields no finding and a VIOLATING
 box IS flagged (so no check is green-by-vacuity). Plus the base-case golden invariant: the real plan
-passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..30
+passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..31
 get their own legs as they are built. stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import hashlib
@@ -651,6 +651,65 @@ record("8 threat-parity: a §5 row citing a non-catalogue gate -> caught",
 _real = m.build_ctx(ROOT)
 record("16 planted-positive: clean on the real repo (every built fail-closed §5 gate self-tested)",
        m.doc16_planted_positive(_real) == [])
+# 16 reads the gate-selftests dir as `*.py` ONLY (2026-09-09): a `.legs` blessed leg-name set naming a
+# gate id inside a leg NAME is data, not a self-test - the planted pair below discriminates the glob.
+with tempfile.TemporaryDirectory() as _t16:
+    _r16 = Path(_t16)
+    (_r16 / "scripts" / "gate-selftests").mkdir(parents=True)
+    (_r16 / "scripts" / "check-x").write_text("# implements G9999\n", encoding="utf-8")
+    (_r16 / "scripts" / "gate-selftests" / "g24-x.legs").write_text("a leg naming G9999\n", encoding="utf-8")
+    _c16 = m.Ctx(root=_r16, boxes=[], by_id={}, plan_files=[], gate_ids=set(),
+                 docs={"docs/security/security-concept.md": "| **T1** d | c | G9999 |\n",
+                       "docs/security/build-gates.md": "| **G9999** | x | fail-closed |\n"})
+    record("16 planted-positive: a gate id inside a NON-.py data file under gate-selftests (a `.legs` "
+           "blessed set) does NOT register as a self-test -> caught",
+           any("G9999" in f.msg for f in m.doc16_planted_positive(_c16)))
+    (_r16 / "scripts" / "gate-selftests" / "_helper.py").write_text("# a helper the runner never runs: G9999\n", encoding="utf-8")
+    record("16 planted-positive: a gate id ONLY in a `_`-prefixed helper module (which run-gate-selftests never "
+           "executes) does NOT register as a self-test -> still caught",
+           any("G9999" in f.msg for f in m.doc16_planted_positive(_c16)))
+    (_r16 / "scripts" / "gate-selftests" / "g24-x.py").write_text("# G9999 planted\n", encoding="utf-8")
+    record("16 planted-positive: the same gate id in a .py self-test registers -> clean",
+           m.doc16_planted_positive(_c16) == [])
+
+# --- check 31: the phase-boundary sweep binding (2026-09-09) -------------------------------------------------
+_SW = "Run the phase-end Co-Pilot hardening sweep over the whole P2 delivery"
+_SW3 = "Run the phase-end Co-Pilot hardening sweep over the whole P3 delivery"
+
+
+def _sweep_plan(**kw):
+    """A two-phase plan in the bound shape; kw overrides let each leg break exactly one clause."""
+    p2_sweep = box(bid="P2.9", marker=kw.get("m2", "!extern"), title=_SW, notes=["> owner"])
+    p3_first = box(bid=kw.get("first3", "P3.1"), marker=" ", needs=kw.get("n31", ["P2.9"]))
+    p3_sweep = box(bid="P3.5", marker="!extern", title=kw.get("t35", _SW3), notes=["> owner"])
+    p3_signoff = box(bid="P3.6", marker=" ", title="Sign off", needs=kw.get("n36", ["P3.5"]))
+    boxes = [box(bid="P2.1"), p2_sweep, p3_first, p3_sweep, p3_signoff] + kw.get("extra", [])
+    for i, b in enumerate(boxes):          # document order = list order (one file)
+        b.lineno = i + 1
+    return ctx(boxes)
+
+
+record("31 sweep: the bound shape (one sweep per phase, [!extern], last, P<n+1>.1 needs it, the final "
+       "sign-off needs it) -> clean", m.doc31_sweep_binding(_sweep_plan()) == [])
+record("31 sweep: a phase with NO sweep box -> caught",
+       any("0 phase-end sweep boxes" in f.msg for f in m.doc31_sweep_binding(_sweep_plan(t35="Some other box"))))
+record("31 sweep: TWO sweep boxes in one phase -> caught",
+       any("2 phase-end sweep boxes" in f.msg for f in m.doc31_sweep_binding(
+           _sweep_plan(extra=[box(bid="P3.7", marker="!extern", title=_SW3, notes=["> dup"], needs=["P3.5"])]))))
+record("31 sweep: P<n+1>.1 without `needs:` the sweep -> caught",
+       any("P3.1: must carry `needs: P2.9`" in f.msg for f in m.doc31_sweep_binding(_sweep_plan(n31=["P2.1"]))))
+record("31 sweep: a box AFTER the sweep that does not `needs:` it -> caught",
+       any("P3.6: follows the phase-end sweep box P3.5" in f.msg
+           for f in m.doc31_sweep_binding(_sweep_plan(n36=["P3.1"]))))
+record("31 sweep: an OPEN `[ ]` sweep box (not [!extern]) -> caught",
+       any("found [ ]" in f.msg for f in m.doc31_sweep_binding(_sweep_plan(m2=" "))))
+record("31 sweep: a successor phase whose first box P<n+1>.1 is ABSENT -> caught (fail-closed, never a silent skip)",
+       any("P3.1 is absent" in f.msg for f in m.doc31_sweep_binding(_sweep_plan(first3="P3.2"))))
+record("31 sweep: clean on the real plan (P2..P11 each bind their sweep)", m.doc31_sweep_binding(_real) == [])
+record("registry: every DOC_CHECKS key has its numbered item in build-gates.md §6 (a check without its §6 "
+       "definition is a dangling cross-reference - the check-31 r1 P1 catcher)",
+       all(m.re.search(rf"^{k.split(':')[0]}\. \*\*", _real.docs.get("docs/security/build-gates.md", ""), m.re.M)
+           for k in m.DOC_CHECKS))
 record("21 t2-taint-xor: pending (neither CodeQL nor Semgrep live) -> skip []",
        m.doc21_taint_xor(_real) == [])
 # the target-absent stubs all skip today (their P0.6/P1 targets are unauthored). NB check 23 is NO LONGER

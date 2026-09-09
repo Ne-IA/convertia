@@ -1132,6 +1132,15 @@ delivered *system*.
 - **Evidence:** what was attacked, with what tooling, what was found, what
   landed — recorded in the sweep's evidence-commit bodies; the box check-off
   itself stays a bare marker flip.
+- **Re-bless (added 2026-09-09 — the owner's cage-by-direction decision):** the sweep
+  re-blesses the monotone leg-name sets of the tool canaries
+  (`scripts/gate-selftests/_monotone_pin.py --bless <tool>` for `compile-engine-asset`,
+  `fetch-engine-assets`, `stage-engines`), so the `--selftest` legs the phase's boxes
+  added become pinned against removal and rename — one owner-acked act per phase, the
+  replacement for the per-box tally-bump tail those canaries used to demand. Legs
+  added since the last bless are unpinned against removal until the sweep re-blesses —
+  the phase-length window the monotone pin opens; the sweep diffs each canary's
+  unblessed report against the phase's box list before blessing.
 - **Who:** the Co-Pilot session (roles-and-escalation §1); an L(-1) surface
   touched by a fix follows the normal owner-ack path (G71).
 - **Second leg:** after the delivery re-test, the same sweep runs the
@@ -1148,7 +1157,9 @@ roles-and-escalation §4(d)), and the sweep box is the one `[!extern]` whose
 closure is the WHOLE successor phase (the 2026-09-09 scoping, build-loop.md §3
 step 1, names it as its single carve-out) — so the loop **mechanically hard-stops
 at every phase boundary until the sweep is `[x]`**, expressed in the existing
-marker / `needs:` vocabulary plus that one named exception. A
+marker / `needs:` vocabulary plus that one named exception — which `plan-lint`
+check 31 binds mechanically (exactly one sweep box per phase, `[!extern]` until
+executed, last in its phase, named in `P<n+1>.1`'s `needs:`). A
 DECISION-C early build of a *single* later-phase prerequisite box is **not**
 gated by the boundary stop — that box is swept by its owning phase's sweep.
 

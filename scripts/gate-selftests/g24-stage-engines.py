@@ -7,7 +7,8 @@ check (the P4.27 box's hand-off note):
 
 1. RUN the tool's fixture-driven `--selftest` (its 214 legs have a CI runner: this file is
    discovered by `run-gate-selftests`, so the suite executes at L2 (diff-scoped canary) and L4
-   (3-OS)) and PIN the tally at 214 - the host-stable-count claim, CI-checked. (35 at delivery,
+   (3-OS)) and PIN the BLESSED LEG-NAME SET (`g24-stage-engines.legs` via `_monotone_pin.py`; 214 names
+   at the 2026-09-09 bless - a removed or renamed leg reds, an added leg is reported), CI-checked. (35 at delivery,
    P4.27; 53 since P4.28/17808aa; 124 since P4.29/e9dcb14 - the universal lipo/merge legs;
    126 since P4.29.1/8affa89 - the one-slice refusal-message arms split into two needled legs,
    the r2 arm-blind finding; 182 since P4.30/1b644b5 - the per-OS load-path relocation legs;
@@ -56,11 +57,14 @@ each exception-guarded: an unhandled traceback out of any is a NAMED failing leg
 canary.
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop (the P4.56.3 pattern):
-this file is L(-1)-caged while stage-engines is not, and it PINS the tally (214), the skip-name
-inventory, and its OWN leg count - so any box that adds a `--selftest` leg to stage-engines (P4.41
-manifest, P4.51 assertions, the P5-P7 staging boxes; the landed bumps P4.28-P4.31 are recorded
-in the chain above, the pin carrying the current value) carries the matching
-tally/inventory bump HERE as a pre-planned owner-acked L(-1) tail of that box. The P4.31 binder
+this file is L(-1)-caged while stage-engines is not, and it pins the BLESSED leg-name set
+(`g24-stage-engines.legs`, monotone since 2026-09-09: a removed or renamed leg reds, an added leg
+is only reported), the skip-name inventory, and its OWN leg count. A box that adds a `--selftest`
+leg to stage-engines (P4.41 manifest, P4.51 assertions, the P5-P7 staging boxes; the landed bumps
+P4.28-P4.31 are recorded in the chain above) owes NO per-box bump any more - the Co-Pilot
+re-blesses the set at the phase-end sweep (`_monotone_pin.py --bless stage-engines`, one
+owner-acked act per phase); a REMOVED or RENAMED leg, or a NEW OS-gated skip name, still needs the
+owner-acked edit here, by design. The P4.31 binder
 fixtures additionally PIN the `binaries/`/`resources/` bundle-prefix spellings from outside, so
 a re-home of the staging destinations (`BINARIES_REL`/`RESOURCES_REL`) carries a canary edit in
 the same owner-acked tail (the r1 opus P3 coupling declaration). It also carries
@@ -117,45 +121,75 @@ def _refused(fn) -> tuple[bool, bool, str]:
 _LINUX = "x86_64-unknown-linux-gnu"
 _WIN = "x86_64-pc-windows-msvc"
 
-# The declared OS-gated leg names, verbatim from stage-engines' selftest. A rename there without
+# The declared OS-gated leg names, verbatim from stage-engines' selftest - each the REAL leg's name plus
+# its skip suffix (the 2026-09-09 r1 P0: a placeholder name on the skip arm is not host-stable, so the
+# blessed base names would have been missing on POSIX). A rename there without
 # a matching edit here fails the inventory legs - deliberate: the skip surface is pinned.
 POSIX_JUNCTION_SKIPS = {
-    "fail-closed: junction escape leg (skipped - Windows-only)",
-    "junction allow leg (skipped - junctions are Windows-only)",
-    "junction cycle leg (skipped - junctions are Windows-only)",
+    "fail-closed: a Windows directory junction resolving outside the tree (skipped - Windows-only)",
+    "an internal Windows junction is allowed, not falsely refused (skipped - junctions are Windows-only)",
+    "fail-closed: a junction pointing at its own ancestor (the copy would loop) (skipped - junctions are Windows-only)",
 }
 WIN_SYMLINK_SKIPS = {
-    "stage: symlink preserve leg (skipped - host cannot create symlinks)",
-    "fail-closed: symlink escape leg (skipped - host cannot create symlinks)",
-    "fail-closed: absolute-symlink leg (skipped - host cannot create symlinks)",
+    "stage: an internal symlink is preserved, not dereferenced (skipped - host cannot create symlinks)",
+    "fail-closed: a staged symlink resolving outside the staged tree (skipped - host cannot create symlinks)",
+    "fail-closed: an absolute symlink, even one pointing inside its own entry (skipped - host cannot create symlinks)",
 }
 # The junction trio ALSO has an on-Windows fallback spelling ("mklink unavailable"); it may never
 # fire on a supported host (mklink /J is unprivileged), so it is in the DECLARED set only for the
 # subset check - the Windows must-run leg below fails if any junction-flavoured skip appears.
 WIN_JUNCTION_FALLBACK_SKIPS = {
-    "fail-closed: junction escape leg (skipped - mklink unavailable)",
-    "junction allow leg (skipped - mklink unavailable)",
-    "junction cycle leg (skipped - mklink unavailable)",
+    "fail-closed: a Windows directory junction resolving outside the tree (skipped - mklink unavailable)",
+    "an internal Windows junction is allowed, not falsely refused (skipped - mklink unavailable)",
+    "fail-closed: a junction pointing at its own ancestor (the copy would loop) (skipped - mklink unavailable)",
 }
 # The P4.29 universal symlink QUARTET: the same all-or-none shape as the trio (a symlink-privilege
 # probe gates the group) - never skipped on POSIX, all four skipped on an unprivileged Windows.
 WIN_UNIVERSAL_SYMLINK_SKIPS = {
-    "universal staging: symlink-vs-file leg (skipped - host cannot create symlinks)",
-    "universal staging: dir-vs-dirlink leg (skipped - host cannot create symlinks)",
-    "universal staging: symlink-disagreement leg (skipped - host cannot create symlinks)",
-    "universal staging: symlink-preserve leg (skipped - host cannot create symlinks)",
+    "universal staging: a symlink in one slice and a FILE in the other is refused (skipped - host cannot create symlinks)",
+    "universal staging: a real DIR against a symlink-to-dir is refused, not flattened (skipped - host cannot create symlinks)",
+    "universal staging: the two slices pointing one symlink elsewhere is refused (skipped - host cannot create symlinks)",
+    "universal staging: a symlink agreeing across slices is PRESERVED, not merged (skipped - host cannot create symlinks)",
 }
 # The two ANY-LINK legs plant a symlink where the host allows one and fall back to a junction
 # where it does not - declared (name-legitimate) but MUST-RUN on both CI platforms, since they
 # skip only on a host that can express NEITHER link shape.
 ANY_LINK_SKIPS = {
-    "universal staging: escaping-link leg (skipped - host cannot create any link)",
-    "universal staging: tree-walk descent leg (skipped - host cannot create any link)",
+    "universal staging: an escaping link in EITHER slice is refused, on --check too (skipped - host cannot create any link)",
+    "universal staging: the tree walk descends exactly as `copytree` does (skipped - host cannot create any link)",
 }
 DECLARED_SKIP_NAMES = (POSIX_JUNCTION_SKIPS | WIN_SYMLINK_SKIPS | WIN_JUNCTION_FALLBACK_SKIPS
                        | WIN_UNIVERSAL_SYMLINK_SKIPS | ANY_LINK_SKIPS)
 
-# --- 1. the full suite, its tally, and the per-OS skip inventory --------------------------------
+# --- the monotone leg-name pin (2026-09-09, the owner's cage-by-direction decision) ----------------
+# The exact `len(m._results) == N` tally pin made every leg the Loop added to the un-caged tool an
+# owner-acked bump HERE. The pin is now the BLESSED leg-name multiset in the sibling `.legs` file
+# (`_monotone_pin.py`): a removed or renamed leg reds, an added leg is only reported, and the
+# Co-Pilot re-blesses at the phase-end sweep. Loaded by path like the tool itself (no sys.path).
+try:
+    _mp_loader = importlib.machinery.SourceFileLoader(
+        "_monotone_pin", str(Path(__file__).resolve().parent / "_monotone_pin.py"))
+    _mp = importlib.util.module_from_spec(importlib.util.spec_from_loader("_monotone_pin", _mp_loader))
+    _mp_loader.exec_module(_mp)
+except Exception as _mp_err:  # noqa: BLE001 - a missing or broken pin module is a NAMED FAIL below, never a dead canary
+    print(f"[g24] monotone pin module failed to load: {type(_mp_err).__name__}: {_mp_err}")
+    _mp = None
+
+
+def _pin_probe(tool: str) -> tuple[list[str], list[str], list[str]]:
+    """(blessed, missing, unblessed) for the tool's live run, fail-closed: a missing or broken pin
+    module, an unusable blessed set or a renamed `_results` all become a named FAIL (empty blessed +
+    a sentinel missing), never a dead canary."""
+    if _mp is None:
+        return [], ["<pin module unusable>"], []
+    try:
+        return _mp.check(tool, [n for n, _ok in m._results])
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        print(f"[g24-{tool}] monotone pin probe raised: {type(e).__name__}: {e}")
+        return [], ["<blessed set unusable>"], []
+
+
+# --- 1. the full suite, its blessed leg-name set, and the per-OS skip inventory -----------------
 print("[g24-stage-engines] running stage-engines --selftest ...")
 # The suite runs under a CAPTURED stdout: stage-engines' _record PRINTS each leg as it is
 # recorded, so the captured stream is PRODUCTION-TIME evidence a post-hoc in-place rewrite of
@@ -174,7 +208,35 @@ if suite_crashed:
     print(f"[g24-stage-engines] --selftest raised: {suite_crashed}")
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
-record("the leg tally is host-stable at 214 (the pinned count)", len(m._results) == 214)
+_blessed, _pin_missing, _pin_unblessed = _pin_probe("stage-engines")
+record("monotone pin: every blessed leg name (g24-stage-engines.legs) is in the live run and the "
+       "blessed set is non-empty - a removed or renamed tool leg reds on every OS, an absent or empty "
+       "blessed set is a failing pin", _blessed != [] and _pin_missing == [])
+record("monotone pin: the blessed set is normalized (no skip suffix inside the .legs file), so the pin "
+       "is host-stable", _blessed != [] and not any("(skipped" in n for n in _blessed))
+if _pin_missing:
+    print(f"[g24-stage-engines] monotone pin: MISSING blessed leg(s): " + "; ".join(_pin_missing[:5]))
+if _pin_unblessed:
+    print(f"[g24-stage-engines] monotone pin: {len(_pin_unblessed)} unblessed live leg(s) - reported, "
+          "never failed (re-bless at the phase-end sweep): " + "; ".join(_pin_unblessed[:5]))
+record("monotone pin: every declared OS-gated skip name normalizes to a blessed base name (the skip arm "
+       "spells the REAL leg + a suffix, so the pin is host-stable by construction - the r1 P0 catcher)",
+       _mp is not None and _blessed != [] and all(_mp.normalize(n) in set(_blessed) for n in DECLARED_SKIP_NAMES))
+record("monotone pin: every skip literal in the TOOL's source normalizes to a blessed base name (host-independent - "
+       "a placeholder on an arm this host never runs is caught here, the r2 P1 catcher)",
+       _mp is not None and _blessed != []
+       and _mp.unblessed_skip_literals(SCRIPT.read_text(encoding="utf-8"), _blessed) == [])
+record("monotone pin: the historical placeholder replays as a finding (the 2026-09-09 r1 P0: a skip arm spelling "
+       "its own name instead of the real leg's)",
+       _mp is not None and _mp.unblessed_skip_literals(
+           '_record("junction allow leg (skipped - junctions are Windows-only)", True)', _blessed)
+       == ["junction allow leg (skipped - junctions are Windows-only)"])
+record("monotone pin: the source scan is NON-VACUOUS here - stage-engines carries skip literals with a base "
+       "(a re-cut to the concatenation idiom would make the catcher a tautology, and reds this leg first)",
+       _mp is not None and _mp.skip_literals(SCRIPT.read_text(encoding="utf-8")) != [])
+record("monotone pin: every `(skipped` mention in the TOOL's source is a recognized literal (a new spelling would "
+       "slip past the scan - pinned at zero unaccounted)",
+       _mp is not None and _mp.unaccounted_skip_mentions(SCRIPT.read_text(encoding="utf-8")) == 0)
 # The INDEPENDENT verdict, derived from the stored entries rather than the tool's own
 # aggregation: `rc` above comes from selftest()'s `return 1 if failed else 0`, which lives in
 # the same un-caged function - force-greening THAT is a one-line edit the recorder-fidelity
@@ -675,7 +737,7 @@ record(
 )
 
 # --- 4. the canary's own leg count --------------------------------------------------------------
-record("the canary's own leg count is pinned (46 + this pin)", len(results) == 46)
+record("the canary's own leg count is pinned (52 + this pin)", len(results) == 52)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-stage-engines] {len(results) - len(failed)}/{len(results)} assertions passed.")

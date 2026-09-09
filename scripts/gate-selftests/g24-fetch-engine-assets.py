@@ -6,7 +6,8 @@ own check (the g24-stage-engines pattern; that file's COUPLING note is the model
 
 1. RUN the tool's fixture-driven `--selftest` (125 legs at delivery, P4.28/17808aa; 165 since the
    P4.28.1 owner tail - the `--source` mode's 40 legs, the pre-declared coupling below executed)
-   and PIN the tally at 165 - the host-stable-count claim, CI-checked at L2 (diff-scoped canary)
+   and PIN the BLESSED LEG-NAME SET (`g24-fetch-engine-assets.legs` via `_monotone_pin.py`; 165 names at
+   the 2026-09-09 bless - a removed or renamed leg reds, an added leg is reported) - CI-checked at L2 (diff-scoped canary)
    and L4 (3-OS).
 
 2. The skip INVENTORY, in its strictest form: no leg of the fetch suite is OS-SKIPPED - every
@@ -26,12 +27,15 @@ URLs + an off-row URL refused under that derived list), and the recorder-fidelit
 faithfully, so a coerced-True or dropped-FAIL recorder reds this caged canary).
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop: this file is
-L(-1)-caged while fetch-engine-assets is not, and it PINS the tally (165), the empty-skip
-inventory, and its OWN leg count - any box that adds a `--selftest` leg to THIS tool (the P5-P7
-row boxes exercising real rows) carries the matching bump HERE as a pre-planned owner-acked
-L(-1) tail of that box. (P4.28.1 settled BOTH arms of the original either/or: its `--source`
-mode added 40 legs to this script - the 125 -> 165 bump above - AND its harness is its own
-script with its own sibling canary, g24-compile-engine-asset.py.)
+L(-1)-caged while fetch-engine-assets is not, and it pins the BLESSED leg-name set
+(`g24-fetch-engine-assets.legs`, monotone since 2026-09-09: a removed or renamed leg reds, an
+added leg is only reported), the empty-skip inventory, and its OWN leg count. A box that adds a
+`--selftest` leg to THIS tool (the P5-P7 row boxes exercising real rows) owes NO per-box bump any
+more - the Co-Pilot re-blesses the set at the phase-end sweep (`_monotone_pin.py --bless
+fetch-engine-assets`, one owner-acked act per phase); a REMOVED or RENAMED leg still needs the
+owner-acked edit here, by design. (P4.28.1 settled BOTH arms of the original either/or: its
+`--source` mode added 40 legs to this script - the 125 -> 165 bump above - AND its harness is its
+own script with its own sibling canary, g24-compile-engine-asset.py.)
 
 Run:  python3 scripts/gate-selftests/g24-fetch-engine-assets.py   Exit 0 = every assertion held.
 """
@@ -93,7 +97,35 @@ def _probe(fn) -> bool:
         return False
 
 
-# --- 1. the full suite, its tally, and the strict skip inventory --------------------------------
+# --- the monotone leg-name pin (2026-09-09, the owner's cage-by-direction decision) ----------------
+# The exact `len(m._results) == N` tally pin made every leg the Loop added to the un-caged tool an
+# owner-acked bump HERE. The pin is now the BLESSED leg-name multiset in the sibling `.legs` file
+# (`_monotone_pin.py`): a removed or renamed leg reds, an added leg is only reported, and the
+# Co-Pilot re-blesses at the phase-end sweep. Loaded by path like the tool itself (no sys.path).
+try:
+    _mp_loader = importlib.machinery.SourceFileLoader(
+        "_monotone_pin", str(Path(__file__).resolve().parent / "_monotone_pin.py"))
+    _mp = importlib.util.module_from_spec(importlib.util.spec_from_loader("_monotone_pin", _mp_loader))
+    _mp_loader.exec_module(_mp)
+except Exception as _mp_err:  # noqa: BLE001 - a missing or broken pin module is a NAMED FAIL below, never a dead canary
+    print(f"[g24] monotone pin module failed to load: {type(_mp_err).__name__}: {_mp_err}")
+    _mp = None
+
+
+def _pin_probe(tool: str) -> tuple[list[str], list[str], list[str]]:
+    """(blessed, missing, unblessed) for the tool's live run, fail-closed: a missing or broken pin
+    module, an unusable blessed set or a renamed `_results` all become a named FAIL (empty blessed +
+    a sentinel missing), never a dead canary."""
+    if _mp is None:
+        return [], ["<pin module unusable>"], []
+    try:
+        return _mp.check(tool, [n for n, _ok in m._results])
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        print(f"[g24-{tool}] monotone pin probe raised: {type(e).__name__}: {e}")
+        return [], ["<blessed set unusable>"], []
+
+
+# --- 1. the full suite, its blessed leg-name set, and the strict skip inventory -----------------
 print("[g24-fetch-engine-assets] running fetch-engine-assets --selftest ...")
 try:
     rc = m.selftest()
@@ -103,7 +135,17 @@ except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
     print(f"[g24-fetch-engine-assets] --selftest raised: {suite_crashed}")
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
-record("the leg tally is host-stable at 165 (the pinned count)", _probe(lambda: len(m._results) == 165))
+_blessed, _pin_missing, _pin_unblessed = _pin_probe("fetch-engine-assets")
+record("monotone pin: every blessed leg name (g24-fetch-engine-assets.legs) is in the live run and the "
+       "blessed set is non-empty - a removed or renamed tool leg reds on every OS, an absent or empty "
+       "blessed set is a failing pin", _blessed != [] and _pin_missing == [])
+record("monotone pin: the blessed set is normalized (no skip suffix inside the .legs file), so the pin "
+       "is host-stable", _blessed != [] and not any("(skipped" in n for n in _blessed))
+if _pin_missing:
+    print(f"[g24-fetch-engine-assets] monotone pin: MISSING blessed leg(s): " + "; ".join(_pin_missing[:5]))
+if _pin_unblessed:
+    print(f"[g24-fetch-engine-assets] monotone pin: {len(_pin_unblessed)} unblessed live leg(s) - reported, "
+          "never failed (re-bless at the phase-end sweep): " + "; ".join(_pin_unblessed[:5]))
 # The INDEPENDENT verdict from the stored entries: `rc` comes from selftest()'s own
 # aggregation, which lives in the same un-caged tool - force-greening it is a one-line edit
 # the recorder-fidelity catcher cannot see. Both reporting halves are pinned from outside.
@@ -144,8 +186,8 @@ raised, msg = _refused(
 record("planted positive: an off-allow-list host REFUSES, naming the allow-list rule",
        raised and "not an origin this row names" in msg)
 # The redirect pin is one build_opener ARGUMENT (fetch-engine-assets' own factoring note): losing
-# it is a silent downgrade to urllib's default policy, and the suite tally (165) only catches a
-# DELETED leg, never one neutered in place — so the installation is asserted here independently.
+# it is a silent downgrade to urllib's default policy, and the blessed-name pin only catches a
+# DELETED or RENAMED leg, never one neutered in place — so the installation is asserted here independently.
 record("planted positive: the per-hop redirect pin is INSTALLED in the real opener",
        _probe(lambda: any(isinstance(h, m._PinnedRedirectHandler)
                           for h in m.build_pinned_opener(frozenset()).handlers)))
@@ -207,7 +249,7 @@ record(
 # runs inside _refused's try, every tool-touching record() predicate inside _probe's, and a
 # module-load failure tracebacks to exit 1 — fail-closed either way; the template's guard covers
 # a fixture SECTION that builds real trees, which this canary deliberately has none of.)
-record("the canary's own leg count is pinned (16 + this pin)", len(results) == 16)
+record("the canary's own leg count is pinned (17 + this pin)", len(results) == 17)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-fetch-engine-assets] {len(results) - len(failed)}/{len(results)} assertions passed.")

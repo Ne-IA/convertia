@@ -2605,8 +2605,8 @@ def selftest() -> int:
     try:
         _legs()
     except Exception as exc:
-        # A dead tally is worse than a broad catch: the g24 canary pins the leg COUNT, so an
-        # unhandled raise must surface as a NAMED failing leg rather than as a missing report.
+        # A dead suite is worse than a broad catch: the g24 canary pins the blessed leg-NAME set, so
+        # an unhandled raise must surface as a NAMED failing leg rather than as missing names.
         _record(f"the suite raised before finishing: {type(exc).__name__}: {exc}", False)
 
     failed = [name for name, ok in _results if not ok]

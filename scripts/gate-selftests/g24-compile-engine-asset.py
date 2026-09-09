@@ -9,7 +9,8 @@ compile-engine-asset cannot neuter its own check:
 
 1. RUN the tool's fixture-driven `--selftest` under a CAPTURED stdout (the tool's `_record`
    prints each leg since P4.29.1, so the stream is production-time evidence - section 1) and
-   PIN the tally at 257 - the host-stable-count claim, CI-checked at L2 (diff-scoped canary)
+   PIN the BLESSED LEG-NAME SET (`g24-compile-engine-asset.legs` via `_monotone_pin.py`; 257 names at the
+   2026-09-09 bless - a removed or renamed leg reds, an added leg is reported) - CI-checked at L2 (diff-scoped canary)
    and L4 (3-OS). (208 legs at delivery, P4.28.1/072a021; 257 since P4.29.1/8affa89 - the
    cross-fallback + producing-step-arch legs; each bump is that box's pre-declared owner-acked
    tail, and the number is READ from the committed tree's own `--selftest` run, never carried
@@ -53,11 +54,14 @@ duck-typed prefix whose walk yields an escaping symlink, no link privilege neede
 walk pattern pinned at "*" - a third cage-ruling-leaning seam, driven from outside).
 
 COUPLING, declared so it is planned and never a surprise mid-box hard-stop: this file is
-L(-1)-caged while compile-engine-asset is not, and it PINS the tally (257), the empty-skip
-inventory, and its OWN leg count - any box that adds a `--selftest` leg to the tool (P4.34's
-pull-forward, the first seam fill per its 2026-09-03 attribution ruling, and the
-P5.1.1/P5.5.1/P5.9.1/P6.1.1/P7.17.1 compile boxes filling the configure seam) carries the
-matching bump HERE as a pre-planned owner-acked L(-1) tail of that box.
+L(-1)-caged while compile-engine-asset is not, and it pins the BLESSED leg-name set
+(`g24-compile-engine-asset.legs`, monotone since 2026-09-09: a removed or renamed leg reds, an
+added leg is only reported), the empty-skip inventory, and its OWN leg count. A box that adds a
+`--selftest` leg to the tool (P4.34's pull-forward, the first seam fill per its 2026-09-03
+attribution ruling, and the P5.1.1/P5.5.1/P5.9.1/P6.1.1/P7.17.1 compile boxes filling the
+configure seam) owes NO per-box bump any more - the Co-Pilot re-blesses the set at the phase-end
+sweep (`_monotone_pin.py --bless compile-engine-asset`, one owner-acked act per phase); a REMOVED
+or RENAMED leg still needs the owner-acked edit here, by design.
 
 Run:  python3 scripts/gate-selftests/g24-compile-engine-asset.py   Exit 0 = every assertion held.
 """
@@ -124,7 +128,44 @@ def _probe(fn) -> bool:
         return False
 
 
-# --- 1. the full suite, its tally, and the strict skip inventory --------------------------------
+# --- the monotone leg-name pin (2026-09-09, the owner's cage-by-direction decision) ----------------
+# The exact `len(m._results) == N` tally pin made every leg the Loop added to the un-caged tool an
+# owner-acked bump HERE. The pin is now the BLESSED leg-name multiset in the sibling `.legs` file
+# (`_monotone_pin.py`): a removed or renamed leg reds, an added leg is only reported, and the
+# Co-Pilot re-blesses at the phase-end sweep. Loaded by path like the tool itself (no sys.path).
+try:
+    _mp_loader = importlib.machinery.SourceFileLoader(
+        "_monotone_pin", str(Path(__file__).resolve().parent / "_monotone_pin.py"))
+    _mp = importlib.util.module_from_spec(importlib.util.spec_from_loader("_monotone_pin", _mp_loader))
+    _mp_loader.exec_module(_mp)
+except Exception as _mp_err:  # noqa: BLE001 - a missing or broken pin module is a NAMED FAIL below, never a dead canary
+    print(f"[g24] monotone pin module failed to load: {type(_mp_err).__name__}: {_mp_err}")
+    _mp = None
+
+
+def _refused_pin(fn) -> bool:
+    """Did fn raise the pin module's own MonotonePinError? (a generic exception is a FAIL, not a pass)"""
+    try:
+        fn()
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        return _mp is not None and isinstance(e, _mp.MonotonePinError)
+    return False
+
+
+def _pin_probe(tool: str) -> tuple[list[str], list[str], list[str]]:
+    """(blessed, missing, unblessed) for the tool's live run, fail-closed: a missing or broken pin
+    module, an unusable blessed set or a renamed `_results` all become a named FAIL (empty blessed +
+    a sentinel missing), never a dead canary."""
+    if _mp is None:
+        return [], ["<pin module unusable>"], []
+    try:
+        return _mp.check(tool, [n for n, _ok in m._results])
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        print(f"[g24-{tool}] monotone pin probe raised: {type(e).__name__}: {e}")
+        return [], ["<blessed set unusable>"], []
+
+
+# --- 1. the full suite, its blessed leg-name set, and the strict skip inventory -----------------
 print("[g24-compile-engine-asset] running compile-engine-asset --selftest ...")
 # The suite runs under a CAPTURED stdout: compile-engine-asset's _record PRINTS each leg as it
 # is recorded (the P4.29.1 Loop half, closing the bound the P4.29 tail RECORDED at this exact
@@ -146,7 +187,64 @@ if suite_crashed:
     print(f"[g24-compile-engine-asset] --selftest raised: {suite_crashed}")
 record("the tool's --selftest completed without an unhandled exception", not suite_crashed)
 record("the tool's full --selftest suite passes under the canary runner", rc == 0)
-record("the leg tally is host-stable at 257 (the pinned count)", _probe(lambda: len(m._results) == 257))
+_blessed, _pin_missing, _pin_unblessed = _pin_probe("compile-engine-asset")
+record("monotone pin: every blessed leg name (g24-compile-engine-asset.legs) is in the live run and the "
+       "blessed set is non-empty - a removed or renamed tool leg reds on every OS, an absent or empty "
+       "blessed set is a failing pin", _blessed != [] and _pin_missing == [])
+record("monotone pin: the blessed set is normalized (no skip suffix inside the .legs file), so the pin "
+       "is host-stable", _blessed != [] and not any("(skipped" in n for n in _blessed))
+if _pin_missing:
+    print(f"[g24-compile-engine-asset] monotone pin: MISSING blessed leg(s): " + "; ".join(_pin_missing[:5]))
+if _pin_unblessed:
+    print(f"[g24-compile-engine-asset] monotone pin: {len(_pin_unblessed)} unblessed live leg(s) - reported, "
+          "never failed (re-bless at the phase-end sweep): " + "; ".join(_pin_unblessed[:5]))
+# --- the shared pin module's own legs (the r1 review: a caged plane module with no direct leg) ---------
+record("monotone pin module: normalize strips the `(skipped: reason)` spelling",
+       _mp is not None and _mp.normalize("a leg (skipped: symlink creation is unprivileged here)") == "a leg")
+record("monotone pin module: normalize strips the `(skipped - reason)` spelling",
+       _mp is not None and _mp.normalize("a leg (skipped - host cannot create symlinks)") == "a leg")
+record("monotone pin module: normalize leaves a mid-string `(skipped` untouched",
+       _mp is not None and _mp.normalize("a (skipped - x) leg that ran") == "a (skipped - x) leg that ran")
+record("monotone pin module: normalize strips a paren-bearing reason and keeps the leg's own parenthetical",
+       _mp is not None and _mp.normalize("a leg (the copy would loop) (skipped - host (no CAP) refuses)")
+       == "a leg (the copy would loop)")
+record("monotone pin module: an unknown tool is refused by --bless (MonotonePinError), never a guessed path",
+       _mp is not None and _refused_pin(lambda: _mp.bless("no-such-tool"))
+       and _refused_pin(lambda: _mp.legs_path("no-such-tool")))
+record("monotone pin module: skip_literals reads a SINGLE-quoted skip literal too",
+       _mp is not None and _mp.skip_literals("_record('junction allow leg (skipped - x)', True)")
+       == ["junction allow leg (skipped - x)"])
+record("monotone pin module: unaccounted_skip_mentions counts a `(skipped` mention the literal scan does not "
+       "recognize (an implicit multi-line concatenation) and ignores a recognized one",
+       _mp is not None and _mp.unaccounted_skip_mentions('x = "a " \n "(skipped - y)"\n') == 1
+       and _mp.unaccounted_skip_mentions('_record("a leg (skipped - y)", True)\n# (skipped in a comment\n') == 0)
+with tempfile.TemporaryDirectory() as _pin_td:
+    _absent = Path(_pin_td) / "absent.legs"
+    _empty = Path(_pin_td) / "empty.legs"
+    _empty.write_bytes(b"\n\n")
+    record("monotone pin module: an ABSENT blessed set raises (a failing pin, never a vacuous pass)",
+           _mp is not None and _refused_pin(lambda: _mp.load_blessed("compile-engine-asset", path=_absent)))
+    record("monotone pin module: an EMPTY blessed set raises",
+           _mp is not None and _refused_pin(lambda: _mp.load_blessed("compile-engine-asset", path=_empty)))
+    _out = Path(_pin_td) / "out.legs"
+    _red = SimpleNamespace(selftest=lambda: 1, _results=[("a leg", False)])
+    _none = SimpleNamespace(selftest=lambda: 0, _results=[])
+    _green = SimpleNamespace(selftest=lambda: 0, _results=[("a leg", True), ("b leg (skipped - x)", True)])
+    record("monotone pin module: --bless refuses a RED suite and writes nothing",
+           _mp is not None and _mp.bless("compile-engine-asset", module=_red, out=_out) == 1 and not _out.exists())
+    record("monotone pin module: --bless refuses an EMPTY suite and writes nothing",
+           _mp is not None and _mp.bless("compile-engine-asset", module=_none, out=_out) == 1 and not _out.exists())
+    record("monotone pin module: --bless writes the NORMALIZED names of a green suite, LF, trailing newline",
+           _mp is not None and _mp.bless("compile-engine-asset", module=_green, out=_out) == 0
+           and _out.read_bytes() == b"a leg\nb leg\n")
+record("monotone pin module: missing() is the multiset difference of blessed minus the NORMALIZED live run",
+       _mp is not None and _mp.missing(["a", "b"], ["a"]) == ["b"] and _mp.missing(["a"], ["a (skipped - x)"]) == [])
+record("monotone pin module: missing() keeps multiplicity (blessed twice, live once -> missing once)",
+       _mp is not None and _mp.missing(["a", "a"], ["a"]) == ["a"])
+record("monotone pin module: unblessed() is the normalized live run minus the blessed set",
+       _mp is not None and _mp.unblessed(["a"], ["a", "b (skipped: y)"]) == ["b"])
+record("monotone pin module: normalize keeps a mid-string `(skipped` when the name ends with its own parenthetical",
+       _mp is not None and _mp.normalize("a (skipped - x) note and a tail (v2)") == "a (skipped - x) note and a tail (v2)")
 # The INDEPENDENT verdict from the stored entries: `rc` comes from selftest()'s own
 # aggregation, which lives in the same un-caged tool - force-greening it is a one-line edit
 # the recorder-fidelity catcher cannot see. Both reporting halves are pinned from outside.
@@ -170,6 +268,24 @@ _SYMLINK_TRIO_SKIPPED = {
         "...and publishes nothing when it does",
     )
 }
+
+
+record("monotone pin: every declared OS-gated skip name normalizes to a blessed base name (the skip arm "
+       "spells the REAL leg + a suffix, so the pin is host-stable by construction)",
+       _mp is not None and _blessed != [] and all(_mp.normalize(n) in set(_blessed) for n in _SYMLINK_TRIO_SKIPPED))
+record("monotone pin: every skip literal in the TOOL's source normalizes to a blessed base name (host-independent; "
+       "PROSPECTIVE here - compile's skip arms use the bare-suffix concatenation idiom, so the scan sees no literal "
+       "today and the fixture replay below is what proves it)",
+       _mp is not None and _blessed != []
+       and _mp.unblessed_skip_literals(SCRIPT.read_text(encoding="utf-8"), _blessed) == [])
+record("monotone pin: every `(skipped` mention in the TOOL's source is a recognized literal (a new spelling would "
+       "slip past the scan - pinned at zero unaccounted)",
+       _mp is not None and _mp.unaccounted_skip_mentions(SCRIPT.read_text(encoding="utf-8")) == 0)
+record("monotone pin: the historical placeholder replays as a finding (the 2026-09-09 r1 P0: a skip arm spelling "
+       "its own name instead of the real leg's)",
+       _mp is not None and _mp.unblessed_skip_literals(
+           '_record("junction allow leg (skipped - junctions are Windows-only)", True)', _blessed)
+       == ["junction allow leg (skipped - junctions are Windows-only)"])
 
 
 def _inventory_ok() -> bool:
@@ -489,7 +605,7 @@ record(
 # (No section-level exception guard: every raising seam runs inside _refused's try, every
 # tool-touching predicate inside _probe's, and a module-load failure tracebacks to exit 1 -
 # fail-closed either way; this canary builds no real trees.)
-record("the canary's own leg count is pinned (29 + this pin)", len(results) == 29)
+record("the canary's own leg count is pinned (50 + this pin)", len(results) == 50)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-compile-engine-asset] {len(results) - len(failed)}/{len(results)} assertions passed.")

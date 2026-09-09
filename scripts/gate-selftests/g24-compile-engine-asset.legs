@@ -1,0 +1,257 @@
+a from-source row is read with its anchor
+the row carries the triples it targets
+the row carries the url its signature lives at
+a PREBUILT row is not this script's
+a SUB-COMPONENT row is not this script's
+a from-source row with no anchor table is refused
+a from-source row missing `tarball_sha256` is refused
+a from-source row missing `signature_url` is refused
+a from-source row missing `signing_key_fingerprint` is refused
+a from-source row missing `verified_with` is refused
+a from-source row missing `toolchain_digest` is refused
+a row with no `triples` is refused - a compile has to know what it targets
+an EMPTY `triples` is refused
+a non-string triple is refused
+a manifest that is not TOML is refused
+`engine` that is not an array of tables is refused
+a blank declared `cache_engine` is refused, not silently defaulted
+an absent `cache_engine` falls back to the row id
+the seam is one configure LINE per source, keyed on the row id
+an empty seam file is a valid container
+a seam entry that is not a table is refused
+a seam entry with no `configure` table is refused
+a `configure` that is not a table is refused
+`flags` that is not a per-row table is refused
+an empty configure LINE is refused
+a blank flag is refused
+a configure line declaring "--prefix=/tmp/x" is refused
+a configure line declaring "--prefix" is refused
+a configure line declaring "--exec-prefix=/tmp/x" is refused
+a configure line declaring "DESTDIR=/tmp/x" is refused
+a configure line declaring "-DCMAKE_INSTALL_PREFIX=/tmp/x" is refused
+a configure line declaring "-DCMAKE_STAGING_PREFIX=/tmp/x" is refused
+a configure line declaring "-Dprefix=/tmp/x" is refused
+a configure line declaring "--libdir=/usr/lib64" is refused
+a configure line declaring "--bindir=C:/somewhere" is refused
+a configure line declaring "-Dlibdir=/usr/lib64" is refused
+a configure line declaring "-DCMAKE_INSTALL_LIBDIR=/usr/lib64" is refused
+a configure line declaring "--docdir=/tmp/docs" is refused
+a configure line declaring "--localstatedir=/var" is refused
+a configure line declaring "--libdir" is refused
+a configure line declaring "--libdir=../../../../etc/evil" is refused
+a configure line declaring "-Dlibdir=../../outside" is refused
+a configure line declaring "--libdir={prefix}/../../escape" is refused
+a configure line declaring "--extra-cflags=-I{prefix}/../../../../etc" is refused
+a configure line declaring "--extra-ldflags=-L{prefix}/../../tmp/evil" is refused
+a configure line declaring "-DCMAKE_TOOLCHAIN_FILE=/tmp/evil.cmake" is refused
+a configure line declaring "--native-file=/tmp/evil.ini" is refused
+a configure line declaring "--cross-file=/tmp/evil.ini" is refused
+a configure line declaring "--preset=evil" is refused
+a configure line declaring "-C/tmp/evil.cmake" is refused
+a configure line declaring "--libdir= /usr/lib64" is refused
+a configure line declaring "--datadir='/usr/share'" is refused
+a configure line declaring "--includedir=~/evil" is refused
+a configure line declaring "-DCMAKE_INSTALL_PREFIX:PATH=/opt/out" is refused
+a configure line declaring "-DCMAKE_STAGING_PREFIX:PATH=/opt/out" is refused
+a configure line declaring "-DCMAKE_INSTALL_LIBDIR:PATH=/usr/lib64" is refused
+a configure line declaring "--libdir=..{prefix}" is refused
+a configure line declaring "--libdir=x{prefix}/lib" is refused
+a configure line declaring "--libdir={prefix}.." is refused
+a configure line declaring "--libdir={prefix}lib" is refused
+a configure line declaring "--install-prefix=/opt/evil" is refused
+a configure line declaring "--shlibdir=/usr/lib" is refused
+a configure line declaring "--incdir=/usr/include" is refused
+a configure line declaring "--pkgconfigdir=/usr/lib/pkgconfig" is refused
+a configure line declaring "--runstatedir=/run" is refused
+a configure line declaring "-DCMAKE_INSTALL_RUNSTATEDIR=/etc/cron.d" is refused
+a configure line declaring "--dvidir=/abs" is refused
+a configure line declaring "-DLIB_INSTALL_DIR=/usr/lib64" is refused
+a configure line declaring "--sysroot-prefix=/opt/evil" is refused
+a configure line declaring "--libdir=${HOME}/evil" is refused
+a configure line declaring "--libdir=${exec_prefix}/lib64" is refused
+a configure line declaring "-DCMAKE_INSTALL_LIBDIR=${DESTDIR}/evil" is refused
+a configure line declaring "--libdir=" is refused
+a configure line declaring "--libdir={prefix}/x{prefix}" is refused
+a configure line declaring "--libdir={prefix}//host/share" is refused
+the four spellings of one install option normalise to one name
+a RELATIVE install dir stays inside the prefix and is allowed
+a RELATIVE install dir is allowed in every spelling - the guard does not over-refuse
+the shape rule is what covers a name no table lists
+the read-path escape hatch takes a name back OUT of the install-dir rule
+a flag that merely CONTAINS an option name is not refused
+a configure line may name the shared prefix with `{prefix}`
+a placeholder this script does not substitute is refused, not passed through
+a `$`-braced linker token is left alone - `${ORIGIN}` is not this script's placeholder
+a source may declare the SUBDIRECTORY its build system lives in
+a source that declares none builds at the tree root
+a TRAVERSING source_dir is refused on the same grammar as every derived path
+a source_dir naming a source with no flags is refused
+the build system is DECLARED, never guessed
+an unknown build system is refused, not defaulted
+a `system` entry naming a source with no flags is refused
+a source with flags but NO declared system is refused
+a seam table naming no from-source GROUP is unbound
+a seam LINE naming no row of its group is unbound
+a fully bound seam is not reported
+a group of two sources is ONE entry
+the entry is keyed the way stage-engines parses it back
+each source carries its OWN configure line, in manifest order
+each source's filenames are derived from its own urls
+two rows out of ONE tarball are ONE build, not two
+that one build records every row id it produces
+the row that declares the line is the one that configures the build
+a tarball whose rows declare NO line is refused
+a tarball whose rows declare TWO lines is an ambiguity, not a merge
+a triple no row targets plans nothing
+a row targeting ANOTHER triple is not planned here
+a group with no configure table refuses to compile, rather than using a default line
+a SOURCE with no configure line refuses to compile
+a group resolving to two entry names fails closed
+two sources naming one filename fail closed instead of overwriting
+a url with no usable filename fails closed
+a published entry plans as a HIT
+an absent source entry names the sibling that fills it
+a complete, pinned entry resolves
+a RESTORED archive that is not the pinned bytes is refused - a cache is not a trust boundary
+an entry missing the signature is refused, not built from
+a DIRECTORY wearing an archive's name is refused, not read as bytes
+an entry holding an UNDECLARED file is refused - the contents are the contract
+a gpg row runs gpg over the DECLARED signature file
+an `sq` row runs sq - the tool the ROW names, not a default
+every accepted verification tool is actually driveable, and runs as itself
+an unnamed verification tool is refused
+a mis-shaped fingerprint is refused BEFORE the verifier is even run
+a signature that does not verify stops the build
+a VALID signature by the WRONG key is refused
+`sq`'s human output is matched with spacing removed
+gpg needs its MACHINE-READABLE verdict - the bare fingerprint in the output is not one
+the PRIMARY key fingerprint in VALIDSIG's last field counts too
+`sq`'s match does not read back the PATHS this script passed in
+a verification tool that is not installed is a PREREQUISITE failure, not a bad signature
+a VALIDSIG line for a DIFFERENT key is refused
+a traversing member is refused
+an absolute member is refused
+a drive-relative member is refused
+a dot member is refused
+a member path with an interior NUL is refused
+a BACKSLASH-spelled traversal is refused - the separator is not the platform's
+a symlink whose TARGET traverses is refused
+a hardlink whose TARGET is absolute is refused
+a ZIP source unpacks through the same path
+a traversing ZIP member is refused too
+the stdlib data filter is applied - a device-node member is refused
+an unusable archive is a clear refusal, not a traceback
+the build root is the archive's single top-level directory
+a FLAT archive keeps the directory itself
+TWO top-level entries are not a single root - the unpack directory itself is kept
+an autotools source regenerates, configures, makes and installs - in that order
+configure is handed THIS script's prefix, then the declared line
+the prefix reaches POSIX build tooling in POSIX spelling
+a flag containing a space stays ONE argument
+a `autotools` source is driven by its own build system, not autotools
+a `configure` source is driven by its own build system, not autotools
+a `meson` source is driven by its own build system, not autotools
+a `cmake` source is driven by its own build system, not autotools
+every declarable build system actually drives steps, into THIS script's prefix
+cmake is handed the prefix in ITS spelling, not autotools'
+`{prefix}` is substituted before the build sees it - a run-time path no manifest could spell
+a flag with no placeholder is passed through byte-for-byte
+`${prefix}` survives SUBSTITUTION too, not only validation
+a failing `autoreconf` names THAT step and stops the build
+a failing `./configure` names THAT step and stops the build
+a failing `make` names THAT step and stops the build
+a failing `make install` names THAT step and stops the build
+a host building for ITSELF is native - nothing to cross-configure, nothing to emulate
+the §6.1.3 pair (arm64 mac -> x86_64 mac) resolves to the declared cross build
+an UNDECLARED host/target mismatch is REFUSED, never quietly built for the host
+...and the refusal names both sides of the pair it will not guess at
+the fallback is ONE-WAY - the reverse direction is not a declared pair either
+a host with no §3.4.5 triple cannot be classified, so the build is refused rather than published under a key it may not match
+every declarable build system has a cross spelling - none can fall through to native
+a build system with NO declared cross spelling is refused, not built for the host
+a cross `autotools` build keeps the declared line as a strict PREFIX and appends only the cross suffix - both slices carry the identical curated flags
+a cross `autotools` build is told to target x86_64 in THAT system's own spelling
+a NATIVE `autotools` build carries no cross spelling at all
+a cross `configure` build keeps the declared line as a strict PREFIX and appends only the cross suffix - both slices carry the identical curated flags
+a cross `configure` build is told to target x86_64 in THAT system's own spelling
+a NATIVE `configure` build carries no cross spelling at all
+a cross `meson` build keeps the declared line as a strict PREFIX and appends only the cross suffix - both slices carry the identical curated flags
+a cross `meson` build is told to target x86_64 in THAT system's own spelling
+a NATIVE `meson` build carries no cross spelling at all
+a cross `cmake` build keeps the declared line as a strict PREFIX and appends only the cross suffix - both slices carry the identical curated flags
+a cross `cmake` build is told to target x86_64 in THAT system's own spelling
+a NATIVE `cmake` build carries no cross spelling at all
+meson's machine description is a FILE this script GENERATES, and the flag points at it
+...naming the target CPU and the Rosetta wrapper meson runs target binaries with
+`--cross-file` is STILL refused in a DECLARED line - generating one here does not widen the guard that keeps a manifest from importing build settings
+a cross build probes the emulator exactly once, with the declared wrapper
+a host that cannot EXECUTE the target architecture is refused, naming Rosetta 2
+an ABSENT `arch` tool is a structural refusal, not a bare traceback
+a thin Mach-O reports the one architecture it declares
+the magic's byte ORDER is the file's - a big-endian header is not read little-endian
+a fat Mach-O reports its whole arch table
+a non-Mach-O and a truncated header are not architecture-bearing
+an implausible fat arch COUNT is rejected the way the G30 gate rejects it
+a fat header that CLAIMS more arches than it carries is rejected, not read past its own table
+the sibling that CONSUMES these slices reads the same header the same way - two fat fixtures, two parsers, one verdict, and one of them carries a high-bit cputype so a signed-vs-unsigned drift cannot hide
+every Mach-O header constant is frozen to the G30 gate's own value
+...and the freeze table covers every int constant this module defines under the three fat-header PREFIXES, so a new magic, cputype or bound cannot arrive unpinned under one of those names (prefix-bounded, not shape-complete)
+a prefix whose Mach-Os are all the target arch passes, and its data files are not architecture-bearing
+a non-Mach-O target is not header-checked - it is native-only by construction
+a slice that came out NATIVE is refused, naming the file, the arch it is and the arch the entry is keyed for
+an already-FAT member is refused under a per-slice key too - `lipo` cannot merge a duplicate architecture any more than it can merge a missing one
+a cross build whose toolchain quietly emitted the HOST architecture is refused
+...and publishes NOTHING, so the wrong-arch slice never becomes a permanent cache hit
+an honest cross build publishes the entry `stage-engines` will lipo
+...having probed the emulator AFTER the signatures and BEFORE the first build step
+a NATIVE build never probes an emulator it does not need
+the arch assertion guards the NATIVE slice too - both halves of a universal pair are checked the same way, which is what makes the merge meaningful
+EVERY signature is verified BEFORE anything is unpacked or run
+each source is then built in its own root, into one shared prefix
+the two sources are configured by their OWN lines
+the entry is published under the §6.1.3 key
+no staging residue survives a success
+a second compile over a published entry reports the race, it does not overwrite
+the two archives are verified against their OWN signature files, not swapped
+a build that installs NOTHING is refused - an empty entry is a permanent cache hit
+a url tail that is a multi-SEGMENT name is refused
+a source url whose tail is drive-relative is refused here too
+the build runs in the DECLARED source subdirectory, not the tree root
+a source_dir the unpacked tree does not have is a clear refusal, not a build in ''
+a symlink target that leaves the tree is classified as an escape
+a tree with no symlinks at all is self-contained
+an escaping symlink in the BUILT tree is refused before publish
+compile_entry REFUSES to publish a tree the build pointed out of
+...and publishes nothing when it does
+compile_entry runs the check over the PREFIX, the check WALKS, and its refusal REACHES the caller
+a compile that loses the publish race reports THAT, and overwrites nothing
+and run() counts that race as a cache HIT, the way the sibling counts one
+a stray NON-directory at the entry path is never mistaken for a benign race
+a failed build publishes NOTHING and leaves no residue
+a bad signature stops the build before a single step runs
+run() compiles the manifest's groups
+a cache HIT is reported under -v, naming the entry
+the report names EVERY row the build produces, not only the declaring one
+--check counts a cache HIT as a hit, not as work still to do
+run() is a no-op on a triple no row targets
+--check writes nothing
+an unbound seam entry stops the run
+--engine on an absent group is a structural error
+a missing manifest is a structural error, not a traceback
+a missing configure manifest is a structural error
+run() drives a full cross build end to end and publishes the slice `stage-engines` will lipo
+...with the cross build THREADED through it - the emulator was probed and the cross suffix reached configure, neither of which a native run does
+run() resolves the (host, target) pair BEFORE it reads either manifest - `--check` catches a target this host cannot produce, whatever the manifest says
+main threads --root/--cache-root/--target through to the run
+main REFUSES a --target this host cannot produce, instead of filtering rows by it
+main reports a structural error as exit 2 - and it is the MISSING MANIFEST arm, not the cross-pair refusal that now also exits 2
+main refuses a run that names neither --engine nor --all
+what `fetch --source` publishes is exactly what this script's plan expects to read
+a group fetched from source compiles end to end, both sources built
+the two halves derive the SAME filenames from the same manifest
+one tarball behind TWO rows is fetched once and published once
+and it COMPILES - two rows out of one archive are one build, not a collision
+the shared build records both row ids it produces
+run_tool passes an argv LIST - a value with a space stays ONE argument
+run_tool reports a non-zero exit rather than raising
+run_tool runs in the cwd it is given

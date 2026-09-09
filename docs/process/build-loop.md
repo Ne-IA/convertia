@@ -605,8 +605,9 @@ A change is **done** only when:
   roles-and-escalation §4(g)). The stop is for the caged EDIT, never a reason to idle:
   a caged **tail** that reds nothing until it lands (a build-gates row describing the
   new leg) is pre-declared in the box and lands in the Co-Pilot's per-phase owner-act
-  batch (§9); a caged tail that reds the same push (an equality-pinned canary tally, a
-  fixture pin) stays a same-push owner tail; a caged **precondition** is expressed as a
+  batch (§9); a caged tail that reds the same push (a fixture pin) stays a same-push
+  owner tail — the tool canaries' tallies no longer red on an addition (the monotone
+  leg-name pin, G24); a caged **precondition** is expressed as a
   `needs:` on an `[!extern]` owner-act box (the P4.89 pattern), and the loop continues
   outside that `needs:` closure (§3 step 1).
 - **GitHub API unreachable mid-session beyond the bounded retry** — during the push-wait

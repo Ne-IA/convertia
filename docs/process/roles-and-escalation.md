@@ -181,8 +181,9 @@ Two further blockers route the same way (their mechanics live in build-loop.md, 
   gate **G71**). The explicit, load-bearing case of (c)'s "any decision a doc reserves as
   an owner decision". Pre-declare it: a caged **tail** that reds nothing until it lands (a
   build-gates row) is named in the box and lands in the Co-Pilot's per-phase owner-act
-  batch; a caged tail that reds the same push (an equality-pinned canary tally, a fixture
-  pin) stays a same-push owner tail; a caged **precondition** is a `needs:` on an
+  batch; a caged tail that reds the same push (a fixture pin) stays a same-push owner
+  tail — the tool canaries' tallies no longer red on an addition (the monotone leg-name
+  pin, G24); a caged **precondition** is a `needs:` on an
   `[!extern]` owner-act box (the P4.89 pattern) — the trigger stops the caged edit, not
   the loop, which continues outside that closure (except the phase-end sweep box, which
   blocks its WHOLE successor phase, test-strategy §11.3).

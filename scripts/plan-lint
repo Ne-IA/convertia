@@ -7,7 +7,7 @@ docs/process/, docs/plan/). It enforces TWO families of checks:
   * FORMAT checks (_format.md §7) — the plan-box grammar: marker validity, sub-box consistency,
     header well-formedness, tag validity, reference resolution, needs:-targets exist + acyclic,
     annotation pairing, numbering gap-freeness.
-  * DOC checks 1..30 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
+  * DOC checks 1..31 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
     hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
     parity, the G68 doc-graph leg, the G69 struct-map leg, the check-27 gate-posture-transition leg, etc.
 
@@ -17,7 +17,7 @@ stay target-absent until their phase fills the §04 handlers; G24a made exactly 
 when `tests/corpus/manifest.toml` landed. This file is L(-1) security-critical (G71).
 
 Build status: foundation + the 9 FORMAT checks are implemented + self-tested. The doc-wide checks
-1..30 are added incrementally (P0.3.5 onward, each with its G24 negative fixture); until a doc check is
+1..31 are added incrementally (P0.3.5 onward, each with its G24 negative fixture); until a doc check is
 implemented it is listed in CHECKS as a NotImplemented placeholder that the meta-self-test asserts.
 
 Usage: plan-lint [--check <id>] [--json] [--quiet] [--max-per-check N] [--root <dir>]
@@ -353,7 +353,7 @@ def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  DOC checks (build-gates.md §6, checks 1..30) — added incrementally; active-now ones first.
+#  DOC checks (build-gates.md §6, checks 1..31) — added incrementally; active-now ones first.
 # =============================================================================================
 _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
 # the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 19 classes
@@ -553,7 +553,13 @@ def doc16_planted_positive(ctx: Ctx) -> list[Finding]:
     # fail-closed gates (per their build-gates row)
     fail_closed = {m.group(1) for m in re.finditer(r"^\| \*\*(G\d+[a-z]?)\*\* \|.*fail-closed", bg, re.M)}
     implemented = _gates_in_files(ctx.root, "scripts/check-*", "scripts/run-*")
-    selftested = _gates_in_files(ctx.root, "scripts/gate-selftests/*")
+    # Exactly the runner's discovery (2026-09-09): `run-gate-selftests` runs `scripts/gate-selftests/*.py` minus
+    # `_`-prefixed helper modules, so only those count as a self-test - a `.legs` blessed leg-name set carries
+    # gate ids inside leg NAMES and is data, and a `_helper.py` the runner never executes tests nothing.
+    selftested: set[str] = set()
+    for f in ctx.root.glob("scripts/gate-selftests/*.py"):
+        if f.is_file() and not f.name.startswith("_"):
+            selftested.update(re.findall(r"\bG\d+[a-z]?\b", f.read_text(encoding="utf-8", errors="replace")))
     for g in sorted(sec5 & fail_closed & implemented,
                     key=lambda x: (int(re.match(r"G(\d+)", x).group(1)), x)):
         if g not in selftested:
@@ -1871,7 +1877,7 @@ def doc29_stale_liveness(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  Check registry — FORMAT checks live; doc checks 1..30 added incrementally (P0.3.5 + P1.66).
+#  Check registry — FORMAT checks live; doc checks 1..31 added incrementally (P0.3.5 + P1.66).
 # =============================================================================================
 # --- check 30: spec-restatement fidelity (the P4.33 QuarantinedByOs reconcile's class catcher) ---------
 # One canonical user-facing string has ONE home — the §2.8.2 / §2.9.1 tables in 02-guarantees.md — and every
@@ -2018,6 +2024,52 @@ def doc30_spec_restatement_fidelity(ctx: Ctx) -> list[Finding]:
                                "without a five-word run of it)"))
     return out
 
+# --- check 31: the phase-boundary sweep binding (the 2026-09-09 scoped-STOP carve-out, made mechanical) ----------
+# The `[!extern]` STOP is scoped to the blocked needs: closure (build-loop.md §3 step 1); the ONE carve-out is the
+# standing phase-end Co-Pilot hardening-sweep box, which blocks its whole successor phase (test-strategy §11.3).
+# That carve-out was a semantic classification carried in prose ("is THIS [!extern] the sweep box?"); this check
+# binds it in plan data: one sweep box per phase >= 2, `[!extern]` until executed, the last box of its phase
+# (every box after it - the final phase's RC sign-off - names it in needs:), and P<n+1>.1 names it in needs:.
+_SWEEP_TITLE = "Run the phase-end Co-Pilot hardening sweep"
+
+
+def doc31_sweep_binding(ctx: Ctx) -> list[Finding]:
+    """Check 31: for every phase >= 2 with boxes, exactly one box titled with the standing sweep phrase, marked
+    `[!extern]` (or `[x]` once executed), followed in document order only by boxes that `needs:` it, and named
+    in `needs:` by the successor phase's first box P<n+1>.1 - so the phase-boundary stop follows from the plan,
+    never from prose alone (test-strategy §11.3; build-loop.md §3 step 1)."""
+    out: list[Finding] = []
+    phases = sorted({b.phase for b in ctx.boxes if b.phase >= 2})
+    terminal = max((b.phase for b in ctx.boxes), default=0)
+    for n in phases:
+        boxes_n = [b for b in ctx.boxes if b.phase == n]
+        sweeps = [b for b in boxes_n if b.title.startswith(_SWEEP_TITLE)]
+        if len(sweeps) != 1:
+            out.append(Finding("31:sweep-binding", boxes_n[0].file, 0,
+                               f"P{n}: {len(sweeps)} phase-end sweep boxes (exactly one expected, titled "
+                               f"{_SWEEP_TITLE!r}... - test-strategy §11)"))
+            continue
+        sweep = sweeps[0]
+        if sweep.marker not in ("!extern", "x"):
+            out.append(Finding("31:sweep-binding", sweep.file, sweep.lineno,
+                               f"{sweep.box_id}: the phase-end sweep box is [!extern] until executed (or [x]), "
+                               f"found [{sweep.raw_marker}]"))
+        for b in boxes_n:
+            if b.file == sweep.file and b.lineno > sweep.lineno and sweep.box_id not in b.needs:
+                out.append(Finding("31:sweep-binding", b.file, b.lineno,
+                                   f"{b.box_id}: follows the phase-end sweep box {sweep.box_id} but does not "
+                                   f"`needs:` it - the sweep is the phase's last work box (test-strategy §11)"))
+        first = ctx.by_id.get(f"P{n + 1}.1")
+        if first is None and n < terminal:
+            out.append(Finding("31:sweep-binding", sweep.file, sweep.lineno,
+                               f"P{n + 1}.1 is absent, so nothing carries `needs: {sweep.box_id}` - the "
+                               f"phase-boundary stop needs the successor's first box (test-strategy §11.3)"))
+        elif first is not None and sweep.box_id not in first.needs:
+            out.append(Finding("31:sweep-binding", first.file, first.lineno,
+                               f"{first.box_id}: must carry `needs: {sweep.box_id}` - the phase-boundary stop is "
+                               f"this edge (test-strategy §11.3)"))
+    return out
+
 
 FORMAT_CHECKS = {
     "format:box-parse-completeness": fmt_box_parse_completeness,
@@ -2062,8 +2114,9 @@ DOC_CHECKS = {
     "27:gate-posture-transition": doc27_gate_posture_transition,
     "29:stale-liveness": doc29_stale_liveness,
     "30:spec-restatement-fidelity": doc30_spec_restatement_fidelity,
+    "31:sweep-binding": doc31_sweep_binding,
 }
-CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # doc checks 1..30
+CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # doc checks 1..31
 
 
 def run(ctx: Ctx, only: str | None = None, max_per_check: int | None = None) -> list[Finding]:

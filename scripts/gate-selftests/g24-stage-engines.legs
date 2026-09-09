@@ -1,0 +1,214 @@
+exe suffix: windows triple -> .exe
+exe suffix: macOS/Linux triples -> none
+externalBin naming: <name>-<triple>[.exe]
+target: explicit v1 triple accepted
+target: universal-apple-darwin accepted (P4.29)
+fat parse: a two-slice header reports both cputypes
+fat parse: a 64-bit fat header is read at its own arch width
+fat parse: a THIN Mach-O is not fat
+fat parse: a non-Mach-O is not fat
+fat parse: the cputype constants are read from a LITERAL header, not from themselves
+fat parse: the arch bound AGREES with the G30 gate that parses the same bytes
+fat parse: a declared count the table does not carry is refused
+fat parse: a header shorter than 8 bytes is refused
+fat parse: a non-fat MAGIC with a plausible header is still not fat
+fat parse: an absurd arch count is refused, not trusted
+fat parse: a truncated arch table is refused
+G30 assertion: a both-slice fat binary passes
+G30 assertion: a THIN binary wearing the universal name is refused
+G30 assertion: a fat binary missing a slice names WHICH one
+is_macho: thin and fat are Mach-O, data is not
+lipo: driven as an argv LIST, `-create <slices> -output <staging sibling>`
+lipo: the merge is ATOMIC - the staging sibling never survives
+lipo: a merge REFUSED for thinness leaves no file under the real name
+lipo: a failing merge is a clear refusal, not a silent miss
+run_tool passes an argv LIST - a path with a space stays ONE argument
+lipo: success with no output file is still a refusal
+dual sourcing: both per-arch entries are found for one row
+dual sourcing: an engine absent from BOTH slices is absent, not an error
+dual sourcing: ONE slice present is a refusal naming the missing one and P4.29.1
+dual sourcing: the missing-x86_64 arm names the CROSS remedy and its exact --target
+dual sourcing: the missing-aarch64 arm names a NATIVE compile, not a cross build
+universal staging: the sidecar lands under the universal externalBin name
+universal staging: lipo was handed BOTH slices, in UNIVERSAL_SLICES order
+universal staging: the merged sidecar is asserted fat with BOTH slices
+universal staging: the merged sidecar keeps its exec bit
+universal staging: the resource tree's Mach-O member is lipo'd, its data copied
+universal staging: a member missing from ONE slice's entry is named, not a lipo error
+universal staging: a resource MEMBER that is not a directory is named
+universal staging: the resource destination is CLEARED, not merged into
+universal staging: a directory both slices carry SURVIVES the merge
+universal staging: an ALREADY-fat identical member is copied, never re-merged
+universal staging: the two slices must pin the SAME version
+universal staging: a DIRECTORY in one slice and a file in the other is refused
+universal staging: a Mach-O in ONE slice only is a divergence, not a merge
+universal staging: a symlink in one slice and a FILE in the other is refused
+universal staging: two IDENTICAL thin Mach-Os are refused, not copied through
+universal staging: a MERGED tree member keeps the mode its slice had
+universal staging: a real DIR against a symlink-to-dir is refused, not flattened
+universal staging: an upstream that already ships universal is COPIED, not re-merged
+universal staging: an already-universal sidecar is still asserted fat
+universal staging: a failure AFTER the bytes land leaves no TORN universal sidecar
+universal staging: the already-universal sidecar is PUBLISHED by a rename
+universal --check refuses a THIN already-universal SIDECAR, as the real run does
+universal staging: ONE Mach-O sidecar slice against a non-Mach-O is refused BY SLICE
+universal staging: two DIFFERING sidecar slices that are not both Mach-O are NAMED
+universal --check reports an UNCLAIMED entry from either slice triple
+universal staging: the result records the PRIMARY slice's entry
+universal staging: a lipo that emits a THIN binary is refused, not shipped
+universal staging: a THIN tree MEMBER is refused too - G30 cannot see it by name
+universal staging: two pinned VERSIONS of one engine are refused per slice
+universal staging: an entry TWO declared engines claim is refused, per slice
+universal staging: the two slices pointing one symlink elsewhere is refused
+universal staging: a symlink agreeing across slices is PRESERVED, not merged
+universal staging: an escaping link in EITHER slice is refused, on --check too
+universal --check reaches member CONTENT, not only the two path SETS
+universal --check refuses an identical THIN Mach-O, exactly as the real run does
+universal --check still writes NOTHING while validating that deeply
+universal staging: the tree walk descends exactly as `copytree` does
+universal staging: the merged MODE is in place AT the rename, not applied after it
+universal staging: the COPIED sidecar's mode is in place at the rename too
+universal staging: two EMPTY slice trees still produce the destination directory
+same_bytes: the comparison spans CHUNKS, and a prefix is not a match
+an absent `lipo` is a structural refusal (exit 2), not a filesystem fault (exit 1)
+universal staging: a sidecar row's `member` picks the file inside the entry
+universal staging: an engine absent from BOTH slices is reported, not an error
+universal --check resolves and validates but merges nothing
+universal staging: a path present in only ONE slice's tree is refused
+universal staging: a DIFFERING non-Mach-O has no merge rule and is refused
+target: unknown triple refused
+target: host resolution agrees with the table
+cache key: dashed version parses
+cache key: dashed engine name parses
+cache key: empty version rejected
+cache key: other triple rejected
+stage: every declared row resolved
+stage: sidecars land triple-suffixed in src-tauri/binaries
+stage: two sidecars from ONE cache entry
+stage: resource tree lands under src-tauri/resources/<subdir>
+stage: exec bit set on a non-Windows sidecar
+stage: re-run is idempotent
+stage: a re-stage replaces the tree, leaving no stale file
+stage: rows sharing one destination accumulate, they do not erase each other
+stage: the per-destination clear still removes a stale file from a shared subdir
+stage: an internal symlink is preserved, not dereferenced
+fail-closed: a staged symlink resolving outside the staged tree
+fail-closed: an absolute symlink, even one pointing inside its own entry
+fail-closed: a Windows directory junction resolving outside the tree
+an internal Windows junction is allowed, not falsely refused
+fail-closed: a junction pointing at its own ancestor (the copy would loop)
+check: nothing written on write=False
+absent engine reported, not staged
+fail-closed: a resource subdir outside the §3.3.1 key set
+unclaimed cache entry reported, not failed (the P4.34 link-input class)
+fail-closed: one entry claimed by two declared engines (the dash-prefix collision)
+fail-closed: two pinned versions of one engine restored
+fail-closed: a declared member missing from its cache entry
+fail-closed: a declared resource SUBTREE missing from its cache entry
+fail-closed: a member path escaping its cache entry
+fail-closed: an absent cache root
+binder: an EMPTY manifest binds nothing - fail-open until the first row lands
+binder: an ABSENT manifest is fail-open too
+binder: a declared cache_engine wins over the id
+binder: an UNdeclared cache_engine falls back to the id
+binder: malformed manifest TOML is an error, not a silent fail-open
+binder: a staging row naming an entry no manifest row declares is reported
+binder: staging rows whose entries ARE declared are not reported
+binder: the real repo manifest EXISTS and currently binds nothing
+binder: stage_all REFUSES an unbound row (the check runs on the real path)
+main(): a fully bound row set stages cleanly
+main(): an UNbound row set is refused at package time (the wiring is live)
+main(): an empty manifest is fail-OPEN at package time too
+main(): a row set unbound to `tauri.conf.json` is refused at package time too - the bundle binder is wired, not just written
+main(): the NO-ROWS early return checks the config as well - an `externalBin` entry nothing stages is refused while STAGED_ENGINES is still empty
+main(): the NO-ROWS early return stays fail-OPEN when the config declares nothing either - the leg above cannot be passing for the wrong reason
+binder: a row that names NO cache entry fails CLOSED, not fail-open
+binder: a DECLARED-but-unusable cache_engine is refused, not read as the id
+binder: a non-table engine entry fails CLOSED too
+binder: a mis-typed `engine` key fails CLOSED, unlike an absent one
+binder: stage_all is fail-OPEN while the manifest declares no rows
+bundle binder: the two §3.3.1 keys are READ back as declared
+bundle binder: a config with NEITHER key present reads as two empty declarations, not as an error - the keys are optional in Tauri's own schema
+bundle binder: an ABSENT config fails CLOSED, unlike the engines.lock reader - a committed required file that is missing means a broken checkout, not an empty phase
+bundle binder: malformed JSON fails CLOSED
+bundle binder: a non-object `bundle` fails CLOSED
+bundle binder: a non-string-array `externalBin` fails CLOSED
+bundle binder: a non-string-map `resources` fails CLOSED
+bundle binder: a fully bound pair reports NOTHING (no over-fire)
+bundle binder (forward, sidecar): a SIDECAR row no `externalBin` entry names is reported - the silent half, since Tauri simply does not package what it is not told about
+bundle binder (forward, tree): a RESOURCE_TREE row no `resources` key names is reported
+bundle binder (reverse, sidecar): an `externalBin` entry no row stages is reported
+bundle binder (reverse, tree): a `resources/<subdir>/` key no row stages is reported
+bundle binder (shape): an `externalBin` entry OUTSIDE `binaries/` is refused even though its bare name matches a staging row - Tauri would resolve it against a path this script never writes
+bundle binder (shape): an un-prefixed entry does not COUNT as the row's declaration either - the row is ALSO reported undeclared, so the diagnostic says what to write and not only what is wrong. Measured: without this leg, dropping the prefix filter from the declared set survived the whole suite, because the leg above hands it a correctly-prefixed entry as well
+bundle binder (shape): a MISTYPED resource subdir is reported, not skipped as an unrecognised key
+bundle binder: NON-engine map entries are not claimed - the same map carries the §3.3.1 licences text and the §3.3.2 step 4 SBOM/NOTICE + patent-disposition record, which no staging row produces
+bundle binder: a BUILT_SIDECARS entry needs no staging row - the reverse direction's declared escape hatch, so §3.3.1's own `binaries/convertia-imgworker` does not red a guard that cannot be satisfied
+bundle binder: the hatch is NAMED, not a pattern - a sidecar entry outside BUILT_SIDECARS is still refused, so a typo cannot hide behind the exemption
+bundle binder: a name that is BOTH exempt and staged is itself reported - the exemption exists for sidecars this script does not produce, so the collision means one of the two declarations is wrong
+bundle binder: the reverse resource check uses the FORWARD check's exact spelling - a doubled trailing slash claims no row, where an rstrip would have read it as a claim while the forward half still called the row undeclared
+bundle binder: a key that MEANS `resources/` without spelling it (a capital, a backslash) is reported as the mistyped destination it is, not skipped as a non-engine resource - it resolves on the authoring host and breaks on the runner
+bundle binder: the BARE `resources` spelling means the whole staging tree and is reported too - Tauri would walk all of it into the resource root under the wrong internal paths - while a key that merely STARTS with the word stays non-engine
+bundle binder: a JSON `null` reads as ABSENT, the way Tauri's own Option spells it - refusing it would reject a config Tauri accepts
+bundle binder: a DUPLICATE externalBin entry is reported once, not once per occurrence - JSON arrays permit duplicates where object keys do not
+bundle binder: the two prefixes are DERIVED from the staging destinations, so a re-home of where this script writes cannot leave the config side behind
+bundle binder: assert_rows_bound_to_bundle names EVERY problem it found, not the first - both directions arrive in one message
+bundle binder: the REAL repo config parses and binds against the REAL row set - the live leg, which reds the moment a P5-P7 row is staged without its declaration
+bundle binder: stage_all REFUSES an unbound row (the check runs on the real path)
+bundle binder: stage_all is fail-OPEN when NEITHER side declares anything
+relocation: every v1 triple AND the universal target declare a relocator
+relocation: the read-back table covers exactly the same targets, so a new triple cannot arrive with a rewrite but no way to check it
+relocation: an undeclared target is a structural refusal, never a silent no-op
+relocation (macOS): a shipped lib gets `-id @loader_path/<its own final name>`
+relocation (macOS): the dependent's ABSOLUTE reference is rewritten to @loader_path
+relocation (macOS): id and change travel in ONE invocation - the tool applies them together, so a half-rewritten Mach-O is not a reachable state
+relocation (macOS): `origin` shapes the prefix for a lib that does NOT sit beside the exe
+relocation (macOS): a declaration with no operation produces NO invocation
+relocation (Linux): `--set-rpath $ORIGIN` as ONE literal argv token, so the shell never sees the `$` (which is the only reason it survives to patchelf)
+relocation (Linux): `origin` shapes $ORIGIN/<sub>, and the leg needs no set_id/references because ELF has no per-lib install name to rewrite
+relocation (Windows): a RECORDED no-op - declared in the table, so 'nothing to do' is distinguishable from 'nobody considered it'
+relocation: the read-back expectation is the FINAL name, never the staging spelling
+relocation: EVERY declared operation is read back - the `-change` half through `otool -L`, because install_name_tool matches its old path literally and exits 0 on no match, which is the shape a rewrite most likely fails in
+relocation: a platform that rewrites NOTHING has nothing to read back either
+binder: a relocation naming no staged row is refused
+binder: a staged row with NO relocation is the normal case, never an error
+SCOPE freshness: no piece the docstring lists as EXCLUDED has since landed in THIS file - the sentence went stale at P4.29 and again at P4.30, and no gate could see it (G8 is diff-scoped, G68 is .md-only, plan-lint check 29 is .rs-only)
+SCOPE freshness: the leg is non-vacuous - it finds ids in that sentence AND finds boxes that DID decide here, so an empty either side cannot pass it silently
+SCOPE freshness: the COMPARISON itself is driven, not just its live inputs - a listed id that DID decide here is refused, one that did not is accepted (no listed id is currently decided here, so the live evaluation alone cannot tell a working check from a dropped one)
+_raises: the NEEDLE decides, not the type alone - a StagingError whose message does not contain the needle is False, which is what makes every arm-blind leg in this file impossible to write (the docstring claims that; this leg is what proves it)
+_raises: a WRONG exception type is a named FAIL, never a dead suite - it used to propagate and kill the whole run with a traceback instead of reddening the one leg. The needle IS present in the KeyError, so only the TYPE can decide this leg
+relocate_one: the rewrite lands, is read back, and leaves NO staging residue
+relocate_one: the tool is handed the STAGING sibling, never the published file - the publish stays one atomic replace
+relocate_one: ...and the read-back runs against that same sibling, after the rewrite
+relocate_one: a failing tool leaves the published file BYTE-IDENTICAL and no residue
+relocate_one: a rewrite that empties its input is refused, and publishes nothing
+relocate_one: a rewrite that changes the CONTAINER format is refused - a load-path rewrite edits load commands, never the magic
+relocate_one: a tool that exits 0 without writing the load path is REFUSED - the silent-no-op class, caught at the step that produced the file
+relocate_one: a file declaring BOTH halves reads BOTH back - `otool -D` for its own install name AND `otool -L` for its references. This is the realistic first filler (P6.1.2's libvorbisenc has an install name AND references libvorbis/libogg), and every other leg drives one half alone, which left the multi-tool loop unpinned
+relocate_one: ...and BOTH operations travel in ONE install_name_tool invocation - the rule is per FILE, not per operation kind
+relocate_one: the NEW load path present while the ABSOLUTE one it was meant to replace SURVIVES is refused - `-change` can match nothing, exit 0, and leave both, which asserting only the new value's presence would accept
+relocate_one: the read-back matches whole TOKENS, not substrings - a `$ORIGINAL/lib` rpath does not satisfy an expected `$ORIGIN`, and the same guard keeps `…dylib.2` from satisfying `…dylib`
+relocate_one: a read-back that cannot run is a refusal - an unverifiable rewrite is not a rewrite
+relocate_one (Linux): patchelf writes, `--print-rpath` reads the whole mechanism back
+relocate_one: a SYMLINK target is refused rather than silently flattened by the copy-rewrite-replace - which of the two meanings a rewrite has there is the declaring box's call
+relocate_one: a builder whose argv does NOT end in the target path is refused - the substitution rewrites the LAST token, so any other shape would leave the tool pointing at the PUBLISHED file and lose the atomic publish
+relocate_all (Windows): the recorded no-op REPORTS as a no-op - counting the rows CONSIDERED rather than the ones that produced argv would print 'relocated 1' on the one platform whose entire point is that its no-op be distinguishable, which is the thing the count exists to prevent
+relocate_one (Windows): the recorded no-op spawns NOTHING and touches nothing
+relocate_all: --check RESOLVES the target and builds the argv, and writes nothing - a check pass that validated less than the run is the one shape it must never have
+relocate_all: the WRITE pass rewrites the file the staging step actually published
+relocate_all: a relocation for a sidecar may not name a member - a sidecar row stages one file, so its rewrite addresses that file
+relocate_all: `set_id` on a SIDECAR is refused - a sidecar is staged under the externalBin STAGE-TIME name Tauri strips, so an install name derived from it would point at a file that does not ship, and the read-back would confirm the wrong value
+relocate_all: the symlink guard runs on the RAW member path, BEFORE `_member_path` resolves it - behind the resolution a symlinked member is indistinguishable from its target, so the guard could never fire on the RESOURCE_TREE case it exists for
+relocate_all: several rows may share one RESOURCE_TREE dest (§3.3.1 maps the whole image stack onto resources/image/), and they come from DIFFERENT engines - an absent one must not hide a destination another engine DID stage
+relocate_all: ...and the binder agrees with it - a dest ANY row stages is bound, so the two do not disagree about what a dest is
+relocate_all: ...in BOTH orders - `results` follows declaration order, and §3.3.1 maps several P5 boxes onto resources/image/, so absent-FIRST is as reachable as absent-last; a first-wins dict would re-open the defect the last-wins one had
+relocate_all: a relocation naming a MEMBER the staging step did not produce is refused with a diagnostic - without the guard it falls into relocate_one's open() and surfaces as a bare filesystem error that names neither the declaration nor the tree
+relocate_all: the count is REPORTED - in a box whose thesis is that a rewrite doing nothing must be visible, a run that rewrote zero files must not read like one that rewrote three
+relocate_all: the published file's MODE and mtime survive the rewrite round trip - relocation is a new publish path over a file whose dropped +x the module docstring calls load-bearing (it surfaces as a misleading startup 'integrity failed'). The mtime is what makes this observable on a host with no exec bit to lose: `copy2` seeds the sibling, the TOOL then touches it, and only the closing `copystat` puts the original stamp back
+relocate_all: --CHECK reaches the argv contract too - it is byte-free, so a check pass that skipped it would validate less than the run for a reason that has nothing to do with the bytes
+relocate_all: an engine the cache does not carry is nothing to do, not a violation
+relocate_all: an unrelocatable target is refused BEFORE any path is resolved
+wiring: stage_all's PER-ARCH branch runs the relocation tail - deleting the call survives every leg that drives relocate_all directly
+wiring: stage_all's UNIVERSAL branch runs the relocation tail - deleting the call survives every leg that drives relocate_all directly
+wiring: stage_all runs the BINDER - a relocation naming no staged row is refused there, not silently skipped later by relocate_all's absent-row arm
+wiring: stage_all DEFAULTS the runner for the relocation tail - the one production path that reaches `run_tool` passes no runner of its own
