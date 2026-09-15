@@ -114,10 +114,15 @@ fingerprint = "sha256:59cf428eea6d3c0ae12b6b2a02e153826f7d7002d174d2d2c5ac167178
 #     check 25 fires on §0.7's text changing). A FILE row only — the G69 dir-set is untouched;
 #     §1a re-verified unedited per the P4.56.1-tail-(b) precedent (its src-tauri/ block lists
 #     DIRECTORIES only, so the projection holds).
+#     Re-blessed 2026-09-15 (the P4 pre-fill audit commit): two §0.7 row TEXTS changed, no directory
+#     moved. The engine-configure.toml seam row names its fill boxes (P4.34 first, then P5.1.1 / P5.5.1 /
+#     P5.9.1 / P6.1.1 / P7.17.1), and the crates/imgworker/src/ row no longer enumerates files, so a new
+#     worker file (P4.83 lib.rs) owes no re-bless. §1a re-verified: its mirror row was re-worded in the
+#     same commit; the G69 dir-set is untouched.
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:adec2e1228f6b5807f11eddf6a6b6bf469159b572f0c59727de87096360a1422"
+fingerprint = "sha256:2cb8a80bdc236dda9d368ba8ab6e1dd5b8de63a980d69e86a21185c970e7c7fa"

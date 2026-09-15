@@ -354,7 +354,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `engines.lock` row(s)**, which are keyed by (artifact, target-triple), so the flag is
   per-target DATA and the OS level is the derived view; flipping it `false` makes §3.2.3 resolve the pair to
   `PlatformUnavailable` and C12 `get_engine_health` add HEIC to
-  `EngineHealth.unavailable_targets`, so §5.2 renders it disabled-with-reason — data,
+  `EngineHealth.unavailable_targets` and the C3 offer marks it `Unavailable`, so §5.2 renders it
+  disabled-with-reason — data,
   not code. HEVC-encode is the **highest patent-exposure** codec in the set (27 000+
   patents, multiple active pools beyond 2027; libheif#591) — **materially riskier than
   AAC/H.264** and the most likely flag-flip; **kvazaar (BSD)** recorded as the
@@ -579,7 +580,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Image dims carrier** — `DetectionOutcome::Recognized { …, dims: Option<(u32,u32)> }`
   (header-derived raster w/h, §1.2 step 4) is the §1.10 cheap-estimate input. Owner:
   §1.2 / §0.6 / §1.10.
-- **RunId timing** — minted at **start_conversion (C6)**, NOT at the §2.4 freeze (the
+- **RunId timing** — minted at **start_conversion (C6)** (the §7.2.3 smoke probe's run dir is the one exception), NOT at the §2.4 freeze (the
   freeze produces the `CollectedSetId`). §7.1.2 corrected. Owner: §7.1.2 / §0.4.1 C6.
 - **`OutcomeMsg` / `ConversionErrorKind` / `LossyKind` derive `specta::Type`** and are in
   `collect_types![]` (§06 drift check covers them) — no `any` for `ItemResult.reason`.
@@ -628,8 +629,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **libvips bundled WITHOUT poppler(GPL)/MuPDF(AGPL)/any GPL-AGPL PDF loader** — keeps
   the image-worker LGPL-only; §6.1.3 positive build assertion. Owner: §3.1 / §3.6.1 / §6.1.3.
 - **§3.4 availability flag is concrete** — a scalar `available` boolean on the codec's
-  `engines.lock` row(s), keyed by (artifact, target-triple); C12 `get_engine_health` reads it into `unavailable_targets`; §5.2
-  renders disabled-with-reason. Owner: §3.4.4a / §7.2.3.
+  `engines.lock` row(s), keyed by (artifact, target-triple); C12 `get_engine_health` reads it into `unavailable_targets` and C3 marks the target
+  `Unavailable`; §5.2 renders disabled-with-reason. Owner: §3.4.4a / §7.2.3.
 - **WebView2-absent portable launch fails before the core runs** — cannot show an in-app
   fault; the "fail clearly" substitute is the §6.2.4 download-page prerequisite note;
   `minimumWebview2Version` is NSIS-installer-only and **NSIS is NOT shipped v1** (§6.1.2
@@ -1152,7 +1153,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   §2.12.4 (raised by §1.2). *(§2.12.4 already DECIDED this; moved here off `[OPEN]`.)*
 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
-- **None at the owner level after this round.** The items the prior pass's "None open"
+- **§3.4.2 — the disposition of the §04 source codecs §3.4 classifies neither way** (WMA, AMR-NB, DTS, AC-3, VP6,
+  Sorenson Spark, MP2, MPEG-1 video, MJPEG, VP8, WMV1/2, Nellymoser, Cinepak), found 2026-09-10 by the P4 pre-fill
+  audit; the owner ruling is plan P4.90 (A). Otherwise **none at the owner level after this round.** The items the prior pass's "None open"
   claim had actually still left open — **NSIS-vs-portable (`[OPEN-6.1a]`)**, **HEVC/H.265
   MOV→MP4 default**, **§1.6 defaults registry (`[REC]`)** — are `[DECIDED]`; the
   synthesis-fix round additionally resolved **`[OPEN-6.1b]` Linux `.deb`** (→ AppImage-only

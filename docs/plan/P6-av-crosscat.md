@@ -100,7 +100,7 @@
   > cancellation routes through the **P4-built §1.7 process-group kill (P4.10) + the kill↔cleanup↔no-partial ordering (P4.11)** (FFmpeg may spawn children); a cancelled re-encode leaves NO partial output (FFmpeg writes to the §2.1 temp `out_tmp`, atomic-renamed only on success); already-finished batch items are kept. (`needs: P4.10/P4.11` — the P4 cancel/kill mechanism, per the P6.92 reconciliation obligation.)
 - [ ] **P6.14** [TEST] Add the per-engine FFmpeg §7.2.3 availability/integrity row + the in-bundle hash-manifest entry · §7.2.3 · G46 G37
   needs: P6.2, P4.43
-  > populate the FFmpeg + FFprobe rows in the build-time in-bundle hash manifest and the `EngineHealth` availability table (the per-engine variant of the **P4-built §7.2.3 startup-verifier framework, P4.43**) so a missing/corrupt FFmpeg escalates to a §2.13 app-fault, not a crash, and feeds C12 `get_engine_health` (§5.2 disables unavailable targets). (`needs: P4.43` — the P4 integrity-verifier framework this populates a row in, per the P6.92 reconciliation obligation.)
+  > populate the FFmpeg + FFprobe rows in the build-time in-bundle hash manifest and the `EngineHealth` availability table (the per-engine variant of the **P4-built §7.2.3 startup-verifier framework, P4.43**) so a missing/corrupt FFmpeg escalates to a §2.13 app-fault, not a crash, and feeds C12 `get_engine_health` (§5.2 renders availability from C3). (`needs: P4.43` — the P4 integrity-verifier framework this populates a row in, per the P6.92 reconciliation obligation.)
 
 ---
 

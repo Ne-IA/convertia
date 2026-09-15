@@ -308,24 +308,44 @@ def fmt_needs_targets(ctx: Ctx) -> list[Finding]:
             if n not in ctx.by_id:
                 out.append(Finding("format:needs-targets-exist-and-acyclic", b.file, b.lineno,
                                    f"{b.box_id}: needs: {n} — no such box"))
-    # acyclicity over the needs: graph (DFS)
-    WHITE, GREY, BLACK = 0, 1, 2
-    color = {b.box_id: WHITE for b in ctx.boxes}
-
-    def visit(bid: str, stack: list[str]) -> None:
-        color[bid] = GREY
-        for n in ctx.by_id.get(bid).needs if bid in ctx.by_id else []:
-            if n not in color:
-                continue
-            if color[n] == GREY:
-                cyc = " -> ".join(stack + [bid, n])
-                out.append(Finding("format:needs-targets-exist-and-acyclic",
-                                   ctx.by_id[bid].file, ctx.by_id[bid].lineno, f"needs: cycle {cyc}"))
-            elif color[n] == WHITE:
-                visit(n, stack + [bid])
-        color[bid] = BLACK
+    # acyclicity over the needs: graph (DFS). A top box's `[x]` is the AND of its sub-boxes (_format.md §2), so a box
+    # with sub-boxes is two nodes: its DONE node needs its BODY node and every sub-box, and its own `needs:` hang off
+    # the BODY node. A sub-box inherits its parent's `needs:` (_format.md §3.2), so it needs the parent's BODY, and its
+    # own `needs:` on the parent reads that BODY too. The ordinary "sub-box needs its parent" stays clean, while a
+    # sub-box that needs a box whose closure needs the parent (the P4.35 -> P4.35.1 -> P4.83 -> P4.35 deadlock,
+    # 2026-09-15) or a box that needs the sub-box while the parent needs that box is the cycle it really is.
+    parent_of: dict[str, str] = {}
+    children: dict[str, list[str]] = {}
     for b in ctx.boxes:
-        if color[b.box_id] == WHITE:
+        if len(b.num) >= 2:
+            pid = "P" + str(b.phase) + "." + ".".join(map(str, b.num[:-1]))
+            if pid in ctx.by_id:
+                parent_of[b.box_id] = pid
+                children.setdefault(pid, []).append(b.box_id)
+    body = "#body"
+
+    def edges(node: str) -> list[str]:
+        bid = node.removesuffix(body)
+        if node == bid and bid in children:
+            return [bid + body] + children[bid]
+        targets = [n + body if parent_of.get(bid) == n else n for n in ctx.by_id[bid].needs if n in ctx.by_id]
+        return targets + [parent_of[bid] + body] if bid in parent_of else targets
+
+    WHITE, GREY, BLACK = 0, 1, 2
+    color: dict[str, int] = {}
+
+    def visit(node: str, stack: list[str]) -> None:
+        color[node] = GREY
+        for n in edges(node):
+            if color.get(n, WHITE) == GREY:
+                cyc = " -> ".join(s.replace(body, " (body)") for s in stack + [node, n])
+                b = ctx.by_id[node.removesuffix(body)]
+                out.append(Finding("format:needs-targets-exist-and-acyclic", b.file, b.lineno, f"needs: cycle {cyc}"))
+            elif color.get(n, WHITE) == WHITE:
+                visit(n, stack + [node])
+        color[node] = BLACK
+    for b in ctx.boxes:
+        if color.get(b.box_id, WHITE) == WHITE:
             visit(b.box_id, [])
     return out
 

@@ -105,6 +105,20 @@ v1**; **MPL** (LibreOffice) invoked;
 SPDX `ImageMagick`, Apache-2.0-style) — both unrestricted and link-OK (ImageMagick is
 **not** GPL and is a **required** component, not a fallback).
 
+**Startup-fault classification `[DECIDED]` (Co-Pilot ruling 2026-09-15, owner may overturn — the
+home §7.2.3 names).** Every engine program the §7.2.3 presence loop checks (FFmpeg and FFprobe,
+LibreOffice, poppler's `pdftotext`, pandoc, the image worker; each once the build declares it,
+§7.2.3 Build-window posture) is **startup-required**: absent or non-runnable → `EngineMissing`,
+an integrity mismatch → `BundleDamaged`, both an app-level startup fault (the §7.2.1 readiness
+gate incl. the §7.2.3 smoke, §2.13.1, §2.8). Two cases are not that arm: a quarantined sidecar
+is `QuarantinedByOs` (§7.2.4), and a **degradable** failure is one inside a present engine that
+only some formats use — today the row 1d ImageMagick BMP delegate (§7.2.3), attributed by the
+smoke probe's record rather than read as a non-runnable worker. A degradable failure marks those
+targets `Unavailable { reason }` in the C3 offer (§0.6 `Target.availability`,
+rendered by §5.2), with a reason distinct from the patent gap. A §3.4
+`available = false` posture is not a failure (`PlatformUnavailable`), and a damaged
+bundled resource is `BundleDamaged`.
+
 ---
 
 ## 3.2 Engine registry & selection
@@ -713,6 +727,10 @@ availability (SSOT *v1 DoD* exception 1) flows from here.
   BSD. No patent royalty; the §3.4 entry exists only to record the **build/ship
   posture** (it ships everywhere).
 - **VP9 / Opus / Vorbis / FLAC / ALAC / PCM** — royalty-free; not in this matrix.
+- **`[OPEN — owner, plan P4.90 (A)]`** WMA v1/v2/Pro/Lossless, AMR-NB, DTS, AC-3, VP6, Sorenson
+  Spark, MP2, MPEG-1 video, MJPEG, VP8, WMV1/2, Nellymoser and Cinepak — decoded, never
+  encoded, by the bundled FFmpeg for §04 source formats — are classified neither in this list
+  nor in §3.4.3 (measured 2026-09-10). The ruling lands each in one of the two.
 
 ### 3.4.3 The matrix — recommended disposition per (codec × platform)
 
@@ -906,9 +924,10 @@ is concretely:
   (§0.4.1 / §7.2.3) computes `EngineHealth.unavailable_targets: Vec<TargetId>` — it
   reads the **resolved `available` flag** (not only the build-time hash manifest): a
   target whose only encoder is an `available = false` codec is added to
-  `unavailable_targets`. §5.2 reads `EngineHealth` and renders that target's tile
-  **disabled-with-reason** ("HEIC isn't available on this system"). So flipping x265 to
-  unavailable on a platform removes HEIC as an offered target there with no code change.
+  `unavailable_targets`, and the C3 offer marks that target `Unavailable { reason }` (§0.6
+  `Target.availability`), which §5.2 renders **disabled-with-reason** ("HEIC isn't available on
+  this system"); `EngineHealth` lists it without a reason. So flipping x265 to
+  unavailable on a platform marks HEIC unavailable (disabled-with-reason) there with no code change.
 - HEIC-encode is **never a default** target (§3.4.4 / images.md), so a flip is a clean,
   zero-blast-radius drop of one never-default tile.
 

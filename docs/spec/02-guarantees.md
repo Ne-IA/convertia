@@ -1114,7 +1114,7 @@ For each source, §1.8 classifies its **intended** output location via
     (so the dir is writable) but its **removal fails**, the verdict is **writable**
     (the create succeeded — that is the test) and the leftover probe file is **not**
     cause to divert. **The probe runs at C4 (§1.8/§1.10), BEFORE the RunId is minted
-    (§7.1.2: RunId is minted at C6), so it CANNOT carry a `RunId` and uses a distinct
+    (§7.1.2: a batch RunId is minted at C6), so it CANNOT carry a `RunId` and uses a distinct
     pre-RunId name keyed on `InstanceId` only: `.convertia-<InstanceId>-probe-<rand>.part`.**
     The §2.6.3 per-file sweep reclaims this `InstanceId`-only probe residue via **InstanceId
     liveness** (any live lock under `convertia/scratch/<InstanceId>.*` ⇒ the instance is
@@ -2049,7 +2049,7 @@ with a trace:
 
   > **Presentation channel by WebView health `[DECIDED]` (P2.109).** *Which* surface a
   > **startup** fault renders on is fixed by whether the WebView itself is alive.
-  > **`EngineMissing` / `BundleDamaged`** (a §7.2.1 readiness fault, steps 3–5) leave the
+  > **`EngineMissing` / `BundleDamaged`** (a §7.2.1 readiness fault) leave the
   > WebView healthy → they present over the §0.4.2 `app://fault` event on the §5.8 WebView
   > screen, replayed through a **`PendingFault`** buffer for the first-frame race (the
   > `app://fault` emit + buffer body lands with the P4 readiness verifier bodies).

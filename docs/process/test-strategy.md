@@ -1141,6 +1141,9 @@ delivered *system*.
   added since the last bless are unpinned against removal until the sweep re-blesses —
   the phase-length window the monotone pin opens; the sweep diffs each canary's
   unblessed report against the phase's box list before blessing.
+- **Caged tails (added 2026-09-15):** before the box flips, the sweep lands, under
+  owner-ack, every caged tail a box of the phase declared as reds-nothing (the P4.41
+  G38 planted positives, floor rows, tool pins, gate-row wording).
 - **Who:** the Co-Pilot session (roles-and-escalation §1); an L(-1) surface
   touched by a fix follows the normal owner-ack path (G71).
 - **Second leg:** after the delivery re-test, the same sweep runs the
@@ -1214,6 +1217,9 @@ boundary — batched, never one per box mid-phase**. **Owner acts the audit find
 consolidated into ONE `[!extern]` owner-act box per phase** (appended at max+1; the
 dependent boxes `needs:` it), which the Co-Pilot executes as one owner-acked act
 while the loop builds every box outside that closure (build-loop.md §3 step 1).
+That box stays separate from a precondition act that already scopes a STOP closure (the
+P4.34 → P4.89 shape), so a ruling never waits on an acquisition act. Caged tails that red
+nothing are not tracked in it; they close with the phase-end sweep box.
 The audit **builds nothing**:
 it edits the plan/spec layer only; an L(-1) surface follows the normal owner-ack
 path (G71). Evidence rides the audit's commit bodies, same as the delivery leg.

@@ -138,8 +138,8 @@ app-shell spine (single-instance guard, the engine presence+integrity probe slot
 zero-startup-network assertion, launch-intake feed, WebView-absent app-fault) —
 the verifier body lands in P4, but the ordered sequence is owned here. The **C12
 `get_engine_health` IPC command + the `EngineHealth` type** (§7.2 — `present` /
-`integrity_ok` / `runnable` fields, consumed by §5.2 to disable unavailable
-targets, escalated to §2.13 app-fault) is a pipeline contract with **no engine
+`integrity_ok` / `runnable` fields, its unavailable-target set mirroring the C3
+offer §5.2 renders, escalated to §2.13 app-fault) is a pipeline contract with **no engine
 dependency** — it is type-shared here alongside the other pipeline contracts; the
 runtime probe that populates it is built in P4.
 
@@ -239,8 +239,8 @@ are incrementally filled by P5–P7 as each sidecar is staged, mirroring the
 SBOM-row pattern. **§3.4 patent-disposition matrix (single owner — decided here,
 never re-decided downstream):** author the HEIC/AAC/H.264/AV1 ship-bundled /
 rely-on-OS / gate / unavailable matrix, the §3.4.4a `engines.lock` per-platform
-`available` boolean → `PatentDisposition` → `EngineHealth.unavailable_targets`
-wiring (feeding the C12 contract declared in P2 and the §1.5 per-source default
+`available` boolean → `PatentDisposition` → the C3 offer's `Target.availability` (mirrored in
+`EngineHealth.unavailable_targets`) wiring (feeding the C12 contract declared in P2 and the §1.5 per-source default
 availability) and the §3.4.5 per-platform packaging specifics, as **one**
 cross-cutting deliverable — P5/P6 then only **read** the per-codec cell.
 **Bundle-time build assertions (§6.1.3 — run by

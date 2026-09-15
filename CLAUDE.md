@@ -83,7 +83,7 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 │   └── branding/                   → logo / brand source art
 ├── crates/                         → non-core first-party Rust workspace members
 │   └── imgworker/                  → pkg `convertia-imgworker` — the isolated libvips/libheif/librsvg image-worker (§3.5.5, G53)
-│       └── src/                    → `ffi.rs` (the one allow-listed unsafe FFI surface, G29) + `main.rs`
+│       └── src/                    → the worker crate source (its allow-listed FFI module: `ffi.rs`, G29)
 ├── design/                         → UI / design assets (a sibling of `src/`, §0.7)
 ├── docs/                           → all documentation (the doc graph G68 guards)
 │   ├── plan/                       → P0..P11 + README index + `_format.md`

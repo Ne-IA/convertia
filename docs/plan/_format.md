@@ -143,6 +143,10 @@ A box that decomposes into ordered steps lists them as **indented** child boxes:
 - A sub-box carries its own tag + refs and may itself carry a `needs:` (§5). Nesting
   is **at most one level deep** (`P<phase>.<n>.<m>`) — a box that wants three levels
   is two boxes, not a grandchild; `plan-lint` rejects a fourth dotted segment.
+- A sub-box is **never a selection target of its own** (§6): its effective `needs:`
+  closure is its own `needs:` **plus its parent's** (a sub-box `needs:` adds edges,
+  never replaces the parent's). A parent blocked on an `[!extern]` closure (§6 step 4)
+  blocks every sub-box under it (the P4.44 / P4.46 shape).
 
 ### 3.3 The `>`-note
 
@@ -237,9 +241,12 @@ ConvertIA resolves the dependency **in place**.
   prerequisite is something it **cannot build** — an `[!extern]` prerequisite of a
   non-extern box, or an all-blocked deadlock (`roles-and-escalation.md` §4(d)).
 - A `needs:` must not point **forward in a way that creates a cycle** — `plan-lint`
-  (check: needs-acyclic) fails a dependency cycle, since the loop could not resolve
-  it. Pointing at a *later-phase* box is allowed (DECISION C builds it early), but a
-  cycle is not.
+  (check: needs-acyclic) fails a dependency cycle, since the loop could not resolve it.
+  Pointing at a *later-phase* box is allowed (DECISION C builds it early), but a cycle
+  is not. A top box counts as needing its sub-boxes (its `[x]` is their AND, §2) and a
+  sub-box as needing its parent's body (§3.2), so a sub-box that needs a box whose
+  closure needs the parent is a cycle, and so is a box that needs a sub-box while the
+  parent needs that box.
 - Distinguish from a `[!]`: a `needs:` says *"build that first, then me"*; a `[!]`
   says *"I cannot be built at all right now"*. The same fact is **never** expressed
   as both — if a box is genuinely blocked on a separable owner/external act, that act is
@@ -316,7 +323,7 @@ this format so a box author knows exactly how their box will be picked:
    step 1) — except the phase-end sweep box, which blocks its whole successor phase
    (test-strategy §11.3). **`[!]`** → read the `>`-note, skip, mention at the phase end.
 5. **Sub-boxes** are worked top to bottom under their parent before the parent is
-   checked off (§2, §3.2).
+   checked off, and inherit the parent's `needs:` closure (§2, §3.2).
 6. **Zero open boxes** → emit the convergence report and **stop** (never loop
    forever); a genuine all-blocked deadlock → escalate (`build-loop.md` §3 step 1).
 
@@ -365,12 +372,13 @@ this file defines (distinct from the doc-wide consistency checks 5–24 catalogu
   format-change protocol below. `_slug`: lowercase, every character except word characters,
   spaces and hyphens dropped, whitespace collapsed to one hyphen, edge hyphens stripped — `### JPG / JPEG` → `jpg-jpeg`, `### PNG` → `png`.)
 - **`needs:`-targets exist** — every `needs:` box-id is a real box in the plan; the
-  graph is **acyclic** (§5.1). A dangling or cyclic `needs:` fails. **`plan-lint`
-  loads ALL phase files — `P0`..`P11` — when resolving `needs:` targets** (even though
-  the Build-Loop's *execution* scan is `P1`..`P11`, §6): a later phase that activates a
-  `P0`-authored gate may carry `needs: P0.x` (trivially satisfied, since `P0` is `[x]`
-  before the loop reaches `P1`), so a `needs: P0.x` edge must resolve, not dangle. The
-  acyclicity check likewise spans `P0`..`P11`.
+  graph is **acyclic** (§5.1; a top box counts as needing its sub-boxes). A dangling or
+  cyclic `needs:` fails. **`plan-lint` loads ALL phase files — `P0`..`P11` — when
+  resolving `needs:` targets** (even though the Build-Loop's *execution* scan is
+  `P1`..`P11`, §6): a later phase that activates a `P0`-authored gate may carry
+  `needs: P0.x` (trivially satisfied, since `P0` is `[x]` before the loop reaches
+  `P1`), so a `needs: P0.x` edge must resolve, not dangle. The acyclicity check
+  likewise spans `P0`..`P11`.
 - **Annotation pairing** — `unlocked-by:` appears **only** under a `[!]` box and
   names a real box; no blocked box is **silent** — a `[!]` box carries a `>`-note
   **or** an `unlocked-by:`, and a `[!extern]` box carries a mandatory `>`-note (it

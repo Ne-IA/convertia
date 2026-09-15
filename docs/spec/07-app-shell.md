@@ -163,7 +163,7 @@ These two ids are the entities §0.6 lists as "defined in §7.1". Both are
 | Id | Type | Scope / lifetime | Derivation | Purpose |
 |----|------|------------------|------------|---------|
 | `InstanceId` | `Uuid` (v4) — opaque 128-bit | One running process, created once in `setup` | Random at launch | Names the per-instance scratch root (§2.14) and stamps temp artifacts so startup cleanup (§2.6) can tell *this* instance's residue from a *different* instance's still-running temp |
-| `RunId` | `Uuid` (v4) | One "drop → … → summary" cycle (one `Batch`); a new drop after a summary starts a new `RunId` | Random when **`start_conversion` (C6) accepts the batch** (§0.4.1 C6 / §0.4.4); the §2.4 freeze produces the **`CollectedSetId`** (the pre-run identity), **not** the `RunId` — the `RunId` is minted only when CONVERT begins, so the per-run scratch `run-<RunId>/` (§2.6.1) never exists before any RunId is minted | Owns the per-run temp subdir; cancellation/cleanup (§2.6), progress events (§0.4) and the end-of-batch summary (§1.12) are all keyed by it |
+| `RunId` | `Uuid` (v4) | One "drop → … → summary" cycle (one `Batch`); a new drop after a summary starts a new `RunId` | Random when **`start_conversion` (C6) accepts the batch** (§0.4.1 C6 / §0.4.4); the §2.4 freeze produces the **`CollectedSetId`** (the pre-run identity), **not** the `RunId` — the `RunId` is minted only when CONVERT begins — the one exception is the scratch-dir identity of the §7.2.3 startup smoke probe: a probe-scoped `run-<RunId>/` minted, locked and reclaimed like any run dir, carrying no `Batch`, event or summary (Co-Pilot 2026-09-15) — so the per-run scratch `run-<RunId>/` (§2.6.1) never exists before a RunId is minted | Owns the per-run temp subdir; cancellation/cleanup (§2.6), progress events (§0.4) and the end-of-batch summary (§1.12) are all keyed by it |
 
 Pseudo-types (mirrored to TS via the §0.4.5 mechanism — not re-decided here):
 
@@ -214,8 +214,9 @@ section only fixes the *identity* embedded in it.)
    intact and is a `BundleDamaged` app-level fault (§2.13), reported through the
    same readiness path as steps 3–5. No directory is *created* yet.
 3. **Engine presence + integrity verification** (§7.2.3) — the bundled sidecars
-   must exist and be runnable; a failure here is an **app-level fault** (§2.13),
-   not a per-item failure.
+   must exist and be intact; a failure here is an **app-level fault** (§2.13),
+   not a per-item failure. The §7.2.3 *smoke* leg, the check of "runnable", is not
+   part of this step — it runs after step 5 (§7.2.3 Placement).
 4. **Executable-permission setup** on the engine binaries for the portable build
    (§7.2.4).
 5. **Scratch + log dir creation** with the per-instance root (§7.1.2). Reclaim
@@ -231,28 +232,29 @@ section only fixes the *identity* embedded in it.)
    frontend's mount-time C1 drain collects them into §1.1 once the window is ready).
 8. Hand to UI empty/idle state (§5.2).
 
-Steps 3–5 run in the Rust core during `setup`/just after; the window is only shown
-once they succeed, so a hard fault is shown as a clean fault screen (§2.13), never
-a half-broken UI. **Mechanism `[DECIDED]` (P2.106.6 / P2.109):** the single `main`
-window is config-declared **`visible: false`** in `tauri.conf.json` (created hidden,
-not by a programmatic builder — §7.3.1), and the core reveals it
+Steps 3–5 (and, off macOS, the §7.2.3 smoke leg) run in the Rust core during `setup`/just
+after; the window is only shown once they succeed, so a hard fault is shown as a clean fault
+screen (§2.13), never a half-broken UI. **Mechanism `[DECIDED]` (P2.106.6 / P2.109):** the
+single `main` window is config-declared **`visible: false`** in `tauri.conf.json`
+(created hidden, not by a programmatic builder — §7.3.1), and the core reveals it
 (`get_webview_window("main")` → `.show()`) **only on the readiness-gate success path**
-(steps 3–5 `Ok`); a readiness fault instead skips this normal reveal and hands the
-app-level `AppFault` to the §2.13.3 presentation. `get_webview_window("main")`
-returning `None` at step 6 is the core-observable WebView-init fault seam (missing/old
-WKWebView / WebKitGTK, §0.3.1) — **P2.109 builds that detection + routing** (the `None`
-arm constructs a `WebviewFault` `AppFault` and routes it to `present_startup_fault`).
+(steps 3–5 `Ok`, plus the §7.2.3 smoke leg off macOS — a required-engine smoke failure takes
+this readiness channel); a readiness fault instead skips this normal reveal and hands the
+app-level `AppFault` to the §2.13.3 presentation. `get_webview_window("main")` returning
+`None` at step 6 is the core-observable WebView-init fault seam (missing/old WKWebView /
+WebKitGTK, §0.3.1) — **P2.109 builds that detection + routing** (the `None` arm constructs a
+`WebviewFault` `AppFault` and routes it to `present_startup_fault`).
 
 **Which surface a startup fault renders on is `[DECIDED]` by the WebView's own health
 (P2.109) — the fault channel splits in two:**
 
-- **Readiness faults (steps 3–5): `EngineMissing` / `BundleDamaged`** leave the WebView
-  itself healthy, so they present over the **built** §0.4.2 `app://fault` event → the
-  §5.8 WebView fault screen. Because such a fault can fire **before** the §5.8 listener
-  is registered (the same first-frame race the §7.8.1 launch-intake buffer closes), it
-  is replayed through a **`PendingFault` buffer** on listener-ready. The `app://fault`
-  emit + `PendingFault` buffer body lands with the step-3–5 verifier bodies (**P4**),
-  not P2.109.
+- **Readiness faults (steps 3–5 + the §7.2.3 smoke): `EngineMissing` / `BundleDamaged`**
+  leave the WebView itself healthy, so they present over the **built** §0.4.2 `app://fault`
+  event → the §5.8 WebView fault screen. Because such a fault can fire **before** the §5.8
+  listener is registered (the same first-frame race the §7.8.1 launch-intake buffer closes),
+  it is replayed through a **`PendingFault` buffer** on listener-ready. The `app://fault`
+  emit + `PendingFault` buffer body lands with the readiness verifier bodies (**P4**), not
+  P2.109.
 - **The WebView-init fault (step 6): `WebviewFault`** — the OS WebView runtime could not
   create the view — makes an `app://fault`→WebView emit **impossible** (there is no
   WebView to render it), so it presents on a **native surface** (not the WebView; the
@@ -302,8 +304,9 @@ present and usable:
     the video two-phase probe binary (§3.2.1). It is **presence + integrity checked as its
     own binary** (`binaries/ffprobe`) via this out-of-band loop, but — like ImageMagick —
     it has **no standalone `EngineStatus` row in the C12 surface**: its availability is
-    rolled into the FFmpeg engine's status (a missing/corrupt `ffprobe` makes the FFmpeg
-    `EngineStatus.runnable = Some(false)`, since no video job can probe without it). Its
+    rolled into the FFmpeg engine's status (a missing `ffprobe` makes the FFmpeg
+    `EngineStatus.runnable = Some(false)`, since no video job can probe without it, and a
+    corrupt one its `integrity_ok = false`). Its
     `EngineId::FFprobe` appears in the SBOM/NOTICE layer (§3.7) and this binary
     presence/integrity loop, never in the §3.2.3 registry.
 - **Integrity `[DECIDED]`:** verify each engine binary against a **build-time
@@ -318,8 +321,11 @@ present and usable:
   **First-launch hash-cache deliverable `[DECIDED]`:** the cache is a **small JSON marker
   file `engine-integrity.json` in the OS config dir next to the prefs blob** (Tauri
   `app_config_dir()`, e.g. `~/.config/dev.ne-ia.convertia/` — a **separate file**, not
-  merged into the 3-key prefs blob, so a prefs reset never forces a re-hash). It records,
-  per engine, `{ id, expected_hash, expected_size, app_version }`. **Warm-launch
+  merged into the 3-key prefs blob, so a prefs reset never forces a re-hash). It records
+  one entry per bundled FILE — `{ path, engine, check, expected_hash, expected_size }`,
+  mirroring the in-bundle manifest rows — plus `app_version` once `[CORRECTED 2026-09-15
+  — the P4 pre-fill audit: "per engine" was the illustrative literal; this §'s own checks
+  below are per file]`. **Warm-launch
   validation:** if the marker is present **and its `app_version` matches the running
   build**, do presence + the cheap size/header check only; if the marker is **absent or
   `app_version` differs** (first launch or post-update), re-hash all engines and rewrite
@@ -349,11 +355,28 @@ present and usable:
 - **Smoke probe `[REC]`:** optionally, a fast `--version`-style invocation per
   critical engine through the §3.5/§2.12 wrapper to confirm it *runs* on this OS
   (catches a glibc/arch mismatch a hash can't). Kept cheap; gated behind verbose
-  mode (§7.5) on warm launches.
+  mode (§7.5) on warm launches. **Placement `[DECIDED]` (Co-Pilot 2026-09-15):** off macOS the
+  smoke leg runs **after §7.2.1 step 5** and before the step-6 reveal — never at step 3,
+  where a spawn would precede the §7.2.4 `+x` setup and any scratch dir. Its §2.12.3(a)
+  cwd is a probe-scoped, `.lock`-held `run-<RunId>/` (§7.1.2), so the §2.6 reclaim paths
+  cover a crash mid-probe; the `soffice` probe keeps its §3.5.2 profile inside it, and
+  the spawn runs under the §1.7 watchdog. Presence and integrity stay in step 3; the macOS
+  caveat below applies on top.
+- **Build-window posture `[DECIDED]` [Co-Pilot ruling 2026-09-15 — owner may overturn]:**
+  the presence and integrity roster is the engine programs this build DECLARES (its
+  `bundle.externalBin` entries and engine `bundle.resources` trees, read from the compiled
+  config), not every row of the §3.3.3 program table, so a build that does not ship an
+  engine yet neither checks it nor offers its pairs; a structural test binds every
+  registered engine's program to a declared entry. A declared engine that is absent, damaged
+  or non-runnable stays startup-required (§3.1). The committed placeholder in-bundle
+  manifest carries `"placeholder": true`, which the generator never writes: a debug
+  build (`debug_assertions`) reads it as the dev posture (the integrity leg is skipped with a log line and `integrity_ok` stays `true`; presence and the smoke still run), and a release build reads it as
+  `BundleDamaged`, so no shipped binary accepts it.
 
-**`EngineHealth` — the C12 return (defined here; §0.4.1 C12 references it).** The
-cached result of this startup probe. Feeds §5.2 (disable/omit unavailable targets)
-and the §7.2.4 startup-fault surface. Owned by §7.2:
+**`EngineHealth` — the C12 return (defined here; §0.4.1 C12 references it).** The cached
+result of this startup probe. Its `unavailable_targets` set mirrors the C3 offer (§5.2
+renders from C3 `Target.availability`), and the result feeds the §7.2.4 startup-fault
+surface. Owned by §7.2:
 
 ```rust
 struct EngineHealth {
@@ -371,8 +394,10 @@ struct EngineHealth {
                                        //   `{ present: true, integrity_ok: true, runnable: Some(true) }`
                                        //   (always-available-in-core, pure-Rust, nothing to verify)
                                        //   — appended after the loop, never from it.
-    unavailable_targets: Vec<TargetId>,// §3.4 patent-gapped on THIS platform (PlatformUnavailable)
-    all_critical_ok: bool,             // derived: every required engine present+runnable
+    unavailable_targets: Vec<TargetId>,// every target unavailable here: the §3.4 patent gap or a §3.1 degradable
+                                       // failure (the reason text rides C3 `Target.availability`)
+    all_critical_ok: bool,             // derived: every §3.1 required engine present + integrity_ok + not
+                                       // smoke-failed (a delegate-absent record degrades, never clears it)
 }
 
 struct EngineStatus {
@@ -395,8 +420,9 @@ struct EngineStatus {
 > conversion silently at first use at runtime**, not at startup. (**ICO save** is the
 > `magicksave` default but `[DEFER: build spike]` §3.5.5 — if the spike fails, ICO save uses
 > the in-core Rust assembler and does **not** depend on the ImageMagick delegate.) To surface
-> a missing BMP delegate as a **startup fault** instead, the image-worker smoke probe (§7.2.3
-> above) **MUST include a BMP delegate exercise `[DECIDED]`** — e.g. a tiny
+> a missing BMP delegate at startup (a §3.1 degrade, never an app-level fault) instead, the
+> image-worker smoke probe (§7.2.3 above) **MUST include a BMP delegate exercise
+> `[DECIDED]`** — e.g. a tiny
 > `magicksave`/`magickload` BMP round-trip **or** a `vips`/ImageMagick `--list-formats`-style
 > check verifying **BMP is a registered delegate** (and, **if the magicksave ICO path ships**,
 > ICO too) — so a missing/corrupt ImageMagick delegate makes the `ImageCore`
@@ -430,11 +456,13 @@ struct AppInfo {
 is an **app-level startup fault** (§2.13) presented in plain language ("A required
 conversion component is missing or damaged — please re-download ConvertIA from the
 official releases page", with the §7.7 user-initiated link), **never** a stack
-trace. A failure of a single engine that only affects *some* formats may instead
-degrade to "those formats unavailable" rather than refusing the whole app —
-**`[REC]`** mark the affected targets unavailable in the picker (the same surface
-the §3.4 patent-gap uses, §5.2) and keep the rest working; classification of
-"required vs partial" is owned by §3.1/§2.13, surfaced here.
+trace. A failure of a sub-component inside a present engine that only affects
+*some* formats (today the §3.1 row 1d BMP delegate) degrades to "those formats
+unavailable" rather than refusing the whole app: mark the affected targets
+unavailable in the picker with a reason distinct from the §3.4 patent gap (it rides C3
+`Target.availability`, §0.6; §5.2 renders it) and
+keep the rest working. The required-vs-degradable roster is §3.1's **Startup-fault
+classification**, surfaced here.
 
 ### 7.2.4 Executable-permission setup (portable build) `[REC]`
 

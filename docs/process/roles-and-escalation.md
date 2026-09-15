@@ -152,11 +152,12 @@ proceed, tagged** (§3).
   ([build-loop.md §3 step 2](build-loop.md#step-2--unpack-the-box-anatomy)) says a
   `needs: P<x>.<y>` on a *buildable* box is **built in place, then returned to** —
   that is **not** an escalation. Escalate only when the prerequisite is something the
-  loop **cannot** build: it requires an owner action or external input (an
-  `[!extern]` prerequisite of a non-extern box), or the plan is an **all-blocked
-  deadlock** with nothing open. The escalation is scoped: the loop STOPs for that
-  `needs:` closure only, continues with the open boxes outside it, and the Co-Pilot
-  executes the collected owner acts as one batch per phase
+  loop **cannot** build: it requires an owner action or external input (an `[!extern]`
+  prerequisite of a non-extern box), or the plan is an **all-blocked deadlock** with
+  nothing open. The escalation is scoped: the loop STOPs for that `needs:` closure only,
+  continues with the open boxes outside it, and the Co-Pilot works the collected owner
+  acts per phase (the owner-act box and each precondition box as its own act, the caged
+  tails at the sweep box)
   ([build-loop.md §3 step 1](build-loop.md#step-1--find-the-next-buildable-box), §9) —
   except the phase-end sweep box, which blocks its WHOLE successor phase
   (test-strategy §11.3).
@@ -180,11 +181,11 @@ Two further blockers route the same way (their mechanics live in build-loop.md, 
   `L-neg1-ack: owner` trailer ([security-concept §2](../security/security-concept.md#2-working-model--two-sessions-one-branch),
   gate **G71**). The explicit, load-bearing case of (c)'s "any decision a doc reserves as
   an owner decision". Pre-declare it: a caged **tail** that reds nothing until it lands (a
-  build-gates row) is named in the box and lands in the Co-Pilot's per-phase owner-act
-  batch; a caged tail that reds the same push (a fixture pin) stays a same-push owner
+  build-gates row) is named in the box and closes with the phase-end sweep box (test-strategy
+  §11.4); a caged tail that reds the same push (a fixture pin) stays a same-push owner
   tail — the tool canaries' tallies no longer red on an addition (the monotone leg-name
   pin, G24); a caged **precondition** is a `needs:` on an
-  `[!extern]` owner-act box (the P4.89 pattern) — the trigger stops the caged edit, not
+  `[!extern]` precondition box (the P4.89 pattern) — the trigger stops the caged edit, not
   the loop, which continues outside that closure (except the phase-end sweep box, which
   blocks its WHOLE successor phase, test-strategy §11.3).
 

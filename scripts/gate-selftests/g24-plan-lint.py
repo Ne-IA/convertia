@@ -132,6 +132,22 @@ record("needs: a dangling target flagged",
        any("no such box" in f.msg for f in m.fmt_needs_targets(ctx([box(bid="P0.2", needs=["P9.9"])]))))
 record("needs: a 2-cycle flagged",
        any("cycle" in f.msg for f in m.fmt_needs_targets(ctx([box(bid="P0.1", needs=["P0.2"]), box(bid="P0.2", needs=["P0.1"])]))))
+# a top box's [x] is the AND of its sub-boxes: the historical P4.35 -> P4.35.1 -> P4.83 -> P4.35 deadlock replays as a
+# cycle, the ordinary sub-box-needs-its-parent edge stays clean, and the 2026-09-15 re-cut shape is clean
+record("needs: a sub-box needing a box that needs its parent -> a cycle (the P4.35.1 / P4.83 replay)",
+       any("cycle" in f.msg for f in m.fmt_needs_targets(ctx([
+           box(bid="P4.35", needs=["P4.34"]), box(bid="P4.35.1", indent=2, needs=["P4.35", "P4.83"]),
+           box(bid="P4.34"), box(bid="P4.83", needs=["P4.35"])]))))
+record("needs: a sub-box needing its own parent reads the parent's body -> clean",
+       m.fmt_needs_targets(ctx([box(bid="P4.34"), box(bid="P4.35", needs=["P4.34"]),
+                                box(bid="P4.35.1", indent=2, needs=["P4.35"])])) == [])
+record("needs: a box needing a sub-box whose parent needs that box -> a cycle (the inherited-needs edge)",
+       any("cycle" in f.msg for f in m.fmt_needs_targets(ctx([
+           box(bid="P4.1", needs=["P4.2"]), box(bid="P4.1.1", indent=2), box(bid="P4.2", needs=["P4.1.1"])]))))
+record("needs: the re-cut shape (the split before the parent, the sub-box after both) -> clean",
+       m.fmt_needs_targets(ctx([box(bid="P4.34"), box(bid="P4.35", needs=["P4.34", "P4.83"]),
+                                box(bid="P4.35.1", indent=2, needs=["P4.35", "P4.83"]),
+                                box(bid="P4.83", needs=["P4.34"])])) == [])
 
 # --- annotation pairing -----------------------------------------------------------------------
 record("annot: unlocked-by under [!] clean",

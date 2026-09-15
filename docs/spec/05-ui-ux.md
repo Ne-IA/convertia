@@ -275,12 +275,12 @@ shown in the FormatPicker as a **disabled tile with a one-line reason note**
 ("HEIC isn't available on this system"), **not silently omitted** —
 recommendation, satisfying the SSOT *one product / honestly-surfaced exception*
 (§9 first exception): the user sees the format *exists* and learns *why* it's
-out, rather than wondering whether ConvertIA is incomplete. The availability flag
-itself is **sourced from §3.4** via a backend capability query (§0.4 / §3.2
+out, rather than wondering whether ConvertIA is incomplete; a target a §3.1 degradable startup failure marks unavailable (BMP without its ImageMagick delegate) renders the same way, with its own reason. The availability flag
+itself is **sourced from §3.4** (or §3.1) via a backend capability query (§0.4 / §3.2
 capability declaration) — the frontend never hardcodes a platform matrix.
 *(Alternative — omit entirely — is the fallback if a disabled tile tests as
-confusing in the §9 usability walkthrough; the consistency owner is §3.4, this
-section only renders what the capability query returns.)*
+confusing in the §9 usability walkthrough; the consistency owners are §3.4 and §3.1, this
+section only renders what the capability query (C3 `Target.availability`) returns.)*
 
 ---
 
@@ -868,7 +868,7 @@ typed wrappers; feature code calls those.
   recovery path on macOS in v1** — a known open Tauri crash, §0.4.4 — so a mid-stream
   reload surfaces as `AppFault`, not a silent recovery), `open_path` (C9 — open-folder/open-file by `OpenTarget` id, §7.7), `open_project_page`
   (C10 — the About "open Releases" link, §5.9/§7.6), `get_app_info` (C11 — About data,
-  §5.9), `get_engine_health` (C12 — drives disabled/omitted target tiles, §5.2/§3.4),
+  §5.9), `get_engine_health` (C12 — the startup health result, §7.2.3; the tiles render from C3),
   `cancel_ingest` (C13 — the Collecting cancel-collect control, §5.2/§5.10). The
   frontend treats these as opaque typed RPCs.
 - Long-running work (the conversion run) must **not** block on a single Promise
@@ -883,8 +883,8 @@ The §5.2 state machine leaves *which transition* fires C3/C4/C5 implicit; pinne
 the Phase-3 task list is unambiguous:
 - **C3 `get_targets`** is called **on the Confirm → Targets transition (3 → 4)** — the UI
   enters `Targets` only **after** C3 resolves (so the FormatPicker always has its tiles +
-  pre-highlighted default before it is shown). C3 is a pure function of detection (no
-  engine), so it is cheap.
+  pre-highlighted default before it is shown). C3 reads detection plus the cached §7.2.3 health result (no
+  engine spawn), so it is cheap.
 - **C4 `plan_output`** is called **once a target is selected** — i.e. **eagerly on entry
   to `Targets` with the pre-highlighted default already selected**, then **re-called
   (debounced ~150 ms) on any target change or option change** so the `DestinationBar`

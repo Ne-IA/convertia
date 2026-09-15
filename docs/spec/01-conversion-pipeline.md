@@ -578,7 +578,7 @@ per-source target lists and the single default live in **04-formats** and are
 
 ```rust
 fn resolve_targets(src: UserFacingFormat, platform: Platform) -> TargetOffer;
-// Returns the §0.6 `TargetOffer` (the C3 return type). §0.6 OWNS the struct
+// Returns the §0.6 `TargetOffer` (the C3 return type; illustrative — it also reads the §7.2.3 health cache). §0.6 OWNS the struct
 // (`TargetOffer { set, targets: Vec<Target>, default_target }` and `Target`);
 // §1.5 describes only the resolution LOGIC (mirroring the §1.6
 // `EffectiveOptions == OptionValues` reconciliation). The earlier
@@ -624,8 +624,8 @@ fn resolve_targets(src: UserFacingFormat, platform: Platform) -> TargetOffer;
 A target may be `Unavailable` on the current platform per the **§3.4 patent
 disposition matrix** (HEIC/AAC/H.264 × platform). The pipeline **reads** §3.4's
 verdict via the registry and marks the `Target.availability` (§0.6); it never
-re-decides it. Whether an unavailable target is **omitted vs shown-disabled-with-
-note** is a §5.2 presentation decision sourced from §3.4. The **default** is
+re-decides it. A §3.1 degradable startup failure marks its targets the same way. Whether an unavailable target is **omitted vs shown-disabled-with-
+note** is a §5.2 presentation decision sourced from §3.4 (or §3.1). The **default** is
 guaranteed `Available` on every shipping platform: if a per-source default would
 be gapped, that is a §3.4/category product problem (notably MP4-as-default video
 depends on H.264/AAC shipping everywhere — flagged by video.md and §3.4), not a
