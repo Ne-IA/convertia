@@ -1987,7 +1987,7 @@ how each surfaces without a trace.
 |-------|----------|-----------------|----------------|
 | **Item-level** | corrupt file, engine crash on one input, too-big, out-of-disk | **one item** fails; batch continues | §2.8 catalog → §1.12 summary |
 | **Run-level** | scratch volume vanished mid-run, the *whole batch* hits out-of-disk up front, every item fails | the **run** can't proceed sensibly | §2.8 batch summary ("None could be converted…") |
-| **App-level** | Rust core **panic**, WebView fails to load, an engine binary **missing/corrupt at startup**, **damaged bundle**, **no disk at all**, missing/old WebView runtime | the **app** can't function | §2.13.3 calm app-level screen + §7.2 startup faults |
+| **App-level** | Rust core **panic**, WebView fails to load, an engine binary **missing/corrupt at startup**, **damaged bundle**, **no disk at all**, an old or broken WebView runtime the core observes (a missing one is the §0.3.1 honest exception) | the **app** can't function | §2.13.3 calm app-level screen + §7.2 startup faults |
 
 Item-level is §2.8's domain. Run-level reuses §2.8's batch strings. App-level is
 this section.
@@ -2001,7 +2001,7 @@ of poisoning the pool:
 
 - Each item's core-side work runs inside **`std::panic::catch_unwind`** (with the
   closure made `AssertUnwindSafe` as needed). A caught panic is converted to
-  `ConversionError::InternalError` (§2.8) for that item — **the batch continues**.
+  `ConversionErrorKind::InternalError` (§2.8) for that item — **the batch continues**.
 - The panic payload (message + location) is **logged locally only** (§7.5, if
   enabled, redacted); the **user sees only** the calm `InternalError` string — **no
   stack trace** (SSOT). We **do not** `resume_unwind` on the worker (that would kill
@@ -2038,8 +2038,9 @@ When a fault is genuinely **app-level** (the core cannot continue, or a startup
 precondition fails), ConvertIA shows a **single calm screen**, never a crash dialog
 with a trace:
 
-- **Startup faults** (engine binary missing/corrupt, damaged bundle, missing/old
-  WebView runtime, no writable scratch at all) are detected by the §7.2 startup
+- **Startup faults** (engine binary missing/corrupt, damaged bundle, an old or broken
+  WebView runtime the core observes (a missing one is the §0.3.1 honest exception), no
+  writable scratch at all) are detected by the §7.2 startup
   sequence **before** the user can drop anything. They render a plain message —
   e.g. *"ConvertIA can't start because part of the app appears to be missing or
   damaged. Try downloading it again from the official releases page."* — owned by
@@ -2054,7 +2055,8 @@ with a trace:
   > screen, replayed through a **`PendingFault`** buffer for the first-frame race (the
   > `app://fault` emit + buffer body lands with the P4 readiness verifier bodies).
   > **`WebviewFault`** *at startup* (§7.2.1 step 6 — `get_webview_window("main")` is `None`:
-  > a missing/old WKWebView / WebKitGTK, §0.3.1) makes an `app://fault`→WebView emit
+  > an old or broken WKWebView / WebKitGTK init the core observes, never a missing library,
+  > §0.3.1) makes an `app://fault`→WebView emit
   > impossible, so it renders on a **native surface** (not the WebView; the concrete native
   > mechanism is a P4 decision). Both route through the mechanism-independent
   > `present_startup_fault` entry (§7.2.1), which records to the local log (§7.5) now; the
@@ -2163,16 +2165,16 @@ ConvertIA distinguishes:
 1. **The publish temp (`*.part`)** — the file that becomes `final` via atomic
    rename. **Must** be on `final`'s volume (2.14.1).
 2. **Engine working files** — anything an engine writes transiently that is *not*
-   the final artifact (e.g. a LibreOffice user-profile dir per run, FFmpeg's
-   internal temp, the per-run isolated profile §documents.md). These **need not** be
+   the final artifact (e.g. a LibreOffice user-profile dir per invocation, FFmpeg's
+   internal temp, the isolated profile §documents.md). These **need not** be
    on the destination volume and live under the **per-run scratch root** chosen via
    Tauri v2 `PathResolver` (`app_local_data_dir()`/`temp_dir()`), keyed by `RunId`
    (§2.6). They are cleaned with the run.
 
-The LibreOffice per-run isolated user profile (documents.md *Edge cases*; §0.9 notes
+The LibreOffice isolated user profile (documents.md *Edge cases*; §0.9 notes
 LibreOffice headless is **not** safely parallel under one profile) is a **kind-2**
-working file: it lives in the per-run scratch root, one profile per run, so serialized
-LibreOffice invocations don't collide.
+working file: it lives in the per-run scratch root, one disposable profile per invocation
+(§3.5.2 [Co-Pilot ruling 2026-09-15 — owner may overturn]), so serialized LibreOffice invocations don't collide.
 
 **macOS TCC source-staging copy is a THIRD kind-2 contributor (macOS-only) `[DECIDED]`.**
 On macOS the Rust core **copies every beside-source input into kind-2 scratch before
@@ -2301,13 +2303,14 @@ model it estimates against. The free-space check is therefore **per PHYSICAL vol
 the footprint is split by where each byte actually lands (§2.14.2):
 - **`est_output_bytes` + the kind-1 publish temp (`*.part`)** land on **each item's
   `final_dir` volume** (the destination volume, §2.14.1) — beside-source or divert.
-- **`est_scratch_bytes` (kind-2 engine working files — the LibreOffice per-run profile,
-  FFmpeg two-pass/internal temp, **plus on macOS the Σ of staged input sizes**, §2.14.2)**
+- **`est_scratch_bytes` (kind-2 engine working files — the LibreOffice per-invocation profile,
+  FFmpeg two-pass/internal temp, **plus on macOS the staged input sizes of the in-flight set**, §2.14.2)**
   land on the **system / scratch volume** that
   `app_local_data_dir()`/`temp_dir()` resolves to (§2.14.2), which is **NOT** necessarily
   the destination volume (e.g. a beside-source-on-USB job: output → USB, kind-2 → internal
   disk). **macOS TCC staging term `[DECIDED]`:** on macOS `est_scratch_bytes` **includes
-  the sum of staged input sizes** (the §3.5.0/§7.2.6 source-into-scratch copy, input-sized
+  the staged input sizes of the in-flight set — the PEAK-CONCURRENT footprint, never the
+  whole-batch Σ (§2.14.2)** (the §3.5.0/§7.2.6 source-into-scratch copy, input-sized
   per in-flight item) for the system/scratch volume; on **Windows/Linux this term is 0**
   (no TCC staging). So a macOS batch of large inputs is checked against the scratch volume
   for the staging copies, not only the destination volume for the outputs.

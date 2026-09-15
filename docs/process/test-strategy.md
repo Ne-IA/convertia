@@ -88,6 +88,8 @@ so per pair the integration level additionally asserts:
    (`tesseract <out.png> - --psm 6`, or `pdftotext` where a PDF intermediate
    exists) to **contain** it. (Scope the OCR leg to L4 with a committed
    min-confidence threshold if per-push cost bites — it stays a content check.)
+   **No v1 subject (2026-09-15):** no §04 matrix offers a document- or
+   presentation-to-image pair (P4.59), so this rule binds once one is added.
 
 **Break the circular decode for the headline formats (G31).** AVIF/HEIC outputs
 are validated a **second time with a DIFFERENT decoder family** — `ffprobe`
@@ -317,7 +319,7 @@ spec §6.4.4), against the §6.4.5 corpus:
 `scripts/check-corpus-coverage.rs` (a `cargo xtask`-style Rust bin, run in Lane A,
 no engines) asserts a **bijection** between the §04 pair matrices and the corpus
 `manifest.toml` `covers` lists: every required pair has ≥ 1 backing corpus file,
-and every `covers` 2-tuple names a real §04 pair. A pair literally **cannot be
+and every `covers` 2-tuple names a real §04 pair (a `harness_fixture` same-format diagonal excepted, §6.4.3a). A pair literally **cannot be
 declared `reliable`** without a corpus file whose `covers` names it. (It also
 enforces the content-floor tags — `cjk-body`, `rtl-body`, `non-ascii-encoding`,
 `non-latin-tags`, `representative-av`, `real-image` — so the corpus is *content*-

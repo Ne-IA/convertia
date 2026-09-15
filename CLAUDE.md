@@ -131,6 +131,7 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 │       ├── platform/               → tier 3 — path / volume / OS shims (§2.14, §7.7)
 │       ├── pool/                   → tier 3 — the §0.9 subprocess pool + concurrency degree
 │       └── run/                    → tier 2 — per-run/instance scratch ownership + cleanup (§2.4/§2.6)
+├── third-party-licenses/           → the vendored per-component licence texts the generated `THIRD-PARTY-LICENSES.txt` reads (§3.7.2 item 2, P4.57)
 ├── supply-chain/                   → the `cargo-vet` audit trust store (`config.toml` + `audits.toml`; `imports.lock` joins at the P10 live cargo-vet run (P10.59), G18b; L(-1))
 ├── tests/                          → Rust integration + corpus harness (§6.4)
 │   ├── corpus/                     → the §6.5 reliability corpus (manifest + fixtures, fills P3–P7)

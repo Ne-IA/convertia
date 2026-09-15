@@ -105,7 +105,7 @@ v1**; **MPL** (LibreOffice) invoked;
 SPDX `ImageMagick`, Apache-2.0-style) — both unrestricted and link-OK (ImageMagick is
 **not** GPL and is a **required** component, not a fallback).
 
-**Startup-fault classification `[DECIDED]` (Co-Pilot ruling 2026-09-15, owner may overturn — the
+**Startup-fault classification `[DECIDED]` [Co-Pilot ruling 2026-09-15 — owner may overturn] (the
 home §7.2.3 names).** Every engine program the §7.2.3 presence loop checks (FFmpeg and FFprobe,
 LibreOffice, poppler's `pdftotext`, pandoc, the image worker; each once the build declares it,
 §7.2.3 Build-window posture) is **startup-required**: absent or non-runnable → `EngineMissing`,
@@ -1203,7 +1203,7 @@ conversion" is a **read-side** claim, not a write-side one).
 ### 3.5.2 LibreOffice headless (documents, spreadsheets, presentations)
 
 - **Shape:** `soffice --headless --norestore --nolockcheck --nodefault
-  --nofirststartwizard -env:UserInstallation=file://<per-run-profile>
+  --nofirststartwizard -env:UserInstallation=file://<per-invocation-profile>
   --convert-to <ext>:<FilterName>[:<FilterData-JSON>] --outdir <scratch> <input>`.
 - **One document per invocation, serialized.** LibreOffice headless is **NOT
   safely parallel under one profile** (§0.9 owns the concurrency degree and the
@@ -1250,7 +1250,7 @@ conversion" is a **read-side** claim, not a write-side one).
   file existing and being non-empty in `--outdir`**, not by exit code alone (a
   critical correctness rule). Encrypted/password files → no output → mapped to the
   §2.8 "password-protected" kind (documents/spreadsheets/presentations all rely on
-  this). A stale soffice lock from a crashed prior run is avoided by the per-run
+  this). A stale soffice lock from a crashed prior run is avoided by the per-invocation
   profile + `--nolockcheck`.
 - **Profile hardening `[DECIDED — concrete mechanism behind "macros never executed"]`.**
   `--headless --convert-to` does **not** by itself disable macros, and document-event
@@ -1279,7 +1279,7 @@ conversion" is a **read-side** claim, not a write-side one).
     no out-of-input file read**) as its release-blocking proof, exactly as the FFmpeg
     `-protocols`/`-demuxers` and pandoc `--sandbox` controls are corpus-proven. So Calc gets
     the same proof level as the other engines even where a registry key is only best-effort.
-  The profile is disposable per-run (§2.14) and torn down with the run (§2.6).
+  The profile is disposable per invocation, in per-run scratch (§2.14), and torn down with the run (§2.6).
 - **Licence/isolation:** MPL-2.0 sidecar (§3.6); untrusted office files (zip-bomb,
   malformed OOXML, macro-bearing) parsed inside §2.12; **macros never executed**
   (the profile-hardening above + the `04` "macros dropped" policy).
@@ -1571,11 +1571,14 @@ source where required), so the MIT core stays clean.
 linkage site `[DECIDED]`.** LGPL §6 compliance depends on **where** each LGPL lib is
 linked, and the build rule (asserted by §6.1.3, carve-outs i/ii/iii) reflects that:
 - **Into the MIT core (the Tauri app binary):** any LGPL lib linked here **MUST be a
-  bundled *shared* library** (`.so`/`.dylib`/`.dll`), dynamically linked — Rust links
+  *shared* library** (`.so`/`.dylib`/`.dll`, bundled or OS-provided), dynamically linked — Rust links
   **statically by default**, so a vendored *static* LGPL absorbed into the MIT binary
   would silently break LGPL §6 and is a **build failure** (§6.1.3 carve-out i). In v1
-  ConvertIA links **no** LGPL into the MIT core (the whole image stack lives in the
-  separate worker), so this carve-out is a guard against regression.
+  ConvertIA links no LGPL **statically** into the MIT core and ships none of its engine
+  inventory (§3.1) as a link into it (the whole image stack lives in the separate
+  worker); the Tauri host's Linux WebView runtime (GTK/GLib/WebKitGTK, LGPL, §0.3.1) is
+  linked **dynamically**, which satisfies LGPL §6, so this carve-out is a guard against a
+  static regression.
 - **Inside the separate image-worker process (libvips + libheif/libde265/librsvg, and
   any linked FFmpeg libs the worker pulls):** the worker is its **own binary** (§3.5.5),
   so even a **statically** linked LGPL inside it is **aggregation, not a link into the MIT
@@ -1883,16 +1886,19 @@ blocker).
 
 **Accepted trade-off (SSOT *Completeness > lightweight*, temp.md):** bundling
 everything — *including* LibreOffice — makes the download large; this is
-deliberate. v1 has **no hard size cap** (completeness is the gate, not size), but
-the budget below sets expectations and identifies what dominates so trimming
-effort is spent where it matters.
+deliberate. v1 **never trades in-scope completeness for size** (completeness is the
+gate, not size). The §3.9.2 `[DECIDED]` per-platform compressed ceiling is reached only
+through its fixed trim-lever order, never by dropping a pair (dropping pandoc stays
+BLOCKED). Its digit is calibrated against the measured trimmed builds
+(`[DEFER: corpus/build]`). The budget below sets expectations and identifies what
+dominates, so trimming effort is spent where it matters.
 
 ### 3.9.1 Estimated per-component compressed contribution
 
 | Component | Rough installed size | What it is | Trim levers |
 |---|---|---|---|
 | **LibreOffice (headless, trimmed)** | **~250–400 MB** (dominant) | Writer+Calc+Impress program tree + needed type libs; **minimal** build (no help, no UI translations, no dictionaries, no DB/Draw/Math beyond deps) | strip help/l10n/dictionaries (under ~200 MB minimal is reported feasible); drop unused modules; the **bundled font set is a sub-line below** |
-| **Bundled fonts** (LibreOffice + documents/presentations fidelity) | **~30–120 MB** `[OPEN — §3.9.2]` | Liberation/Carlito/Caladea (metric-compat Arial/Calibri/Cambria/Times/Courier) + broad **CJK + RTL** coverage (Noto-class) | CJK is the size driver; a full Noto CJK is ~100 MB+ — subset vs full is the open call |
+| **Bundled fonts** (LibreOffice + documents/presentations fidelity) | **~30–120 MB** (baseline `[DECIDED]` §3.9.3; CJK breadth `[DEFER: size]`) | Liberation/Carlito/Caladea (metric-compat Arial/Calibri/Cambria/Times/Courier) + broad **CJK + RTL** coverage (Noto-class) | CJK is the size driver; a full Noto CJK is ~100 MB+ — the CJK weight count / breadth is the §3.9.3 deferred size knob and the first lever in the §3.9.2 order |
 | **FFmpeg + ffprobe** (GPL-2.0+ build, the listed codecs incl. x264/vpx) | **~30–80 MB** (two exes + their shared libs) | multimedia binary; v1 ships the LGPL component libs as **dynamically-linked shared objects beside the exe** as an engineering preference (a static FFmpeg is equally GPL-clean aggregation per §6.1.3 carve-out iii — it is **not** a licence-mandated choice, §3.6.1) | drop unused (de)muxers/filters via `--disable-everything --enable-…` to a curated list (the `04` codec set only) |
 | **libvips + image codec stack** (libheif/libde265/x265-plugin/aom/dav1d/librsvg/cgif + **required ImageMagick** delegate) | **~20–40 MB** | image lib + codecs (image-worker process) | exclude unneeded loaders; ImageMagick is **required** (BMP+ICO save) but trimmed to BMP/ICO/GIF delegates with **GPL optional delegates excluded** (§3.6.1) — it cannot be removed |
 | **poppler `pdftotext`** | **~5–15 MB** | PDF text extractor | small |

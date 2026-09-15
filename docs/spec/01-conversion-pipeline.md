@@ -1340,9 +1340,11 @@ struct SizeEstimate {
     est_scratch_bytes: u64,      // kind-2 engine working temp → the system/scratch VOLUME (§2.14.2),
                                  //   NOT necessarily the destination volume — checked separately per
                                  //   physical volume (§2.14.4 / the per-physical-volume preflight below).
-                                 //   ON macOS this ALSO INCLUDES the Σ of staged input sizes (the
+                                 //   ON macOS this ALSO INCLUDES this item's staged input size (the
                                  //   §3.5.0/§7.2.6 TCC source-into-scratch copy, input-sized per
-                                 //   in-flight item); on Windows/Linux that term is 0 (no TCC staging).
+                                 //   in-flight item); the scratch-volume grouping below sums these over
+                                 //   the PEAK-CONCURRENT set only (§2.14.2), never the whole batch;
+                                 //   on Windows/Linux that term is 0 (no TCC staging).
     basis: EstBasis,             // PerCategoryHeuristic | EngineProbe
 }
 ```
@@ -1376,7 +1378,7 @@ struct SizeEstimate {
     source volume** (§2.14.1), and per-location divert sends some items to Downloads and
     others beside themselves — so a batch routinely spans **2+ destination volumes with no
     single destination volume**. Crucially, the **kind-2 engine working scratch** (LO
-    per-run profile, FFmpeg two-pass/internal temp — `est_scratch_bytes`) does **NOT** land
+    per-invocation profile, FFmpeg two-pass/internal temp — `est_scratch_bytes`) does **NOT** land
     on the destination volume: it lands on the **system / scratch volume** that
     `app_local_data_dir()`/`temp_dir()` resolves to (§2.14.2). A summed check against one
     volume is therefore **wrong** in two ways (a 5 GB share destined for a 1 GB USB stick

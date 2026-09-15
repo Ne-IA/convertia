@@ -222,11 +222,12 @@ section only fixes the *identity* embedded in it.)
 5. **Scratch + log dir creation** with the per-instance root (§7.1.2). Reclaim
    orphaned scratch roots (§7.2.5, owned by §2.6).
 6. **WebView window create** and frontend load (the WebView runtime floor is
-   §0.3.1). A missing/old WebView is a §7.2/§2.13 startup fault **where the core can
+   §0.3.1). An old or broken WebView is a §7.2/§2.13 startup fault **where the core can
    observe it** (macOS WKWebView / Linux WebKitGTK init failures the Rust core sees);
-   the **Windows WebView2-*absent* portable case is the honest exception** (§0.3.1) —
-   the loader fails before the core runs, so there is no in-app fault to show and the
-   "fail clearly" substitute is the §6.2.4 download-page prerequisite note, not a dialog.
+   the **Windows WebView2-*absent* portable case and the Linux missing-`libwebkit2gtk-4.1`
+   case are the honest exceptions** (§0.3.1) — the loader fails before the core runs, so
+   there is no in-app fault to show and the "fail clearly" substitute is the §6.2.4
+   download-page prerequisite note, not a dialog.
 7. **Process launch-time intake** (§7.8): if the app was opened *with* file paths
    (OS open-doc / argv), feed them through the §7.8.1 funnel (stashed core-side; the
    frontend's mount-time C1 drain collects them into §1.1 once the window is ready).
@@ -241,8 +242,8 @@ single `main` window is config-declared **`visible: false`** in `tauri.conf.json
 (steps 3–5 `Ok`, plus the §7.2.3 smoke leg off macOS — a required-engine smoke failure takes
 this readiness channel); a readiness fault instead skips this normal reveal and hands the
 app-level `AppFault` to the §2.13.3 presentation. `get_webview_window("main")` returning
-`None` at step 6 is the core-observable WebView-init fault seam (missing/old WKWebView /
-WebKitGTK, §0.3.1) — **P2.109 builds that detection + routing** (the `None` arm constructs a
+`None` at step 6 is the core-observable WebView-init fault seam (an old or broken WKWebView /
+WebKitGTK init the core observes, never a missing library, §0.3.1) — **P2.109 builds that detection + routing** (the `None` arm constructs a
 `WebviewFault` `AppFault` and routes it to `present_startup_fault`).
 
 **Which surface a startup fault renders on is `[DECIDED]` by the WebView's own health
@@ -259,8 +260,8 @@ WebKitGTK, §0.3.1) — **P2.109 builds that detection + routing** (the `None` a
   create the view — makes an `app://fault`→WebView emit **impossible** (there is no
   WebView to render it), so it presents on a **native surface** (not the WebView; the
   concrete native mechanism is a P4 decision, §2.13.3). The Windows WebView2-*absent*
-  case is **not** this: it fails **before** the core runs (§0.3.1 honest exception), so
-  the core never observes it.
+  case and the Linux missing-`libwebkit2gtk-4.1` case are **not** this: each fails **before**
+  the core runs (§0.3.1 honest exceptions), so the core never observes them.
 
 `present_startup_fault` is the mechanism-independent §2.13.3 entry point both channels
 route through; it records the fault locally (§7.5) now, and the two presentation bodies
@@ -685,7 +686,7 @@ Two complementary hooks own the lifecycle (per Tauri v2):
   > lingering output temp) — that is the §2.6.3 (b) opportunistic reclaim's surface (`P3.24`
   > `reclaim_dest_parts_in`); and the normal **per-run** cleanup is unchanged (`finish_run` →
   > `cleanup_run`, §2.6.2). The §7.3.3 confirmed-quit cancel→cleanup→exit flow (which is where a
-  > mid-run scratch would exist) is **P4.67**; today `RunEvent::Exit` is reached only while idle
+  > mid-run scratch would exist) is **P4.67.1**; today `RunEvent::Exit` is reached only while idle
   > (the busy guard blocks a busy quit), so this backstop mainly reclaims a **prior/foreign**
   > crashed run's scratch — an early run of the same §2.6.3 sweep the next launch would do.
 

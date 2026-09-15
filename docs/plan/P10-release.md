@@ -92,9 +92,10 @@
   needs: P0.4.10, P10.4
   > the Lane-B stage-1 matrix build on the three native legs (`windows-latest`, `macos-latest` arm64 building `universal-apple-darwin`, pinned `ubuntu-22.04` / the self-hosted VPS path) per §6.1.4; activates the P0.4.10 build-matrix contract. No cross-compile (§6.1.1). Per-leg toolchain (Rust host triple, both macOS targets via `rustup target add`, Node+pnpm) installed through the P0.2.1 pinned fetch-and-verify mechanism.
 - [ ] **P10.9** [BUILD] Run `scripts/stage-engines` per leg from the verified engine-asset cache, then `tauri build` · §6.1.3 · G37
-  needs: P10.8
+  needs: P10.8, P4.52
   > stage each platform's engines from the `actions/cache` `<cache_engine>-<cache_version>-<triple>` cache (populated on a miss by `scripts/fetch-engine-assets`' checksum-verified pinned-URL fetch — the P4.28 adjudication — re-verified vs `engines.lock` on cache-restore, §6.1.3/§6.3.4) into `src-tauri/binaries/` + `src-tauri/resources/`, then run `tauri build`. Activates the per-engine G37 SHA-verify-before-stage policy (authored P0.7.4, executed per-engine P4–P7) at the whole-bundle release build. A platform ships only the engines §3.4 makes available there — never a silent omission.
   > **[Forward-note from the P4 pre-fill audit, 2026-09-15]** `convertia-imgworker` is a BUILD product, not a cache entry (`BUILT_SIDECARS`): this leg builds and places it per triple ahead of `tauri build` with the P4.89 (d) actor, and on macOS the Lane-B leg `lipo`s the two `rustup`-target builds into the universal sidecar.
+  > **[Link-kind leg — from the P4 pre-fill audit, 2026-09-15]** after `tauri build` this leg runs the P4.52 MIT-core link-kind checker over the release build's build-script link directives (hence `needs: P4.52`); the compile-sanity invocation is P4.52's P4.81 caged tail [Co-Pilot ruling 2026-09-15 — owner may overturn].
 - [ ] **P10.10** [BUILD] Execute the macOS per-sidecar `lipo -create` universal-fat-binary assembly + the per-sidecar `lipo -info` assertion · §6.1.3 §6.1.4 · G30
   needs: P10.9, P4.29, P4.29.1
   > on the macOS leg, `stage-engines` reads **both** restored slices per sidecar/lib (`aarch64-apple-darwin` AND `x86_64-apple-darwin` — dual-arch cache keys) and `lipo -create`s each into one `<name>-universal-apple-darwin` fat Mach-O **before** `tauri build` (Tauri does NOT lipo sidecars), executing the **P4.29 lipo step**. The **P4.29.1 missing-`x86_64`-slice from-source/cross-Rosetta fallback is a DIFFERENT actor and an EARLIER step**: `stage-engines` only ever reads the cache and never compiles, so a one-slice cache is its refusal (naming the missing slice and the remedy), while the fallback itself is `scripts/compile-engine-asset --target x86_64-apple-darwin` populating that slice BEFORE staging runs — this leg orders the two, it does not fuse them. The G30 per-sidecar `lipo -info` fat-Mach-O assertion (P0.4.10) fails the leg if a slice is missing rather than shipping a single-arch sidecar that crashes on the other arch. (`needs: P4.29/P4.29.1` — the P4-built lipo step this release leg executes, plus the P4-built compile fallback it orders ahead of it.)
@@ -104,6 +105,7 @@
 - [ ] **P10.12** [BUILD] Produce the macOS universal `.dmg` + the Linux AppImage as the canonical per-platform artifacts · §6.1.2 · G30
   needs: P10.9
   > the `app`→`dmg` target wrapping the universal `ConvertIA.app` (macOS) and the `appimage`-only Linux target (`.deb`/`.rpm` not shipped v1, `[DECIDED-6.1b]`) — one canonical portable-first artifact per platform (DoD row 13).
+  > **AppImage WebKitGTK posture [Co-Pilot ruling 2026-09-15 — owner may overturn]:** §0.3.1's `[DECIDED]` rely-on-OS shape decides the AppImage posture: WebKitGTK is located on the host at the `libwebkit2gtk-4.1` floor, never bundled (§3.9.1), so it keeps the distro's security patches; the §0.3.1 row literal was re-cut 2026-09-15. Probe first: Tauri's AppImage bundler copies WebKitGTK and the GTK stack it links into the linuxdeploy AppDir by default (its linuxdeploy step runs the gtk plugin), so the fill excludes them from the AppDir, verifies the AppImage runs against the host library on the floor distros, and escalates if a host-WebKitGTK AppImage cannot load.
 - [ ] **P10.13** [BUILD] Record the `latest`-runner drift facts as release-asset lines + the deployment-target / WebView2 floor assertions · §6.1.4 · G30
   needs: P10.8
   > each macOS/Windows leg records the resolved image label + Xcode/CLT (macOS) / WebView2 (Windows) version as a release-asset line, and the build **fails** if `MACOSX_DEPLOYMENT_TARGET` drifts below the §0.3.1 floor (`= 11.0`) or WebView2 is absent on the image — so a `latest`-runner roll surfaces loudly, not silently (the drift-guard price of not hard-pinning macOS/Windows).
@@ -114,10 +116,10 @@
 ### SBOM finalize, NOTICE assembly & attribution-completeness gate (Lane-B stage 3)
 
 - [ ] **P10.14** [RELEASE] Execute `cargo xtask sbom` — merge the Rust + frontend + `engines.lock` layers at `specVersion 1.5` · §6.3.1 · G35
-  needs: P0.7.1, P10.9
-  > finalize the SBOM by running the P0.7.1-authored `cargo xtask sbom`: it shells out to `cargo cyclonedx --spec-version 1.5` (Rust) + `@cyclonedx/cdxgen --spec-version 1.5` (frontend `pnpm-lock.yaml` — NOT the npm-only `cyclonedx-npm`) + converts the now-populated `engines.lock` rows, merges into one CycloneDX JSON, and **aborts on a schema-version mismatch**. Activates G35 over the whole release bundle (per-engine rows were populated P4–P7).
+  needs: P0.7.1, P4.56.2, P10.9
+  > finalize the SBOM by running the P4.56.2-built `cargo xtask sbom` (executing the P0.7.1 SBOM policy; invocation per §6.3.1): it shells out to `cargo cyclonedx --spec-version 1.5` (Rust) + the pinned raw `cdxgen` executable as `cdxgen -t js --no-recurse --spec-version 1.5` (frontend `pnpm-lock.yaml`; the P4.56.2 `scripts/gate-tools.toml` row, invoked per §6.3.1) + converts the now-populated `engines.lock` rows, merges into one CycloneDX JSON, and **aborts on a schema-version mismatch**. Activates G35 over the whole release bundle (per-engine rows were populated P4–P7).
 - [ ] **P10.15** [RELEASE] Run the Syft staged-bundle completeness cross-check + the deterministic stage-tree file-manifest diff · §6.3.1 §6.3.3 · G35
-  needs: P10.14
+  needs: P10.14, P4.58
   > Syft scans the staged bundle and the gate **fails** if any shipped `.so`/`.dll`/`.dylib`/resource/font has no `engines.lock`/SBOM component (the §6.3.3.1 "no shipped file without an SBOM entry" rule + the T3a side-loaded-mismatch guard), backed by a deterministic stage-tree manifest diff. The whole-bundle execution of the P0.7.1 completeness policy.
   > **[Forward note from P4.30, 2026-09-05]** the "file-manifest **diff**" this box builds is an ATTRIBUTION/COMPLETENESS check — §6.3.3 item 1's "every binary/resource staged maps to a component in `engines.lock`", i.e. *no shipped file without an SBOM entry* — and must NOT be built as a post-staging SHA-256 re-verify against `engines.lock`. Staging legitimately re-emits bytes: the P4.29 `lipo -create` universal merge and the P4.30 beside-the-exe load-path rewrite both rewrite load commands, so a relocated `.dylib`/`.so` cannot hash-match the row that named its INPUT. G37's per-object hash is verified **before** staging (and on cache-restore); the post-staging byte anchor is the §7.2.3 in-bundle manifest, which is generated after final staging and checked against itself. §0.11 T3a's prose runs the two clauses together without the per-clause gate attribution its security-concept §5 sibling carries (G37 = the hash, G35 = the manifest diff), which is exactly how the byte reading looks plausible — flagged in the P4.30 dual review by BOTH reviewers, resolved against §6.3.3, and recorded here because this is the box that would otherwise build the wrong check.
 - [ ] **P10.16** [RELEASE] Derive + assert the static-link SBOM closure for the imgworker stack · §6.3.1 §3.6 · G35a
@@ -127,19 +129,20 @@
   needs: P10.14
   > produce the ISO-standard SPDX-JSON via the CycloneDX CLI `convert --output-format spdxjson` (fallback `syft convert`); a convenience asset, **not** the gate input (the §6.3.3 completeness gate reads the canonical CycloneDX JSON, P10.15/P10.18).
 - [ ] **P10.18** [RELEASE] Generate `NOTICE` + `THIRD-PARTY-LICENSES.txt` from `engines.lock` + the SBOM (never hand-drifted) · §6.3.2 · G35 G36
-  needs: P10.14
+  needs: P10.14, P4.57
   > **Patent-disposition record [Co-Pilot ruling 2026-09-15 — owner may overturn]:** this box also emits the §3.3.2 step-4 patent-disposition record (§3.4) as a bundled resource, projected from the same `engines.lock` `available` flags, under the P4.41 placeholder rule (no other box owned it).
   > assemble the repo `NOTICE` + the longer `THIRD-PARTY-LICENSES.txt` from the same `engines.lock` + dependency SBOM (so they cannot drift from what ships): per engine the name+version, full licence text, and for GPL/LGPL/AGPL the **written offer of source** (pinned upstream tag + build recipe). The in-repo file and the in-bundle copy are the **same generated artifact** (§5.9 displays it).
   > **Ordering constraint (P2.98 — compile-time embed):** the §5.9/C11 `AppInfo.third_party_notice` embeds `THIRD-PARTY-LICENSES.txt` at **compile time** via `include_str!` (P2.98), so the About/embedded copy is frozen at the Rust compile — but the compile (P10.9, Lane-B stage 1) currently runs **before** this generation (P10.18, stage 3), so a naive pipeline would ship a **STALE** embedded notice while the bundle carries the fresh file (the "same generated artifact" claim above holds only if the embed is fresh). The §6.3.3 completeness gate (P10.19) reads the FILE + SBOM, **not** the compiled binary's embedded string, so nothing currently catches this. Two fixes (decide at P10.5/P10.18), the first the more direct: **(a)** extend the §6.3.3 gate to assert the shipped binary's embedded notice **==** the generated file (catches a stale embed even if generation stays a later stage); or **(b)** re-home the compile (P10.9) to run **after** generation (P10.18) — a structural stage re-order, not merely the P10.5 next-blocks-prior assertion.
+  > **SBOM as a bundled resource [Co-Pilot ruling 2026-09-15 — owner may overturn]:** §3.7.1 / §3.3.2 item 4 also bundle the per-build SBOM as a resource. Its bundle carrier is the P4.41 placeholder class rule, because the per-build SBOM has the same shape as the hash manifest: a committed placeholder declared in `bundle.resources`, overwritten by generation, so tauri-build (which copies resources at compile time) always finds a file. It is the same ordering class as the embedded notice and cannot follow P10.9's compile, so this box decides only the ordering: fix (b), or an SBOM generation step between staging and P10.9's `tauri build`.
 - [ ] **P10.19** [RELEASE] Run the attribution-completeness release gate — copyleft text present + SPDX resolved + no MIT-taint · §6.3.3 · G36 G36b
   needs: P10.18, P10.15
   > the §6.3.3 release-blocking check (same status as the no-harm guarantee): every copyleft (GPL/LGPL/MPL/AGPL) SBOM component has its licence text in `THIRD-PARTY-LICENSES.txt` (+ a GPL-family written-offer); **no** component has an unresolved SPDX id (`UNKNOWN`/`NOASSERTION` = hard fail, with the `LicenseRef-…`-with-text carve-out, e.g. `LicenseRef-AOMPL-1.0`); **no** engine that would taint the MIT core via linking slipped in. G36 (Rust+bundled) + G36b (frontend pnpm graph). A miss **aborts the release**.
 - [ ] **P10.20** [RELEASE] Run the SPDX-expression validation leg + generated-vs-committed NOTICE parity · §3.7.2 §6.3.3 · G36
-  needs: P10.18
-  > the `spdx` crate / `cargo-about` SPDX-expression validation (poppler `GPL-2.0-only OR GPL-3.0-only`, x265/x264 `-or-later` for the LGPL-3.0 libheif host, libaom `LicenseRef-AOMPL-1.0`) + the parity assertion that every GPL/LGPL/AGPL row has its licence text AND a corresponding-source-POINTER line in `THIRD-PARTY-LICENSES` (the P0.7.1 NOTICE-parity leg).
+  needs: P10.18, P4.58
+  > the P4.58 `spdx`-crate leg's SPDX-expression validation (poppler `GPL-2.0-only OR GPL-3.0-only`, x265/x264 `-or-later` for the LGPL-3.0 libheif host, libaom `LicenseRef-AOMPL-1.0`) + the parity assertion that every GPL/LGPL/AGPL row has its licence text AND a corresponding-source-POINTER line in `THIRD-PARTY-LICENSES` (the P0.7.1 NOTICE-parity leg).
 - [ ] **P10.21** [RELEASE] Assemble + assert the copyleft corresponding-source bundle (imgworker LGPL + x265 GPL) · §6.1.3 §3.6.2 · G38b
-  needs: P0.7.2, P10.9
-  > execute the P0.7.2 policy at release: ship the static image-worker's complete corresponding source + LGPL object files / relink recipe, **and** the x265 GPL §3 complete corresponding source + written offer (the worker is a GPL combined work when x265 loads); the stage step **fails the build if the source bundle is missing** (G38b). The §5 T6 row's release proof.
+  needs: P0.7.2, P10.9, P4.76
+  > execute the P0.7.2 policy at release: ship the static image-worker's complete corresponding source + LGPL object files / relink recipe, **and** the x265 GPL §3 complete corresponding source + written offer (the worker is a GPL combined work when x265 loads); the stage step **fails the build if the source bundle is missing** (G38b), through the carve-out-(ii) assertion P4.76 builds (hence `needs: P4.76`). The §5 T6 row's release proof.
 - [ ] **P10.22** [RELEASE] Emit the SBOM-diff-between-releases informational asset · §6.3.1 · G35b
   needs: P10.14
   > diff this release's CycloneDX against the previous, surfacing added/removed/changed components as a non-blocking Co-Pilot review item (G35b) — a careless P5–P7 transitive `.so` entering the bundle is otherwise unreviewed.
@@ -233,6 +236,7 @@
 - [ ] **P10.42** [GATE] Wire the `docs/demoted-pairs.md` ↔ pair-status-ledger consistency leg into the governance gate · §6.5.3 §6.8 · G44
   needs: P10.41
   > the same §6.8 gate asserts every §6.5.2 ledger entry in state `unavailable-per-§3.4` or `demoted` has a matching `docs/demoted-pairs.md` row (required fields: pair, kind, affected platforms, reason, ledger ref) **and vice-versa** (no orphan rows) — so a patent-gapped/demoted pair can never ship without its release-note item, making §6.10 rows 16/17 a concrete machine-checkable gate (G44).
+  > **Demoted half (the P4.61 `demoted` source ruling, 2026-09-15):** the `demoted` direction holds by construction, because the P4.61 generator reads `docs/demoted-pairs.md` as its `demoted` input; the `unavailable-per-§3.4` direction and the required-field checks stay real.
 - [ ] **P10.43** [DOC] Wire the `.github/` policy set + the SSOT-default-to-Parked issue templates · §6.8 · G44
   needs: P10.40
   > the `.github/` issue templates (new-format/feature requests default to **Future Ideas (Parked)** per the SSOT inclusion test), the PR template referencing the DCO/quality bar, and the private-advisory config wired to `SECURITY.md`; the DCO `Signed-off-by` is **requested, not required** (CI does not hard-block an unsigned commit — that would make it required — but may surface a friendly reminder).
@@ -268,12 +272,13 @@
 - [ ] **P10.51** [DOC] Author the Windows SmartScreen + WebView2 prerequisite note · §6.2.4 §0.3.1 · G44
   needs: P10.48
   > the Windows SmartScreen friction ("Windows protected your PC" → More info → Run anyway) **and** the WebView2 prerequisite note — because the portable `.zip` cannot show an in-app fault when WebView2 is absent (the loader fails before the core runs), this note is the **sole Windows floor mechanism in v1** (no NSIS bootstrapper): *"ConvertIA needs Microsoft Edge WebView2 (built into Windows 11 and current Windows 10; if a window flashes and closes, install the WebView2 Runtime or update Windows/Edge)."*
-- [ ] **P10.52** [DOC] Author the Linux AppImage libfuse2 prerequisite note · §6.2.4 §6.1.4 · G44
+- [ ] **P10.52** [DOC] Author the Linux AppImage libfuse2 + libwebkit2gtk-4.1 prerequisite notes · §6.2.4 §6.1.4 §0.3.1 · G44
   needs: P10.48
   > the FUSE-2-at-launch runtime-dependency disclosure: *"Linux: the AppImage needs `libfuse2` (Ubuntu: `sudo apt install libfuse2`, or `libfuse2t64` on 24.04+); alternatively run with `--appimage-extract-and-run`."* — a bare "download, run, done" is false on a FUSE-3-only distro.
+  > **[libwebkit2gtk-4.1 note — the §0.3.1 honest-failure ruling, 2026-09-15]** this box also authors the §6.2.4 Linux `libwebkit2gtk-4.1` prerequisite note: a missing host WebKitGTK stops the loader before the core runs, so the note is that case's fail-clearly substitute.
 - [ ] **P10.53** [GATE] Build the download/trust-page completeness assertion (parse-checked prerequisite notes) · §6.2.4 §6.8 · G44
   needs: P10.49, P10.50, P10.51, P10.52, P0.7.13
-  > the G44 leg asserting the download/trust page is complete: the **literal-form** minisign-recipe assertion (P10.28) + the **parse-checked** WebView2/libfuse2/macOS-Sequoia prerequisite notes are present (P0.7.13's "literal-form minisign-recipe + parse-checked prerequisite notes"). A typo'd/absent note is a trust-damaging defect, so this is gated, not trusted.
+  > the G44 leg asserting the download/trust page is complete: the **literal-form** minisign-recipe assertion (P10.28) + the **parse-checked** WebView2/libfuse2/libwebkit2gtk-4.1/macOS-Sequoia prerequisite notes are present (P0.7.13's "literal-form minisign-recipe + parse-checked prerequisite notes"). A typo'd/absent note is a trust-damaging defect, so this is gated, not trusted.
 
 ---
 
@@ -292,7 +297,8 @@
   needs: P10.42
   > the release `CHANGELOG.md`/GitHub Release body: the human-readable projection of the §6.5.2 ledger's `unavailable-per-§3.4` (exception 1, patent gap) + `demoted` (exception 2) rows mirrored from `docs/demoted-pairs.md`, plus the as-is/no-warranty restatement + the verify-hash recipe — so no patent-gapped/demoted pair ships as a silent omission. Enumerated in G58 (P10.54).
 - [ ] **P10.58** [RELEASE] Wire the Lane-B publish stage to canonical GitHub Releases — one coordinated all-or-nothing release · §6.2.2 §6.7.2 · G58
-  needs: P10.55, P10.27, P10.32, P10.19, P10.45, P10.56, P10.37
+  needs: P10.55, P10.27, P10.32, P10.19, P10.45, P10.56, P10.37, P10.61
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P10.61` points at the `[!extern]` Lane-B stage-2 box appended at the end of the phase, whose merged `reliability-report.json` this stage uploads. The `[!extern]` STOP holds this box until P10.61 is `[x]`. Acyclic + valid.
   > Lane-B stage 7: upload artifacts + `SHA256SUMS` + `.minisig` + `.sha256` files + SBOM (CycloneDX/SPDX) + `reliability-report.json` + `NOTICE`/`THIRD-PARTY-LICENSES.txt` + the attestation bundle as a **single coordinated release** (one large all-or-nothing v1, SSOT); the release body restates as-is/no-warranty + the verify recipe (P10.49) + the two-exception items (P10.57). No auto-update/phone-home publishing step (P10.1/P10.2). Runs only after every prior release-blocking stage is green.
 
 ---
@@ -302,6 +308,16 @@
 - [ ] **P10.59** [GATE] Run the deferred cargo-vet first-party crate-trust live vetting — `init`/`import` (≥2 DBs) / `check --locked` over the full `Cargo.lock`, commit `imports.lock`, populate `audits.toml` · §3.8 · G18b G18a G9
   needs: P1.7
   > the live cargo-vet run that P0.3.6 authored the config/protocol for and **P1.59 deferred** ("a separate P10 vetting effort"): pin cargo-vet (`gate-tools.toml`), `cargo vet init`, `cargo vet import` the ≥2 declared DBs (Mozilla + Google, `supply-chain/config.toml`), `cargo vet suggest` then certify/exempt the full tree (~471 crates) with documented reasons, commit `supply-chain/imports.lock` (Co-Pilot-reviewed, never auto-fetched — G9 invariant (e) / G18a `--locked`), and populate `supply-chain/audits.toml`. This flips the G18b live tier from skip-with-warning to fail-closed (a clean `cargo vet check --locked` becomes release-blocking). **Authored as the owning box at P1.68** so the deferred work is plan-owned (the obligation-as-prose lesson the P1.66 G71 fix taught — an unowned, unverified deferral silently never happens). Runs in the P10 supply-chain stage, before P10.58 publish.
+
+---
+
+### Full reliability gate (Lane-B stage 2)
+
+> Authored by the **Co-Pilot 2026-09-15** from the test-strategy §11.4 pre-fill audit of the P4 boxes; max+1 convention.
+
+- [!extern] **P10.61** [CI] Wire Lane-B stage 2 — the full reliability gate on all three legs, per-leg ledger-record upload, merge into `reliability-report.json`, abort on any `failing` cell · §6.7.2 §6.5.2 · G31
+  needs: P10.4, P10.8, P4.59, P4.61, P9.47
+  > **[!extern] (owner + Co-Pilot — every surface is `.github/**`, L(-1), G71):** §6.7.2 stage 2 has no content box, because P10.4 builds the stage shape only. This box runs the P4.59 per-pair runner on each native leg, the Linux leg on the P9.47 host and host-disjoint from signing per P10.7. It uploads each leg's §6.5.2 records, runs the P4.61 `reliability-ledger` merge, and fails the stage on any `failing` cell. P10.54 enumerates and P10.58 publishes the resulting asset.
 
 ---
 

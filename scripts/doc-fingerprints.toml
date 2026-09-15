@@ -119,10 +119,15 @@ fingerprint = "sha256:59cf428eea6d3c0ae12b6b2a02e153826f7d7002d174d2d2c5ac167178
 #     P5.9.1 / P6.1.1 / P7.17.1), and the crates/imgworker/src/ row no longer enumerates files, so a new
 #     worker file (P4.83 lib.rs) owes no re-bless. §1a re-verified: its mirror row was re-worded in the
 #     same commit; the G69 dir-set is untouched.
+#     Re-blessed 2026-09-15 (the second landing of the same audit: the IPC-set, licence-tree and `gate_api` Co-Pilot rulings): the
+#     lib.rs row names the read-only `gate_api` facade the non-default `gate-api` cargo feature adds, and its
+#     invoke_handler clause names the §0.4.1 command table without a count. The tree gains the
+#     `third-party-licenses/` DIRECTORY row (the P4.57 vendored licence texts); §1a gains its mirror row in
+#     the same commit, so the G69 dir-set and the §1a projection stay bijective.
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:2cb8a80bdc236dda9d368ba8ab6e1dd5b8de63a980d69e86a21185c970e7c7fa"
+fingerprint = "sha256:1c89c43c5db2987495e604ed8f276b0f598ede6b014041821f2812ba4206e790"

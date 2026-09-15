@@ -276,9 +276,11 @@ build-time mechanics that realise them**:
   static = fail" rule would WRONGLY fail the statically-linked image-worker that §3.5.5/
   §3.6.1 mandate as aggregation). Three carve-outs:
   - **(i) LGPL linked into the MIT core (the Tauri app binary) → MUST be shared/relinkable.**
-    Any LGPL lib linked into the MIT core binary itself must be a **bundled shared object**
+    Any LGPL lib linked into the MIT core binary itself must be a **shared object**
     (`.so`/`.dylib`/`.dll`) — a static LGPL link into the MIT core is a **build failure**
     (it would taint the MIT core; Rust links statically by default, so this is enforced).
+    The enforced property is the link KIND: a dynamic link satisfies LGPL §6 whether the
+    shared object is bundled or OS-provided (e.g. the §0.3.1 Linux WebView runtime).
     The **external FFmpeg component libs** dynamically linked *beside* the FFmpeg binary
     are verified present as shared objects too. **Only `libmp3lame` is LGPL** (so the §6
     relinkability-beside-the-GPL-exe obligation applies to it); `libvorbis`/`libogg`/
@@ -621,6 +623,13 @@ normal user isn't surprised:
   `libfuse2t64` on 24.04+); alternatively run with `--appimage-extract-and-run`."* —
   satisfying the §6.1.4 disclosure requirement with an enforcement home (and a §6.8
   README content item, below).
+- **Linux WebKitGTK prerequisite `[DECIDED]` [Co-Pilot ruling 2026-09-15 — owner may overturn]:** the AppImage uses the
+  host `libwebkit2gtk-4.1` (never bundled, §0.3.1 / §3.9.1), and a **missing** library stops
+  the dynamic loader before the core runs, so the page must note: *"Linux: ConvertIA needs
+  the system WebKitGTK 4.1 (`libwebkit2gtk-4.1`; Ubuntu: `sudo apt install
+  libwebkit2gtk-4.1-0`) — it is not bundled in the AppImage; if the AppImage does not start,
+  install it."* — the "fail clearly" substitute for that case (a §6.8 README content item,
+  below).
 
 ### 6.2.5 Reproducible-build intent `[DECIDED — best-effort, not a gate]`
 
@@ -1002,6 +1011,11 @@ matrices and the corpus `manifest.toml`:
    `covers` entry) — *and* fail if any `covers` entry names a pair that does **not**
    exist in the §04 matrices (a stale/typo'd coupling). Both directions of the
    bijection are checked, so the gate cannot rot.
+   **Harness-fixture exception `[DECIDED]`:** a `[[file]]` flagged
+   `harness_fixture = true` is exempt from the stale-coupling (direction-2) leg only
+   for same-format `[X, X]` tuples whose `X` is a §04 format. Any other tuple in a
+   flagged entry that names a pair outside the §04 matrices still fails. A flagged
+   tuple never satisfies a required pair in direction 1.
 
 This is what makes the §6.5 reliability gate **non-circular**: a pair literally
 cannot be declared `reliable` without a corpus file whose `covers` list names it.
@@ -1061,6 +1075,9 @@ exercises = ["orientation-bake", "ICC-P3", "HDR-10bit"]
 covers   = [              # the (source→target) pairs this file backs (§6.4.3a)
   ["HEIC", "JPG"], ["HEIC", "PNG"], ["HEIC", "WEBP"], ["HEIC", "AVIF"],
 ]
+# harness_fixture = true  # optional, ONLY on the P4.79 phase-harness fixture: its same-format
+#                         # [X, X] covers tuples are exempt from §6.4.3a step-3 direction 2,
+#                         # never count toward direction 1, and report as a §6.5.2 informational row
 [file.expect]             # expected outcome per target
 "HEIC→JPG"  = { result = "success", lossy = "image_lossy_codec" }
 "HEIC→AVIF" = { result = "success", lossy = "image_lossy_codec" }
@@ -1381,6 +1398,10 @@ human table) keyed by `(source, target, platform)`, each cell ∈
 > `unavailable-per-§3.4` or explicitly `demoted`.** Any `failing` cell blocks the
 > release. The report is published as a release asset (transparency).
 
+A `harness_fixture` pair (the §6.4.3a exception) is emitted as an **informational**
+row outside the enumerated release-gate set: the release predicate ignores it, and it
+never takes one of the four release-gate cell values.
+
 This directly realises the SSOT *v1 DoD* conversions clause. Because v1 is **one
 large all-or-nothing release with no deadline** (SSOT), the gate has no
 time-pressure escape hatch — internal *sequencing* (fill/validate category by
@@ -1576,7 +1597,7 @@ for the OS-agnostic checks, fanning to the matrix only for compile-sanity:
    fast, engine-light, run on every PR.
 4. **Corpus↔pair bijection guard (§6.4.3a):** `scripts/check-corpus-coverage.rs`
    (a `cargo run`/xtask Rust bin, §6.4.3a) asserts every §04 v1-required pair has ≥1
-   backing corpus `covers` entry (and no stale couplings). Engine-free, fast — runs every
+   backing corpus `covers` entry (and no stale couplings, `harness_fixture` diagonals excepted per §6.4.3a). Engine-free, fast — runs every
    push so coverage gaps surface before the expensive Lane B corpus run.
 4a. **Defaults-registry "no required choices" guard (§1.6) `[DECIDED]`:** an
    engine-free xtask **generates the §1.6 consolidated `OptionDecl.default` index from the
@@ -1852,7 +1873,7 @@ All are English (public OSS repo). Mapping each to its SSOT origin and content o
 | **`SECURITY.md`** | **Private vulnerability reporting** channel (GitHub private advisories + a contact); scope statement = ConvertIA opens **untrusted files through third-party decoders** → references the §0.11 threat-surface map and the §2.12 isolation posture; best-effort patch posture **with no SLA** (SSOT); how a reporter can include a (redacted, §7.5) repro from the local log. | SSOT *Security posture* / *License & Openness*; ties to §2.12, §7.5, §0.11. |
 | **`PRIVACY.md`** | Plain-language restatement of **§2.11**: fully offline, **no network/telemetry/accounts/update-phone-home**; the only network is user-initiated (open project page, §7.7); the **cloud-sync caveat** (ConvertIA neither causes/prevents/detects your OneDrive/iCloud/Dropbox sync uploading files in a synced folder). | SSOT *Local/private/offline*; restates §2.11 (owner of the invariant). |
 | **`TRADEMARK.md`** | The MIT grant covers **code, not the "ConvertIA" name or the Ne-IA logo**; forks/redistributions must use a **different name** and may **not** use the Ne-IA logo; guidelines for nominative use. | SSOT *Trademark*. |
-| **`README.md`** (download + trust) | What it is, the **canonical-GitHub-Releases-only** download location (§6.2.2), the **verify-your-hash** recipe (§6.2.4), as-is/no-warranty + best-effort-security posture, supported-OS floor (§0.3.1), per-platform unsigned-build first-launch note, **plus the per-platform prerequisites (§6.2.4): Windows portable-zip WebView2 note (§0.3.1) and the Linux AppImage `libfuse2` note (§6.1.4)**. | SSOT *Distribution & download trust*. |
+| **`README.md`** (download + trust) | What it is, the **canonical-GitHub-Releases-only** download location (§6.2.2), the **verify-your-hash** recipe (§6.2.4), as-is/no-warranty + best-effort-security posture, supported-OS floor (§0.3.1), per-platform unsigned-build first-launch note, **plus the per-platform prerequisites (§6.2.4): Windows portable-zip WebView2 note (§0.3.1), the Linux AppImage `libfuse2` note (§6.1.4) and the Linux `libwebkit2gtk-4.1` note (§0.3.1)**. | SSOT *Distribution & download trust*. |
 | **`.github/` policy** | Issue templates (default new format/feature requests to **Future Ideas (Parked)** per the SSOT inclusion test — SSOT *Out of Scope*); PR template referencing the DCO/quality bar; private-advisory config wired to `SECURITY.md`. | SSOT *Out of Scope* (inbound-request default) + governance. |
 
 **DCO posture (explicit) `[DECIDED]`:** **no CLA**; a DCO **`Signed-off-by`** line
@@ -1968,7 +1989,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 |---|---------------|-------------------|----------------------------|-------|
 | 1 | **Every sensible source→target pair works reliably on all 3 platforms** | §04 (pairs) · §1 (pipeline) · §3 (engines) | Reliability gate / pair-status ledger (§6.5); integration+corpus tests (§6.4.3–6.4.5) | **in-scope-gate** |
 | 2 | **"Reliably" = fail-clearly + no-harm on a real-world corpus** | §2.5 (no-harm) · §2.8 (fail-clearly) | Property/fault-injection (§6.4.2) + the corpus (§6.4.5) as precondition | **in-scope-gate** |
-| 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); the **corpus↔pair bijection guard (§6.4.3a)** fails CI if any §04 pair has no backing corpus file (or a `covers` entry names a non-existent pair); **plus the §6.4.5 minimum-content gate** — fails CI unless the manifest tags ≥1 CJK-body + ≥1 RTL-body Office doc, ≥1 non-ASCII-encoding CSV/TSV, ≥1 non-Latin-tag audio file, representative A/V, **and the image floor (≥1 HEIC, ≥1 AVIF, ≥1 SVG, ≥1 multi-size ICO, ≥1 PNG-with-alpha)** (so the corpus is content-complete, not just pair-complete, and not all-synthetic/all-plain images) | **in-scope-gate** |
+| 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); the **corpus↔pair bijection guard (§6.4.3a)** fails CI if any §04 pair has no backing corpus file (or a `covers` entry names a non-existent pair, the §6.4.3a harness-fixture exception aside); **plus the §6.4.5 minimum-content gate** — fails CI unless the manifest tags ≥1 CJK-body + ≥1 RTL-body Office doc, ≥1 non-ASCII-encoding CSV/TSV, ≥1 non-Latin-tag audio file, representative A/V, **and the image floor (≥1 HEIC, ≥1 AVIF, ≥1 SVG, ≥1 multi-size ICO, ≥1 PNG-with-alpha)** (so the corpus is content-complete, not just pair-complete, and not all-synthetic/all-plain images) | **in-scope-gate** |
 | 4 | **Everything runs fully offline (whole engine set bundled, no fetch)** | §3.3 (bundle-all) · §2.11 (offline invariant) | Bundling at build (§6.1.3); offline-observability E2E with egress blocked (§6.7.3); SBOM proves no runtime-fetch component | **in-scope-gate** |
 | 5 | **Offline guarantee observably true (no network at all)** | §2.11 | Network-egress-blocked E2E run asserts zero calls (§6.7.3 / §6.4.6) | **in-scope-gate** |
 | 6 | **Basic accessibility (keyboard path + readable contrast/sizes; **screen-reader path, SSOT Principle 10**; WCAG 2.1 AA per §5.6)** | §5.6 · §5.6.1 (SR contract) · §5.10 (shortcut map) | **Automated axe-core a11y assertions (§6.4.6a)** — **ARIA-role validity + focus-order run in Lane A (jsdom, §6.7.1)**; **WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI, both themes) runs in Lane B on the `@axe-core/webdriverio` live-WebView session (§6.7.2)** — jsdom cannot compute contrast. **Text-size half (body copy ≥ `--text-base` = 16px, §5.5) is verified by the §6.6 human walkthrough** — axe-core does not measure font size (§6.4.6a). Plus the keyboard-only human walkthrough (§6.6) **and the §6.6 screen-reader smoke pass that walks the §5.6.1 SR contract** | **in-scope-gate** |

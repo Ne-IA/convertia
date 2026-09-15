@@ -428,8 +428,10 @@ _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
 # (T7a — Windows reserved-name output aliasing — added by the 2026-07-21 P3.73 P0 ruling)
 THREAT_CLASSES = {"T1", "T2", "T2a", "T2b", "T2c", "T3", "T3a", "T4", "T5", "T6",
                   "T7", "T7a", "T8", "T9a", "T9b", "T10", "T11", "T12", "T13"}
-# the §0.4.1 enumerated IPC command SET (a set, not a contiguous range — C2 is split into C2a/C2b)
-IPC_COMMANDS = {"C1", "C2a", "C2b", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14"}
+# the §0.4.1 enumerated IPC command SET plus the plan-ruled C15 `confirm_quit` / C16 `get_run_liveness` (Co-Pilot
+# ruling 2026-09-15), whose §0.4.1 rows P4.67.1 / P4.50 author (a set, not a contiguous range — C2 is split into C2a/C2b)
+IPC_COMMANDS = {"C1", "C2a", "C2b", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14",
+                "C15", "C16"}
 
 
 def _slug(text: str) -> str:
@@ -673,7 +675,9 @@ def doc17_forward_idea_status(ctx: Ctx) -> list[Finding]:
 
 def doc9_inventory_parity(ctx: Ctx) -> list[Finding]:
     """Check 9 (membership): every IPC command token `Cn` named in the spec/security prose is in the
-    §0.4.1 enumerated set {C1,C2a,C2b,C3..C14} (bare `C2` is allowed as the picker-family alias)."""
+    §0.4.1 enumerated set {C1,C2a,C2b,C3..C16} (bare `C2` is allowed as the picker-family alias). C15
+    `confirm_quit` / C16 `get_run_liveness` are plan-ruled members (Co-Pilot ruling 2026-09-15) whose §0.4.1 rows
+    P4.67.1 / P4.50 author."""
     out = []
     allowed = IPC_COMMANDS | {"C2"}
     for rel, text in ctx.docs.items():
@@ -684,8 +688,8 @@ def doc9_inventory_parity(ctx: Ctx) -> list[Finding]:
                 tok = "C" + m.group(1) + m.group(2)
                 if tok not in allowed:
                     out.append(Finding("9:inventory-parity", rel, ln,
-                                       f"IPC command {tok} is not in the §0.4.1 enumerated set "
-                                       "{C1,C2a,C2b,C3..C14}"))
+                                       f"IPC command {tok} is not in the §0.4.1 enumerated set plus the plan-ruled C15/C16 "
+                                       "{C1,C2a,C2b,C3..C16}"))
     return out
 
 

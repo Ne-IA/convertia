@@ -203,6 +203,8 @@ record("8 threat-parity: a §5 table missing classes -> caught",
        m.doc8_threat_parity(dctx({"docs/security/security-concept.md": "| **T1** d | c | G48 |\n"})) != [])
 record("9 inventory: a C99 IPC command -> caught",
        m.doc9_inventory_parity(dctx({"docs/spec/a.md": "the C99 command\n"})) != [])
+record("9 inventory: C17 (past the ruled set) -> caught",
+       m.doc9_inventory_parity(dctx({"docs/spec/a.md": "the C17 command\n"})) != [])
 record("11 span-bound: a frozen G2-G50 < max -> caught",
        m.doc11_span_bound(dctx({"docs/security/build-gates.md": "| **G2** | a |\n| **G72** | b |\nthe G2-G50 boundary\n"})) != [])
 record("11 span-bound: 'rather than G2-G50' counter-example -> NOT caught (negative cue)",

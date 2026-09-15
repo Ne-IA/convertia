@@ -489,8 +489,10 @@ pub(crate) fn available_bytes(dir: &Path) -> io::Result<u64> {
 
 /// The §1.10 **available-MEMORY** read — the OS-shim sibling of [`available_bytes`] (which reads free DISK),
 /// built HERE at its first need so the memory read has ONE home: the §0.9/§1.10 memory-adaptive concurrency
-/// factor (`crate::pool`, P4.20), which caps the effective degree and gates the high-memory watermark. The
-/// §1.10 preflight engine (P4.72/P4.73) reads the same primitive for its memory ceilings.
+/// factor (`crate::pool`, P4.20), which caps the effective degree and gates the high-memory watermark. It is
+/// NOT a §1.10 preflight input: the P4.72/P4.73 engine budgets DISK (`est_output_bytes`/`est_scratch_bytes`
+/// against [`available_bytes`]), and the §1.10 per-item memory ceiling is a kill-side control (the §1.7
+/// kill, reinforced by the §2.12.3 Job-Object memory cap), not an available-memory read.
 ///
 /// **The failure bias is the OPPOSITE of [`available_bytes`]'s, deliberately** [Build-Session-Entscheidung:
 /// P4.20]. A free-DISK read feeds a "does it fit?" gate, so an unreadable value must fail toward

@@ -631,6 +631,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **§3.4 availability flag is concrete** — a scalar `available` boolean on the codec's
   `engines.lock` row(s), keyed by (artifact, target-triple); C12 `get_engine_health` reads it into `unavailable_targets` and C3 marks the target
   `Unavailable`; §5.2 renders disabled-with-reason. Owner: §3.4.4a / §7.2.3.
+- **Linux: a missing `libwebkit2gtk-4.1` fails before the core runs** — the dynamic loader
+  stops first, so the "fail clearly" substitute is the §6.2.4 download-page prerequisite note
+  (the WebView2 pattern below); an old or broken runtime the core observes stays a §7.2
+  fault (§0.3.1). Owner: §0.3.1 / §6.2.4.
 - **WebView2-absent portable launch fails before the core runs** — cannot show an in-app
   fault; the "fail clearly" substitute is the §6.2.4 download-page prerequisite note;
   `minimumWebview2Version` is NSIS-installer-only and **NSIS is NOT shipped v1** (§6.1.2

@@ -73,7 +73,7 @@ jobs:
       # app, so the §6.1.4 release-runner's RUNTIME/BUNDLE deps (librsvg2-dev, patchelf, FUSE 2) and the
       # dlopen'd tray (libappindicator-sys uses the libloading crate; x11-dl its own dlopen/libc wrapper —
       # neither needs a build-time `-dev`) are deliberately NOT installed here. These are CI build-ENVIRONMENT deps, NOT shipped/trust-bearing (the portable
-      # AppImage bundles/locates its own WebKitGTK, §6.1/§0.3.1), so they track the runner image rather than
+      # AppImage locates the host WebKitGTK and never bundles it, §6.1/§0.3.1), so they track the runner image rather than
       # the pinned gate-tool/engine set; webkit2gtk-4.1 = the §0.3.1 Ubuntu-22.04 floor. The Linux-CI
       # analogue of the local MSVC/WebView2 dev runway. Positioned here in the environment-setup block so it
       # precedes EVERY Rust-compiling step below — the G19 `cargo run -p xtask -- codegen` regen (live since

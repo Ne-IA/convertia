@@ -252,7 +252,7 @@ exposed-parameter capability-assertion framework — belong here; the **per-engi
 assertion lists land in P5/P6/P7. **§3.9 binary-size-budget levers:** the size
 engineering that keeps the build under the §3.9.2 ≤400 MB compressed ceiling
 (LibreOffice strip help/l10n/dictionaries, CJK font subset-vs-full, pandoc
-GHC-runtime weight, shared-lib dedup) is owned here with an **early baseline
+GHC-runtime weight) is owned here with an **early baseline
 measurement**, so P5–P7 each track their incremental size cost against the budget
 rather than discovering overflow at release (the §6.7.2 release-time size *gate*
 itself is in P10). **Generic UX-correctness primitives (so P5–P7 are UI-testable
@@ -466,7 +466,7 @@ release mechanics enabling verified downloads — in scope): write the copy-past
 **verify-hash recipe** including the literal `minisign -Vm SHA256SUMS -p docs/minisign.pub`
 step (lowercase **`-p` = public-key FILE PATH**; uppercase `-P` expects an inline base64
 key string and would FAIL on a path — build-gates G39 RUNS this literal recipe so a broken
-form fails the release) + the Windows WebView2 / Linux libfuse2 prerequisite notes, and the
+form fails the release) + the Windows WebView2 / Linux libfuse2 / Linux libwebkit2gtk-4.1 prerequisite notes, and the
 **macOS Sequoia step-by-step Gatekeeper / per-sidecar-quarantine recovery**
 instructions (the SSOT "reaching the user at the highest-risk moment"
 trust-substitute) — so the P11 §6.6 walkthrough has authored content to validate.

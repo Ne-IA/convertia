@@ -391,7 +391,7 @@ fn dispatch_run_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
         // directly, with no per-window `CloseRequested`) is blocked and routed to the SAME §5.2 confirm
         // signal as the window-close guard — the one §7.3.2 busy predicate, the one `app://close-requested`
         // event. A PROGRAMMATIC exit (`app.exit(code)` → `code: Some(..)`) is never blocked: that is the
-        // sanctioned exit a confirmed-quit flow uses (its §5.2 QuitConfirm edge is the P4.67 box), so the
+        // sanctioned exit a confirmed-quit flow uses (its §5.2 QuitConfirm edge is the P4.67.1 box), so the
         // guard applies only to the OS/user quit request (`code: None`). An idle converter is not busy, so
         // the quit proceeds immediately (§7.3.3). [Build-Session-Entscheidung: P2.137]
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
@@ -706,8 +706,8 @@ fn readiness_checks(app: &AppHandle) -> Result<(), AppFault> {
 /// guarantee — a hard startup fault renders as a clean §2.13 fault screen, never a half-broken window.
 /// Resolving the window here is ALSO the §0.3.1/§7.2.1 WebView-init fault observation point:
 /// `get_webview_window("main")` returning `None` means the OS WebView runtime could NOT create the view (a
-/// missing/old macOS WKWebView / Linux WebKitGTK; the Windows WebView2-absent case fails before the core runs
-/// and is the §0.3.1 honest exception, not this). [Build-Session-Entscheidung: P2.109] the `None` arm surfaces
+/// old or broken macOS WKWebView / Linux WebKitGTK init; a Windows WebView2-absent or Linux missing-library case
+/// fails before the core runs and is a §0.3.1 honest exception, not this). [Build-Session-Entscheidung: P2.109] the `None` arm surfaces
 /// that as the §2.13 app-level `WebviewFault` (`webview_init_fault`) routed to `present_startup_fault`
 /// (§2.13.3) — a broken WebView cannot render an `app://fault` screen, so its presentation is NATIVE (body
 /// P4); this box builds the detection + routing seam. This is NOT a programmatic window builder — the window
@@ -727,7 +727,7 @@ fn reveal_main_window(app: &AppHandle) {
         Some(window) => {
             window.show().ok();
         }
-        // §0.3.1/§2.13 WebView-init fault: no `main` WebView exists (missing/old WKWebView / WebKitGTK), so
+        // §0.3.1/§2.13 WebView-init fault: no `main` WebView exists (an old or broken WKWebView / WebKitGTK init), so
         // route the app-level `WebviewFault` to the §2.13.3 presentation. An `app://fault`→WebView emit is
         // impossible here (there is no WebView), so the NATIVE presentation body (P4) owns HOW; P2.109 owns
         // the detection + route.
@@ -3862,7 +3862,7 @@ mod startup_spine {
     }
 
     // §6.4.1 unit (G15): §7.2.1 step 6 / §0.3.1 — `reveal_main_window`'s `None` arm (no `main` WebView: a
-    // missing/old WKWebView / WebKitGTK) routes the app-level `WebviewFault` to `present_startup_fault`. The
+    // old or broken WKWebView / WebKitGTK init) routes the app-level `WebviewFault` to `present_startup_fault`. The
     // AppHandle-coupled reveal is not `tauri::test`-executed (the boot-stage pattern §1.1a), so this source-scan
     // pins the wiring: the `None` arm constructs the fault (`webview_init_fault()`) and hands it to
     // `present_startup_fault`. Needle `concat!`-assembled (self-match avoidance). [Build-Session-Entscheidung: P2.109]

@@ -880,7 +880,7 @@ impl ResidueRecord {
 /// - `Cancelled` (case 3): **RATIFIED exactly as built** — the residue does NOT rewrite the per-item reason
 ///   (`None`). §2.6.4 authors no per-item case-3 sentence: its complete per-item surface is the STRUCTURAL
 ///   `CleanupResidue` annotation (the rendered `residue_display` + the C9 reveal link), and the "With residue"
-///   tail is BATCH-level (§2.8.2 02:1266/:1274) — routing it per-item would double-render it against the
+///   tail is BATCH-level (the §2.8.2 batch summary table) — routing it per-item would double-render it against the
 ///   `RunResult` summary line, and its pathless "see details" wording cannot satisfy §5.7:830's "with where
 ///   residue remains" anyway. `state` (not the message) is what distinguishes a stopped cancel.
 /// - `Failed` (case 2): **unchanged as built** — the item is reported `Failed` WITH the combined §2.8.2

@@ -98,6 +98,9 @@ proceed.
 - **Linux — libfuse2:** the AppImage mounts itself with FUSE 2 at launch. If it will
   not start, install `libfuse2` (Ubuntu: `sudo apt install libfuse2`, or `libfuse2t64`
   on 24.04 and newer), or run it with `--appimage-extract-and-run`.
+- **Linux — WebKitGTK:** ConvertIA uses your system's WebKitGTK 4.1 and does not bundle it.
+  If the AppImage will not start, install `libwebkit2gtk-4.1` (Ubuntu:
+  `sudo apt install libwebkit2gtk-4.1-0`).
 
 ## As-is, no warranty
 

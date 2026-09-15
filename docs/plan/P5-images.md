@@ -70,6 +70,7 @@
 - [ ] **P5.2** [BUILD] Add the libvips no-copyleft-PDF-loader §6.1.3 positive build assertion · §6.1.3 §3.1 · G38
   needs: P5.1, P0.7.4
   > the stage-step assertion that the staged libvips exposes **no** `pdfload`/`poppler`/`mupdf` foreign loader/symbols and **fails the build** if one is present (a distro libvips often enables poppler-glib PDF — libvips#2222) — the image-specific variant of the P4 generic §6.1.3 framework. → executes the P0.7.4 per-engine build-assertion policy for the image stack (`needs: P0.7.4`, the assertion-policy home, `[x]` before the loop; the cross-phase edge carried via the P5.74 reconciliation box). **Artifact + stage distinction (vs P4.53):** P4.53 is the P4 proof-of-life check on the P4.34 imgworker's libvips; this box asserts the **newly-staged P5.1 libvips before any P5 image engine builds against it** — same property, different artifact at a different build stage (each fact keeps one home, _format.md §8).
+  > **Mechanism:** the needle set, the `vips_pdfload*` proof check and the configure cross-check are P4.53's mechanism note, applied to the P5.1-staged archive.
 - [ ] **P5.3** [BUILD] Stage cgif + the lovell/libimagequant v2.4.x BSD fork for native gifsave + palette PNG · §3.1 §3.5.5 §6.1.3 · G37
   needs: P5.1
   > cgif (MIT) for native `gifsave`, plus the **BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** vendored/statically linked inside the cgif/palette path (never upstream 4.x GPLv3-or-commercial which would taint the LGPL worker, §3.1 row 1e); pinned by exact version+ref in `engines.lock`.
@@ -104,8 +105,8 @@
   needs: P5.8
   > libaom (`BSD-2-Clause AND LicenseRef-AOMPL-1.0` — both legs, §3.7) as the single bundled AV1 **encoder** via `heifsave compression=av1`; **dav1d** (`BSD-2-Clause`) configured as libheif's AV1 **decoder** (smaller/faster — "libaom is encode-only" is a build choice, not a libaom limitation); both pinned in `engines.lock`.
 - [ ] **P5.12** [BUILD] Add the libheif-resolves-dav1d-for-AV1-decode §6.1.3 wiring assertion · §3.1 §3.5.5 §6.1.3 · G38
-  needs: P5.11
-  > the stage-step runtime-plugin-enumeration assertion that the staged libheif resolves **dav1d** (not libaom) as its AV1 decoder (`heif-info`/`libheif_decoder` enumeration lists dav1d) and **fails the build** if libaom is wired as the decoder or no dav1d decoder is present.
+  needs: P5.11, P5.10
+  > the stage-step runtime-plugin-enumeration assertion that the staged libheif resolves **dav1d** (not libaom) as its AV1 decoder (the P4.55 worker enumeration) and **fails the build** if libaom is wired as the decoder or no dav1d decoder is present. P5.12 activates the P4.55 slot against the P5.11-staged libheif; it authors no second check. `needs: P5.10`: a plugin-form dav1d is enumerable only after the worker registers its plugin directory (the P5.10 mechanism); for a built-in dav1d the edge costs nothing [Co-Pilot ruling 2026-09-15 — owner may overturn].
 - [ ] **P5.13** [BUILD] Stage librsvg (>= 2.56.3 floor) for direct rsvg::Loader SVG load · §3.1 §3.5.5 §6.1.3 · G37 G37b
   needs: P5.1
   > librsvg (LGPL-2.1+) staged inside the image-worker for the **direct `rsvg::Loader`** path (NOT libvips `svgload`); pinned **`>= 2.56.3`** in `engines.lock` (the CVE-2023-38633 belt-and-suspenders floor, not load-bearing for v1 since P5.28 sets no base URL), dynamic-closure asserted.
@@ -189,6 +190,7 @@
 - [ ] **P5.30** [RUST] Wire the SVG → {PNG★,JPG,WEBP,BMP,TIFF,ICO} target routing (HEIC/AVIF out) · §3.5.5 · G29 G31
   needs: P5.28, P5.29
   > the 6 offered SVG targets routed to the P5.20–P5.26 savers; **SVG→HEIC / SVG→AVIF are `out`** (no everyday demand — matrix and offered set agree, so the bijection guard does not enumerate them); every SVG→raster cell fires `image_svg_raster` (incl. the PNG★ default — never omit it), plus the target-codec LossyKind where additionally lossy.
+  > **SVG size source [Co-Pilot ruling 2026-09-15 — owner may overturn]:** where the `image_svg_raster` `{w}×{h}` comes from at target choice is P4.65's open item (iii), left for the P4→P5 pre-fill audit, which rules it before this box.
 
 ### Patent-gated encode paths (HEIC / AVIF via heifsave — reads §3.4)
 
@@ -331,7 +333,7 @@
 ### Reliability ledger, SBOM/NOTICE rows, availability rows
 
 - [ ] **P5.65** [TEST] Mark every available image pair `reliable` in the §6.5.2 pair-status ledger on all 3 platforms · §6.5 §6.5.1 §6.5.2 · G31
-  needs: P5.49, P5.50, P5.51, P5.52, P5.53, P5.54, P5.55, P5.56, P5.57, P5.58, P5.59, P5.60, P5.61
+  needs: P5.49, P5.50, P5.51, P5.52, P5.53, P5.54, P5.55, P5.56, P5.57, P5.58, P5.59, P5.60, P5.61, P4.61
   > drive the P4-built ledger generator so every enumerated image pair is `reliable` (valid output + no-harm + fail-clearly + lossy-disclosure-matches + content-fidelity, on each platform where §3.4 says it is available) — `reliability-report.json` + human table; any `failing` cell blocks; this is the §6.5 coverage gate for the image category travelling with the format work (category-by-category sequencing).
 - [ ] **P5.66** [TEST] Record the HEIC-encode patent-gap exception (per platform) as a §6.5.3 demoted-pairs / release-note row · §6.5.3 §3.4.3 · G31
   needs: P5.56, P5.65
@@ -375,8 +377,8 @@
 ### Cross-phase reconciliation (the deferred P5→P4 `needs:`)
 
 - [ ] **P5.74** [GATE] Wire the deferred P5→P4 harness reconciliation `needs:` edges — isolation boundary, §1.7 line-reader, per-pair runner, options-panel shell · §3.5.5 · G7 G20
-  needs: P4.37, P4.8, P4.59, P4.64, P4.74, P4.28.1, P0.7.3, P0.7.4
-  > the P5 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.77; reciprocal of P3.70/P6.92/P7.77/P9.46): declare the load-bearing P5→P4 + P5→P0 edges the per-saver/per-declaration/per-pair-test boxes consume — every image-worker load/save box (P5.16/P5.19/P5.20–P5.36) runs inside the **P4.37 §2.12 isolation boundary**, fills the **P4.35 `Invocation`-equivalent plan** + marshals progress through the **P4.8/P4.36 §1.7 line-reader**; the image staging boxes execute the **P0.7.3 engine-acquisition + allow-list policy** (P5.1) and the per-engine §6.1.3 assertions execute the **P0.7.4 build-assertion policy** (P5.2/P5.6/P5.7); the from-source curated-build compile boxes (libvips P5.1.1, ImageMagick P5.5.1, x265 P5.9.1) fill the **P4.28.1 from-source compilation harness** configure-flag manifest seam (the curated builds the P5.2/P5.6/P5.7 §6.1.3 assertions can only pass against); every per-pair integration test (P5.47–P5.61) runs on the **P4.59 §6.4.3 per-pair runner**; every advanced-option DECLARATION box (P5.37–P5.46 + the ICO declaration P5.75) renders against the **P4.64 OptionsPanel widget dispatch** + the **P4.74 AdvancedDrawer**. The end-of-phase image-engine bump re-validation hook (P5.76) carries only intra-P5 edges (`needs: P5.65`/`P5.67`) — the §6.5.4 trigger is the image `engines.lock` pin, not a P4 harness box — so it needs no P4 reconciliation edge, named here only for end-of-phase-box completeness (parallel to the FFmpeg P6.82 / office P7.76 hooks). `needs:` the P4 harness boxes here so the §6 selection can build-it-first-then-return rather than proceeding against an unbuilt P4 dependency; no P5 box `>`-note defers a `needs:` with the P4.77-forbidden phrasing.
+  needs: P4.37, P4.8, P4.59, P4.60, P4.61, P4.64, P4.74, P4.92, P4.28.1, P0.7.3, P0.7.4
+  > the P5 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.77; reciprocal of P3.70/P6.92/P7.77/P9.46): declare the load-bearing P5→P4 + P5→P0 edges the per-saver/per-declaration/per-pair-test boxes consume — every image-worker load/save box (P5.16/P5.19/P5.20–P5.36) runs inside the **P4.37 §2.12 isolation boundary**, fills the **P4.35 `Invocation`-equivalent plan** + marshals progress through the **P4.8/P4.36 §1.7 line-reader**; the image staging boxes execute the **P0.7.3 engine-acquisition + allow-list policy** (P5.1) and the per-engine §6.1.3 assertions execute the **P0.7.4 build-assertion policy** (P5.2/P5.6/P5.7); the from-source curated-build compile boxes (libvips P5.1.1, ImageMagick P5.5.1, x265 P5.9.1) fill the **P4.28.1 from-source compilation harness** configure-flag manifest seam (the curated builds the P5.2/P5.6/P5.7 §6.1.3 assertions can only pass against); every per-pair integration test (P5.47–P5.61) runs on the **P4.59 §6.4.3 per-pair runner**; every advanced-option DECLARATION box (P5.37–P5.46 + the ICO declaration P5.75) renders against the **P4.64 OptionsPanel widget dispatch** + the **P4.74 AdvancedDrawer**; every declaration box registers through the **P4.92 registry offer seam**, which the P5.77 C3 default-target assertion reads; the image ledger gate (P5.65) drives the **P4.61 generator** over the **P4.60 §04 enumeration**. The end-of-phase image-engine bump re-validation hook (P5.76) carries only intra-P5 edges (`needs: P5.65`/`P5.67`) — the §6.5.4 trigger is the image `engines.lock` pin, not a P4 harness box — so it needs no P4 reconciliation edge, named here only for end-of-phase-box completeness (parallel to the FFmpeg P6.82 / office P7.76 hooks). `needs:` the P4 harness boxes here so the §6 selection can build-it-first-then-return rather than proceeding against an unbuilt P4 dependency; no P5 box `>`-note defers a `needs:` with the P4.77-forbidden phrasing.
 
 ---
 
@@ -390,7 +392,7 @@
 > reconciliation box's declaration list above.
 
 - [ ] **P5.75** [UI] Register the ICO advanced-option declarations (Basic icon-sizes default `[16,32,48,256]` no-upscale; Advanced custom-size-list / single-size mode / 256px-embedded-PNG on) · §1.6 · G47
-  needs: P5.27, P4.64, P4.74
+  needs: P5.27, P4.64, P4.74, P4.92
   > the §1.6 ICO option declaration the images.md ICO Options/settings entry defines (the only offered raster target without one): **Basic** — `icon sizes` defaulting to the standard multi-resolution set `[16,32,48,256]` (favicons + Windows app icons in one file), high-quality Lanczos downscale, **upscale-beyond-source skipped** with a note; **Advanced** — a `custom size list`, a `single size` mode, and `256px stored as embedded PNG` (default on, required for a valid/small 256 entry) — declared against the P4-built OptionsPanel widget dispatch (P4.64) + the AdvancedDrawer (P4.74), no new panel chrome (the §1.6 generic declaration model). Mirrors P5.37–P5.45's per-target declarations; the values are the images.md ICO `[DECIDED]` defaults the P5.27 ICO-save path + P5.55 runtime assertion already implement. (`needs: P5.27` for the ICO-save path the declaration drives + `P4.64`/`P4.74` for the panel/drawer it renders against — the cross-phase edges carried via the P5.74 reconciliation box.)
 
 ---

@@ -347,7 +347,7 @@ const _: () = assert!(MEMORY_PER_SLOT_BYTES > 0);
 /// run at once. `[DECIDED]` **1**, and this is a *correctness* bound rather than a throughput one: §0.9
 /// records that LibreOffice headless "is **NOT safely parallel under one user profile** — concurrent
 /// `soffice` instances sharing a profile **lock/corrupt** it — a *correctness* issue, not just contention",
-/// and that even with the §3.5.2 per-run isolated `-env:UserInstallation` profiles "the safe v1 stance is
+/// and that even with the §3.5.2 per-invocation isolated `-env:UserInstallation` profiles "the safe v1 stance is
 /// **one office conversion at a time**".
 ///
 /// It is a named `pub const` here because §0.9 makes it one: "**`MAX_LO_CONCURRENCY = 1` is a §0.9-owned
