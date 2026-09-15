@@ -73,6 +73,57 @@ record("refs: no ref AND no tooling-only flagged",
        len(m.fmt_reference_resolution(ctx([box(refs="")]))) >= 1)
 record("refs: a real ref + tooling-only (mutually exclusive) flagged",
        any("mutually exclusive" in f.msg for f in m.fmt_reference_resolution(ctx([box(refs="G7 · tooling-only")]))))
+# the §04/<file>#<slug> coverage-anchor leg (P4.60.3; _format.md §3.1/§7) - reads the REAL 04-formats tree
+record("refs: §04 coverage anchor - a valid `§04/images.md#png` resolves to the `### PNG` heading -> clean",
+       m.fmt_reference_resolution(ctx([box(refs="§04/images.md#png")])) == [])
+record("refs: §04 coverage anchor - an absent slug (`§04/images.md#nonexistent`) -> flagged by the slug arm",
+       any("slugs to 'nonexistent'" in f.msg
+           for f in m.fmt_reference_resolution(ctx([box(refs="§04/images.md#nonexistent")]))))
+record("refs: §04 coverage anchor - an absent file (`§04/nope.md#png`) -> flagged by the file arm",
+       any("no docs/spec/04-formats/nope.md" in f.msg
+           for f in m.fmt_reference_resolution(ctx([box(refs="§04/nope.md#png")]))))
+# a bare or incomplete §04-shaped token never falls back to the `04` title anchor (the 04-formats title heading
+# numbers itself `04`, so `§04` alone WOULD resolve without the arm) - one leg per shape
+def _flagged(refs, needle):
+    return any(needle in f.msg for f in m.fmt_reference_resolution(ctx([box(refs=refs)])))
+
+
+record("refs: §04 coverage anchor - the bare token `§4` -> flagged as no numbered §4 tree", _flagged("§4", "is not a coverage anchor"))
+record("refs: §04 coverage anchor - the bare token `§4.7` -> flagged as no numbered §4 tree", _flagged("§4.7", "is not a coverage anchor"))
+record("refs: §04 coverage anchor - the bare token `§04` -> flagged, never resolved against the `04` title anchor", _flagged("§04", "is not a coverage anchor"))
+record("refs: §04 coverage anchor - the bare token `§04.7` -> flagged, never resolved against the `04` title anchor", _flagged("§04.7", "is not a coverage anchor"))
+record("refs: §04 coverage anchor - the incomplete token `§04/nope.md` (no slug) -> flagged as malformed", _flagged("§04/nope.md", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - the incomplete token `§04/images.md` (no slug) -> flagged as malformed", _flagged("§04/images.md", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - the incomplete token `§04/images.md#` (empty slug) -> flagged as malformed", _flagged("§04/images.md#", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - the incomplete token `§04/#png` (no file) -> flagged as malformed", _flagged("§04/#png", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - a valid anchor with a glued second anchor `§04/images.md#png#jpg` -> flagged as malformed", _flagged("§04/images.md#png#jpg", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - a valid anchor with a glued tail `§04/images.md#png.md` -> flagged as malformed", _flagged("§04/images.md#png.md", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - the numbered sibling with a glued tail `§1.7#foo` -> flagged as malformed", _flagged("§1.7#foo", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - two glued refs `§1§04/images.md#png.7` never join into `§1.7` -> flagged as malformed", _flagged("§1§04/images.md#png.7", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - a wrong-case slug `§04/images.md#PNG` -> flagged by the slug arm", _flagged("§04/images.md#PNG", "slugs to 'PNG'"))
+record("refs: §04 coverage anchor - a wrong-case file name `§04/Images.md#png` -> flagged by the file arm on every OS", _flagged("§04/Images.md#png", "no docs/spec/04-formats/Images.md"))
+record("refs: §04 coverage anchor - a real letter-suffixed numbered ref `§6.4.6a` stays clean", m.fmt_reference_resolution(ctx([box(refs="§6.4.6a · G33a")])) == [])
+record("refs: §04 coverage anchor - a `§` not at the token start `(§1.7)` -> flagged as malformed", _flagged("(§1.7)", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - a double letter suffix `§6.4.6ab` -> flagged as malformed", _flagged("§6.4.6ab", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - an uppercase letter suffix `§6.4.6A` -> flagged as malformed", _flagged("§6.4.6A", "is not a well-formed reference token"))
+record("refs: §04 coverage anchor - a zero-padded title number `§01` -> flagged, never resolved against the `01` title anchor", _flagged("§01", "is not a coverage anchor"))
+record("refs: a gate id with a glued tail `G7#foo` -> flagged as malformed, never resolved as G7", _flagged("G7#foo", "is not a well-formed reference token"))
+# the heading-level and fence rules, hermetically: a temp 04-formats file carrying a real `### `, a fenced `### `
+# and a `## ` heading (the real tree has no fenced heading, so only a fixture can pin the fence rule)
+with tempfile.TemporaryDirectory() as _tmp:
+    _fmt = Path(_tmp) / "docs" / "spec" / "04-formats"
+    _fmt.mkdir(parents=True)
+    (_fmt / "t.md").write_bytes(b"## Level Two\n\n```\n### Fenced\n```\n\n### Real Entry\n")
+
+    def _ctx_at(boxes):
+        return m.Ctx(root=Path(_tmp), boxes=boxes, by_id={b.box_id: b for b in boxes}, plan_files=[])
+
+    record("refs: §04 coverage anchor - hermetic: a `### ` heading resolves (`§04/t.md#real-entry`) -> clean",
+           m.fmt_reference_resolution(_ctx_at([box(refs="§04/t.md#real-entry")])) == [])
+    record("refs: §04 coverage anchor - hermetic: a `### ` inside a code fence is no heading (`#fenced`) -> flagged",
+           any("slugs to 'fenced'" in f.msg for f in m.fmt_reference_resolution(_ctx_at([box(refs="§04/t.md#fenced")]))))
+    record("refs: §04 coverage anchor - hermetic: a `## ` heading is not a format entry (`#level-two`) -> flagged",
+           any("slugs to 'level-two'" in f.msg for f in m.fmt_reference_resolution(_ctx_at([box(refs="§04/t.md#level-two")]))))
 
 # --- needs-targets + acyclic ------------------------------------------------------------------
 record("needs: a resolvable target clean",

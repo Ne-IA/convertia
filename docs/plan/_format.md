@@ -351,14 +351,19 @@ this file defines (distinct from the doc-wide consistency checks 5–24 catalogu
   reference, and `tooling-only` always means a genuine, declared absence.
   **Format-coverage anchor leg (`§04/<file>#<slug>`):** a coverage-track ref of the
   form `§04/<file>#<slug>` (§3.1) resolves by checking that `docs/spec/04-formats/<file>`
-  exists **and** contains a `### ` heading whose GitHub-style slug equals `<slug>` — so
+  exists under that exact name **and** contains a `### ` heading outside a code fence whose slug
+  by plan-lint's `_slug` (the check-2 rule for intra-doc anchors; close to, not identical with,
+  GitHub's) equals `<slug>` — so
   the per-format/per-pair acceptance contract a box implements is a *resolvable* anchor,
-  not a filename-only reference. A bare `§4` / `§4.x` token **fails** (there is no
-  numbered §4 tree in `04-formats/`); a `§04/<file>#<slug>` whose file or slug does not
-  exist **fails**. This gives the coverage track (track C) the same resolvable-anchor
-  guarantee the numbered `§0`–`§3`/`§5`–`§7` tracks already have. (The gate that BUILDS
-  this leg + its G24 self-test is the P4 coverage-anchor `[GATE]` box; this format change
-  is recorded here in the same commit as that box per the format-change protocol below.)
+  not a filename-only reference. A bare `§4` / `§4.x` token or a zero-padded `§0N` token (it
+  numbers a spec file title, never a section) **fails**; a `§04/<file>#<slug>` whose file or slug
+  does not exist **fails**; and every whitespace-separated header token carrying a `§` or a gate
+  id must be whole — `§<n>[.<n>…][a-z]`, `§04/<file>#<slug>` or `G<n>[a-z]` — so an incomplete
+  anchor or a glued tail (`§04/images.md#png#jpg`, `§1.7#foo`, `G7#foo`) **fails**. This gives the coverage track (track C) the same resolvable-anchor
+  guarantee the numbered `§0`–`§3`/`§5`–`§7` tracks already have. (The leg + its G24
+  self-test landed at P4.60.3, 2026-09-15; this format change was recorded here first, per the
+  format-change protocol below. `_slug`: lowercase, every character except word characters,
+  spaces and hyphens dropped, whitespace collapsed to one hyphen, edge hyphens stripped — `### JPG / JPEG` → `jpg-jpeg`, `### PNG` → `png`.)
 - **`needs:`-targets exist** — every `needs:` box-id is a real box in the plan; the
   graph is **acyclic** (§5.1). A dangling or cyclic `needs:` fails. **`plan-lint`
   loads ALL phase files — `P0`..`P11` — when resolving `needs:` targets** (even though

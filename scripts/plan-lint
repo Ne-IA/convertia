@@ -54,6 +54,14 @@ ANNOT_RE = re.compile(r"^(?P<indent> *)(?P<kind>needs|unlocked-by): *(?P<val>.+)
 NOTE_RE = re.compile(r"^(?P<indent> *)> ?(?P<text>.*)$")
 REF_SECTION_RE = re.compile(r"§[0-9][0-9A-Za-z.]*")
 REF_GATE_RE = re.compile(r"\bG\d+[a-z]?\b")
+REF_GATE_TOKEN_RE = re.compile(r"G[0-9]+[a-z]?")   # a whole gate-id header token
+# the format-coverage anchor form (_format.md §3.1/§7, P4.60.3): `§04/<file>#<slug>` -> a `### ` heading in
+# docs/spec/04-formats/<file> whose plan-lint slug (_slug) equals <slug>; the 04-formats tree has no numbered §4
+REF_04_RE = re.compile(r"§04/([A-Za-z0-9_.-]+\.md)#([A-Za-z0-9_-]+)")
+# a well-formed numbered §-token (the letter suffix is real: §6.4.6a, §3.4.4a); every whitespace-separated header token
+# carrying a § must FULLY match this or REF_04_RE, and every token carrying a gate id must fully match
+# REF_GATE_TOKEN_RE, so no glued tail (`§1.7#foo`, `§04/x.md#y#z`, `G7#foo`) resolves by prefix
+REF_SECTION_TOKEN_RE = re.compile(r"§[0-9]+(?:\.[0-9]+)*[a-z]?")
 
 
 @dataclass
@@ -225,14 +233,37 @@ def fmt_header_well_formedness(ctx: Ctx) -> list[Finding]:
     return out
 
 
+def _04_heading_slugs(root: Path, file: str):
+    """The `### ` heading slugs of docs/spec/04-formats/<file> (plan-lint's own _slug), or None if the file is
+    absent - the coverage-track anchor set a `§04/<file>#<slug>` ref resolves against (_format.md §7)."""
+    formats = root / "docs" / "spec" / "04-formats"
+    # an EXACT directory-entry match, so a wrong-case name fails on case-insensitive NTFS/APFS as on Linux CI
+    if not formats.is_dir() or file not in {p.name for p in formats.iterdir() if p.is_file()}:
+        return None
+    text = (formats / file).read_text(encoding="utf-8", errors="replace")
+    return {_slug(line[4:]) for _, line in _strip_fenced(text) if line.startswith("### ")}
+
+
 def fmt_reference_resolution(ctx: Ctx) -> list[Finding]:
     out = []
     anchors = _spec_anchors(ctx.root)
     gates = _gate_ids(ctx.root)
     for b in ctx.boxes:
-        secs = REF_SECTION_RE.findall(b.refs)
-        gs = REF_GATE_RE.findall(b.refs)
-        has_ref = bool(secs or gs)
+        tokens = b.refs.split()
+        malformed = [t for t in tokens
+                     if ("§" in t and not (REF_SECTION_TOKEN_RE.fullmatch(t) or REF_04_RE.fullmatch(t)))
+                     or (REF_GATE_RE.search(t) and "§" not in t and not REF_GATE_TOKEN_RE.fullmatch(t))]
+        for t in malformed:
+            out.append(Finding("format:reference-resolution", b.file, b.lineno,
+                               f"{b.box_id}: `{t}` is not a well-formed reference token - a header ref token is "
+                               f"`§<n>[.<n>...][a-z]`, `§04/<file>#<slug>` or `G<n>[a-z]`, whole and "
+                               f"whitespace-separated (_format.md §7)"))
+        refs = " ".join(t for t in tokens if t not in malformed)
+        refs04 = REF_04_RE.findall(refs)
+        plain = REF_04_RE.sub(" ", refs)       # a `§04/...` anchor is not a numbered §-token
+        secs = REF_SECTION_RE.findall(plain)
+        gs = REF_GATE_RE.findall(plain)
+        has_ref = bool(secs or gs or refs04)
         tooling_only = "tooling-only" in b.refs
         if not has_ref and not tooling_only:
             out.append(Finding("format:reference-resolution", b.file, b.lineno,
@@ -242,6 +273,14 @@ def fmt_reference_resolution(ctx: Ctx) -> list[Finding]:
                                f"{b.box_id}: carries a real ref AND `tooling-only` (mutually exclusive)"))
         for s in secs:
             num = s[1:]            # drop §
+            # a zero-padded `§0N[.x]` token numbers a spec FILE title (`# 04 — Formats`), never a section, and
+            # 04-formats/ has no numbered tree at all: neither may resolve against a title anchor by prefix
+            if num == "4" or num.startswith("4.") or re.fullmatch(r"0[0-9](?:\..*)?", num):
+                out.append(Finding("format:reference-resolution", b.file, b.lineno,
+                                   f"{b.box_id}: §{num} is not a coverage anchor or a section - a `§0N` token "
+                                   f"numbers a spec file title and 04-formats/ has no numbered §4 tree; cite a "
+                                   f"numbered section or `§04/<file>#<slug>` (_format.md §7)"))
+                continue
             if not any(a == num or a.startswith(num + ".") or num.startswith(a + ".") or num == a
                        for a in anchors):
                 out.append(Finding("format:reference-resolution", b.file, b.lineno,
@@ -250,6 +289,15 @@ def fmt_reference_resolution(ctx: Ctx) -> list[Finding]:
             if gates and g not in gates:
                 out.append(Finding("format:reference-resolution", b.file, b.lineno,
                                    f"{b.box_id}: {g} resolves to no build-gates catalogue row"))
+        for file, slug in refs04:
+            slugs = _04_heading_slugs(ctx.root, file)
+            if slugs is None:
+                out.append(Finding("format:reference-resolution", b.file, b.lineno,
+                                   f"{b.box_id}: §04/{file}#{slug} names no docs/spec/04-formats/{file}"))
+            elif slug not in slugs:
+                out.append(Finding("format:reference-resolution", b.file, b.lineno,
+                                   f"{b.box_id}: §04/{file}#{slug}: no `### ` heading in 04-formats/{file} slugs to "
+                                   f"'{slug}' (plan-lint's _slug rule: lowercase, only word characters, spaces and hyphens kept, whitespace -> one hyphen, edge hyphens stripped)"))
     return out
 
 
@@ -365,8 +413,8 @@ IPC_COMMANDS = {"C1", "C2a", "C2b", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C
 
 
 def _slug(text: str) -> str:
-    """GitHub-style heading slug: lowercase, drop punctuation (keep word chars/space/hyphen),
-    spaces -> hyphen."""
+    """Heading slug, close to but not identical with GitHub's: lowercase, keep only word chars /
+    whitespace / hyphens, collapse whitespace to one hyphen, strip edge hyphens."""
     t = text.strip().lower()
     t = re.sub(r"[^\w\s-]", "", t)
     return re.sub(r"\s+", "-", t).strip("-")

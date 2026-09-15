@@ -250,7 +250,7 @@ windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32
 # convention; MSRV 1.71 ≤ the workspace rust-version 1.96.0). Linux-only, so it rides
 # `[target.'cfg(target_os = "linux")'.dependencies]`. §0.8 gains the `landlock §2.12.3` Additional-crates row in
 # THIS commit (DoD 2); the paired `check-supply-chain` PINNED_FLOORS §0.8 drift-floor row is L(-1) (G71) — the
-# Co-Pilot box P4.84 (whose anticipated-floors comment already names "landlock §2.0"), mirroring the
+# Co-Pilot box P4.84 (landed 2026-09-15; it corrected the comment's authoring-time "landlock §2.0"), mirroring the
 # chardetng P3.27 / csv P3.41 / process-wrap P4.10 splits (a new direct dep ABSENT from PINNED_FLOORS does not
 # red G18: the floor is a present-crate check, P3.82).
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -262,9 +262,9 @@ landlock = "0.4.5"
 # (rustix/tokio/…), so this adds NO newly-resolved package. Permissive (`MIT OR Apache-2.0`). Pinned to the
 # pre-existing lock-resolved 0.2.186 (no incidental bump). Linux-only. §0.8 gains the `libc §2.12.3` Additional-
 # crates row in THIS commit (DoD 2); its paired `check-supply-chain` PINNED_FLOORS floor row is L(-1) — the
-# Co-Pilot box P4.84's catch-all ("plus any further P4 direct-dep promotion's row"), exactly like the
+# Co-Pilot box P4.84, which landed it as a definite row on 2026-09-15 beside the
 # landlock/seccompiler/process-wrap rows. (A new direct dep ABSENT from PINNED_FLOORS does not red G18 — the
-# floor is a present-crate check, P3.82 — so nothing reds before P4.84 lands the row.)
+# floor is a present-crate check, P3.82 — so nothing redded before P4.84 landed the row.)
 libc = "0.2.186"
 # [P4.15.3] §2.12.3 best-effort Linux privilege-drop tier — the seccomp-bpf leg: installs an ALLOW-by-default
 # seccomp filter with a small DENY-list of never-legit-in-a-decoder syscalls (defence-in-depth, NOT the egress
@@ -278,8 +278,8 @@ libc = "0.2.186"
 # Permissive (`Apache-2.0 OR BSD-3-Clause`) and pure Rust with no socket/copyleft/image-C-lib edge, so G53 +
 # cargo-deny + cargo-audit stay green. Caret-pinned to the lock-resolved 0.5.0. Linux-only (`seccompiler` builds
 # only on Linux). §0.8 gains the `seccompiler §2.12.3` row in THIS commit (DoD 2); the paired PINNED_FLOORS floor
-# row is L(-1) — the Co-Pilot box P4.84 (which EXTENDS the anticipated-floors comment, since seccompiler is not
-# yet named there).
+# row is L(-1) — the Co-Pilot box P4.84 (landed 2026-09-15; it also named seccompiler in the floor-activation
+# comment).
 seccompiler = "0.5.0"
 
 # [P4.20] §1.10 available-memory probe, macOS leg — `crate::platform::available_memory_bytes` reads the Mach
@@ -289,7 +289,7 @@ seccompiler = "0.5.0"
 # in `Cargo.lock`, so widening it to macOS adds NO newly-resolved package and leaves the lock byte-identical —
 # it is a target-table addition, not a dep-add. Same pin as the Linux arm (0.2.186, no incidental bump). §0.8's
 # `libc` Additional-crates row is widened from "Linux-only" in THIS commit (DoD 2); the `check-supply-chain`
-# PINNED_FLOORS row rides the P4.84 catch-all exactly as the Linux arm's does.
+# PINNED_FLOORS row is the one definite `libc` row P4.84 landed (2026-09-15) for both arms.
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2.186"
 
@@ -334,8 +334,8 @@ tokio = { version = "1.52.3", features = ["macros", "test-util"] }
 # so this is a direct-edge promotion: no newly-resolved package, no SBOM/G53 row; `MIT OR Apache-2.0`, pure
 # Rust, no socket/copyleft/image-C-lib edge). Default features (`parse` + `serde`). Caret-pinned to the
 # lock-resolved 1.1.2 (the normal-lib convention). §0.8 records the choice in the same commit (DoD 2); the
-# paired `check-supply-chain` PINNED_FLOORS floor row is L(-1) — the Co-Pilot box P4.84's catch-all ("plus
-# any further P4 direct-dep promotion's row"), exactly like the P4.10/P4.15 rows (a new direct dep ABSENT
+# paired `check-supply-chain` PINNED_FLOORS floor row is L(-1) — the Co-Pilot box P4.84's definite `toml`
+# row (landed 2026-09-15), like the P4.10/P4.15 rows (a new direct dep ABSENT
 # from PINNED_FLOORS does not red G18: the floor is a present-crate check, P3.82).
 toml = "1.1.2"
 [build-dependencies]
