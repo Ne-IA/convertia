@@ -120,7 +120,7 @@ record("_string_blanked: literal bodies blanked, code preserved, unterminated qu
        == "assert_eq!(f(\"_______\"), '_______')"
        and "expect(" not in m._string_blanked('x = "expect( unterminated'))
 
-# --- the whole-deletion-run window (the 2026-07-12 P3.86 refinement): a REMOVED assertion is
+# --- the whole-deletion-run window (the 2026-07-13 P3.86 refinement): a REMOVED assertion is
 #     justified by ONE tag within ±WINDOW of its contiguous `-`-run's BOUNDARIES — git emits every
 #     `-` before any `+`, so a buried assert in an atomically-deleted test unit can never carry a
 #     tag within ±WINDOW of itself; the tombstone belongs to the deletion EVENT ------------------

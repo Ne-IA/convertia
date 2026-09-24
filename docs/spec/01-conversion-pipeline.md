@@ -957,7 +957,7 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
     > (case (b) above is thus specifically the successful-run descendant). This resolves the
     > exit-classification-owner decision the P4.10 forward note delegated to P4.12 — the same
     > box that owns the exit≠0 → §3.5 `classify_failure` routing.
-    > **`[UPSTREAM 2026-08-25 — Co-Pilot]`** the defect is FIXED upstream in `process-wrap`
+    > **`[UPSTREAM 2026-08-26 — Co-Pilot]`** the defect is FIXED upstream in `process-wrap`
     > **10.0.0** (released 2026-08-24: "Keep wrapper registry live during hooks" + "Preserve
     > creation flags with job objects"; reported independently as watchexec/process-wrap#35/#36,
     > both closed — so there is nothing left to report upstream). The pin stays **9.1.0**:
@@ -1014,7 +1014,7 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
   descendants can survive us on **POSIX**; they are reaped by re-parenting, and the
   **startup cleanup** (§2.6) discards the previous run's owned temp. **On Windows the
   crash-time reap is CLOSED for a still-running engine wherever the §2.12.3 Leg-B job attached
-  `[CORRECTED — P4.17, 2026-08-25]`** — see the note below for the precise arm split.
+  `[CORRECTED — P4.17, 2026-08-26]`** — see the note below for the precise arm split.
   > **`[CORRECTED 2026-07-23 — P4.10, FORCED DEVIATION]`** this bullet previously said
   > "On an **ungraceful** end (crash/power-loss) the OS reaps the Windows job", which
   > rested on the kill-on-job-close limit the Mechanism bullet above shows is
@@ -1029,11 +1029,11 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
   > box (P4.17) normatively requires exactly that limit. **P4.17 is therefore the
   > tracked home for closing this residual**, and P4.10 records both halves of the
   > upstream defect in that box's forward note.
-  > **`[UPSTREAM 2026-08-25 — Co-Pilot]`** fixed upstream in `process-wrap` 10.0.0 — see the
+  > **`[UPSTREAM 2026-08-26 — Co-Pilot]`** fixed upstream in `process-wrap` 10.0.0 — see the
   > Mechanism bullet's `[UPSTREAM]` note above (the pin stays 9.1.0; the bump is a deliberate
   > dep-major act of its own). P4.17's own `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job remains the
   > in-product close regardless of the bump.
-  > **`[CORRECTED 2026-08-25 — P4.17, the residual is CLOSED on Windows, arm-split]`** the
+  > **`[CORRECTED 2026-08-26 — P4.17, the residual is CLOSED on Windows, arm-split]`** the
   > "tracked home" this note names has landed: §2.12.3's Windows privilege-drop tier (Leg B)
   > creates ConvertIA's OWN Job Object carrying `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assigns
   > the still-suspended child to it before its threads resume (a Windows-8+ NESTED pair with
@@ -1244,7 +1244,7 @@ Pending ─▶ Running ─┬─▶ Succeeded
   cancels cooperatively (the P3.52 note), so the arm is unreachable until P4.11 wires
   the stop-dequeue — the spec decides it ahead of its consumer.
 - `Skipped` is assigned **before** the queue (a §1.2/§1.3 ineligible item never
-  becomes `Pending`); it is distinct from a mid-run `Failed`. `[CLARIFIED 2026-07-12 —
+  becomes `Pending`); it is distinct from a mid-run `Failed`. `[CLARIFIED 2026-07-13 —
   the P3.48 rerun-skip ruling]` The same construction-terminal rule covers the
   **§2.5.3 re-run skip**: an eligible ledger-hit item the user chose to skip at the
   §2.5 batch-level prompt is assigned `Skipped(AlreadyConverted)` at C6 construction —
@@ -1252,7 +1252,7 @@ Pending ─▶ Running ─┬─▶ Succeeded
 - **Running → Failed mapping — where the kind conversion lives `[DECIDED]`.** When the
   §1.7 lifecycle returns `InvocationResult::Failed(kind)` (carrying the Rust-internal
   `ConversionErrorKind`, §2.8), the orchestrator — **`crate::orchestrator`**, which owns
-  the transition (`[CORRECTED 2026-07-11 — the P3.46 hard-stop]` this section previously
+  the transition (`[CORRECTED 2026-07-12 — the P3.46 hard-stop]` this section previously
   mis-named the transition/Batch owner "`crate::run`"; §0.7 is normative — the tier-1
   `crate::orchestrator` homes the §1.9 queue + job lifecycle + `JobState`, while
   `crate::run` is the tier-2 scratch/cleanup LEAF that depends DOWN only and may
@@ -1295,7 +1295,7 @@ Pending ─▶ Running ─┬─▶ Succeeded
   `CollectedSet::Single.skipped`**, a `ConversionJob` record with
   `JobState = Skipped(reason)` set **at construction** (the `SkipReason` copied directly from
   `SkippedItem.reason`, §0.6; its `source` is `JobSource::Skipped(<the frozen SkippedItem
-  record>)` — the §0.6 `JobSource` sum type `[DECIDED 2026-07-11 — the P3.47 ruling]`, so the
+  record>)` — the §0.6 `JobSource` sum type `[DECIDED 2026-07-12 — the P3.47 ruling]`, so the
   batch carries the complete skip record itself and no eligible-shaped data is
   synthesised). These `Skipped` jobs **never enter the `Pending` queue** and
   receive **no `Channel` events** (no live `ItemStarted`/`ItemProgress`/`ItemFinished`, per
@@ -1595,7 +1595,7 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
 - **Re-run prompt linkage:** if §2.5 detected an equivalent prior output **before**
   CONVERT, the one batch-level skip/fresh-copy prompt (§5.2) already resolved it;
   the summary reflects whichever the user chose (skipped items appear as a distinct
-  outcome, not a failure). `[CLARIFIED 2026-07-12 — the P3.48 rerun-skip ruling]` The
+  outcome, not a failure). `[CLARIFIED 2026-07-13 — the P3.48 rerun-skip ruling]` The
   representation is `JobState::Skipped(SkipReason::AlreadyConverted)` (§0.6), assigned
   at C6 construction: the item is projected into `RunResult.items` as
   `ItemResult { item, state: Skipped(AlreadyConverted), output_display: None,

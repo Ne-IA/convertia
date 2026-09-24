@@ -138,7 +138,7 @@ pub async fn drain_intake(
 /// `pub(crate)` would expose an IPC-funnel internal to tier 1/2 (`orchestrator`/`engines`) against the §0.7
 /// tier model. This FULFILS the unit-testability the doc above already declares as this fn's reason to exist
 /// (owner decision A ships no `tauri::test` mock, so the AppHandle-free split IS the test surface).
-/// [Decision: P3.66, 2026-07-18 — `pub(super)`, not `pub(crate)`]
+/// [Decision: P3.66, 2026-07-20 — `pub(super)`, not `pub(crate)`]
 pub(super) fn drain_to_collected_set(
     pending: &PendingIntake,
     ready: &FrontendReady,

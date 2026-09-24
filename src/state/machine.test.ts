@@ -20,7 +20,7 @@ import {
 } from "./machine";
 
 // §6.4.6 unit (G15): the §5.2 walking-skeleton state machine (P3.53). The FULL slice reducer lives in
-// `machine.ts` (the 2026-07-13 option-① ruling), so EVERY §5.2 transition cell of the slice states is a
+// `machine.ts` (the 2026-07-15 option-① ruling), so EVERY §5.2 transition cell of the slice states is a
 // reducer arm — each asserted here as a pure `transition(state, msg)` read-back (test-strategy §0.2), plus the
 // no-op behaviour of an invalid (state, msg) pair and the global `app://fault` wildcard from every state.
 

@@ -33,7 +33,7 @@ import type {
 import { initialState, transition, type Msg, type State } from "./machine";
 
 // The §5.2 screen-state machine now lives in `state/machine.ts` (the P3.53 slice-subset `State` +
-// pure `transition` reducer, the 2026-07-13 P3.53 ruling); the store HOLDS `machine: State` and drives it
+// pure `transition` reducer, the 2026-07-15 P3.53 ruling); the store HOLDS `machine: State` and drives it
 // via {@link AppStore.dispatch}. Re-exported here so the §5.3 screens read/dispatch from the one store home.
 export type { Msg, State } from "./machine";
 
@@ -114,7 +114,7 @@ export interface AppStore extends AppState {
   readonly applyConvertEvent: (event: ConversionEvent) => void;
   /** [P3.53] Dispatch a §5.2 machine `Msg` — apply the pure `transition` reducer to advance `machine` (§5.2).
    *  The §5.3 screens dispatch these (user actions + inbound §5.8 IPC results/events); the machine is the flow
-   *  single-source-of-truth (the 2026-07-13 P3.53 ruling), so the screens hold NO transition logic. */
+   *  single-source-of-truth (the 2026-07-15 P3.53 ruling), so the screens hold NO transition logic. */
   readonly dispatch: (msg: Msg) => void;
 }
 

@@ -13,7 +13,7 @@ It FLAGS + REQUIRES JUSTIFICATION, it does NOT forbid. A suppression is fine whe
 BOUNDARIES of its contiguous deletion run - git emits every `-` of a change region before any `+`,
 so the buried assertions of an atomically-deleted test unit can never have a tag within +/-N of
 themselves; ONE tombstone tag adjacent to the deletion run justifies the whole deleted unit, and a
-1-line removal degenerates to the historical per-assert window exactly - the 2026-07-12 P3.86
+1-line removal degenerates to the historical per-assert window exactly - the 2026-07-13 P3.86
 refinement, owner-acked L(-1)):
   - the changed-expectation form  [Test-Change: <box-id> - old-obsolete+new-correct, <ref>]
         (the green-by-rewrite case: prove (1) the old expectation is obsolete (cite the spec) AND
@@ -513,7 +513,7 @@ def _scan_hunks(diff_text: str, relpath: str) -> list[str]:
                 flagged.append((k, "removed assertion"))
         for k, label in flagged:
             lo, hi = max(0, k - WINDOW), min(len(body), k + WINDOW + 1)
-            # The whole-deletion-run window (the 2026-07-12 P3.86 refinement, owner-acked L(-1)): a
+            # The whole-deletion-run window (the 2026-07-13 P3.86 refinement, owner-acked L(-1)): a
             # REMOVED assertion is justified by a tag within +/-WINDOW of its maximal contiguous
             # `-`-run's BOUNDARIES, not of each buried line. Git emits every `-` of a change region
             # before any `+`, so an atomically-deleted test unit's inner assertions are structurally

@@ -35,7 +35,7 @@
 //! into one `SinglePublish::Published` — so the single-call-FIRST ordering is pinned STRUCTURALLY instead
 //! (the source-scan test in this module), the §1.1a pattern — cited by MODULE, never by `#[test] fn` name,
 //! which a rename would silently strand (the P2.136/G73 convention).
-//! [Decision: P3.66, 2026-07-18 — clause (2), reading (a) sharpened; no production change for observability]
+//! [Decision: P3.66, 2026-07-20 — clause (2), reading (a) sharpened; no production change for observability]
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

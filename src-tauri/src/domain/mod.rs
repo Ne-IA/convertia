@@ -684,7 +684,7 @@ impl DetectionOutcome {
 /// The frozen source record a `ConversionJob` (§1.9, `crate::orchestrator`) converts (§0.6) — a SUM over the
 /// two §1.1-freeze outcomes a materialised job can carry: an ELIGIBLE `DroppedItem` (queued `Pending`,
 /// converted) or a pre-flight-ineligible `SkippedItem` (never queued, terminal `Skipped` at construction,
-/// §1.9). [DECIDED 2026-07-11 — the P3.47 ruling] a §1.9 pre-flight-`Skipped` job is **not** "an eligible job
+/// §1.9). [DECIDED 2026-07-12 — the P3.47 ruling] a §1.9 pre-flight-`Skipped` job is **not** "an eligible job
 /// missing its source" (an `Option<DroppedItem>` None-with-meaning that would give the P2.14 `item ==
 /// source.item()` invariant a queued-only carve-out) but its **own kind carrying its own frozen record**, so:
 /// (1) the §1.9 "skips survive C6" anchor holds in FULL fidelity — the §0.4.4 collected-set registry is

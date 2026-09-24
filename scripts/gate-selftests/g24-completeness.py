@@ -3,7 +3,7 @@
 
 Proves the G22 membership bijection logic CATCHES an uncovered format (no fixture / no round-trip
 test) and PASSES full coverage; the G23 conversion-command scan finds the SS0.4.1 conversion
-command(s) (`_CONVERSION_COMMANDS`, exactly `start_conversion` - re-keyed 2026-07-17 by the P3.63
+command(s) (`_CONVERSION_COMMANDS`, exactly `start_conversion` - re-keyed 2026-07-18 by the P3.63
 ruling; the retired `convert_*` shape and every non-conversion command are ignored) and the
 untested-command walk CATCHES a command with no partner test (positive + negative) and PASSES one
 that is tested; and the live tier is GREEN on the real repo (G23 LIVE since P3.63). stdlib-only,

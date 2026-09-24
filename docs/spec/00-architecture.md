@@ -530,7 +530,7 @@ FrozenCollectedSet`** (the `CollectedSet::Single` wire payload **plus its off-wi
 table `[DECIDED 2026-07-06]`** — the per-item real `raw_path`/`resolved_path` pairs, the
 §2.3 identity evidence, and the real dropped-root `PathBuf`s; the wire carries only the
 `display_name`/`roots_display` strings, §0.6), mirroring the `RunId`-token /
-`CollectingId`-token lifecycle pattern. `[CLARIFIED 2026-07-07 — the P3.40 ruling]`
+`CollectingId`-token lifecycle pattern. `[CLARIFIED 2026-07-11 — the P3.40 ruling]`
 The **§2.3 identity evidence** is carried as an **orchestrator-side table beside the
 domain `FrozenCollectedSet`** within the same registry record — `ItemId → FileIdentity`
 over every **resolved** survivor, eligible and detect-ineligible skipped alike (the
@@ -837,7 +837,7 @@ pub struct SkippedItem {
                                      //   the summary display [DECIDED 2026-07-06]; the real path
                                      //   stays core-side (FrozenCollectedSet path table, §0.4.4)
     pub detected_display: Option<String>, // the friendly detected-type name RETAINED from
-                                     //   detection's own output [DECIDED 2026-07-11 — the P3.50
+                                     //   detection's own output [DECIDED 2026-07-12 — the P3.50
                                      //   ruling]: Some(detected) for UnsupportedType (its
                                      //   DetectionOutcome variant always carries it), the
                                      //   best_guess for Uncertain when detection named one, None
@@ -959,7 +959,7 @@ pub struct ConversionJob {
                                      //   items.len(); §6 property-test asserts item == source.item()
                                      //   UNIFORMLY over both JobSource arms.
     pub source: JobSource,           // the job's own frozen record — see JobSource below
-                                     //   [DECIDED 2026-07-11 — the P3.47 ruling]; the item's REAL
+                                     //   [DECIDED 2026-07-12 — the P3.47 ruling]; the item's REAL
                                      //   raw/resolved paths live in the §0.4.4 FrozenCollectedSet
                                      //   path table (keyed by `item`) — the §1.7 invocation
                                      //   resolves them there [DECIDED 2026-07-06]
@@ -968,7 +968,7 @@ pub struct ConversionJob {
                                      //   pre-flight Skipped job (never planned)
 }
 
-pub enum JobSource {                 // [DECIDED 2026-07-11 — the P3.47 ruling] a §1.9 pre-flight
+pub enum JobSource {                 // [DECIDED 2026-07-12 — the P3.47 ruling] a §1.9 pre-flight
     Eligible(DroppedItem),           //   Skipped job is NOT "an eligible job missing its source";
     Skipped(SkippedItem),            //   it carries its OWN frozen record. The sum type (not an
 }                                    //   Option<DroppedItem>) keeps the §1.9 "skips survive C6"
@@ -977,7 +977,7 @@ pub enum JobSource {                 // [DECIDED 2026-07-11 — the P3.47 ruling
                                      //   of the complete skip record — and keeps the item ==
                                      //   source.item() invariant UNIFORM (both arms carry item;
                                      //   no queued-only carve-out). Coupling invariant (§6
-                                     //   property-tested; REFINED by the 2026-07-12 P3.48
+                                     //   property-tested; REFINED by the 2026-07-13 P3.48
                                      //   rerun-skip ruling): source is Skipped(_) ⟺ state is
                                      //   JobState::Skipped(<a detection reason>) — the §2.5.3
                                      //   re-run skip is state Skipped(AlreadyConverted) with
@@ -1009,7 +1009,7 @@ pub enum SkipReason {                // why a pre-flight item never entered the 
     Uncertain,                       // can't tell (§1.2)
     Empty,                           // 0-byte / no decodable content
     Unreadable,                      // gone/locked/denied at freeze (§1.2)
-    AlreadyConverted,                // the §2.5.3 re-run skip [DECIDED 2026-07-12 — the P3.48
+    AlreadyConverted,                // the §2.5.3 re-run skip [DECIDED 2026-07-13 — the P3.48
                                      //   rerun-skip ruling]: the user chose RerunDecision::Skip
                                      //   at the §2.5 batch-level prompt for a ledger-hit item —
                                      //   assigned at C6 construction (terminal, never queued,
@@ -1531,7 +1531,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | Cancellation | **tokio-util** (`CancellationToken`) | exact |
 | Error plumbing | **thiserror** (core error enums) → mapped to `IpcError` (§0.4.3); `serde` for wire | exact |
 | Detection | content-sniffing crate(s) — `infer` and/or hand-rolled magic tables; §1.2 owns the strategy | exact |
-| FS guarantees | `tempfile` (owned scratch), `winapi-util`/`dunce` (resolved-identity via the safe `GetFileInformationByHandle` wrapper + Windows path canonicalisation; replaces the earlier `same-file` listing — same-file exposes no Windows identity numbers, §2.3.1 `[CORRECTED 2026-07-07]`), free-space via platform calls (`rustix` `statvfs`/`fstatvfs`, `windows-sys` `GetDiskFreeSpaceExW` — `fs2` is RETIRED and never becomes a dependency), atomic **no-replace** publish via `rustix::fs::renameat_with(NOREPLACE)` (Linux `renameat2` / macOS `renameatx_np`) + `windows-sys` (the `FileRenameInfoEx`-class no-replace move) — NOT plain std `rename`, which replaces (`[CORRECTED 2026-07-07 — the P3.12 hard-stop ruling]`; the earlier "`fs2`/platform calls, atomic rename via std" row text) — + §2.14 cross-volume fallback | exact |
+| FS guarantees | `tempfile` (owned scratch), `winapi-util`/`dunce` (resolved-identity via the safe `GetFileInformationByHandle` wrapper + Windows path canonicalisation; replaces the earlier `same-file` listing — same-file exposes no Windows identity numbers, §2.3.1 `[CORRECTED 2026-07-07]`), free-space via platform calls (`rustix` `statvfs`/`fstatvfs`, `windows-sys` `GetDiskFreeSpaceExW` — `fs2` is RETIRED and never becomes a dependency), atomic **no-replace** publish via `rustix::fs::renameat_with(NOREPLACE)` (Linux `renameat2` / macOS `renameatx_np`) + `windows-sys` (the `FileRenameInfoEx`-class no-replace move) — NOT plain std `rename`, which replaces (`[CORRECTED 2026-07-08 — the P3.12 hard-stop ruling]`; the earlier "`fs2`/platform calls, atomic rename via std" row text) — + §2.14 cross-volume fallback | exact |
 | Frontend | **React 19**, **TypeScript** (strict, no `any`), **Vite** (per platform CLAUDE.md, current major), **Tailwind CSS** | exact, lockfile |
 | Frontend state | lightweight store (recommend **Zustand**) + the generated `bindings.ts`; §5.1 owns the final choice | §5.1 |
 | Package mgr | **pnpm** (`pnpm@10.13.1` class per platform standard) | pinned |

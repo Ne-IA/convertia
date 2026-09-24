@@ -212,7 +212,7 @@ pub enum JobState {
 // since P3.48; the first correction then over-shot to "all three are live", which is false for
 // `project_outcome`. A multi-subject liveness clause has to be checked SUBJECT BY SUBJECT against the
 // module's own reason string.] Homed in `crate::orchestrator` per §0.7 (the tier-1 §1.9
-// lifecycle owner) — the 2026-07-11 reconciliation of §1.9's "crate::run" mis-attribution (the P3.46 [Decision]
+// lifecycle owner) — the 2026-07-12 reconciliation of §1.9's "crate::run" mis-attribution (the P3.46 [Decision]
 // note); the projection composes `InvocationResult` (tier-2 `engines`), `JobState` (tier-1) and `crate::outcome`
 // (tier-2), a legal downward fan the tier-2 scratch/cleanup `run` leaf could not host. No taxonomy in the FSM:
 // the internal-kind→wire-kind projection is `project_outcome`, so "a wrong transition fails in P3.46.1, a
@@ -1180,7 +1180,7 @@ pub fn batch_summary_line(totals: &Totals, has_residue: bool) -> String {
 }
 
 // ─── §2.1.1 per-item PUBLISH LEGS (P3.38 → re-cut P3.48) ──────────────────────────────────────────────
-// [Build-Session-Entscheidung: P3.38 → P3.48] Homed HERE in crate::orchestrator (tier 1) per the 2026-07-07
+// [Build-Session-Entscheidung: P3.38 → P3.48] Homed HERE in crate::orchestrator (tier 1) per the 2026-07-11
 // home ruling (§0.7 > the plan-cluster heading): the sequence COMPOSES `crate::run` (temp/cleanup) +
 // `crate::fs_guard` (publish/divert) + the engine step — and ONLY the tier-1 orchestrator may compose all
 // three (`fs_guard` depends DOWN only; `run`/`fs_guard` are mutually-independent siblings, so a deliberate

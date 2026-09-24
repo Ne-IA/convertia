@@ -10,7 +10,7 @@
 //! the pinned handle, `winapi-util`'s `AsHandleRef for File`) — comes through `winapi-util`'s SAFE wrapper
 //! (with `dunce` for the canonical-path `\\?\`-normalisation), and the Unix side is std `MetadataExt` — no
 //! `unsafe` in the core (§2.3.1 `[CORRECTED 2026-07-07]`). The §2.1.2/§2.3.3 create-only dir-relative PUBLISH
-//! primitives split by OS `[re-cut by the P3.12 ruling, 2026-07-07]`: the **Unix** side (Linux `renameat2` /
+//! primitives split by OS `[re-cut by the P3.12 ruling, 2026-07-08]`: the **Unix** side (Linux `renameat2` /
 //! macOS `renameatx_np`, P3.12/P3.13; the §2.14.3 copy fallback P3.17; the durability fsync P3.16/P3.18) rides
 //! `rustix`'s SAFE API and lands HERE in `crate::fs_guard` with ZERO `unsafe` (the crate-root deny holds); the
 //! **Windows** side (`NtSetInformationFile(FileRenameInformationEx)`, P3.14) is the FIRST — and only — RAW

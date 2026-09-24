@@ -1,6 +1,6 @@
 // src/state/machine.ts — the §5.2 screen-state finite-state machine (the walking-skeleton SLICE subset, P3.53).
 //
-// A PURE reducer `transition(state, msg) → state` over the §5.2 slice states. Per the 2026-07-13 P3.53 ruling
+// A PURE reducer `transition(state, msg) → state` over the §5.2 slice states. Per the 2026-07-15 P3.53 ruling
 // (option ①), the FULL slice machine lives HERE — the flow single-source-of-truth — so the §5.3 screens stay
 // presentational ("presentational + wired to the store/machine"): they RENDER `state` and DISPATCH `Msg`s, and
 // never hold transition logic. §5.2 is normative for the derivation ("Phase 3 derives the machine from these

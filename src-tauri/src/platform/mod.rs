@@ -18,7 +18,7 @@
 //! **and the §2.6.3 run-lock** ride safe `rustix` (`flock`; the §2.14.3 free-space read rides safe
 //! `rustix::fs::statvfs`; the §2.7.2 FAT/exFAT detection rides safe `rustix::fs::statfs`), the §2.3 identity
 //! reads ride safe `winapi-util`, the §0.9
-//! kill rides `process-wrap` (example list corrected 2026-07-07, the P3.12 ruling); the remaining per-OS
+//! kill rides `process-wrap` (example list corrected 2026-07-08, the P3.12 ruling); the remaining per-OS
 //! helpers are authored by their consuming boxes (P3+).
 //!
 //! **The one `unsafe` allow (G29):** this file carries the module-inner `#![allow(unsafe_code)]` that
@@ -668,7 +668,7 @@ pub(crate) fn available_memory_bytes() -> Option<u64> {
 /// (a §0.7 tier-3 leaf) free of any `crate::domain` dependency, exactly as the REACTIVE §2.1.2 third-fallback
 /// arm returns `fs_guard::PublishOutcome::NoAtomicPublishSupport` and defers the `DivertReason` mapping upward.
 ///
-/// **READ-ONLY detection [Decision: P3.18, 2026-07-07 — the `statfs`-class realization]:** a `statfs`-class
+/// **READ-ONLY detection [Decision: P3.18, 2026-07-09 — the `statfs`-class realization]:** a `statfs`-class
 /// query that WRITES NO FILE, so it leaves no unreclaimable probe residue (the defect of the discarded
 /// write-probe alternative). Per OS:
 ///  - **Linux:** `rustix::fs::statfs(dir)` → `StatFs.f_type` (the superblock magic) is classified by

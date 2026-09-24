@@ -335,7 +335,7 @@ describe("applyConvertEvent (live store action)", () => {
 });
 
 // §6.4.6 unit (G15): the P3.53 §5.2 machine store-integration — the store HOLDS `machine: State` and drives it
-// through the pure `transition` reducer via `dispatch` (the 2026-07-13 P3.53 ruling). The per-transition logic
+// through the pure `transition` reducer via `dispatch` (the 2026-07-15 P3.53 ruling). The per-transition logic
 // is tested exhaustively in `machine.test.ts`; here we assert the store seam (initial state + dispatch → reducer).
 describe("machine dispatch (P3.53 §5.2 store integration)", () => {
   afterEach(() => {

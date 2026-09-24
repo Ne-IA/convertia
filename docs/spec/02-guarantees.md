@@ -494,7 +494,7 @@ once). No-clobber is evaluated on the **resolved real file**.
 
 Every source and every candidate output path is reduced to a **canonical identity**
 by `fs_guard::resolve_identity(path) -> io::Result<FileIdentity>` (**fallible**
-`[CORRECTED 2026-07-07 — the P3.6 build]`: `canonicalize` fails on a path that does
+`[CORRECTED 2026-07-08 — the P3.6 build]`: `canonicalize` fails on a path that does
 not exist, so a missing source is a clean `Err` the §2.8 caller maps, never a panic
 — the earlier `-> FileIdentity` was the infallible shorthand. The §2.3.2
 retry-on-the-parent-when-absent is `is_safe_output`'s §2.3.3 OUTPUT-target concern,
@@ -527,7 +527,7 @@ not this — a frozen source exists at drop):
     identity numbers (`Handle::dev()`/`ino()` are Unix-only), so `winapi-util` is
     the direct dependency. (The G29/`crate::platform` FFI-surface example lists NAMED
     `GetFileInformationByHandle` among the primitives the core MAY link raw until the
-    2026-07-07 P3.12 ruling corrected them; `[CORRECTED — P3.9]` NO core path calls it
+    2026-07-08 P3.12 ruling corrected them; `[CORRECTED — P3.9]` NO core path calls it
     raw: the §2.3.1 identity read here AND the §2.3.3 P3.9 dir-handle verify BOTH use
     `winapi-util`'s safe `information(&handle)` wrapper (P3.9 reads the ALREADY-OPEN
     dir handle via `winapi-util`'s `AsHandleRef for File`). The genuine raw per-OS
@@ -1416,7 +1416,7 @@ enum OutcomeMsg {
 }
 ```
 
-**The pre-flight SKIP lines come from the SAME table `[DECIDED 2026-07-11 — the P3.50
+**The pre-flight SKIP lines come from the SAME table `[DECIDED 2026-07-12 — the P3.50
 ruling]`:** `crate::outcome` renders `OutcomeMsg::Skipped.text` by mapping the
 `SkipReason` through the §1.12 bridge (`skip_reason_to_error_kind`, P2.20) onto the
 kind rows above — `Empty` → the `Empty` row, `Unreadable` → the `Unreadable` row
@@ -1937,7 +1937,7 @@ T1 (§0.11) is uniformly subprocess-isolated. (This also reinforces §3.6: copyl
 engines are aggregated as separate binaries; the image-worker links libvips/LGPL
 internally, which is aggregation, never a link into the MIT core.)
 
-> **Clarification (P4.19 realization, 2026-08-26) — the absolute's SCOPE + its in-crate assertion
+> **Clarification (P4.19 realization, 2026-08-27) — the absolute's SCOPE + its in-crate assertion
 > `[DECIDED — P4.19]`:** "decoder" in this absolute means a decoder on the **untrusted-input path** —
 > the §1.2 detection sniffs, the §3.x conversion engines and the §3.5.6 native transform (this
 > section's own scope sentence: detection is "the first code touching untrusted bytes"). The

@@ -11,7 +11,7 @@ gate is never silently fail-open once its target lands.
     exactly `start_conversion`) has a PARTNER TEST (a tracking-aware `git ls-files` walk; stage the
     test in the same commit). This is G23's REAL home - it needs no §04 matrix row or bijection
     script, just the walk - LIVE fail-closed since P3.63 (the run_conversion_e2e_tests partner
-    suite). RE-KEYED 2026-07-17 (the P3.63 ruling, owner-acked L(-1)): the P0.4.11-era premise
+    suite). RE-KEYED 2026-07-18 (the P3.63 ruling, owner-acked L(-1)): the P0.4.11-era premise
     keyed the walk on a `convert_*` handler class that spec §0.4 invariant 1 forbids (no
     per-item-target command exists or may exist), so the walk was permanently dormant against the
     real C6 command; it now keys on the named §0.4.1 conversion-command set below.
@@ -48,7 +48,7 @@ for _stream in (sys.stdout, sys.stderr):          # the console's codepage is no
 ROOT = Path(__file__).resolve().parents[1]
 
 # --- G23: the §0.4.1 conversion-command handlers + their partner tests ---------------------------
-# The conversion-command set G23 keys on (re-keyed 2026-07-17, the P3.63 ruling: spec §0.4
+# The conversion-command set G23 keys on (re-keyed 2026-07-18, the P3.63 ruling: spec §0.4
 # invariant 1 forbids any per-item-target IPC command, so the once-assumed `convert_*` handler
 # class can never exist - the walk's real subject is the single §0.4.1 C6 `start_conversion`).
 # STANDING OBLIGATION (recorded in the P3.63 Decision note): a spec-level act that adds a

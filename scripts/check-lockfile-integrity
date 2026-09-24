@@ -41,9 +41,9 @@ lands):
       source + checksum (a same-version `[patch]`/fork substitution compiles different bytes).
       Target-absent while a listed sub-lock does not exist; fail-CLOSED on any unreadable/
       unparseable/malformed lockfile, a version drift, or a source/checksum mismatch.
-  (E) SUB-WORKSPACE --LOCKED RESOLVE (live since 2026-08-25) - the STALENESS half of (D): a root
+  (E) SUB-WORKSPACE --LOCKED RESOLVE (live since 2026-08-26) - the STALENESS half of (D): a root
       dep-add whose NEW subtree never reached the sub-lock at all is invisible to (D)'s both-locks
-      comparison (the 2026-08-24 c045ccd class - fuzz/Cargo.lock missing the P4.15 landlock/
+      comparison (the 2026-08-25 c045ccd class - fuzz/Cargo.lock missing the P4.15 landlock/
       seccompiler subtrees redded the --locked nightly fuzz job on BOTH legs for 2 nights, caught
       by the SCHEDULE rather than the push), so (E) runs `cargo metadata --locked` FROM each
       sub-workspace dir (the exact fuzz.yml pre-flight form) and fail-CLOSES on a non-zero
@@ -451,7 +451,7 @@ def subworkspace_locked_resolve(root: Path) -> list[str]:
     """(E) `cargo metadata --locked` must SUCCEED from every SUBWORKSPACE_LOCKS workspace dir - the
     STALENESS half of the sub-workspace contract. Leg (D) compares only crate names present in
     BOTH locks, so a root dep-add whose NEW subtree never reached the sub-lock at all is invisible
-    to it (the 2026-08-24 c045ccd class: fuzz/Cargo.lock missing the P4.15 landlock/seccompiler
+    to it (the 2026-08-25 c045ccd class: fuzz/Cargo.lock missing the P4.15 landlock/seccompiler
     subtrees redded the --locked nightly fuzz job on BOTH legs for 2 nights); a --locked resolve
     fails exactly then - at L1/L2, instead of at the next scheduled run. Target-absent (with a
     notice) while the sub-workspace MANIFEST does not exist; fail-CLOSED when cargo is

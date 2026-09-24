@@ -13,7 +13,7 @@ class) AND a same-version source/checksum substitution (the [patch]/fork shape),
 synced/subset resolution + sub-only crates + identical source/checksum, is target-absent without
 the sub-lock, and fail-CLOSES on an unparseable/malformed lock (incl. a duplicate (name, version)
 pair) / a sub-lock without a root lock, and the sub-workspace --locked resolve (E) PASSES a synced
-fixture workspace under REAL cargo, CATCHES a stale sub-lock (the 2026-08-24 c045ccd class),
+fixture workspace under REAL cargo, CATCHES a stale sub-lock (the 2026-08-25 c045ccd class),
 is target-absent without the sub-workspace manifest, and fail-CLOSES when cargo is unavailable,
 and the --deep FLAG gates leg (E) (main([]) at L1 never spawns cargo; main(['--deep']) at L2/L4 does).
 stdlib-only (the (E) legs invoke the real `cargo` binary, present wherever --deep is wired — L2/L4).
