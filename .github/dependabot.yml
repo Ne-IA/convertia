@@ -19,6 +19,11 @@ updates:
     commit-message: { prefix: "deps(actions)" }
     open-pull-requests-limit: 5
     labels: ["bot:dependabot", "type:dependencies"]
+    groups:
+      # the save/restore halves of ONE actions/cache pin move together - G56's cache-lockstep sub-rule (11)
+      # refuses a split, and Dependabot otherwise offers them as two PRs (the 2026-09-07 #30 precedent).
+      actions-cache:
+        patterns: ["actions/cache", "actions/cache/*"]
 
   - package-ecosystem: "cargo"            # Cargo.toml + Cargo.lock  (scaffolded P1.51)
     directory: "/"
@@ -44,8 +49,11 @@ updates:
     # --require-hashes`): Semgrep pins its transitive deps (opentelemetry-*, jsonschema, …) to exact
     # ranges, so a single-TRANSITIVE bump is `ResolutionImpossible` — it breaks the Semgrep install
     # (sast red), so such a PR is structurally un-mergeable. The ONLY coherent update is bumping
-    # `semgrep` itself, which regenerates the whole pinned tree; its transitives then follow. So allow
-    # ONLY semgrep here (a whitelist — everything else is ignored). [Co-Pilot — P1 Dependabot triage]
+    # `semgrep` itself — and even that PR is red by construction: the bot bumps the version string and
+    # leaves the `--require-hashes` digest set stale (PRs #28 and #33), so the required sast job refuses
+    # it and the Co-Pilot regenerates the tree per the requirements-ci.txt recipe and re-lands it (roles
+    # §5a). So allow ONLY semgrep here (a whitelist — everything else is ignored). [Co-Pilot — P1
+    # Dependabot triage; the re-land shape recorded 2026-09-24]
     # TRIP-WIRE: semgrep is today the SOLE direct dep in requirements.in. If a SECOND top-level pip
     # gate-tool is ever added there, add it to this allow-list in the SAME commit — else it would
     # silently get no Dependabot bump/security PRs.

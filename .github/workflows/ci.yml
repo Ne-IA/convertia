@@ -45,12 +45,12 @@ jobs:
         os: [ubuntu-22.04, macos-14, windows-2022]
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0          # full history so the P1.54 G28 diff-coverage leg can range github.event.before..HEAD
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
       - name: Install + verify pinned gate tools
@@ -253,7 +253,7 @@ jobs:
       # secret to an off-allowlist host. allowed-endpoints = checkout/gh-api + the GitHub release
       # CDNs the pinned gate-tool binaries (actionlint/zizmor) + setup-python download from.
       - name: 'Harden the runner — egress block (this job reads a secret; G56)'
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -263,12 +263,12 @@ jobs:
             objects.githubusercontent.com:443
             release-assets.githubusercontent.com:443
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0          # full history so G71 can range from github.event.before..HEAD
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
       - name: Install + verify pinned workflow tools (actionlint, zizmor)
@@ -304,7 +304,7 @@ jobs:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
         run: python3 scripts/check-dual-review --base "$BEFORE"
       - name: 'G11: conventional-commit subject over the push range (L4 mirror of the L3 commit-msg gate)'
-        if: github.event_name == 'push'        # build-loop commits only; fork-PR subjects are squash-normalised on merge
+        if: github.event_name == 'push'        # push ranges only: a fork PR is re-landed by the maintainer (roles §5a), never merged as its own commits
         env:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
         run: python3 scripts/check-commit-msg --base "$BEFORE"
@@ -323,11 +323,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
       - name: Install + verify the pinned SAST tools (Semgrep via pip --require-hashes; shellcheck pinned)
@@ -358,7 +358,7 @@ jobs:
         os: [ubuntu-22.04, macos-14, windows-2022]
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: 'Node/pnpm toolchain via corepack (all 3 OS — the per-OS tauri build needs the frontend)'
@@ -441,11 +441,11 @@ jobs:
       compile: ${{ steps.plan.outputs.compile }}
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
       # The check pass runs for the RUNNER'S host triple (x86_64-unknown-linux-gnu — `--all` is
@@ -521,16 +521,16 @@ jobs:
         entry: ${{ fromJSON(needs.engine-asset-plan.outputs.fetch) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
       - name: 'restore the cache entry (§6.1.3 group key)'
         id: restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .engine-cache/${{ matrix.entry.key }}
           key: ${{ matrix.entry.key }}
@@ -548,7 +548,7 @@ jobs:
           python3 scripts/fetch-engine-assets --engine "$ENTRY_GROUP" --target "$ENTRY_TRIPLE" $MODE_FLAG
       - name: 'save the populated entry under the same key'
         if: steps.restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .engine-cache/${{ matrix.entry.key }}
           key: ${{ matrix.entry.key }}
@@ -590,22 +590,22 @@ jobs:
             autoconf automake libtool make gcc g++ pkg-config \
             meson ninja-build cmake gnupg xz-utils tar zstd
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
       - name: 'restore the built entry (a hit ends the job — the entry is immutable under its key)'
         id: restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .engine-cache/${{ matrix.entry.key }}
           key: ${{ matrix.entry.key }}
       - name: 'restore the signed source inputs (populated by engine-asset-populate)'
         if: steps.restore.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .engine-cache/${{ matrix.entry.src_key }}
           key: ${{ matrix.entry.src_key }}
@@ -618,7 +618,7 @@ jobs:
         run: python3 scripts/compile-engine-asset --engine "$ENTRY_GROUP" --target "$ENTRY_TRIPLE"
       - name: 'save the compiled entry under the same key'
         if: steps.restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .engine-cache/${{ matrix.entry.key }}
           key: ${{ matrix.entry.key }}

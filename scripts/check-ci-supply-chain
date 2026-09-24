@@ -10,21 +10,52 @@ real parser resolves differently than a line scan) makes it ERROR rather than pa
 vacuously. zizmor remains the PRIMARY YAML-parsing G50 control; this is the G56 residual
 backstop against a future malicious/careless L(-1) `.github/**` diff.
 
-Fail-closed pre-pass (every workflow + dependabot.yml the gate reasons about):
-  * multiple YAML documents (`---` / `...` beyond a leading marker) -> reject;
-  * YAML anchors (`&name`), aliases (`*name`), merge keys (`<<:`) -> reject (stdlib
-    cannot resolve them, so a value could be defined out of the scanner's sight);
-  * duplicate TOP-LEVEL mapping keys -> reject (YAML resolves a dup to the LAST, a
-    line scan would trust the FIRST);
-  * explicit YAML tags (`!!type` / `!tag`) and complex/explicit keys (`? key`) -> reject
-    (both change resolution in ways a line scan cannot follow);
-  * block-scalar bodies (`run: |` / `: >`) are excised before any structural scan so
-    literal shell text never masquerades as - or hides - YAML structure;
-  * inline FLOW-MAPPING values (`{ ... }`) under the security-relevant keys (`on:` and
-    its children, `permissions:` at top-level AND per-job, `jobs:`) -> reject: a flow map
-    hides key/value structure from a line scan (a flow SEQUENCE `[a, b]` carries no hidden
-    keys and is fine). Anchors/aliases are detected ONLY at YAML node-start positions, so a
-    `*glob`/`&bg` shell token mid-scalar in a single-line `run:` is not a false anchor.
+Fail-closed pre-pass (every workflow + dependabot.yml the gate reasons about) - the DIALECT every
+structural reader below relies on (precheck; the r5-r9 reviews closed it refusal by refusal):
+  * multiple YAML documents (`---` / `...` beyond a leading marker) -> reject; a UTF-8 BOM anywhere
+    -> reject (at the file start YAML strips it and a line scan would read `\ufeffjobs` as a key
+    and skip every job-level check; at column 0 of a later line libyaml / yaml.v3 skip it while
+    YamlDotNet / PyYAML / js-yaml keep it; G52 forbids the BOM anyway);
+  * a quoted mapping key on a structural line -> reject: the dialect reads plain keys only, so every
+    reader matches ONE spelling (a quoted key hid `use-policy-store` from the harden-runner read and
+    `uses` from the engine-cache restore read - the r14 / r15 reviews; 0 live);
+  * a character Python treats as WHITE SPACE or a LINE BREAK outside the four every YAML parser
+    agrees on -> reject, anywhere in the file: YAML's white space is the space and the tab and its
+    line breaks are LF and CR,
+    while Python's str.isspace() / re `\\s` / str.strip() / str.splitlines() - the primitives every
+    reader here is built on - also see VT / FF / FS / GS / RS / U+001F / NEL / U+00A0 / U+1680 /
+    U+2000-U+200A / U+2028 / U+2029 / U+202F / U+205F / U+3000 (25 characters). Text after one of
+    the break members inside a comment is a real line to a YAML 1.1 parser (GitHub's YamlDotNet
+    workflow parser, libyaml / PyYAML, actionlint's yaml.v3 break at NEL / U+2028 / U+2029; the
+    ASCII members are rejected by libyaml / PyYAML / yaml.v3 and read as content by YamlDotNet)
+    and comment to an LF reader (the r9-r11 reviews' forged block-scalar header); a key or an
+    indent spelled with a space member is a different key or indent to YAML than to a `\\s` regex
+    (the r12 review's `package-ecosystem:<U+00A0>"npm"`, complete to the gate, unparseable to
+    Dependabot). The predicate is Python's own (`c not in ' \t\r\n' and c.isspace()`), applied to
+    the file's characters and pinned over every code point by a self-test leg, so no member can
+    be missed (an enumerated list missed VT once) and every accepted file splits, indents and
+    keys identically to every parser family;
+  * every structural line (comment-stripped, block-scalar bodies excised) is a `key:` entry, a
+    `- ` item, a bare `-` or a document marker, nothing else -> a line led by `?` / `:` / any
+    other indicator, a plain-scalar continuation line and a flow collection at the start of a
+    line's content are rejected, so a key and its `:` always share a line; a quoted node that
+    runs off its line -> reject (the value or key would continue on a line this reader never joins);
+  * any backslash on a structural line -> reject (no escape model: an escape can spell any key
+    or value and desynchronise the expression pre-pass);
+  * YAML anchors (`&name`), aliases (`*name`), merge keys (`<<:`), explicit tags (`!!type` /
+    `!tag`) and explicit keys in flow position (`{ ? k : v }`) -> reject, detected at YAML
+    node-start positions only, so a `*glob` / `&bg` shell token mid-scalar in a single-line
+    `run:` is not a false anchor;
+  * a flow collection spanning lines, an inline `jobs:` value, any inline job-id value and a
+    `steps` key followed by a flow opener anywhere on a line -> reject (a step GitHub reads is
+    then a block item under a block `steps:` under a block job under a block `jobs:`); an inline
+    FLOW-MAPPING value under the other security-relevant keys (`on:` and its children,
+    `permissions:` at top-level AND per-job) -> reject, a flow map hides key/value structure
+    from a line scan (a flow value inline after any other key, `branches: [main]`, is read);
+  * duplicate TOP-LEVEL mapping keys -> reject (YAML resolves a dup to the LAST, a line scan
+    would trust the FIRST);
+  * block-scalar bodies (`run: |` / `: >`) are excised before any structural scan so literal
+    shell text never masquerades as - or hides - YAML structure.
 
 Assertions (after the file is known to be in plain, statically-analysable block form):
   (1) .github/dependabot.yml exists + declares all four ecosystems (github-actions,
@@ -53,7 +84,10 @@ Assertions (after the file is known to be in plain, statically-analysable block 
       a non-`read-all` inline scalar are all rejected fail-closed.
   (6) runner-host integrity (P0.2.7, security-concept principle 11) - a job that reads a CI
       secret (`${{ secrets.* }}`) must NOT run on a self-hosted runner, and a GitHub-hosted
-      secret job must use step-security/harden-runner with `egress-policy: block`; a secret
+      secret job must use step-security/harden-runner with `egress-policy: block` (read to the
+      value's end, balanced-quoted, case-sensitive; a quoted key refused by the dialect; a step carrying
+      `use-policy-store` / `policy:` / `denied-endpoints` does not count - the dashboard policy or
+      the deny-list mode replaces the pinned block); a secret
       job whose runs-on is not a literal recognized hosted image is rejected fail-closed.
       Non-secret jobs are unconstrained (fail-open until the P10 signing job lands).
   (7) cargo-fuzz toolchain pin (P0.2.10, G37) - every `cargo ... fuzz` invocation names the
@@ -78,18 +112,86 @@ Assertions (after the file is known to be in plain, statically-analysable block 
       deliberately WIDER than jobs.<job>.container/services: it matches ANY `image:`/
       `container:` key at any depth, so a future legitimate non-container `image:` key (a
       matrix dimension, a workflow_dispatch input) lands as a documented exemption, never a
-      silent pass. The r6 sentence's transitive-action-pin half (pinact OR the reserved G67
-      Scorecard leg) is a separate acquisition owned by its own box, not this line scan.
+      silent pass. The r6 sentence's transitive-action-pin half is the owner act P4.97 (fetch every
+      referenced action's action.y*ml at its pinned SHA, then check nested uses: pins and docker
+      runs.image digests over the copies; pinact - which resolves tags to SHAs and version comments
+      through the GitHub API, reads the local workflow and action files it is handed, and never
+      reads a referenced REMOTE action's `action.y*ml`; its `--no-api` mode errors on a bare SHA -
+      and the reserved G67 Scorecard leg corroborate only), not this line scan.
  (10) the G37 restore-re-verify ordering (the G56 workflow-lint sub-rule the G37 row names) -
       a JOB that restores an engine-asset cache (`actions/cache*` + a `.engine-cache` path)
       may not also invoke `scripts/stage-engines`: no lint-recognizable SHA-256 re-verify
       actor exists between them, so the pair fails CLOSED. Content is scanned over the RAW
       (comment-stripped, NOT block-scalar-excised) job bodies - the check-(8) dual-view
       precedent, because a `run: |` body is exactly where a stage-engines invocation lives.
-      The Lane-B box that wires staging extends this rule with the sanctioned verify step it
-      lands (and the planted-mismatch self-test the G37 row asks for). Restore-only jobs (the
-      populate/compile pair) and stage-engines-without-restore jobs (the check-mode pass) are
-      the sanctioned shapes.
+      The owner act P10.62 extends this rule with the sanctioned verify step (and the planted-
+      mismatch self-test the G37 row asks for); P10.9, the box that wires staging, needs it.
+      Restore-only jobs (the populate/compile pair) and stage-engines-without-restore jobs (the
+      check-mode pass) are the sanctioned shapes.
+ (11) actions/cache LOCKSTEP (2026-09-24) - every `uses:` of `actions/cache`, `actions/cache/save`
+      or `actions/cache/restore` across ALL workflows pins ONE lowercase 40-hex sha: one action
+      version writes AND reads a cache entry (Dependabot offers the halves as two PRs - #30 bumped
+      save only). Read over the structural view (comment-stripped, block-scalar bodies excised: a
+      `run: |` body is a string GitHub reads no step from). The `uses` SHAPE rule closes the class
+      instead of listing odd forms: every `uses` key token on a structural line must be the key of
+      a plain block step line `[- ]uses: <value>` with the value on the same line and no block-scalar
+      indicator - a next-line or block-scalar value, a second key token on the line and a `uses` key
+      in any other position fail CLOSED. The rule is sound because the precheck restricts the YAML
+      DIALECT a structural line may use (the r7-r8 reviews: a step written as a flow collection in a
+      spelling the tokenizer's node model did not reproduce - a ` - ` inside a flow scalar, an
+      expression end hidden behind an escaped `\x7d`, a flow mapping on the line after a bare `-`
+      or after `steps:`, an inline `jobs: {...}` - carried a `uses` key the shape rule never saw).
+      Refused, each loud and fail-closed: every structural line must be a `key:` entry or a `- `
+      item (the line SHAPE - a line led by `?` / `:` / any other indicator, a plain-scalar
+      continuation line and a flow collection at the start of a line's content are refused, so a
+      key and its `:` always share a line and a sequence item is never a flow collection; the r9
+      review's `?` at a line end with the key on the next line); ANY backslash on a structural
+      line (a YAML escape can spell any key or value and desynchronise the expression scan, so the
+      dialect has no escapes and a double-quoted node simply ends at its next `"`); a quoted mapping
+      key (the dialect reads plain keys only, so every reader matches one spelling - a quoted key hid
+      `use-policy-store` from the harden-runner read and `uses` from the restore read); an inline
+      value on the top-level `jobs:` line and on any job-id line (parse_jobs); a `steps` key
+      followed by a flow collection anywhere on a line; a flow collection spanning lines; a quoted
+      node running off its line; explicit keys in flow position, anchors and aliases of any YAML
+      name, merge keys and tags; a BOM anywhere; any character Python treats as white space or a line
+      break outside the four every YAML parser agrees on (25 of them - the 8 str.splitlines() breaks,
+      NEL / U+2028 / U+2029 being breaks to GitHub's YAML 1.1 parser too, and the 17 further
+      `isspace()` members such as U+00A0; the predicate is Python's own, applied to the file's
+      characters, pinned over every code point by a self-test leg, the refusal driven per character),
+      so every accepted file splits, indents and keys identically to every
+      parser and to this reader (a flow value inline after a key that is not `jobs`, a job id or
+      `steps`, `branches: [main]` / `with: {path: x}`, is read).
+      Under that dialect a step GitHub reads is a block sequence item under a block `steps:` under
+      a block job under a block `jobs:`, so its `uses` key can only sit on a block line - the
+      reader never reconstructs a flow item from YAML's quote / indicator grammar, and the two
+      premises hold by construction (the r5/r6 reviews): a block scalar is excised from its
+      header's KEY column with the indicator after whitespace (a folded `- name: >-` never
+      swallows the step's own `uses:`; `save:>` is no header). The structural scanners share one
+      node-aware view (_tokenize: the comment cut, the quote blanking, the unterminated scan, the
+      flow depth), so an apostrophe inside a plain scalar hides nothing anywhere; the RAW view that
+      checks (6), (8), (10) and the fuzz pin read over `run: |` bodies keeps the pre-existing
+      shell-quote-aware cut, because a body line is shell, not YAML (the r7 review's P0). A
+      plainly quoted value is read through its quotes (a quoted key is refused); the owner/repo is matched
+      case-insensitively and token-bounded (a local `./.github/actions/cache-engines` is not the
+      cache action); a resolved cache `uses:` without a lowercase 40-hex sha fails closed.
+      Named residuals, one per refusal of the dialect (loud, fail-closed): a `uses:` spelled inside a
+      `name:` / `if:` / `with:` value reds (reword it); any structural line outside the shape reds - a
+      line led by `?` / `:` / another indicator (a block-scalar header written on the line AFTER its key,
+      `run:` / `|`, is such a line: write `run: |`), a plain-scalar continuation line (write the value
+      on one line or as a block scalar), a flow collection at the start of a line's content, any
+      sequence item written as a flow collection (a step, a matrix `include:` entry, a dependabot
+      list item); a flow value spanning lines reds (write it on one line); an inline `jobs:` or
+      job-id value reds (write block style); a `steps` token followed by a flow opener anywhere on a
+      raw structural line reds, even inside a quoted scalar (`- name: 'steps: [a]'` - reword it); a
+      backslash anywhere on a structural line reds, quoted or not (single quotes clear only an
+      escaped quote, `"a \"b\""` -> `'a "b"'`; a literal backslash needs a block scalar); a quoted
+      node running off its line reds (an escaped line break is a backslash anyway); a BOM anywhere
+      reds (G52 forbids it too); a character Python treats as white space or a line break outside the
+      four every YAML parser agrees on reds anywhere in the file (remove it); an anchor, alias, merge
+      key or tag, an explicit key in flow position, a quoted mapping key (write it plainly), a second
+      document, a duplicate top-level key and a flow map under `on:` / `permissions:` red
+      (write plain block style). The caged-file review (G71 + G1) is the backstop behind every
+      structural refusal.
 
 fail-closed: any violation -> exit 1. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
@@ -122,8 +224,133 @@ def fail(msg: str) -> None:
     print(f"[G56] FAIL: {msg}", file=sys.stderr)
 
 
+def _blank_expressions(line: str) -> str:
+    """(pure) Every `${{ ... }}` GitHub expression blanked to spaces, its end found by a scan that honours the
+    expression's own single-quoted strings (`''` is the escape) - a `}}` inside such a string, as in
+    `${{ toJSON(fromJSON('{"a":{"b":1}}')) }}`, does not end it (the r7 review's non-greedy defect). An
+    expression that never closes on the line is blanked to the end of the line."""
+    out: list[str] = []
+    i, n = 0, len(line)
+    while i < n:
+        if line.startswith("${{", i):
+            j = i + 3
+            in_str = False
+            end = None
+            while j < n:
+                ch = line[j]
+                if in_str:
+                    if ch == "'":
+                        if j + 1 < n and line[j + 1] == "'":
+                            j += 2
+                            continue
+                        in_str = False
+                elif ch == "'":
+                    in_str = True
+                elif line.startswith("}}", j):
+                    end = j + 2
+                    break
+                j += 1
+            end = n if end is None else end
+            out.append(" " * (end - i))
+            i = end
+            continue
+        out.append(line[i])
+        i += 1
+    return "".join(out)
+
+
+def _tokenize(line: str) -> tuple[str, str, bool, int, int]:
+    """(pure) ONE YAML-node-aware pass over a STRUCTURAL line - the single quote model every structural scanner
+    in this gate shares (the r6 review: three scanners with two quote models let a mid-scalar apostrophe in a
+    flow scalar hide a flow-position `? "u\x73es"` key from the precheck). A quote opens a quoted node only at a
+    node start; a node starts at the line start, after a `- ` or `? ` indicator that itself stands at a node
+    start (a ` - ` inside a plain scalar starts nothing - the r7 review's fake node), after `: ` anywhere, after
+    a quoted key's `:` even with whitespace before it (`"k" : "v"`, the JSON-like form, in any context), and
+    after a flow `{` / `[` / `,`. `{` / `[` open a flow collection only at a node start (a brace inside a
+    plain scalar is content); `}` / `]` close one only while one is open. A double-quoted node ends at its
+    next `"` - the precheck refuses every backslash on a structural line, so this reader carries no escape
+    model; inside a single-quoted node `''` is the escape. A `#` preceded by
+    whitespace outside a quoted node starts the comment. `${{ ... }}` expressions are blanked first
+    (_blank_expressions). Returns (the line with every quoted node and expression blanked to spaces, the line
+    cut at its comment, whether a quoted node runs off the line, the flow depth still open at the end of the
+    line, the count of quoted KEYS - a quoted node followed by `:` at any node start, block or flow position,
+    which the dialect refuses: the r16 review's `concurrency: {group: rel-x, "cancel-in-progress": true}`)."""
+    scan = _blank_expressions(line)
+    out: list[str] = []
+    i, n = 0, len(scan)
+    at_node_start = True
+    flow_depth = 0
+    comment_at: int | None = None
+    unterminated = False
+    quoted_keys = 0
+    while i < n:
+        ch = scan[i]
+        if ch in "\"'" and at_node_start:
+            q, start = ch, i
+            i += 1
+            while i < n:
+                if scan[i] == q:
+                    if q == "'" and i + 1 < n and scan[i + 1] == "'":
+                        i += 2
+                        continue
+                    break
+                i += 1
+            else:
+                unterminated = True
+                out.append(" " * (n - start))
+                break
+            i += 1
+            out.append(" " * (i - start))
+            k = i
+            while k < n and scan[k] in " \t":
+                k += 1
+            if k < n and scan[k] == ":":
+                out.append(scan[i:k] + ":")
+                i = k + 1
+                at_node_start = True
+                quoted_keys += 1
+            else:
+                at_node_start = False
+            continue
+        if ch == "#" and (i == 0 or scan[i - 1] in " \t"):
+            comment_at = i
+            break
+        out.append(ch)
+        if ch in " \t":
+            i += 1
+            continue
+        if ch in "{[" and at_node_start:
+            flow_depth += 1
+        elif ch in "}]" and flow_depth:
+            flow_depth -= 1
+            at_node_start = False
+        elif ch == "," and flow_depth:
+            at_node_start = True
+        elif ch in "-?" and at_node_start and (i + 1 >= n or scan[i + 1] in " \t"):
+            at_node_start = True
+        elif ch == ":" and (i + 1 >= n or scan[i + 1] in " \t"):
+            at_node_start = True
+        else:
+            at_node_start = False
+        i += 1
+    blanked = "".join(out)
+    stripped = (line if comment_at is None else line[:comment_at]).rstrip()
+    return blanked, stripped, unterminated, flow_depth, quoted_keys
+
+
+def _quoted_key(line: str) -> bool:
+    """(pure) True when the structural line carries a quoted mapping key at any node start - block or flow
+    position (the tokenizer's verdict; a quoted VALUE, a quoted ITEM and a quoted string inside a quoted value are
+    not keys). A `''`-escaped single-quoted key is a quoted key too; the line shape refuses it as well."""
+    return _tokenize(line)[4] > 0
+
+
 def strip_comment(line: str) -> str:
-    """Drop a trailing YAML `#` comment, respecting single/double quotes."""
+    """Drop a trailing YAML `#` comment from a RAW-view line, respecting single/double quotes wherever they
+    sit - the pre-2026-09-24 cut, kept for the raw view on purpose: checks (6), (8), (10) and the fuzz pin read
+    block-scalar BODY lines, which are shell, and a shell-quoted `"a #"` must keep the rest of its line (the
+    r7 review: the node-aware cut opened no mid-line quote there and hid a secret read, a compile and a
+    stage-engines call). The structural view uses strip_comment_structural."""
     q = None
     for i, ch in enumerate(line):
         if q:
@@ -136,6 +363,12 @@ def strip_comment(line: str) -> str:
     return line.rstrip()
 
 
+def strip_comment_structural(line: str) -> str:
+    """Drop a trailing YAML `#` comment from a STRUCTURAL line: a `#` after whitespace outside a quoted NODE
+    (the tokenizer's cut - `echo it's # x` loses its comment; `'a # b'` keeps its content)."""
+    return _tokenize(line)[1]
+
+
 def unquote(s: str) -> str:
     s = s.strip()
     if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
@@ -144,36 +377,51 @@ def unquote(s: str) -> str:
 
 
 def blank_spans(line: str) -> str:
-    """Blank out `${{ ... }}` expressions and quoted strings (so anchor/alias scans on
-    the result cannot false-positive on `&&` in an expression or a `*` glob in a quote)."""
-    out = list(line)
-    for m in re.finditer(r"\$\{\{.*?\}\}", line):
-        for i in range(m.start(), m.end()):
-            out[i] = " "
-    res, q = [], None
-    for ch in out:
-        if q:
-            res.append(" ")
-            if ch == q:
-                q = None
-        elif ch in "\"'":
-            q = ch
-            res.append(" ")
-        else:
-            res.append(ch)
-    return "".join(res)
+    """Blank out `${{ ... }}` expressions and every quoted NODE of a structural line (so anchor/alias/tag/
+    explicit-key scans on the result cannot false-positive on `&&` in an expression or a `*` glob in a quote,
+    and cannot be HIDDEN by an apostrophe inside a plain scalar - the tokenizer's view)."""
+    return _tokenize(line)[0]
+
+
+def _unterminated_quoted_scalar(line: str) -> bool:
+    """(pure) True when a quoted node opened on this structural line is not closed on it: the scalar continues
+    on the next line, which this reader never joins (the tokenizer's verdict)."""
+    return _tokenize(line)[2]
+
+
+def _open_flow_depth(line: str) -> int:
+    """(pure) The number of flow collections a structural line opens and does not close - non-zero means the
+    collection spans lines (the tokenizer's count: braces inside plain scalars are content, not indicators)."""
+    return _tokenize(line)[3]
+
+
+def _block_scalar_indent(stripped: str) -> int | None:
+    """(pure) The parent indentation of a block-scalar header - the column every content line must EXCEED:
+    the KEY column after any `- ` prefixes for a mapping value (`key: |`, `- key: >-`, `- - key: |`), the
+    LAST dash column for a sequence item that is itself the scalar (`- |`). None when the line is no
+    block-scalar header. The indicator must follow whitespace: `key:|` is a plain scalar, and so is a
+    value ending in `:>` (`- name: save:>`) - the r5 review's two mis-read headers. Measured at the dash
+    column, a folded `- name: >-` swallowed the step's own `uses:` and `with:` siblings."""
+    m = re.match(r"^(\s*(?:-\s+)*)(.*)$", stripped)
+    prefix, rest = m.group(1), m.group(2)
+    if re.fullmatch(r"[|>][+\-0-9]*", rest) and prefix.rstrip().endswith("-"):
+        return len(prefix.rstrip()) - 1
+    if not rest.startswith(("{", "[")) and re.search(r":\s+[|>][+\-0-9]*$", rest):
+        return len(prefix)
+    return None
 
 
 def structural_lines(raw: list[str]) -> list[str]:
     """Comment-strip every line and excise block-scalar (`|`/`>`) bodies, so what
-    remains is the file's analysable YAML structure only."""
-    stripped = [strip_comment(ln) for ln in raw]
+    remains is the file's analysable YAML structure only. A body line is one indented
+    MORE than the header's parent column (_block_scalar_indent); the first non-blank
+    line at or below that column ends the body."""
+    stripped = [strip_comment_structural(ln) for ln in raw]
     keep = [True] * len(stripped)
     i = 0
     while i < len(stripped):
-        s = stripped[i]
-        if re.search(r":\s*[|>][+\-0-9]*\s*$", s) or re.match(r"^\s*-\s*[|>][+\-0-9]*\s*$", s):
-            indent = len(s) - len(s.lstrip())
+        indent = _block_scalar_indent(stripped[i])
+        if indent is not None:
             j = i + 1
             while j < len(stripped):
                 b = stripped[j]
@@ -192,8 +440,94 @@ def structural_lines(raw: list[str]) -> list[str]:
     return [s for s, k in zip(stripped, keep) if k]
 
 
+# a character Python treats as WHITE SPACE or a LINE BREAK outside the four every YAML parser agrees on: YAML's white
+# space is the space and the tab, its line breaks LF and CR; Python's str.isspace() / re `\s` / str.strip() /
+# str.splitlines() - the primitives every reader here is built on - also see 25 other characters. The break members
+# hid a forged block-scalar header behind a comment (the r9-r11 reviews: a YAML 1.1 parser - GitHub's YamlDotNet
+# workflow parser, libyaml / PyYAML, yaml.v3 - breaks at NEL / U+2028 / U+2029; libyaml / PyYAML / yaml.v3 reject the
+# ASCII members and YamlDotNet reads them as content; str.splitlines() breaks at all eight); the space members spell a
+# different key or indent to a `\s` regex than to YAML (the r12 review: `package-ecosystem:<U+00A0>"npm"` counts as an
+# ecosystem here and fails to parse in Dependabot; a U+00A0-indented `services:` entry is excised as a block-scalar
+# body). The predicate is Python's own, applied to the file's characters (never an enumerated list - one missed VT),
+# and the self-test pins it over every code point (25 characters, the 8 splitlines breaks among them) and drives the
+# refusal itself with each of them. Live workflows + dependabot.yml: 0.
+def _foreign_space(c: str) -> bool:
+    """(pure) True for a character Python treats as white space or a line break outside the four every YAML
+    parser agrees on (space, tab, LF, CR)."""
+    return c not in " \t\r\n" and c.isspace()
+
+
+def foreign_spaces(name: str, text: str) -> int:
+    """1 (and a failure) when the raw file carries such a character; else 0."""
+    found = sorted(c for c in set(text) if _foreign_space(c))
+    if not found:
+        return 0
+    fail(f"{name}: carries U+{ord(found[0]):04X}, a character Python treats as whitespace or a line break outside the "
+         "four every YAML parser agrees on (space, tab, LF, CR) - text after it inside a comment would be a real line "
+         "to one parser family, a key or an indent spelled with it a different key or indent to another; remove it")
+    return 1
+
+
+# a UTF-8 BOM anywhere: at the file start YAML strips it, so a line scan that kept it would read `\ufeffjobs` as a
+# key and skip every job-level check (the r10 review's pre-existing form); at column 0 of a LATER line libyaml and
+# yaml.v3 skip it (and count one column) while YamlDotNet, PyYAML, js-yaml and this reader keep it as content, so
+# `<U+FEFF>FOO: bar` is a nested key to one family and a top-level key to the other (the r13 review). G52 forbids
+# the BOM on every text file; this reader refuses it anywhere rather than silently mis-reading.
+def utf8_bom(name: str, text: str) -> int:
+    """1 (and a failure) when the raw file carries U+FEFF anywhere; else 0."""
+    at = text.find("\ufeff")
+    if at < 0:
+        return 0
+    fail(f"{name}: carries a UTF-8 BOM (U+FEFF) at offset {at} - at the file start YAML strips it and a line scan "
+         "would read the first key with it, at column 0 of a later line libyaml skips it while YamlDotNet keeps it; "
+         "G52 forbids "
+         "the BOM (charset utf-8); remove it")
+    return 1
+
+
+# the line SHAPE of the dialect: after any `- ` prefixes a structural line is a `key:` entry (a plain key that
+# starts with no indicator and carries no `:` / `#` - a quoted key is outside the shape AND refused by the
+# quoted-key arm with its own message, so the shape
+# carries no quoted-key alternative (the r16 review: a dead model); the `:` followed by
+# whitespace or the line end; any value on the same line), a scalar item (after `- ` only: plain and not led by an
+# indicator, or quoted), a block-scalar item `- |` / `- >-`, or a bare `-`. Nothing else: a line led by `?` (the
+# key would sit on the next line - the r9 review), by `:` (the key sat on the previous line), by any other
+# indicator, a plain-scalar continuation line and a flow collection at the start of a line's content are all
+# refused, so a key and its `:` always share a line and a sequence item is never a flow collection (the r7-r8
+# forms); a document marker (`---` / `...`) is admitted and left to the multi-document check. Measured
+# 2026-09-24: 495 of 495 live structural lines match. The mutant battery shows which clauses are controls and
+# which are defence in depth (conservative, unpinned because another rule already catches the hiding form):
+# the `?` exclusion (a `?` alone on a line hides nothing by itself - the key line after it is refused by the
+# continuation / `:` arm), a `:` inside a plain key (a `key:value` without the space is refused by the colon
+# rule), and a `#` inside one (`a#b: c` keeps its `#` through the cut - the gate and YAML read the same key).
+# The dash arm is strict: a run of dashes
+# separated by whitespace ending in a bare `-`,
+# so `--` is a refused continuation line.
+_SHAPE_KEY = r"(?:[^\s\-?:,\[\]{}#&*!|>'\"%@`][^:#]*?)"
+_SHAPE_ITEM = r"(?:'[^'\\]*'|\"[^\"\\]*\"|[^\s\-?:,\[\]{}#&*!|>'\"%@`].*|[|>][+\-0-9]*)"
+_LINE_SHAPE_RE = re.compile(r"^\s*(?:(?:-\s+)*" + _SHAPE_KEY + r"\s*:(?:\s.*|$)|(?:-\s+)+" + _SHAPE_ITEM + r"|(?:-\s+)*-|---|\.\.\.)$")
+
+
+def _shape_verdict(ln: str) -> str:
+    """(pure) Why a structural line is outside the dialect's shape - the first character of its content decides."""
+    content = re.sub(r"^\s*(?:-\s+)*", "", ln)
+    head = content[:1]
+    if head in "{[":
+        return ("a flow collection at the start of a line's content (a sequence item written as a flow collection, "
+                "or a flow value placed on the line after its key)")
+    if head == "?":
+        return "an explicit-key indicator `?` leading the line (the key would sit on the next line)"
+    if head == ":":
+        return "an explicit-value indicator `:` leading the line (the key sat on the previous line)"
+    if head and head in "&*!|>%@`,]}":
+        return f"a YAML indicator `{head}` leading the line"
+    if head and head in "\"'":
+        return "a quoted mapping key - write it plainly (the dialect reads plain keys only)"
+    return "a plain-scalar continuation line, or a key without its `:` on the same line"
+
+
 def precheck(name: str, lines: list[str]) -> int:
-    """Fail-closed on YAML constructs a stdlib line scan cannot safely resolve."""
+    """Fail-closed on YAML constructs a stdlib line scan cannot safely resolve - the dialect (module docstring)."""
     problems = 0
 
     # multiple documents
@@ -215,37 +549,112 @@ def precheck(name: str, lines: list[str]) -> int:
             break
         seen_content = True
 
-    # anchors / aliases / merge keys - detected ONLY at YAML node-start positions
-    # (after `:`+space, a `- ` sequence item, or a flow `[`/`{`/`,`), so a shell token
-    # like `cp dist/ *staging` or `echo $X &bg` in a single-line `run:` scalar - where
-    # `*`/`&` sit mid-scalar, not at a node start - is NOT misread as YAML structure.
+    # anchors / aliases / merge keys / tags / explicit keys - detected ONLY at YAML node-start positions
+    # (after `:`+space, after one or more `- ` sequence prefixes, at a flow `[`/`{`/`,`, or at the line
+    # start), so a shell token like `cp dist/ *staging` or `echo $X &bg` in a single-line `run:` scalar -
+    # where `*`/`&` sit mid-scalar, not at a node start - is NOT misread as YAML structure. An anchor or
+    # alias name is any run of non-space, non-flow-indicator characters (`&-c`, `*.x` included - the r5
+    # review's evasion of an alphanumeric class). A flow collection opened on one line and closed on
+    # another (the tokenizer's open depth at the end of the line - braces inside plain scalars are
+    # content) is refused too: a key on its continuation line is not resolvable by a line reader (the r5
+    # review's `- {` / `uses:` / `, with:`).
     flagged = set()
+    node_start = r"(?::\s+|^\s*(?:-\s+)*|[\[{,]\s*)"
     for ln in lines:
+        if ln.strip() and not _LINE_SHAPE_RE.match(ln) and "shape" not in flagged:
+            fail(f"{name}: a structural line outside the dialect's shape (`{ln.strip()[:60]}`): {_shape_verdict(ln)} - "
+                 "a structural line is a `key:` entry or a `- ` item; write block style, one key or item per line, "
+                 "a long value as a block scalar")
+            problems += 1
+            flagged.add("shape")
+        # a quoted node that runs off its line continues on a line this reader never joins - a key or value
+        # spelled across lines (the r10 review's dependabot form: a quoted `prefix: "deps(cargo)` swallowing the
+        # next entry's lines, which YAML folds into the string while check (1) read a phantom ecosystem).
+        if _unterminated_quoted_scalar(ln) and "unterminated" not in flagged:
+            fail(f"{name}: an unterminated quoted node (`{ln.strip()[:60]}`) continues on the next line and is not "
+                 "statically resolvable - fails closed")
+            problems += 1
+            flagged.add("unterminated")
+        # the dialect has no escapes: a backslash anywhere on a structural line is refused before any scan
+        # reads the line (an escape can spell any key or value - `"u\x73es":` - and an escaped `\x7d` hides
+        # an expression's end from the escape-blind pre-pass; the r6-r8 reviews). The tokenizer therefore
+        # carries no escape model (a double-quoted node ends at its next `"`). Live workflows: 0 backslashes
+        # on structural lines (a shell backslash lives in a `run: |` body, which is excised).
+        if "\\" in ln and "backslash" not in flagged:
+            fail(f"{name}: a backslash on a structural line (`{ln.strip()[:60]}`) is not statically resolvable - "
+                 "a YAML escape can spell any key or value; write the value single-quoted when the backslash only "
+                 "escaped a quote, and a literal backslash in a block scalar (`run: |`)")
+            problems += 1
+            flagged.add("backslash")
+        # a quoted mapping key at ANY node start - block or flow position (the tokenizer's verdict): the dialect
+        # reads plain keys only, so every reader matches ONE spelling - a quoted key had hidden `use-policy-store`
+        # from the harden-runner read and `uses` from the engine-cache restore read (the r14 / r15 reviews), and a
+        # line-leading arm had let a flow `concurrency: {…, "cancel-in-progress": true}` reach check (3)'s plain
+        # read (the r16 review). 0 of the live structural lines carry one. A quoted ITEM (`- 'v*'`) and a quoted
+        # VALUE are not keys and stay inside the shape.
+        if _quoted_key(ln) and "quotedkey" not in flagged:
+            fail(f"{name}: a quoted mapping key (`{ln.strip()[:60]}`, block or flow position) is refused - the dialect "
+                 "reads plain keys only, so every reader matches one spelling (a quoted key hid `use-policy-store` "
+                 "from the harden-runner read, `uses` from the engine-cache restore read and `cancel-in-progress` "
+                 "from the concurrency read); write the key plainly")
+            problems += 1
+            flagged.add("quotedkey")
         b = blank_spans(ln)
-        if re.search(r"(?:^\s*|[\[{,]\s*)<<\s*:", b) and "merge" not in flagged:
+        if re.search(node_start + r"<<\s*:", b) and "merge" not in flagged:
             fail(f"{name}: YAML merge key (<<:) is not statically verifiable - use plain block style")
             problems += 1
             flagged.add("merge")
-        if re.search(r"(?::\s+|^\s*-\s+|[\[{,]\s*)&[A-Za-z0-9_]", b) and "anchor" not in flagged:
+        if re.search(node_start + r"&[^\s\[\]{},]", b) and "anchor" not in flagged:
             fail(f"{name}: YAML anchor (&name) is not statically verifiable - use plain block style")
             problems += 1
             flagged.add("anchor")
-        if re.search(r"(?::\s+|^\s*-\s+|[\[{,]\s*)\*[A-Za-z0-9_]", b) and "alias" not in flagged:
+        if re.search(node_start + r"\*[^\s\[\]{},]", b) and "alias" not in flagged:
             fail(f"{name}: YAML alias (*name) is not statically verifiable - use plain block style")
             problems += 1
             flagged.add("alias")
         # a `!` at a value node-start (`: !`, `- !`, flow `[{,`) OR at the START of a line's
         # content (`^\s*!`, i.e. a tag on a mapping KEY like `  !!str packages: write`, which
         # a value-position-only scan would miss while the perms parser silently drops it).
-        if re.search(r"(?::\s+|^\s*-\s+|[\[{,]\s*|^\s*)!", b) and "tag" not in flagged:
+        if re.search(node_start + r"!", b) and "tag" not in flagged:
             fail(f"{name}: an explicit YAML tag (!!type / !tag) changes how a value resolves and is "
                  "not statically verifiable - use a plain block value")
             problems += 1
             flagged.add("tag")
-        if re.match(r"^\s*\?\s", ln) and "complexkey" not in flagged:
+        # the line shape above refuses every indicator-led line (`?`, `&`, `*`, `!` at the start of a line's
+        # content, after any dashes); what is left to these node-start scans is the VALUE position (`key: &a`,
+        # `key: *a`, `key: !!str`), the flow position (`{ ? k : v }`, `[*a]`) and, for the merge key, the KEY
+        # position (`<<:` at the start of a line or after a dash - a plain key the shape admits).
+        if re.search(r"(?:^\s*(?:-\s+)*|[\[{,]\s*)\?\s", b) and "complexkey" not in flagged:
             fail(f"{name}: a YAML explicit/complex key (`? key`) is not statically verifiable - use a plain key")
             problems += 1
             flagged.add("complexkey")
+        if _open_flow_depth(ln) and "flow" not in flagged:
+            fail(f"{name}: a flow collection opened on one line and closed on another (`{ln.strip()[:60]}`) is "
+                 "not statically verifiable - write it on one line or in block style")
+            problems += 1
+            flagged.add("flow")
+        # the structural closure (the r7-r9 reviews): a step GitHub reads must be a block sequence item under
+        # a block `steps:` under a block job under a block `jobs:`, so a `uses` key can only sit on a block
+        # line and the (11) shape rule never reconstructs a flow item from YAML's quote / indicator grammar.
+        # The line shape above refuses a flow collection at the start of a line's content (a sequence item
+        # written as a flow collection - a step, a matrix `include:` entry, a dependabot list item - or a
+        # flow value placed on the line after a bare `-` / `- # comment` / `steps:` / `jobs:` / a job id;
+        # the r8 forms N1, N2, N6, G4) and a `?`-led line (the r9 form). Refused here: an inline value on
+        # the top-level `jobs:` line (the r8 form G1 - parse_jobs reads only the block body, so an inline
+        # `jobs: {...}` would skip every job-level check; a job-id line's inline value is refused in
+        # parse_jobs) and a `steps` key followed by a flow collection anywhere on a line. A flow value
+        # inline after any OTHER key (`branches: [main]`, `with: {path: x, key: k}`) is read as before.
+        # Live workflows: 0 inline `jobs:` / job-id / `steps:` flow values.
+        if re.match(r"^jobs\s*:\s*\S", ln) and "flowjobs" not in flagged:
+            fail(f"{name}: an inline `jobs:` value (`{ln.strip()[:60]}`) is not statically resolvable - the "
+                 "job-level checks read block jobs only; write the jobs in block style")
+            problems += 1
+            flagged.add("flowjobs")
+        if re.search(r"(?<![\w-])steps\s*:\s*[\[{]", ln) and "flowsteps" not in flagged:
+            fail(f"{name}: an inline flow `steps:` value (`{ln.strip()[:60]}`) is not statically resolvable - "
+                 "write the steps in block style")
+            problems += 1
+            flagged.add("flowsteps")
 
     # duplicate top-level keys (YAML resolves to the LAST; a line scan trusts the FIRST)
     seen, dups = set(), set()
@@ -313,8 +722,23 @@ def first_level(body: list[str]) -> tuple[set[str], dict[str, list[str]]]:
     return keys, sub
 
 
+def _item_content_indent(item: list[str]) -> int:
+    """(pure) The content indent of a block-sequence item: the end of its `-` + whitespace prefix when a key
+    follows on the dash line (any spacing - the r17 review), else - a bare `-`, which the shape admits - the indent
+    of the next non-blank line, where YAML places the item's content at any deeper indent (the r18 review: a
+    dash+2 guess had mis-read it); dash+2 only for an item with no content at all."""
+    first = item[0]
+    m = re.match(r"\s*-\s+(?=\S)", first)
+    if m:
+        return len(m.group(0))
+    rest = [ln for ln in item[1:] if ln.strip()]
+    return (len(rest[0]) - len(rest[0].lstrip())) if rest else first.index("-") + 2
+
+
 def list_items(block: list[str]) -> list[list[str]]:
-    """Split a YAML block sequence into per-item line groups (each `- ...` item)."""
+    """Split a YAML block sequence into per-item line groups: each `- ...` item, a bare `-` opening an item too
+    (the shape admits it; the r18 review: a bare-dash step had merged into the previous step and lent a
+    with-less harden step a decoy `egress-policy: block` input written under another action)."""
     items, cur, item_indent = [], None, None
     for ln in block:
         if not ln.strip():
@@ -322,7 +746,7 @@ def list_items(block: list[str]) -> list[list[str]]:
                 cur.append(ln)
             continue
         indent = len(ln) - len(ln.lstrip())
-        if ln.lstrip().startswith("- "):
+        if re.match(r"-(?:\s|$)", ln.lstrip()):
             if item_indent is None:
                 item_indent = indent
             if indent == item_indent:
@@ -338,14 +762,15 @@ def list_items(block: list[str]) -> list[list[str]]:
 
 
 def item_children(item: list[str]) -> list[str]:
-    """Direct child lines (at the item's content indent) of a `- key: ...` sequence item,
-    including the key inlined after the dash."""
+    """Direct child lines (at the item's content indent - the end of its `-` + whitespace prefix, ANY spacing,
+    as step_with_block measures it) of a `- key: ...` sequence item, including the key inlined after the dash.
+    A `-   key:` item puts its siblings at dash+4: a dash+2 assumption had hidden a step-level `if:` /
+    `continue-on-error:` from the harden-runner own-key reads (the r17 review, fail-open against HEAD)."""
     if not item:
         return []
     first = item[0]
-    dash = first.index("-")
-    content_indent = dash + 2
-    out = [" " * content_indent + first[content_indent:]] if len(first) > content_indent else []
+    content_indent = _item_content_indent(item)
+    out = [" " * content_indent + first[content_indent:]] if len(first.rstrip()) > content_indent else []
     for ln in item[1:]:
         if not ln.strip():
             continue
@@ -354,24 +779,27 @@ def item_children(item: list[str]) -> list[str]:
     return out
 
 
-def parse_jobs(jobs_body: list[str]) -> tuple[dict[str, list[str]], bool]:
-    """(job-id -> DIRECT-child lines, flow_style_seen). Direct children are the lines at
-    the first deeper indent (step-level keys excluded). A flow-style job value
-    (`build: { ... }`) sets flow_style_seen -> fail-closed."""
+def parse_jobs(jobs_body: list[str]) -> tuple[dict[str, list[str]], list[str]]:
+    """(job-id -> DIRECT-child lines, the job ids written with an INLINE value). Direct children are
+    the lines at the first deeper indent (step-level keys excluded). A job written inline - a
+    flow mapping (`build: { ... }`), a flow sequence or any scalar on the job-id line - carries
+    no block body a line reader can check, so its id is reported -> fail-closed (the structural
+    closure's job-id arm; the top-level `jobs:` arm is the precheck's)."""
     real = [ln for ln in jobs_body if ln.strip()]
     if not real:
-        return {}, False
+        return {}, []
     ji = min(len(ln) - len(ln.lstrip()) for ln in real)
     out: dict[str, list[str]] = {}
-    cur, child_indent, children, flow = None, None, [], False
+    inline: list[str] = []
+    cur, child_indent, children = None, None, []
     for ln in jobs_body:
         if not ln.strip():
             continue
         indent = len(ln) - len(ln.lstrip())
         if indent == ji:
             head, _, val = ln.strip().partition(":")
-            if val.strip().startswith("{"):
-                flow = True
+            if val.strip():
+                inline.append(unquote(head))
             if cur is not None:
                 out[cur] = children
             cur, child_indent, children = unquote(head), None, []
@@ -382,7 +810,7 @@ def parse_jobs(jobs_body: list[str]) -> tuple[dict[str, list[str]], bool]:
                 children.append(ln)
     if cur is not None:
         out[cur] = children
-    return out, flow
+    return out, inline
 
 
 def check_dependabot(root: Path) -> int:
@@ -390,8 +818,9 @@ def check_dependabot(root: Path) -> int:
     if not f.is_file():
         fail(f"{f} missing - G56 requires dependabot coverage")
         return 1
-    lines = structural_lines(f.read_text(encoding="utf-8", errors="replace").splitlines())
-    problems = precheck("dependabot.yml", lines)
+    text = f.read_text(encoding="utf-8", errors="replace")
+    lines = structural_lines(text.split("\n"))
+    problems = utf8_bom("dependabot.yml", text) + foreign_spaces("dependabot.yml", text) + precheck("dependabot.yml", lines)
     _, updates = top_key(lines, "updates")
     ecos: set[str] = set()
     for item in list_items(updates):
@@ -399,7 +828,7 @@ def check_dependabot(root: Path) -> int:
         # fail-closed with ONE clear message, consistent with the workflow flow-style rejections.
         head = item[0].lstrip()
         if head.startswith("- ") and head[2:].lstrip().startswith("{"):
-            fm = re.search(r"package-ecosystem\s*:\s*['\"]?([A-Za-z][\w-]*)", "\n".join(item))
+            fm = re.search(r"package-ecosystem\s*:\s*['\"]?([A-Za-z][\w-]*)['\"]?\s*[,}]", "\n".join(item))
             fail(f"dependabot {('ecosystem ' + repr(fm.group(1))) if fm else 'item'} uses a flow-style "
                  "item - use block style so `package-ecosystem`/`directory`/`schedule` are verifiable")
             problems += 1
@@ -410,7 +839,21 @@ def check_dependabot(root: Path) -> int:
         # (line-anchored), NOT a substring of the whole item - so a decoy `package-ecosystem:`
         # planted in another field VALUE (e.g. `target-branch: "package-ecosystem: cargo"`)
         # cannot shadow the real key. Exactly one such key is required.
-        eco_keys = re.findall(r"^\s*package-ecosystem\s*:\s*['\"]?([A-Za-z][\w-]*)", ctext, re.M)
+        # the value read to its END with balanced quotes - `"npm.x"` and `npm"` are not npm (the r13 / r14
+        # reviews' unanchored-prefix and unbalanced-quote forms); an unreadable value is named as such, never
+        # reported as a missing key; a quoted KEY never reaches this read (the dialect refuses it)
+        eco_keys, unreadable = [], 0
+        for val in re.findall(r"^\s*package-ecosystem\s*:\s*(.*?)\s*$", ctext, re.M):
+            vm = re.fullmatch(r"(?P<q>['\"]?)(?P<v>[A-Za-z][\w-]*)(?P=q)", val)
+            if vm is None:
+                fail(f"dependabot `package-ecosystem` value {val!r} is not a plain or balanced-quoted name "
+                     "(Dependabot cannot load such a config) - unreadable, fail-closed")
+                problems += 1
+                unreadable += 1
+                continue
+            eco_keys.append(vm.group("v"))
+        if unreadable and not eco_keys:
+            continue
         if len(eco_keys) != 1:
             fail(f"dependabot update item has {len(eco_keys)} direct-child `package-ecosystem` "
                  "keys (expected exactly 1)")
@@ -446,7 +889,7 @@ def permission_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
     out: list[tuple[int, list[str]]] = []
     i = 0
     while i < len(lines):
-        m = re.match(r"^(\s*)['\"]?permissions['\"]?\s*:\s*(.*)$", lines[i])
+        m = re.match(r"^(\s*)permissions\s*:\s*(.*)$", lines[i])
         if m and m.group(2).strip() == "":  # block form (value on the following lines)
             indent = len(m.group(1))
             body, j = [], i + 1
@@ -572,15 +1015,13 @@ def job_direct_child_value(body: list[str], key: str) -> str | None:
 def step_with_block(step: list[str]) -> list[str]:
     """The lines under a step item's own `with:` key (egress-policy must be a direct child
     of THIS step's with: mapping, not an env var / bare key / sibling step). The step's
-    content indent is the dash column + 2; a flow/inline `with: {...}` yields [] -> fail-closed."""
+    content indent is the end of the `-` + whitespace prefix (any spacing), or a bare dash's next line; a
+    flow/inline `with: {...}` yields [] -> fail-closed."""
     if not step:
         return []
     first = step[0]
-    dash = re.match(r"\s*-\s+", first)  # content indent = end of the `- ` prefix (any spacing)
-    if not dash:
-        return []
-    ci = len(dash.group(0))
-    norm = ([" " * ci + first[ci:]] if len(first) > ci else []) + list(step[1:])
+    ci = _item_content_indent(step)  # the end of the `- ` prefix (any spacing), or a bare dash's next line
+    norm = ([" " * ci + first[ci:]] if len(first.rstrip()) > ci else []) + list(step[1:])
     out, capturing = [], False
     for ln in norm:
         if not ln.strip():
@@ -603,21 +1044,55 @@ def job_has_harden_block(body: list[str]) -> bool:
     """True iff a STEP in this job is an UNCONDITIONAL step-security/harden-runner with
     `egress-policy: block` AS A DIRECT CHILD OF THAT STEP'S OWN `with:` MAPPING - so a decoy
     in a run-string / step `name:` / an `env:` var named egress-policy / a sibling step, an
-    `if:`-gated step, a flow-style `with:`, or `egress-policy: audit` does NOT satisfy it."""
+    `if:`-gated step, a flow-style `with:`, `egress-policy: audit`, a value with a suffix, another case
+    or an unbalanced quote (`block-x` / `Block` / `block"`) or a step carrying `use-policy-store` /
+    `policy:` / `denied-endpoints` (the StepSecurity dashboard policy replaces the pinned mode - `Defaulting
+    to audit mode.` in harden-runner's src/setup.ts; the v2.21.0 deny-list mode replaces block-with-allow-list)
+    does NOT satisfy it; a PRESENT `continue-on-error` counts only when provably false (a block-scalar or
+    expression value disqualifies). `uses` / `if` / `continue-on-error` are read from the step's OWN keys
+    (item_children, at the step's real content indent whatever the dash spacing - the r17 review), so a decoy
+    under `with:` / `env:` or the two lines written as inputs of another action do not stand in (the r16
+    review); a duplicate `continue-on-error` key (YAML rejects it) is read line by line, fail-closed; a bare `-`
+    opens a step of its own (the r18 review: a bare-dash sibling had merged into the harden step and lent it a
+    decoy `egress-policy: block` input written under actions/checkout). A quoted key never reaches these reads:
+    the dialect refuses it."""
     for step in list_items(child_block(body, "steps")):
-        st = "\n".join(step)
+        # the step's OWN keys only (the dash line's key and its siblings at the content indent, item_children):
+        # a `continue-on-error: false` decoy under `with:` / `env:` cannot stand in for a step-level `true`, and
+        # `uses: step-security/harden-runner` + `egress-policy: block` written as INPUTS of another action is no
+        # harden step (the r16 review: a first-match read over the whole item had regressed against HEAD)
+        own = "\n".join(item_children(step))
         # the EXACT action name only (a `(?![\w./-])` boundary, so a typosquat/fork like
         # `harden-runner-fork` or `harden-runner.evil` does NOT satisfy the requirement).
-        if not re.search(r"^\s*-?\s*uses\s*:\s*['\"]?step-security/harden-runner(?![\w./-])", st, re.M):
+        if not re.search(r"^\s*uses\s*:\s*['\"]?step-security/harden-runner(?![\w./-])", own, re.M):
             continue
-        if re.search(r"^\s*-?\s*if\s*:", st, re.M):
+        if re.search(r"^\s*if\s*:", own, re.M):
             continue  # conditionally-run -> cannot prove it enforces
-        if re.search(r"^\s*-?\s*continue-on-error\s*:\s*(?:['\"]?(?:true|yes|on)\b|\$\{\{)", st, re.M | re.I):
-            continue  # a truthy OR ${{ expression }} continue-on-error could tolerate a failing
-            #          harden setup -> not unconditional enforcement (mirrors check-3's expr handling)
+        coes = re.findall(r"^\s*continue-on-error\s*:\s*(.*)$", own, re.M)
+        if any(not re.fullmatch(r"['\"]?(?:false|no|off|n)['\"]?\s*", v, re.I) for v in coes):
+            continue  # a PRESENT continue-on-error counts only when EVERY such line is provably false: a truthy
+            #          literal, a `${{ }}` expression or a block scalar the structural view excises (`|-` + an
+            #          expression on the next line - the r15 review's pre-existing form) could tolerate a failing
+            #          harden setup -> not unconditional enforcement (check (3)'s release polarity, fail-closed)
         with_body = step_with_block(step)
-        if with_body and re.search(r"^\s*egress-policy\s*:\s*['\"]?block\b",
-                                   "\n".join(with_body), re.M | re.I):
+        if not with_body:
+            continue
+        wb = "\n".join(with_body)
+        # `use-policy-store` (with or without an `api-key`) makes harden-runner fetch the StepSecurity dashboard
+        # policy and ignore the pinned `egress-policy` (`Defaulting to audit mode.` in src/setup.ts at both v2.19.4
+        # and v2.21.1); a `policy:` input names a stored policy the same way; `denied-endpoints` (v2.21.0) switches
+        # to a deny-list mode that allows all other egress whenever `allowed-endpoints` is empty and the TLS probe
+        # defaults to enabled (src/setup.ts, src/tls-inspect.ts). None is statically verifiable, so the step does
+        # not count as BLOCK enforcement whatever its `egress-policy` line says (the r13 / r14 reviews' pre-existing
+        # forms). A quoted key never reaches this read: the dialect refuses it (the r14 / r15 reviews). The key
+        # is matched case-insensitively, as the runner matches input names.
+        if re.search(r"^\s*(?:use-policy-store|policy|denied-endpoints)\s*:", wb, re.M | re.I):
+            continue
+        # the value is read to its END, balanced-quoted, case-SENSITIVE: `block-x`, `Block` and `block"` are not
+        # `block` to harden-runner, which setFailed()s the step (the r13 / r14 reviews' unanchored-prefix forms; the
+        # structural view has already cut a trailing comment). The key keeps its case-insensitive read (the runner
+        # matches input names case-insensitively).
+        if re.search(r"^\s*(?i:egress-policy)\s*:\s*(?:\"block\"|'block'|block)\s*$", wb, re.M):
             return True
     return False
 
@@ -879,7 +1354,7 @@ def check_images_and_engine_cache(name: str, lines: list[str], raw_lines: list[s
     # (9) every `container:` scalar / `image:` value must be digest-pinned; a value this scan
     # cannot resolve fails closed - including the empty/next-line form (the rule-(5) precedent).
     for i, ln in enumerate(lines):
-        bare = re.match(r"^(\s*)['\"]?(image|container)['\"]?\s*:\s*$", ln)
+        bare = re.match(r"^(\s*)(image|container)\s*:\s*$", ln)
         if bare:
             indent, key = len(bare.group(1)), bare.group(2)
             if key == "image":
@@ -897,7 +1372,7 @@ def check_images_and_engine_cache(name: str, lines: list[str], raw_lines: list[s
                         continue
                     if len(nxt) - len(nxt.lstrip()) <= indent:
                         break
-                    if re.match(r"^\s*['\"]?image['\"]?\s*:", nxt):
+                    if re.match(r"^\s*image\s*:", nxt):
                         child_has_image = True
                         break
                 if not child_has_image:
@@ -906,7 +1381,7 @@ def check_images_and_engine_cache(name: str, lines: list[str], raw_lines: list[s
                          "sub-rule)")
                     problems += 1
             continue
-        m = re.match(r"^\s*['\"]?(image|container)['\"]?\s*:\s*(\S.*)$", ln)
+        m = re.match(r"^\s*(image|container)\s*:\s*(\S.*)$", ln)
         if not m:
             continue
         value = unquote(m.group(2).strip())
@@ -917,7 +1392,7 @@ def check_images_and_engine_cache(name: str, lines: list[str], raw_lines: list[s
             problems += 1
     # (10) a job restoring an engine-asset cache may not also run scripts/stage-engines: no
     # lint-recognizable G37 re-verify actor exists between them, so the pair fails closed
-    # until the Lane-B staging box extends this rule with the verify step it lands. Job
+    # until the owner act P10.62 extends this rule with the verify step. Job
     # identity comes from the structural view; every content predicate runs over the RAW body.
     raw_jobs = job_bodies(top_key(raw_lines, "jobs")[1])
     for jid in job_bodies(top_key(lines, "jobs")[1]):
@@ -929,22 +1404,23 @@ def check_images_and_engine_cache(name: str, lines: list[str], raw_lines: list[s
         if restores_engine_cache and "scripts/stage-engines" in joined:
             fail(f"{name}: job '{jid}' restores an engine-asset cache AND invokes "
                  "`scripts/stage-engines` - the G37 restore-re-verify actor between them is "
-                 "not lint-recognizable, so the pair is refused; the Lane-B staging box "
-                 "extends this rule with the sanctioned verify step it lands")
+                 "not lint-recognizable, so the pair is refused; the owner act P10.62 "
+                 "extends this rule with the sanctioned verify step")
             problems += 1
     return problems
 
 
 def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
     name = path.name
-    raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    raw = text.split("\n")
     lines = structural_lines(raw)
     # check (6) takes BOTH views: the excised `lines` for STRUCTURE (runs-on / harden step,
     # so a block-scalar body cannot forge a harden step) and the comment-stripped-but-NOT-
     # excised `stripped` for SECRET detection (so a secret in a multi-line `run:` body or a
     # sibling `env:` is still seen). checks (1)-(5) use the excised `lines`.
     stripped = [strip_comment(ln) for ln in raw]
-    problems = precheck(name, lines)
+    problems = utf8_bom(name, text) + foreign_spaces(name, text) + precheck(name, lines)
     problems += check_runner_host(name, lines, stripped)
     problems += check_fuzz_pin(name, stripped, fuzz_pin)
     problems += check_secret_offline_build(name, lines, stripped)
@@ -953,7 +1429,7 @@ def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
     # (5a) flow-style permissions anywhere (top-level OR per-job) cannot be statically
     # verified for contents-read / id-token - reject fail-closed. Empty `{}`/`{ }`
     # (= no permissions, most restrictive) is allowed.
-    if any(re.match(r"^\s*['\"]?permissions['\"]?\s*:\s*\{\s*[^}\s]", ln) for ln in lines):
+    if any(re.match(r"^\s*permissions\s*:\s*\{\s*[^}\s]", ln) for ln in lines):
         fail(f"{name}: flow-style `permissions: {{...}}` is unsupported - use block style "
              "(so contents-read and the id-token prohibition are verifiable)")
         problems += 1
@@ -963,7 +1439,7 @@ def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
     # accepts is `read-all` (empty `{}` flow is handled by (5a)); write-all / write / any
     # other scalar is rejected fail-closed.
     for ln in lines:
-        m = re.match(r"^\s*['\"]?permissions['\"]?\s*:\s*([^\s{].*)$", ln)
+        m = re.match(r"^\s*permissions\s*:\s*([^\s{].*)$", ln)
         if m and unquote(m.group(1).strip()) != "read-all":
             fail(f"{name}: inline `permissions: {unquote(m.group(1).strip())}` is not read-only "
                  "(use block `contents: read`, or `read-all`)")
@@ -986,7 +1462,7 @@ def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
     # (2) id-token discipline - any id-token permission key (top-level or per-job), in
     # block or quoted-key form. A flow-style `permissions: { id-token: write }` is caught
     # by (5a); a `run:`-string mention of "id-token" never starts a line, so no false-positive.
-    if any(re.match(r"^\s*['\"]?id-token['\"]?\s*:", ln) for ln in lines):
+    if any(re.match(r"^\s*id-token\s*:", ln) for ln in lines):
         fail(f"{name}: an `id-token:` permission key is set - not allowed until the P10 attestation job")
         problems += 1
 
@@ -1058,12 +1534,13 @@ def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
                  "false/no/off passes - an expression or exotic value fails closed)")
             problems += 1
 
-    # (4) per-JOB timeout-minutes; flow-style jobs fail-closed; uses:-jobs exempt
+    # (4) per-JOB timeout-minutes; a job written inline (flow-style or any scalar) fails closed; uses:-jobs exempt
     _, jobs_body = top_key(lines, "jobs")
-    jobs, flow_job = parse_jobs(jobs_body)
-    if flow_job:
-        fail(f"{name}: flow-style job mapping under `jobs:` is unsupported "
-             "(use block style so a job-level timeout-minutes is verifiable)")
+    jobs, inline_jobs = parse_jobs(jobs_body)
+    if inline_jobs:
+        fail(f"{name}: job(s) {inline_jobs} written flow-style / inline (`build: {{ ... }}` or any value on the "
+             "job-id line) are unsupported - use block style so the job-level checks (timeout-minutes, "
+             "runs-on, permissions, steps) are verifiable")
         problems += 1
     else:
         for jid, children in jobs.items():
@@ -1076,6 +1553,82 @@ def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
             if not any(re.match(r"^\s*timeout-minutes\s*:", c) for c in children):
                 fail(f"{name}: job '{jid}' lacks a job-level `timeout-minutes`")
                 problems += 1
+    return problems
+
+
+# (11) the `uses` SHAPE (the r2-r4 review class: a shape rule, not a list of odd forms). The one form this
+# reader resolves is a block step line `[- ]uses: <value>` - the value on the same line, no block-scalar
+# indicator, the key plain and the value plainly quoted at most; every other occurrence of a `uses` key token on a
+# structural line fails closed. The rule is sound under the dialect the precheck enforces (every structural
+# line a `key:` entry or a `- ` item, so a key and its `:` share a line; no backslash; no inline `jobs:` /
+# job-id / `steps:` flow value; no spanning flow; no anchor / alias / merge key / tag / flow-position explicit
+# key; no quoted node running off its line; no BOM; no character Python treats as white space or a line break
+# outside the four every YAML parser agrees on, lines split at LF only): a step GitHub reads then
+# sits on a block line, read by the one tokenizer (_tokenize) the structural comment cut, the quote blanking,
+# the flow depth and the precheck share.
+_USES_KEY_RE = re.compile(r"(?<![\w-])uses\s*:")
+_USES_STEP_RE = re.compile(r"^\s*(?:-\s+)?uses\s*:\s*(.*)$")
+
+
+_CACHE_NAME_RE = re.compile(r"(?i)(?<![\w./-])actions/cache(?:/save|/restore)?(?![\w-])")
+_CACHE_PIN_RE = re.compile(r"(?i:actions/cache(?:/save|/restore)?)@([0-9a-f]{40})")
+
+
+def check_cache_lockstep(wfs: list[Path]) -> int:
+    """(11) every `actions/cache`, `actions/cache/save` and `actions/cache/restore` `uses:` across ALL the
+    given workflows pins ONE lowercase 40-hex sha: one action version writes AND reads a cache entry.
+    Dependabot offers the halves as two PRs (the 2026-09-07 #30 precedent: save only), and a split would
+    save under one action version and restore under another. Read over the STRUCTURAL view (comment-
+    stripped, block-scalar bodies excised: a `run: |` body is a string GitHub reads no step from). The
+    `uses` SHAPE rule (_USES_KEY_RE / _USES_STEP_RE): every `uses` key token must be the key of a plain
+    block step line with its value on the same line and no block-scalar indicator - a next-line or
+    block-scalar value, a second key token on the line and a `uses` key in any other position fail
+    CLOSED. The rule is sound under the
+    dialect precheck enforces (the r7-r9 structural closure): every structural line is a `key:` entry or
+    a `- ` item (a key and its `:` share a line; no `?`- or `:`-led line, no continuation line, no flow
+    collection at a line start), no backslash on a structural line (so no escape spells a key and the
+    tokenizer needs no escape model), no inline `jobs:` / job-id / `steps:` flow value, no flow
+    collection spanning lines, no quoted node running off its line, no flow-position explicit key, no
+    anchor or alias of any YAML name, no merge key, no tag, no BOM, no character Python treats as white
+    space or a line break outside the four every YAML parser agrees on, lines split at LF only - so a
+    step GitHub reads is a block sequence item and its `uses` key lives on a block line; and
+    structural_lines bounds a block scalar by its header's KEY column (a folded `- name: >-` never
+    swallows the step's `uses:`; the r5/r6 reviews) - over the SAME node-aware view this rule reads (one
+    tokenizer for the structural comment cut, the quote blanking, the unterminated scan and the flow
+    depth, so a quote inside a plain scalar opens nothing anywhere; the raw view of checks (6), (8),
+    (10) keeps the shell-quote-aware cut). A plainly quoted value is read through its quotes, a quoted key is refused;
+    the owner/repo is matched case-insensitively and token-bounded (a local
+    `./.github/actions/cache-engines` is not the cache action); a resolved cache `uses:` whose sha is not
+    lowercase 40-hex fails closed."""
+    shas: dict[str, set[str]] = {}
+    problems = 0
+    for wf in wfs:
+        for ln in structural_lines(wf.read_text(encoding="utf-8", errors="replace").split("\n")):
+            keys = _USES_KEY_RE.findall(ln)
+            if not keys:
+                continue
+            m = _USES_STEP_RE.match(ln)
+            value = m.group(1).strip() if m else ""
+            if m is None or len(keys) != 1 or not value or value[0] in "|>":
+                fail(f"{wf.name}: `uses` outside the one shape this reader resolves (`- uses: <value>` on one line): "
+                     f"`{ln.strip()[:60]}` - a next-line or block-scalar value, a second key token or a `uses` key "
+                     "in any other position fails closed (G56 cache-lockstep sub-rule)")
+                problems += 1
+                continue
+            if not _CACHE_NAME_RE.search(value):
+                continue
+            pin = _CACHE_PIN_RE.fullmatch(unquote(value))
+            if pin is None:
+                fail(f"{wf.name}: `uses: {value}` names actions/cache without a lowercase 40-hex sha pin - "
+                     "fails closed (G56 cache-lockstep sub-rule)")
+                problems += 1
+                continue
+            shas.setdefault(pin.group(1).lower(), set()).add(wf.name)
+    if len(shas) > 1:
+        where = "; ".join(f"{sha[:12]}… in {sorted(files)}" for sha, files in sorted(shas.items()))
+        fail(f"actions/cache halves are not in lockstep - {where} (save and restore must pin ONE version; "
+             "the G56 cache-lockstep sub-rule)")
+        problems += 1
     return problems
 
 
@@ -1111,6 +1664,7 @@ def main(argv: list[str] | None = None) -> int:
         problems += 1
     for wf in wfs:
         problems += check_workflow(wf, fuzz_pin)
+    problems += check_cache_lockstep(wfs)     # (11) cross-workflow: one sha for every actions/cache half
 
     if problems:
         print(f"[G56] CI supply-chain hygiene FAILED ({problems} problem(s)).", file=sys.stderr)
