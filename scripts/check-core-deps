@@ -11,6 +11,18 @@ image-worker). cargo-deny `[bans]` cannot express a per-member scope, so this is
 `cargo metadata` dep-tree walk: resolve the core crate, walk its transitive closure, fail if a
 forbidden lib appears. A careless refactor that pulls a copyleft C lib into the core fails HERE (T6).
 
+The §0.8 flate2 backend-selection leg (2026-09-24): the row pins `flate2` to its `rust_backend`/
+miniz_oxide feature ONLY. WHICH backend is selected is a FEATURE fact the lockfile cannot express - since
+flate2 1.1.10 the `default` feature carries the WEAK feature `zlib-rs?/std`, and cargo resolves such an
+optional dependency into Cargo.lock and into `resolve.nodes[].deps` WITHOUT activating it (`cargo tree -i
+zlib-rs` is empty; no zlib_rs artifact is compiled). So the lock-plane companion
+(`crate::untrusted_byte_boundary`) refuses only the C backends, and THIS gate reads the activation record
+cargo keeps exact: `resolve.nodes[].features`, expanded through the crate's own feature table
+(`packages[].features`) to the optional dependencies it turns on - which must include `miniz_oxide`
+(the crate the row names) and stay within what `rust_backend` expands to (the row's own shape, not a
+name list); a flate2 whose `rust_backend` no longer turns on `miniz_oxide`, or whose resolve node carries
+no `features` record, fails closed.
+
 The closure walk is a PURE function (testable against synthetic `cargo metadata` JSON with no cargo
 binary). The LIVE `cargo metadata` invocation activates in P1 once the workspace exists; until then
 this is target-absent and skipped with a notice (fail-closed the moment a Cargo manifest lands without
@@ -55,8 +67,18 @@ def _pkg_name(pkg_id: str, id_to_name: dict[str, str]) -> str:
 def core_closure(metadata: dict, core_name: str = CORE_CRATE_NAME) -> set[str] | None:
     """(pure) The set of crate NAMES in the transitive resolved dependency closure of `core_name`,
     or None if the core crate is not present in this metadata (a layout the walk cannot evaluate)."""
+    ids = core_closure_ids(metadata, core_name)
+    if ids is None:
+        return None
     packages = metadata.get("packages") or []
     id_to_name = {p["id"]: p["name"] for p in packages if "id" in p and "name" in p}
+    return {_pkg_name(i, id_to_name) for i in ids}
+
+
+def core_closure_ids(metadata: dict, core_name: str = CORE_CRATE_NAME) -> set[str] | None:
+    """(pure) The package IDS in the transitive resolved dependency closure of `core_name` (the walk
+    core_closure names), or None if the core crate is not present in this metadata."""
+    packages = metadata.get("packages") or []
     name_to_id = {p["name"]: p["id"] for p in packages if "id" in p and "name" in p}
     resolve = metadata.get("resolve") or {}
     nodes = {n["id"]: n for n in (resolve.get("nodes") or []) if "id" in n}
@@ -78,13 +100,90 @@ def core_closure(metadata: dict, core_name: str = CORE_CRATE_NAME) -> set[str] |
                 stack.append(pid)
         for pid in node.get("dependencies") or []:
             stack.append(pid)
-    return {_pkg_name(i, id_to_name) for i in seen}
+    return seen
 
 
 def forbidden_in_closure(closure: set[str], stems: tuple[str, ...] = FORBIDDEN_STEMS) -> list[str]:
     """(pure) The closure crate names that match a forbidden image-worker lib stem (the core crate
     itself is in the closure but never matches a stem)."""
     return sorted(n for n in closure if any(s in n.lower() for s in stems))
+
+
+# --- the §0.8 flate2 backend selection (the feature plane; module docstring) ----------------------
+FLATE2 = "flate2"
+FLATE2_SELECTED_FEATURE = "rust_backend"
+FLATE2_SELECTED_DEP = "miniz_oxide"        # the backend crate the §0.8 row names
+
+
+def _feature_closure(table: dict, roots: set[str]) -> tuple[set[str], set[str]]:
+    """(pure) Expand `roots` through a crate's feature table: (features reached, optional dependencies
+    turned on). A `feat` entry is followed and a `dep:x` entry turns `x` on; a `x/feat` entry turns `x` on
+    as well (cargo's implicit activation of an optional dep by a dependency-feature); the WEAK `x?/feat`
+    entry configures `x` only if something else activated it and turns on nothing here."""
+    feats: set[str] = set()
+    deps: set[str] = set()
+    stack = list(roots)
+    while stack:
+        f = stack.pop()
+        if f in feats:
+            continue
+        feats.add(f)
+        for entry in table.get(f) or []:
+            if entry.startswith("dep:"):
+                deps.add(entry[4:])
+            elif "?/" in entry:
+                continue
+            elif "/" in entry:
+                deps.add(entry.split("/", 1)[0])
+            else:
+                stack.append(entry)
+    return feats, deps
+
+
+def flate2_backend_problems(metadata: dict, closure_ids: set[str]) -> tuple[list[str], list[str]]:
+    """(pure) For every `flate2` package in the core closure: the optional dependencies its ACTIVATED
+    features turn on must include `miniz_oxide` and stay within the `rust_backend` closure (the §0.8
+    selection). A flate2 whose feature table has no `rust_backend`, whose `rust_backend` no longer turns on
+    `miniz_oxide`, or whose resolve node carries no `features` record cannot be evaluated and is a problem
+    (fail-closed). Returns (problems, evaluated package ids) - the second so a caller can prove the leg
+    was not vacuous."""
+    problems: list[str] = []
+    evaluated: list[str] = []
+    packages = {p["id"]: p for p in (metadata.get("packages") or []) if "id" in p}
+    nodes = {n["id"]: n for n in ((metadata.get("resolve") or {}).get("nodes") or []) if "id" in n}
+    for pid in sorted(closure_ids):
+        pkg = packages.get(pid) or {}
+        if pkg.get("name") != FLATE2:
+            continue
+        evaluated.append(pid)
+        table = pkg.get("features") or {}
+        if FLATE2_SELECTED_FEATURE not in table:
+            problems.append(f"{pid}: its feature table has no `{FLATE2_SELECTED_FEATURE}` feature - the "
+                            "§0.8 selection cannot be evaluated against this flate2 (re-read the row)")
+            continue
+        _, allowed = _feature_closure(table, {FLATE2_SELECTED_FEATURE})
+        if FLATE2_SELECTED_DEP not in allowed:
+            problems.append(f"{pid}: its `{FLATE2_SELECTED_FEATURE}` feature no longer turns on "
+                            f"`{FLATE2_SELECTED_DEP}` (it expands to {sorted(allowed)}) - the §0.8 row names "
+                            "miniz_oxide; re-read the row against this flate2")
+            continue
+        node = nodes.get(pid) or {}
+        if "features" not in node:
+            problems.append(f"{pid}: the resolve node carries no `features` record - the activated set "
+                            "cannot be evaluated (fail-closed)")
+            continue
+        activated = list(node.get("features") or [])
+        _, turned_on = _feature_closure(table, set(activated))
+        if FLATE2_SELECTED_DEP not in turned_on:
+            problems.append(f"{pid}: activated features {sorted(activated)} do not turn on "
+                            f"`{FLATE2_SELECTED_DEP}` - the §0.8 row selects the rust backend (miniz_oxide)")
+        extra = sorted(turned_on - allowed)
+        if extra:
+            problems.append(f"{pid}: activated features {sorted(activated)} turn on optional "
+                            f"dependencies {extra} beyond the `{FLATE2_SELECTED_FEATURE}` closure "
+                            f"{sorted(allowed)} - the §0.8 row selects the rust backend ONLY (no zlib / "
+                            "zlib-ng / zlib-rs backend)")
+    return problems, evaluated
 
 
 def _workspace_manifest() -> Path | None:
@@ -128,8 +227,14 @@ def main() -> int:
               f"copyleft C lib(s) {hits} - §3.6 forbids linking them into the core (they belong to the "
               "separate convertia-imgworker binary only)", file=sys.stderr)
         return 1
+    f2_problems, f2_evaluated = flate2_backend_problems(metadata, core_closure_ids(metadata) or set())
+    if f2_problems:
+        print("[G53] FAIL: the §0.8 flate2 backend selection (rust_backend/miniz_oxide ONLY) is violated "
+              "in the core closure:\n  - " + "\n  - ".join(f2_problems), file=sys.stderr)
+        return 1
     print(f"[G53] core-crate dependency closure OK ({len(closure)} crates; none of "
-          f"{list(FORBIDDEN_STEMS)} present in `{CORE_CRATE_NAME}`)")
+          f"{list(FORBIDDEN_STEMS)} present in `{CORE_CRATE_NAME}`; flate2 backend selection = "
+          f"{FLATE2_SELECTED_FEATURE} only for {f2_evaluated or ['(no flate2 in the closure)']})")
     return 0
 
 

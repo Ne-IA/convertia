@@ -53,8 +53,16 @@ record("parse_npmrc ignores comments/blanks + lowercases keys",
        parsed.get("registry") == "https://registry.npmjs.org/" and parsed.get("unsafe-perm") == "false")
 
 # --- pnpm-lock resolution-URL guard (G18c) ----------------------------------------------------
-record("a lockfile URL from the allowed host -> clean",
-       m.lockfile_url_problems("resolution: {tarball: https://registry.npmjs.org/foo/-/foo-1.0.0.tgz}") == [])
+# [Test-Change: P0.3.8 - old-obsolete+new-correct, G18c 2026-09-24] the old leg passed a `tarball:` resolution from
+# the allowed host; the shape control refuses EVERY non-`{integrity}` resolution now (measured through pnpm's
+# loader + URL parser: pnpm fetches `{integrity}` from the pinned registry; `tarball` / `repo` / `directory` are
+# the keys that could point elsewhere - `tarball` the registry-package one; the older `registry` key the pinned
+# pnpm never reads), so the canonical entry is the clean case and the allowed-host token case moves to a URL
+# outside a resolution.
+record("the canonical registry entry (`resolution: {integrity: sha512-...}`) -> clean",
+       m.lockfile_url_problems("packages:\n\n  foo@1.0.0:\n    resolution: {integrity: sha512-AAAA/BBBB==}\n") == [])
+record("a URL from the allowed host outside a resolution (a notice) -> clean under the token scan",
+       m.lockfile_url_problems("    deprecated: see https://registry.npmjs.org/package/foo\n") == [])
 record("a lockfile URL from a FOREIGN host -> caught",
        any("non-allowed host" in p for p in
            m.lockfile_url_problems("resolution: {tarball: https://evil.example.com/foo.tgz}")))
@@ -84,6 +92,213 @@ record("a protocol-relative //host resolution -> caught",
        m.lockfile_url_problems("tarball: //evil.example.com/x.tgz") != [])
 record("a git+https from a FOREIGN host -> caught",
        m.lockfile_url_problems("repo: git+https://evil.example.com/pkg.git") != [])
+
+# --- G18c (2026-09-24; the gate's module comment): every spelling the reviews measured through pnpm 10.13.1's
+# actual loader (@zkochan/js-yaml 0.0.7; the repo's js-yaml 4.3.2 agrees on every form but `!!binary`) + Node's
+# URL parser is replayed here; the resolution SHAPE control is the closure, the YAML-indicator refusal guards the
+# key, and the posture stays: a deprecation notice's URL is a RED by design, never excised. Every leg drives
+# lockfile_url_problems (the function main() calls), never a helper alone.
+_PKG = "packages:\n\n  foo@1.0.0:\n"
+
+
+def _lock(res: str) -> str:
+    return _PKG + "    resolution: " + res + "\n"
+
+
+def _tb(esc: str) -> str:
+    """A tarball whose host carries `esc` between the allowed host and `.evil...` - the r4 P0 shape."""
+    return '{integrity: sha512-AAAA, tarball: "https://registry.npmjs.org' + esc + '.evil.example.com/x.tgz"}'
+
+
+def _host_red(lock: str, host: str) -> bool:
+    return any("non-allowed host" in p and host in p for p in m.lockfile_url_problems(lock))
+
+
+def _shape_red(lock: str) -> bool:
+    return any("refused by shape" in p for p in m.lockfile_url_problems(lock))
+
+
+def _indicator_red(lock: str, ch: str) -> bool:
+    return any("YAML indicator " + repr(ch) in p for p in m.lockfile_url_problems(lock))
+
+
+_JOINED = "registry.npmjs.org.evil.example.com"
+_ESC = _lock('{integrity: sha512-AAAA, tarball: "https:\\x2f\\x2fevil.example.com/foo.tgz"}')
+record("REPLAY (r2 review): a double-quoted `\\x2f` escape spelling a foreign tarball -> decoded, the token names the host",
+       _host_red(_ESC, "evil.example.com/foo.tgz"))
+record("a `\\u002f` escape spelling the slashes -> decoded, the token names the host",
+       _host_red(_ESC.replace("\\x2f", "\\u002f"), "evil.example.com"))
+record("a `\\/` escape spelling the slashes -> decoded, the token names the host",
+       _host_red(_ESC.replace("\\x2f", "\\/"), "evil.example.com"))
+record("a `\\U0000002f` escape spelling the slashes -> decoded, the token names the host",
+       _host_red(_ESC.replace("\\x2f", "\\U0000002f"), "evil.example.com"))
+record("REPLAY (r4 review, P0): a `\\t` escape inside the host is DELETED as the URL parser does -> the token names "
+       "registry.npmjs.org.evil.example.com (never a separator)",
+       _host_red(_lock(_tb("\\t")), _JOINED))
+record("a `\\n` escape inside the host -> deleted, the joined host is named", _host_red(_lock(_tb("\\n")), _JOINED))
+record("a `\\r` escape inside the host -> deleted, the joined host is named", _host_red(_lock(_tb("\\r")), _JOINED))
+record("a `\\x09` (tab) escape inside the host -> deleted, the joined host is named",
+       _host_red(_lock(_tb("\\x09")), _JOINED))
+record("a `\\u000A` (LF) escape inside the host -> deleted, the joined host is named",
+       _host_red(_lock(_tb("\\u000A")), _JOINED))
+record("a `\\U0000000D` (CR) escape inside the host -> deleted, the joined host is named",
+       _host_red(_lock(_tb("\\U0000000D")), _JOINED))
+record("a `\\` + TAB escape (js-yaml reads a tab) inside the host -> deleted, the joined host is named",
+       _host_red(_lock(_tb("\\\t")), _JOINED))
+record("a LITERAL tab inside the host -> deleted, the joined host is named",
+       _host_red(_lock(_tb("\t")), _JOINED))
+record("REPLAY (r4 review, P1): an ESCAPED LINE BREAK (`https:/\\` + newline + `/evil...`) -> joined as the loader "
+       "does, the token names evil.example.com",
+       _host_red(_lock('{integrity: sha512-AAAA, tarball: "https:/\\\n      /evil.example.com/x.tgz"}'), "evil.example.com"))
+record("REPLAY (r4 review, sonnet P0): a `\\N` (U+0085) right after `://` stays IN the host (ASCII-only token "
+       "boundaries) -> the token reds instead of vanishing",
+       _host_red(_lock('{integrity: sha512-AAAA, tarball: "https://\\Nevil.example.com/x.tgz"}'), "evil.example.com"))
+record("a `\\_` (NBSP) right after `://` -> stays in the host, reds",
+       _host_red(_lock('{integrity: sha512-AAAA, tarball: "https://\\_evil.example.com/x.tgz"}'), "evil.example.com"))
+record("a `\\L` (U+2028) right after `://` -> stays in the host, reds",
+       _host_red(_lock('{integrity: sha512-AAAA, tarball: "https://\\Levil.example.com/x.tgz"}'), "evil.example.com"))
+record("a `\\P` (U+2029) right after `://` -> stays in the host, reds",
+       _host_red(_lock('{integrity: sha512-AAAA, tarball: "https://\\Pevil.example.com/x.tgz"}'), "evil.example.com"))
+record("a `\\x20` (space) right after `://` -> an EMPTY-host token, reds (fail-closed), never a non-match",
+       any("non-allowed host: https:// " in p for p in m.lockfile_url_problems(
+           _lock('{integrity: sha512-AAAA, tarball: "https://\\x20evil.example.com/x.tgz"}'))))
+record("a `git+ssh://\\N...` repo -> the scheme arm refuses it (the git/ssh refusal never vanishes either)",
+       any("non-registry resolution scheme" in p for p in m.lockfile_url_problems(
+           _lock('{type: git, repo: "git+ssh://\\Nevil.example.com/x.git", commit: abc}'))))
+record("an out-of-range `\\U00110000` escape -> a fail-closed problem naming it, no crash (js-yaml accepts it)",
+       any("out-of-range escape `\\U00110000`" in p for p in m.lockfile_url_problems(
+           _lock('{integrity: sha512-AAAA, tarball: "\\U00110000"}'))))
+record("an out-of-range `\\UFFFFFFFF` escape -> a fail-closed problem, no crash",
+       any("out-of-range escape" in p for p in m.lockfile_url_problems(_lock('{integrity: sha512-AAAA, tarball: "\\UFFFFFFFF"}'))))
+record("decode_yaml_escapes: `\\\\` -> one backslash, `\\t` -> deleted, `\\N` -> U+0085, an unknown `\\x i` sequence in "
+       "prose is kept",
+       m.decode_yaml_escapes("a\\\\b\\tc\\Nd C:\\x is gone") == "a\\bc\x85d C:\\x is gone")
+# the SHAPE control: pnpm reads a fetch location only from a `resolution` key, and only the dumper's registry
+# shape passes - a fetch location is refused without the scan having to see its URL
+record("SHAPE: the canonical registry entry -> clean, and COUNTED as canonical (not skipped)",
+       m.lockfile_url_problems(_lock("{integrity: sha512-AAAA/BBBB==}")) == []
+       and m.resolution_shape_problems(_lock("{integrity: sha512-AAAA/BBBB==}")) == ([], 1))
+record("SHAPE: the sha1- and sha256- integrity forms are canonical too",
+       m.resolution_shape_problems(_lock("{integrity: sha1-AAAA}") + "  bar@1.0.0:\n    resolution: {integrity: sha256-BBBB=}\n")
+       == ([], 2))
+record("SHAPE: a `tarball:` beside the integrity (the sonnet r4 form, its host hidden by `\\N`) -> refused by shape, "
+       "no URL read needed",
+       _shape_red(_lock('{integrity: sha512-AAAA, tarball: "https://\\Nevil.example.com/x.tgz"}')))
+record("SHAPE: a `tarball:` from the ALLOWED host -> refused too (`tarball` is the registry-package key that could point elsewhere)",
+       _shape_red(_lock("{integrity: sha512-AAAA, tarball: https://registry.npmjs.org/foo/-/foo-1.0.0.tgz}")))
+record("SHAPE: `http:evil.example.com/x.tgz` (no `//`; the URL parser reads http://evil...) -> refused by shape",
+       _shape_red(_lock("{integrity: sha512-AAAA, tarball: http:evil.example.com/x.tgz}")))
+record("SHAPE: `http:\\\\evil...` (the URL parser reads `\\` as `/`) -> refused by shape",
+       _shape_red(_lock("{integrity: sha512-AAAA, tarball: 'http:\\\\evil.example.com/x.tgz'}")))
+record("SHAPE: a `tarball: |-` block scalar with the URL split over two lines -> the resolution line is not canonical, "
+       "refused",
+       _shape_red(_PKG + "    resolution:\n      integrity: sha512-AAAA\n      tarball: |-\n        https:/\n"
+                  "        /evil.example.com/x.tgz\n"))
+record("SHAPE: a double-quoted tarball folded over a BLANK line (the loader emits an LF the URL parser deletes: "
+       "registry.npmjs.org.evil...) -> the resolution line is not canonical, refused",
+       _shape_red(_lock('{integrity: sha512-AAAA, tarball: "https://registry.npmjs.org\n\n      .evil.example.com/x.tgz"}')))
+record("SHAPE: a block-form resolution (`resolution:` with its keys on the next lines) -> refused",
+       _shape_red(_PKG + "    resolution:\n      integrity: sha512-AAAA\n"))
+record("SHAPE: a multi-line flow resolution (`{integrity: ...,` newline `tarball: ...}`) -> refused",
+       _shape_red(_PKG + "    resolution: {integrity: sha512-AAAA,\n      tarball: https://evil.example.com/x.tgz}\n"))
+record("SHAPE: a git resolution (`{type: git, repo: ..., commit: ...}`) -> refused by shape",
+       _shape_red(_lock("{type: git, repo: git+https://github.com/x/y.git, commit: abc}")))
+record("SHAPE: a directory resolution -> refused by shape", _shape_red(_lock("{type: directory, directory: ../x}")))
+record("SHAPE: a `file:` tarball -> refused by shape",
+       _shape_red(_lock("{integrity: sha512-AAAA, tarball: file:../x.tgz}")))
+record("SHAPE: a double-quoted `\"resolution\":` key -> refused (the dumper writes the bare key)",
+       _shape_red(_PKG + '    "resolution": {integrity: sha512-AAAA, tarball: https://evil.example.com/x.tgz}\n'))
+record("SHAPE: an escaped key `\"re\\x73olution\":` -> decoded, then refused",
+       _shape_red(_PKG + '    "re\\x73olution": {integrity: sha512-AAAA, tarball: https://evil.example.com/x.tgz}\n'))
+record("SHAPE: an escaped-line-break key (`\"resolu\\` newline `tion\":`; js-yaml rejects the indentation, refused "
+       "here fail-closed regardless) -> joined, then refused",
+       _shape_red(_PKG + '    "resolu\\\n      tion": {integrity: sha512-AAAA, tarball: https://evil.example.com/x.tgz}\n'))
+record("SHAPE: a flow-context key/colon split (`{resolution` newline `: {tarball: http:evil...}}`; js-yaml rejects "
+       "it, refused here fail-closed regardless) -> the token on the entry line is not canonical, refused",
+       _shape_red("packages:\n\n  foo@1.0.0: {resolution\n    : {tarball: http:evil.example.com/x.tgz}}\n"))
+record("SHAPE: a merge key carrying a resolution (`<<: {resolution: {tarball: ...}}`; measured: js-yaml reads the "
+       "merged key) -> the token on the merge line is not canonical, refused",
+       _shape_red(_PKG + "    <<: {resolution: {tarball: http:evil.example.com/x.tgz}}\n"))
+record("SHAPE: a resolution at a non-dumper indent (6 spaces) -> refused (the shape is pinned whole)",
+       _shape_red(_PKG + "      resolution: {integrity: sha512-AAAA}\n"))
+record("SHAPE: a package literally named `resolution@1.0.0` / `@x/resolution` is not the token (no false red)",
+       m.resolution_shape_problems("  resolution@1.0.0:\n    resolution: {integrity: sha512-AAAA}\n"
+                                   "  '@x/resolution@1.0.0':\n    resolution: {integrity: sha512-BBBB}\n") == ([], 2))
+record("SHAPE (named residual, fail-closed): a notice carrying the bare word `resolution` -> reds, never silent",
+       _shape_red(_lock("{integrity: sha512-AAAA}") + "    deprecated: no resolution for this, use bar\n"))
+record("INDICATOR: an explicit key `? resolution` (measured: js-yaml reads it as the key) -> refused ('?')",
+       _indicator_red(_PKG + "    ? resolution\n    : {tarball: http:evil.example.com/x.tgz}\n", "?"))
+record("INDICATOR: an anchored key `&r resolution: ...` -> refused ('&')",
+       _indicator_red(_PKG + "    &r resolution: {tarball: http:evil.example.com/x.tgz}\n", "&"))
+record("INDICATOR: an alias key `*r : ...` -> refused ('*')",
+       _indicator_red(_PKG + "    *r : {tarball: http:evil.example.com/x.tgz}\n", "*"))
+record("INDICATOR: a tagged key `!!binary cmVzb2x1dGlvbg==: ...` (a YAML error in pnpm's zkochan loader, byte numbers "
+       "in js-yaml 4.3.2 - never the key; refused fail-closed regardless) -> refused ('!')",
+       _indicator_red(_PKG + "    !!binary cmVzb2x1dGlvbg==: {tarball: http:evil.example.com/x.tgz}\n", "!"))
+record("INDICATOR: a `%TAG` directive -> refused ('%')",
+       _indicator_red("%TAG ! tag:evil,2026:\n" + _lock("{integrity: sha512-AAAA}"), "%"))
+_live = m.decode_yaml_escapes(m.PNPM_LOCK.read_text(encoding="utf-8")) if m.PNPM_LOCK.is_file() else ""
+_live_tokens = len(m._RESOLUTION_TOKEN_RE.findall(_live))
+# the r5 review's key-gluing forms (measured end to end through pnpm's loader + Node's URL: pnpm read the key and
+# fetched): the decoder's deletions and joins OUTSIDE a double-quoted scalar hid the bare `resolution` token from a
+# decoded-only shape pass. The shape control reads the RAW text too, and the two spellings are refused outright.
+_A = "packages:\n\n  foo@1.0.0: {&z\tresolution: {tarball: http:evil.example.com/x.tgz}}\n"
+record("REPLAY (r5 review, A): `{&z<TAB>resolution: {tarball: http:evil...}}` (the deleted tab glues the key onto the "
+       "anchor) -> refused twice: the literal-tab refusal AND the RAW-text shape pass",
+       any("literal tab" in p for p in m.lockfile_url_problems(_A)) and _shape_red(_A))
+record("REPLAY (r5 review, A'): `{!!str<TAB>resolution: ...}` (a tag instead of the anchor) -> refused",
+       any("literal tab" in p for p in m.lockfile_url_problems(_A.replace("&z", "!!str"))))
+_B = "packages:\n\n  foo@1.0.0:\n    # pinned\\\n    resolution: {tarball: http:evil.example.com/x.tgz}\n"
+record("REPLAY (r5 review, B): a comment ending in `\\` + newline before `resolution:` (the join glues the key onto the "
+       "comment) -> refused twice: the line-end-backslash refusal AND the RAW-text shape pass",
+       any("ends with a backslash" in p for p in m.lockfile_url_problems(_B)) and _shape_red(_B))
+record("REPLAY (r5 review, B'): a plain scalar ending in `\\` (`x: a\\` + newline) before `resolution:` -> refused",
+       any("ends with a backslash" in p for p in m.lockfile_url_problems(_B.replace("    # pinned\\\n", "    x: a\\\n"))))
+_C = _lock("{integrity: sha512-X\\x7d\\N, tarball: http:evil.example.com/x.tgz}")
+record("REPLAY (r5 review, C): `sha512-X\\x7d\\N, tarball: ...` (a decoded `}` + U+0085 forged a canonical line under a "
+       "universal line split) -> refused by shape",
+       _shape_red(_C))
+record("the DECODED pass alone on C: lines split at LF only, so the decoded U+0085 stays inside the line and the line is "
+       "not canonical",
+       m.resolution_shape_problems(m.decode_yaml_escapes(_C))[0] != [])
+record("each pass owns one spelling: `\"re\\x73olution\":` is bare only DECODED; `x: a\\` + newline + `resolution:` is bare "
+       "only RAW (the join glues it in the decoded text)",
+       m.resolution_shape_problems(_PKG + '    "re\\x73olution": {tarball: x}\n')[0] == []
+       and m.resolution_shape_problems(m.decode_yaml_escapes(_PKG + '    "re\\x73olution": {tarball: x}\n'))[0] != []
+       and m.resolution_shape_problems(m.decode_yaml_escapes(_PKG + "    x: a\\\n    resolution: {tarball: x}\n"))[0] == []
+       and m.resolution_shape_problems(_PKG + "    x: a\\\n    resolution: {tarball: x}\n")[0] != [])
+record("RESIDUAL (no fetch): a backslash-t ESCAPE in plain context (`{&z\\tresolution: ...}`) glues the key in BOTH "
+       "views - and pnpm reads no `resolution` key from it (measured through pnpm's loader: the anchor swallows "
+       "`z\\tresolution:`, a plain `\\nresolution` key keeps its backslash), so nothing is hidden",
+       m.lockfile_url_problems("packages:\n\n  foo@1.0.0: {&z\\tresolution: {tarball: http:evil.example.com/x.tgz}}\n") == [])
+record("a CRLF + BOM lock with the A form -> refused (the literal tab reds on the raw text; CRLF itself is normalized "
+       "by main()'s read_text - universal newlines - before the scan, and .gitattributes `* text=auto eol=lf` keeps "
+       "the committed lock LF-only; editorconfig-checker, G52, excludes pnpm-lock.yaml by default)",
+       any("literal tab" in p for p in m.lockfile_url_problems("\ufeff" + _A.replace("\n", "\r\n"))))
+record("the LIVE lock carries no literal tab and no line-end backslash (the two raw refusals cost no false red on the "
+       "live lock; a value line ending in a backslash, plain or block-scalar, would red by design)",
+       m.PNPM_LOCK.is_file() and m.raw_text_problems(m.PNPM_LOCK.read_text(encoding="utf-8")) == [])
+record("the two-pass DEDUPE: a `tarball:` resolution reds by shape once, not once per pass (the raw and the decoded "
+       "line are identical)",
+       sum("refused by shape" in p for p in m.lockfile_url_problems(_lock("{tarball: http:evil.example.com/x.tgz}"))) == 1)
+# the TOKEN scan's named fetch-free gaps, pinned as what they are: a notice fetches nothing, a resolution is caught by shape
+record("RESIDUAL (token scan, fetch-free): `http:evil.example.com/x` in a notice carries no `://`, the token scan does not "
+       "see it; the same spelling inside a resolution is refused by shape",
+       m.lockfile_url_problems("    deprecated: see http:evil.example.com/x\n") == []
+       and _shape_red(_lock("{integrity: sha512-AAAA, tarball: http:evil.example.com/x}")))
+record("RESIDUAL (token scan, fetch-free): a host cut by a decoded `\\\"` inside a double-quoted notice ends the token at the "
+       "quote; inside a resolution the shape refuses it",
+       m.lockfile_url_problems('    deprecated: "see https://registry.npmjs.org\\".evil.example.com/x"\n') == []
+       and _shape_red(_lock('{integrity: sha512-AAAA, tarball: "https://registry.npmjs.org\\".evil.example.com/x"}')))
+record("LIVE: every `resolution` token of the committed pnpm-lock.yaml is canonical, and the canonical count equals "
+       "the token count (non-vacuous: at least one)",
+       _live_tokens > 0 and m.resolution_shape_problems(_live) == ([], _live_tokens))
+record("POSTURE: a `deprecated:` notice naming a foreign host (the 2026-09-24 eslint@9.39.4 entry) is a RED by design, "
+       "never excised - the signal to move off the deprecated package",
+       any("eslint.org" in p for p in m.lockfile_url_problems(
+           "packages:\n\n  eslint@9.39.4:\n    resolution: {integrity: sha512-XoMj}\n"
+           "    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.\n")))
+
 record("a block allowlist with a # comment line mid-list -> counts correctly (not under-counted)",
        m._list_count_under("onlyBuiltDependencies:\n  - a\n  # note\n  - b\nother: x\n",
                            "onlyBuiltDependencies") == 2)
@@ -209,7 +424,9 @@ with tempfile.TemporaryDirectory() as _td:
         (base / "pnpm-lock.yaml").write_text("resolution: {tarball: https://evil.example.com/x.tgz}\n",
                                              encoding="utf-8")
         rc_foreign = m.main()
-        (base / "pnpm-lock.yaml").write_text("resolution: {tarball: https://registry.npmjs.org/x.tgz}\n",
+        # [Test-Change: P0.3.8 - old-obsolete+new-correct, G18c 2026-09-24] the clean lock is the dumper's
+        # canonical registry entry; a `tarball:` (even from the allowed host) is refused by shape now.
+        (base / "pnpm-lock.yaml").write_text("packages:\n\n  x@1.0.0:\n    resolution: {integrity: sha512-AAAA}\n",
                                              encoding="utf-8")
         rc_clean = m.main()
         (base / ".pnpmfile.cjs").write_text("module.exports = {}\n", encoding="utf-8")

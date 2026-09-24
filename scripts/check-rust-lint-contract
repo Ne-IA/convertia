@@ -155,7 +155,8 @@ def _audit_ignores() -> list[str]:
     """The `[advisories].ignore` advisory ids from the repo-root `audit.toml`, passed to `cargo audit` as
     `--ignore <id>` so the live G17 leg actually APPLIES them. cargo-audit does NOT auto-read a repo-root
     `audit.toml` (its default config path is `.cargo/audit.toml`, absent here), so a documented ignore
-    there is otherwise silently inert against a real VULNERABILITY — the 18 P1.59 ids are all
+    there is otherwise silently inert against a real VULNERABILITY — the P1.59 ids (18 then, 8 since
+    the 2026-09-24 retirement) are all
     unmaintained/unsound (non-fatal warnings), which masked this until the fatal quick-xml
     RUSTSEC-2026-0194/0195 vulnerabilities exposed it. audit.toml stays the single source of truth;
     check-supply-chain keeps it == deny.toml (the G18 two-scanner reconciliation), so this makes cargo

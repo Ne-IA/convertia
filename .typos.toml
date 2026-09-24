@@ -15,3 +15,7 @@
 mis = "mis"
 # "unparseable" is a valid alternative spelling of "unparsable" used consistently in the spec/security docs.
 unparseable = "unparseable"
+# "flate" — the token typos splits off the `flate2` crate name (DEFLATE; the §0.8 in-core inflate crate) when the
+# security docs name it in prose (the G53 feature-plane leg, 2026-09-24). Whole-word self-map: a genuine
+# standalone `flate`->`flat` typo is implausible in this prose and the G1 review reads it (the `mis` precedent).
+flate = "flate"

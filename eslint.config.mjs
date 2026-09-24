@@ -9,13 +9,23 @@
 //                        code talks to the typed facade.
 //
 // ESM (.mjs) on purpose: package.json declares no type=module, so a .js flat config with an
-// import statement would fail to load under the Node CommonJS default. eslint is pinned to the
-// 9.x line (not the 10.x latest): eslint-plugin-react 7.37 -- required for react/jsx-no-literals
-// -- peers only up to eslint 9.7, so 9.x is the ecosystem-compatible choice (section 5.1
-// avoid-bleeding-edge-that-drifts). [Build-Session-Entscheidung: P1.33, P1.36]
+// import statement would fail to load under the Node CommonJS default. eslint rides the 10.x line
+// (since 2026-09-24; npm marks the whole 9.x line deprecated, "no longer supported"):
+// eslint-plugin-react 7.37.5 -- required for react/jsx-no-literals -- declares no eslint-10 peer
+// range (its list ends at ^9.7; pnpm reports the unmet peer as a warning) and the rules used here
+// run unchanged on 10. Its React-version DETECTION would call the removed context.getFilename()
+// under eslint 10, so settings.react.version is set explicitly below instead of "detect" -- read
+// from the react pin in package.json, so a React bump never leaves it stale -- and a version-sensitive
+// react/* rule that joins this config keeps that setting. (No backticks in these comments: the G57
+// gate stashes backtick templates before it drops comments.) [Build-Session-Entscheidung: P1.33,
+// P1.36; re-cut 2026-09-24 by the Co-Pilot dependency refresh]
 import tseslint from "typescript-eslint";
 import globals from "globals";
 import react from "eslint-plugin-react";
+import pkg from "./package.json" with { type: "json" };
+
+// The React major.minor eslint-plugin-react keys its version-sensitive rules on, from the one pin.
+const REACT_VERSION = pkg.dependencies.react.replace(/^[^0-9]*/, "");
 
 // The i18n-runtime / locale-switch import ban (G57 leg a). Single-homed here so the base block and
 // the non-IPC override (P1.36) share one i18n list rather than duplicating it.
@@ -68,7 +78,7 @@ export default tseslint.config(
   {
     plugins: { react },
     languageOptions: { globals: { ...globals.browser } },
-    settings: { react: { version: "detect" } },
+    settings: { react: { version: REACT_VERSION } },
     rules: {
       // check-ts-gate: the generated bindings.ts IPC door is fully typed, never the any type.
       "@typescript-eslint/no-explicit-any": "error",

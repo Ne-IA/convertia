@@ -1952,7 +1952,10 @@ internally, which is aggregation, never a link into the MIT core.)
 > `convertia-core` (the union over every target and dependency kind — a superset of the shipped
 > link set, so fail-closed by construction) carries no decoder binding (the G53 image-worker set, mirrored verbatim and
 > drift-guarded against the gate script, + the subprocess-only FFmpeg/poppler/image-codec families +
-> the C zlib/XML/xz/bzip2 backends), `flate2` rides `miniz_oxide` only (the §0.8 row), `convertia-imgworker`
+> the C zlib/XML/xz/bzip2 backends), `flate2`'s lock edge carries `miniz_oxide` and no C zlib
+> backend (presence-based; the §0.8 row's SELECTED-backend clause is G53's feature-plane leg since
+> 2026-09-24 — a weak-feature optional dep such as flate2 1.1.10's `zlib-rs` sits in the lock
+> unbuilt), `convertia-imgworker`
 > is **not** in the closure (aggregation, not linkage), and every native-binding-shaped (`-sys`) crate in
 > the closure is classified in a bijective table (a new C-library binding reaching the core is a
 > reviewed classification, never a silent link); (2) over the live §3.2.3 registry every registered

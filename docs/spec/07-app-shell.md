@@ -919,7 +919,10 @@ record *what actually happened* without showing the user a stack trace.
   **`tauri-plugin-log` 2.8.0** — confirmed the `KeepOne` arm is `fs::remove_file(&self.path)?`
   (a delete, not `rename_file_to_dated()`) and `max_file_size` is a `u128` byte cap, so the
   ~1× single-file bound (≈5 MB) holds for this pin; the standing verify-on-bump trigger above
-  re-runs it on the next version bump.
+  re-runs it on the next version bump. **Re-verified 2026-09-24** against the lockfile-pinned
+  **`tauri-plugin-log` 2.9.2** (the Co-Pilot dependency refresh): the `KeepOne` arm is unchanged
+  (`fs::remove_file(&self.path)?`) and `max_file_size` is still a `u128` byte cap — the ~1× bound
+  stands for this pin.
 
 ### 7.5.3 Redaction stance — reconciling diagnostics with privacy `[DECIDED + REC]`
 

@@ -6,9 +6,12 @@ freezes the JS supply-chain posture (stdlib only):
 
   * G18c REGISTRY PIN - `.npmrc` pins the default registry to the single allowed origin AND declares no
     scoped/per-registry override to any other origin (`@scope:registry=` / `//host/:registry`); once
-    `pnpm-lock.yaml` exists (P1) EVERY resolution is checked - a registry tarball must be from the
-    allowed host, and any non-registry resolution SCHEME (git+/git:/ssh:/file:/protocol-relative //) is
-    rejected outright (a git/ssh dep is clone-and-BUILD = code-exec from an arbitrary host);
+    `pnpm-lock.yaml` exists (P1) EVERY resolution is checked - by SHAPE: a `resolution` may only be the
+    registry form pnpm's own dumper writes (`{integrity: sha...-...}`), so a tarball URL,
+    a git repo (clone-and-BUILD = code-exec from an arbitrary host), a directory or a `file:` is refused
+    without the scan having to read the URL; a fail-closed token scan over the escape-decoded text then
+    rejects any foreign host and any non-registry SCHEME (git+/git:/ssh:/file:/protocol-relative //)
+    anywhere else (the G18c block below);
   * G18d LIFECYCLE LOCKDOWN - `.npmrc` keeps the install posture locked (no `enable-pre-post-scripts`,
     no `unsafe-perm`, `frozen-lockfile` on); once a pnpm manifest exists (P1) the build-script allowlist
     (`onlyBuiltDependencies` / pnpm-11 `allowBuilds`) stays <= the frozen count, FAIL-CLOSED on a
@@ -79,12 +82,182 @@ PINNED_FLOORS_JS = {
     "vitest-axe":      "0.1.0",    # §5.x a11y assertions in the vitest suite (P1.56)
 }
 
-# resolution tokens in a pnpm-lock.yaml: any scheme://... (incl. git+ssh / git+https / ssh / git /
-# file) OR a protocol-relative //host.tld/... (the leading-// guarded to a dotted host so a base64
-# integrity hash that happens to contain `//` is not matched)
+# ---- the pnpm-lock.yaml resolution scan (G18c): a fail-closed TEXT scan, no structural YAML model ------------
+# pnpm loads the lock with js-yaml and builds each fetch URL with the WHATWG URL parser
+# (`new URL(tarball, registry)`), so the bytes pnpm FETCHES FROM can differ from the bytes on a line: js-yaml
+# decodes a double-quoted scalar's escapes (`\x2f`, `\u002f`, `\/`, `\N`, ..., and an escaped line break that
+# JOINS two source lines), and the URL parser DELETES every tab / LF / CR of its input, reads `\` as `/` and
+# `http:host` as `http://host`. The 2026-09-24 G1 review measured each of these through pnpm 10.13.1's actual
+# loader and dumper - @zkochan/js-yaml 0.0.7, extracted from pnpm.cjs; the repo's js-yaml 4.3.2 agrees on
+# every form but the `!!binary` key, a YAML error in the zkochan loader - and Node's URL under G1 review: a
+# line-based excision of the `deprecated:` notice was built and WITHDRAWN (aliases, multi-line flows, explicit
+# keys, colon-bearing keys - the YAML-vs-line-model class), and a first escape decoder that turned `\t` / `\n`
+# / `\r` / `\N` into real separators HID a host the URL parser joins. What stands, in this order:
+#   1. decode_yaml_escapes (+ escape_problems): every double-quoted escape the loader knows is decoded over
+#      the WHOLE text - the tab / LF / CR escapes to NOTHING (the URL parser deletes them, so they are never a
+#      token boundary), an escaped line break joined as the loader does, a literal tab or CR deleted for the
+#      same reason, an out-of-range `\U` (the loader accepts it) a fail-closed problem, not a crash.
+#      Over-decoding OUTSIDE a double-quoted scalar is NOT harmless: a deletion or a join there can glue a
+#      `resolution` key onto its neighbour and hide it from a decoded-only shape pass (the r5 review's
+#      `{&z<TAB>resolution: ...}` and `# note\` + newline forms, measured end to end: pnpm read the key and
+#      fetched). So the shape control reads the RAW text as well (item 2), and raw_text_problems refuses a
+#      literal tab and a backslash at a line end outright: the two characters are exactly what the decoder
+#      deletes or joins. A literal tab never appears in a dump (the dumper spells it `\t`); a line-end
+#      backslash CAN - on a plain single-line value (`deprecated: Moved; install to C:\tools\`, the measured
+#      dump) or on any block-scalar value line the dumper writes for multi-line free text, a notice or a
+#      `peerDependencies` range (the live lock holds 42 `peerDependencies` mappings, none multi-line, and 0
+#      block scalars) - and reds here by design like a URL-bearing notice: a fail-closed residual, named
+#      below, never a silent pass.
+#   2. resolution_shape_problems - the CONTROL, run over the RAW text AND over the DECODED text (a key hidden
+#      from one pass by an escape or a deletion is bare in the other): pnpm reads a fetch location only from a
+#      `resolution` key (`tarball`, `repo` + `commit`, `directory`, `type`, the older `registry`), and its own
+#      dumper writes a registry package whose tarball follows the registry template as exactly
+#      `    resolution: {integrity: sha...-...}` (the live lock: all 523; a package whose `dist.tarball`
+#      deviates from the template keeps a `tarball` key - pnpm's toLockfileResolution, before the dumper - and
+#      reds here by design). So every bare `resolution` token on either text must sit on a line of exactly
+#      that shape - lines split at LF only, so a decoded U+0085 / U+2028 is content, never a line end - and a
+#      line starting with a YAML indicator (`?` explicit key - which the dumper emits for a key whose quoted
+#      dump exceeds 1024 characters, and which any block-scalar VALUE line, a notice or a `peerDependencies`
+#      range, may begin with: two fail-closed residuals - `&` anchor, `*` alias, `!` tag, `%` directive) is
+#      refused, so a key spelled through one of them cannot pass the shape check unseen (measured: js-yaml
+#      reads `? resolution` + `: {...}` and a `<<: {resolution: ...}` merge as the key; the merge line carries
+#      the token, the explicit key is refused by its `?`; a flow-position anchor or tag leaves the token bare
+#      on the raw line). Every fetch location other than the pinned registry is thereby refused without the
+#      scan having to see the URL - the registry itself is the .npmrc pin above; the token below is the key
+#      pnpm's `pkgSnapshotToResolution` reads, nothing else names a fetch location - and the two-pass read
+#      plus the raw refusals are what make the claim hold against the decoder's own edits. A tab / LF / CR
+#      ESCAPE in plain context glues in both views, but pnpm keeps that backslash in the key (measured: an
+#      anchor swallows `z\tresolution:`, a plain `\nresolution` key stays spelled so), so no `resolution` key
+#      exists to hide.
+#   3. lockfile_url_problems' token scan: every `scheme://host` token of the decoded text is checked against
+#      the allowed host (a git / ssh / file / protocol-relative scheme is refused outright); a token ends at
+#      an ASCII space, a line end or a YAML quote / flow closer ONLY, so a decoded `\N` / `\_` / NBSP inside a
+#      host stays IN the host and reds, and an empty host after `://` reds. With 2 in place this is defence in
+#      depth for a URL outside a resolution - and the posture: a `deprecated:` notice that names a URL is a
+#      RED by design, the signal to move off the deprecated package (the eslint@9 case of 2026-09-24), never a
+#      scan exemption.
+# Named residuals - the same seven items stand in the G18c row, the Loop-memory and the commit body.
+# Fail-closed (a red by design; the remedy is a dependency bump or a re-audit, never a scan exemption): a
+# notice whose text carries a bare `resolution` token, or a dependency literally named `resolution`; a
+# block-scalar value line (a notice, a `peerDependencies` range) starting with `?` / `&` / `*` / `!` / `%`, or
+# a value line - plain or block-scalar - ending in a backslash; a package key whose quoted dump exceeds 1024
+# characters (spelled as a `? ` explicit key); a registry package whose `dist.tarball` deviates from the
+# registry template (pnpm keeps its `tarball`). Fetch-free (the TOKEN scan, item 3, is not the control; a
+# notice fetches nothing and a resolution is caught by its shape): any URL a notice spells without `scheme://`
+# for the five schemes the token regex knows - http, https, ssh, git, file (`http:host`, `http:\\host`) - and
+# any scheme outside that set (`ftp://`, `svn://`); a URL split across a block scalar's lines or folded over a
+# blank line inside a double-quoted notice (the loader emits an LF the URL parser deletes); a host cut by a
+# decoded `\"` / `\x27` (`'`) / `\x7d` (`}`) or by a literal `'` / `}` inside a double-quoted notice (a
+# URL-valid, DNS-dependent host).
+
+# js-yaml's complete double-quoted escape grammar (readDoubleQuotedScalar): `\x..` / `\u....` / `\U........`,
+# the single-character set, `\` + TAB (a tab) and `\` + line break (the join: the break and the next line's
+# leading whitespace vanish, as the loader's skipSeparationSpace does)
+_YAML_ESCAPE_RE = re.compile(
+    r"\\(?:x([0-9A-Fa-f]{2})|u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|(\r\n|\n|\r)[ \t\r\n]*|([0abtnvfre \"/\\N_LP\t]))")
+_YAML_SIMPLE_ESCAPES = {"0": "\0", "a": "\a", "b": "\b", "t": "\t", "\t": "\t", "n": "\n", "v": "\v", "f": "\f",
+                        "r": "\r", "e": "\x1b", " ": " ", '"': '"', "/": "/", "\\": "\\", "N": "\x85",
+                        "_": "\xa0", "L": "\u2028", "P": "\u2029"}
+_URL_PARSER_DELETES = "\t\n\r"        # the WHATWG URL parser removes these from its input before parsing
+_MAX_CODEPOINT = 0x10FFFF
+
+
+def escape_problems(text: str) -> list[str]:
+    """(pure) Every `\\U` escape whose code point exceeds U+10FFFF: js-yaml's loader accepts it (it emits a
+    surrogate pair with no range check), Python cannot spell it - a fail-closed problem, never a crash."""
+    return [f"pnpm-lock.yaml carries the out-of-range escape `\\U{m.group(3)}` (> U+10FFFF) this scan cannot "
+            "decode - fail-closed (G18c)"
+            for m in _YAML_ESCAPE_RE.finditer(text) if m.group(3) and int(m.group(3), 16) > _MAX_CODEPOINT]
+
+
+def decode_yaml_escapes(text: str) -> str:
+    """(pure) The text as pnpm's loader + URL parser read it: every js-yaml double-quoted escape replaced by
+    its character (`\\x2f` -> `/`, `\\N` -> U+0085, ...), an escaped line break joined, the tab / LF / CR
+    escapes and every literal tab / CR DELETED (the URL parser deletes them), an out-of-range `\\U` replaced
+    by U+FFFD (escape_problems reports it). A backslash starting no known sequence is kept (a plain scalar's
+    `C:\\x is gone`). Over-decoding outside a double-quoted scalar can delete or join (the module comment,
+    item 1), which is why the shape control also reads the raw text and raw_text_problems runs first."""
+    def one(m: "re.Match[str]") -> str:
+        hexes = m.group(1) or m.group(2) or m.group(3)
+        if hexes:
+            cp = int(hexes, 16)
+            ch = chr(cp) if cp <= _MAX_CODEPOINT else "\ufffd"
+        elif m.group(4) is not None:
+            return ""                                   # the escaped line break: a join
+        else:
+            ch = _YAML_SIMPLE_ESCAPES[m.group(5)]
+        return "" if ch in _URL_PARSER_DELETES else ch
+    return _YAML_ESCAPE_RE.sub(one, text).replace("\t", "").replace("\r", "")
+
+
+# the raw refusals (the module comment, item 1): the two characters the decoder deletes or joins
+_LINE_END_BACKSLASH_RE = re.compile(r"\\\r?$")
+
+
+def raw_text_problems(lock_text: str) -> list[str]:
+    """(pure) A literal tab anywhere and a backslash at a line end - the two spellings whose deletion / join
+    by the decoder could glue a key onto its neighbour (the r5 review's forms). A dump never carries a
+    literal tab (spelled `\\t`); it can carry a value line - plain or block-scalar, a notice or a
+    `peerDependencies` range - ending in a backslash, which then reds here by design (a named residual).
+    Each is refused outright, before either shape pass."""
+    problems: list[str] = []
+    for n, line in enumerate(lock_text.split("\n"), 1):
+        if "\t" in line:
+            problems.append(f"pnpm-lock.yaml:{n} carries a literal tab - pnpm's dumper spells a tab `\\t`; the URL "
+                            "parser deletes a tab and the decoder would glue the neighbours; refused (G18c)")
+        if _LINE_END_BACKSLASH_RE.search(line):
+            problems.append(f"pnpm-lock.yaml:{n} ends with a backslash - outside a double-quoted scalar the decoder "
+                            "would join it to the next line and glue that line's key onto this one; refused by "
+                            "design (a value line ending in a backslash, plain or block-scalar, is a red like a "
+                            "URL-bearing notice - G18c)")
+    return problems
+
+
+# the shape control (the module comment, item 2)
+_YAML_INDICATOR_LINE_RE = re.compile(r"^[ \t]*([?&*!%])")
+_RESOLUTION_TOKEN_RE = re.compile(r"(?<![\w@/.-])resolution(?![\w@/.-])")
+_CANONICAL_RESOLUTION_RE = re.compile(r"^ {4}resolution: \{integrity: sha(?:1|256|512)-[A-Za-z0-9+/]+={0,2}\}$")
+
+
+def resolution_shape_problems(text: str) -> tuple[list[str], int]:
+    """(pure) Over ONE view of the lock text (the caller runs it over the raw text and over the decoded text):
+    every line carrying a bare `resolution` token must be the one registry shape pnpm's dumper writes, and
+    no line may start with a YAML indicator (the dumper emits `? ` for a key whose quoted dump exceeds 1024
+    characters, and any block-scalar value line - a notice, a `peerDependencies` range - may begin with one:
+    fail-closed residuals, measured). Lines are split at LF only (a decoded U+0085 / U+2028 stays inside its
+    line). Returns (problems, the count of canonical resolution lines) - the count so a caller can prove the
+    check was not vacuous."""
+    problems: list[str] = []
+    canonical = 0
+    for n, line in enumerate(text.split("\n"), 1):
+        ind = _YAML_INDICATOR_LINE_RE.match(line)
+        if ind:
+            problems.append(f"pnpm-lock.yaml:{n} starts with the YAML indicator {ind.group(1)!r} (explicit key / "
+                            "anchor / alias / tag / directive) - pnpm's dumper writes one only as the `? ` of a key "
+                            "whose quoted dump exceeds 1024 characters or on a block-scalar value line - a "
+                            "notice, a `peerDependencies` range (a fail-closed residual); a key spelled "
+                            "through it is unreadable to this scan; refused (G18c)")
+            continue
+        if not _RESOLUTION_TOKEN_RE.search(line):
+            continue
+        if _CANONICAL_RESOLUTION_RE.match(line):
+            canonical += 1
+            continue
+        problems.append(f"pnpm-lock.yaml:{n} `resolution` outside the one registry shape pnpm's dumper writes "
+                        f"(`resolution: {{integrity: sha...-...}}`): {line.strip()[:80]!r} - every fetch "
+                        "location other than the pinned registry (a tarball URL, a git repo, a directory, a "
+                        "file:) is refused by shape (G18c)")
+    return problems, canonical
+
+
+# URL tokens (the module comment, item 3): any scheme://... (incl. git+ssh / git+https / ssh / git / file)
+# OR a protocol-relative //host.tld/... (the leading-// guarded to a dotted host so a base64 integrity hash
+# that happens to contain `//` is not matched). A token ends at an ASCII space, a line end or a YAML quote /
+# flow closer ONLY - never at a control or non-ASCII whitespace character, which stays in the host and reds
+# - and `://` followed by a boundary is a token with an EMPTY host (fail-closed), never a non-match.
 _RESOLUTION_RE = re.compile(
-    r"(?:(?:git\+)?(?:https?|ssh|git|file):)//[^\s'\"}\]]+"
-    r"|(?<![\w./:])//[a-z0-9-]+(?:\.[a-z0-9-]+)+/[^\s'\"}\]]*",
+    r"(?:(?:git\+)?(?:https?|ssh|git|file):)//[^ \n'\"}\]]*"
+    r"|(?<![\w./:])//[a-z0-9-]+(?:\.[a-z0-9-]+)+/[^ \n'\"}\]]*",
     re.IGNORECASE,
 )
 
@@ -132,11 +305,16 @@ def evaluate_npmrc(cfg: dict[str, str]) -> list[str]:
 
 
 def lockfile_url_problems(lock_text: str) -> list[str]:
-    """(pure) Every resolution in a pnpm-lock.yaml must be a registry tarball from the allowed host; any
-    foreign host or non-registry scheme (git/ssh/file/protocol-relative = clone-and-build / off-registry)
-    is rejected."""
-    problems: list[str] = []
-    for token in _RESOLUTION_RE.findall(lock_text):
+    """(pure) The G18c lock scan (the module comment): the raw refusals and the escape problems, the
+    resolution SHAPE control over the raw text and over the decoded text, then the token scan over the
+    decoded text - a URL must be from the allowed host and any non-registry scheme (git/ssh/file/
+    protocol-relative = clone-and-build / off-registry) is rejected. Nothing is excised."""
+    problems = raw_text_problems(lock_text) + escape_problems(lock_text)
+    decoded = decode_yaml_escapes(lock_text)
+    problems += resolution_shape_problems(lock_text)[0]      # the RAW pass (a key the decoder would glue)
+    problems += resolution_shape_problems(decoded)[0]        # the DECODED pass (a key an escape spells)
+    problems = list(dict.fromkeys(problems))                 # the same line may red identically in both passes
+    for token in _RESOLUTION_RE.findall(decoded):
         low = token.lower()
         if low.startswith(("https://", "http://")):
             host = token.split("://", 1)[1].split("/", 1)[0].lower()
@@ -530,7 +708,7 @@ def main() -> int:
         lock_state = "target-absent (no lockfile yet)"
         floor_state = "§0.8 floor skipped (no lockfile yet)"
     print(f"[G18c/d] JS supply-chain posture OK (registry pinned to {ALLOWED_HOST}, no scoped override; "
-          f"pre/post-scripts + unsafe-perm off; frozen-lockfile on; lockfile resolution-URL + "
+          f"pre/post-scripts + unsafe-perm off; frozen-lockfile on; lockfile resolution-shape + URL + "
           f"onlyBuiltDependencies checks {lock_state}; {floor_state})")
     return 0
 

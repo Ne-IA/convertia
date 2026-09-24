@@ -21,7 +21,9 @@
 //!    verbatim and drift-guarded against the gate script) PLUS the subprocess-only engine families the spec
 //!    homes behind the boundary (FFmpeg / poppler / the image codecs, §3.5) PLUS the C compression/XML
 //!    backends §2.12.4 replaces with pure Rust; `convertia-imgworker` is NOT in the closure (aggregation, not
-//!    linkage); `flate2` rides `miniz_oxide` only (the §0.8 row); and EVERY native-binding-shaped crate the
+//!    linkage); `flate2` rides `miniz_oxide` only (the §0.8 row — the lock edge refuses the C backends; the
+//!    SELECTED backend is a feature-plane fact, asserted by G53 over `cargo metadata`'s activated-feature
+//!    record, see `C_ZLIB_FLATE2_BACKENDS`); and EVERY native-binding-shaped crate the
 //!    closure carries is CLASSIFIED in a bijective table (a new `-sys` crate reaching the core is a
 //!    conscious, reviewed classification, never a silent link). The lockfile closure is the union over
 //!    every target AND every dependency kind (normal + build + dev — a lockfile does not distinguish them),
@@ -168,16 +170,23 @@ const SUBPROCESS_ONLY_DECODER_STEMS: &[&str] = &[
 
 /// The C zlib backends `flate2` MUST NOT be built on (the §0.8 `flate2` row: `rust_backend`/miniz_oxide ONLY,
 /// "NO zlib/zlib-ng C backend") — asserted both on `flate2`'s own dependency edge and absent from the whole
-/// core closure. `zlib-rs`/`libz-rs-sys` are pure Rust but are NOT the §0.8-selected backend either, so
-/// they are refused on the edge as well (the row says miniz_oxide ONLY).
-const NON_MINIZ_FLATE2_BACKENDS: &[&str] = &[
-    "libz-sys",
-    "libz-ng-sys",
-    "cloudflare-zlib-sys",
-    "zlib-sys",
-    "zlib-rs",
-    "libz-rs-sys",
-];
+/// core closure. The pure-Rust `zlib-rs` is deliberately NOT on this lock-edge list: since flate2 1.1.10 its
+/// `default` feature carries the WEAK feature `zlib-rs?/std`, and cargo resolves a weak-feature optional
+/// dependency INTO `Cargo.lock` (and into `cargo metadata`'s `resolve.nodes[].deps`) without activating it —
+/// `cargo tree -i zlib-rs --target all` is empty and no `zlib_rs` artifact is ever compiled. The lockfile is a
+/// superset of the build here, so WHICH backend is selected is a feature-plane fact the lock cannot express;
+/// it is asserted by G53 (`check-core-deps`) over `cargo metadata`'s activated-feature record
+/// (`resolve.nodes[].features`, expanded through the crate's own feature table): flate2's activated optional
+/// deps must turn on `miniz_oxide` and nothing outside the `rust_backend` closure. This list keeps the C
+/// backends, refused on mere PRESENCE in the lock — deliberately conservative: a C zlib crate anywhere in the
+/// closure is a conscious model extension, never a silent pass — and it is the one list the edge leg and the
+/// closure-wide leg both read.
+/// [Test-Change: P4.19 — old-obsolete+new-correct, §0.8] the old lock-edge refusal of `zlib-rs`/`libz-rs-sys`
+/// read cargo's weak-feature lock artifact as a backend selection (flate2 1.1.10, the 2026-09-24 dependency
+/// refresh; verified: `cargo tree` empty, no compiled artifact); the selection is asserted where it exists,
+/// on the feature plane (G53), and the lock edge keeps the presence-based C-backend refusal.
+const C_ZLIB_FLATE2_BACKENDS: &[&str] =
+    &["libz-sys", "libz-ng-sys", "cloudflare-zlib-sys", "zlib-sys"];
 
 /// How a native-binding-shaped crate in the core closure is LINKED — the classification leg 1 requires for
 /// every such crate, so the reason a C-library binding sits in the MIT core is stated next to its name.
@@ -257,8 +266,8 @@ const CLASSIFIED_NATIVE_BINDINGS: &[(&str, LinkClass)] = &[
 /// `roxmltree`, entity resolution disabled). A crate a P5–P7 sniff box adds (the OLE2/CFB reader, the ZIP
 /// central-directory peek) joins this list WITH its §0.8 row in that box — the list is the spec's set, not a
 /// presence assertion, so naming a crate here does not require it to be linked today. Standing obligation
-/// carried forward for `quick_xml`: a DIRECT §1.2 `quick-xml` dep must be `>= 0.41` + §0.8-floored (the
-/// RUSTSEC-2026-0194/0195 owner-acked ignore covers only the transitive 0.39 dead path).
+/// carried forward for `quick_xml`: a DIRECT §1.2 `quick-xml` dep must be `>= 0.41` + §0.8-floored (since
+/// the 2026-09-24 refresh retired the RUSTSEC-2026-0194/0195 ignores, both scanners refuse a `< 0.41` re-entry).
 /// [Build-Session-Entscheidung: P4.19]
 const VETTED_DETECTION_CRATES: &[&str] = &[
     "chardetng",
@@ -1133,12 +1142,13 @@ fn the_image_worker_is_aggregated_never_linked() {
     );
 }
 
-// §2.12.4 / §0.8 / §6.4.1 unit (G15): `flate2` inflates on the pure-Rust `miniz_oxide` backend ONLY — its
-// own dependency edge carries `miniz_oxide` and none of the C zlib / zlib-ng / non-miniz backends, and no C
-// zlib binding is anywhere in the core closure. `flate2` is present by the §0.8 row ("pinned, in lockfile"),
-// so the edge assertion is non-vacuous.
+// §2.12.4 / §0.8 / §6.4.1 unit (G15): `flate2`'s own lock edge carries `miniz_oxide` and none of the C
+// zlib / zlib-ng backends, and no C zlib binding is anywhere in the core closure — both presence-based,
+// deliberately conservative. The "miniz_oxide ONLY" SELECTION is the feature-plane leg of G53 (the lock
+// lists a weak-feature optional dep without activating it — see `C_ZLIB_FLATE2_BACKENDS`). `flate2` is
+// present by the §0.8 row ("pinned, in lockfile"), so the edge assertion is non-vacuous.
 #[test]
-fn flate2_inflates_on_the_pure_rust_backend_only() {
+fn flate2_lock_edge_carries_miniz_oxide_and_no_c_zlib_backend() {
     let graph = LockGraph::parse(WORKSPACE_LOCK);
     let closure = graph.closure_of(CORE_CRATE);
     let flate2_keys: Vec<&PkgKey> = closure.iter().filter(|(n, _)| n == "flate2").collect();
@@ -1160,20 +1170,17 @@ fn flate2_inflates_on_the_pure_rust_backend_only() {
             "§0.8/§2.12.4: flate2 {} must ride `miniz_oxide` (deps: {deps:?})",
             key.1
         );
-        let non_miniz: Vec<&&str> = deps
+        let c_zlib_edge: Vec<&&str> = deps
             .iter()
-            .filter(|d| NON_MINIZ_FLATE2_BACKENDS.contains(d))
+            .filter(|d| C_ZLIB_FLATE2_BACKENDS.contains(d))
             .collect();
         assert!(
-            non_miniz.is_empty(),
-            "§0.8/§2.12.4: flate2 {} selects a non-miniz backend: {non_miniz:?}",
+            c_zlib_edge.is_empty(),
+            "§0.8/§2.12.4: flate2 {} carries a C zlib backend on its lock edge: {c_zlib_edge:?}",
             key.1
         );
     }
-    let c_zlib: Vec<String> = forbidden_in(
-        &names_of(&closure),
-        &["libz-sys", "libz-ng-sys", "cloudflare-zlib-sys", "zlib-sys"],
-    );
+    let c_zlib: Vec<String> = forbidden_in(&names_of(&closure), C_ZLIB_FLATE2_BACKENDS);
     assert!(
         c_zlib.is_empty(),
         "§2.12.4: a C zlib binding is in the core closure: {c_zlib:?}"
