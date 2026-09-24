@@ -247,15 +247,25 @@ the queue cannot grow silently while the loop builds forever:
 - **Dependabot dependency-bump PRs** — the `dependabot.yml` stood up in P0.2.6 covers
   **github-actions + cargo + npm + pip**, so green bumps arrive as PRs against `main`.
 - **External fork pull-requests** — the only surviving "PR" concept in the single-branch
-  model ([build-loop.md §0](build-loop.md#0-who-runs-this-and-what-it-is-not)); their
-  review→merge is otherwise unspecified.
+  model ([build-loop.md §0](build-loop.md#0-who-runs-this-and-what-it-is-not)); they land
+  the way a bump does (below): reviewed, then re-landed by a maintainer as a commit on `main`
+  that keeps the contributor as git author (`git commit --author`, the maintainer as committer)
+  and keeps their `Signed-off-by`, because a contributor's commit cannot carry the review trailer
+  and, on caged files, the owner-ack that every `main` commit must pass (CONTRIBUTING.md says so
+  to contributors).
 
-**Ownership (DECIDED):** **incoming-PR triage / review / merge is the Co-Pilot
+**Ownership (DECIDED):** **incoming-PR triage / review / re-landing is the Co-Pilot
 (owner) session's job, not the autonomous loop's.** The loop has no authority to
 merge, rewrite history, or force-push (§1), so it neither opens, reviews, nor merges
 these PRs; it may *surface* a security-relevant bump as a Co-Pilot item but never
-acts on it. A green Dependabot bump reaches `main` via a **manual Co-Pilot merge**,
-and **any bump that touches `engines.lock` additionally runs the §6.5 engine-bump
+acts on it. A green Dependabot bump reaches `main` as a **Co-Pilot-authored commit on
+`main`** — never as a merge of the bot's commit: the single-branch gates bind every commit
+in the push range — G11's subject grammar (Dependabot's `deps(...)` type is outside its
+set), G12's `Dual-Review` trailer, and G71's `L-neg1-ack: owner` trailer wherever the bump
+touches the cage (`.github/**`, `requirements-ci.txt`) — which a Dependabot commit never
+carries, so the Co-Pilot re-lands the bump under owner-ack and the dual review (verifying
+the pinned SHA / hash set against the upstream itself) and Dependabot closes its PR as
+superseded. **Any bump that touches `engines.lock` additionally runs the §6.5 engine-bump
 re-validation** (the CVE→user path in
 [vuln-response.md](vuln-response.md) routes a security bump through "bump the
 `engines.lock` pin → re-run the §6.5 reliability gate → new release"; P0.6.9). This

@@ -56,7 +56,10 @@ binaries for a local run are documented in [DEVELOPMENT.md](DEVELOPMENT.md).
 ## How to contribute
 
 External contributions come as **GitHub pull requests against `main`**. Keep the change focused,
-make CI green, and a maintainer will review and merge. Requests for **new file formats** default
+make CI green, and a maintainer reviews it and lands it on `main` as a commit that keeps you as the git
+author (`git commit --author`) and keeps your `Signed-off-by`, with the maintainer as committer — every
+commit on `main` must pass the repo's review gates (a dual-review trailer; owner-ack on protected files),
+which a fork commit cannot carry as pushed. Requests for **new file formats** default
 to **Future Ideas (Parked)** per the project's inclusion test — please open an issue to discuss
 before sending a PR that adds a format.
 

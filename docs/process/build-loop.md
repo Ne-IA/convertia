@@ -33,8 +33,9 @@ ordinary `git push` is used; the safety comes from the gates (L1–L5), not from
 branch isolation. The only surviving `PR` concept is the **external fork
 pull-request** (this is a *public* OSS repo); "per-PR" anywhere else means
 "per-push". **Incoming PRs (external fork PRs + Dependabot bumps) are reviewed and
-merged by the Co-Pilot/owner session, NEVER by this loop** — the loop has no merge
-step; ownership + the `engines.lock`-bump re-validation rule are in
+re-landed by the Co-Pilot/owner session as commits on `main`, NEVER by this loop and never
+as a merge of the incoming commit** — the loop has no merge step; ownership, the re-land
+shape + the `engines.lock`-bump re-validation rule are in
 [roles-and-escalation.md §5a](roles-and-escalation.md#5a-incoming-pull-requests--dependabot-bumps--owned-by-co-pilot-never-the-loop).
 
 > **Bootstrap note (DECISION B — read this before assuming any range).** **P0 is

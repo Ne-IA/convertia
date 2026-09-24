@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """check-generated-drift - G19 generated-artifact drift-check framework (P0.3.9).
 
-A generated file (the tauri-specta + specta Rust->TS `bindings.ts`, a CLI `--help` capture, an asset
-manifest) must be BYTE-IDENTICAL to what its producer emits right now - otherwise a hand-edit or a stale
+A generated file (the tauri-specta + specta Rust->TS `bindings.ts`; the CLI `--help` capture P0
+anticipated has no v1 producer and the asset manifest will be per-build output, see below) must be
+BYTE-IDENTICAL to what its producer emits right now - otherwise a hand-edit or a stale
 checkout silently diverges the committed artifact from its source of truth. For each registered artifact
 this framework:
 
@@ -15,10 +16,13 @@ this framework:
 
 The framework + its validators + the self-test were authored in P0; each codegen target is registered
 in the ARTIFACTS registry (with its exact regen command + path + validator) when its producing code
-lands. Registered so far: the tauri-specta `bindings.ts` (P1.28); the CLI `--help` capture + the asset
-manifest register in their own producer boxes. With no artifact registered (or a registered artifact
-whose regen toolchain is absent in this plane) the gate skips with a notice; the live regen+diff
-enforces at L1/L2 + the equipped CI build job. stdlib-only.
+lands. Registered: the tauri-specta `bindings.ts` (P1.28) - the registry is complete at that entry: v1
+ships no CLI (CLAUDE.md §1), so the `--help` capture has no producer, and the §7.2.3 in-bundle hash
+manifest will be per-build output whose committed copy is a placeholder `stage-engines` overwrites
+(P4.41's rulings (3)/(5)/(7); the box is unbuilt), so it is not a drift artifact (retired 2026-09-24,
+build-gates G19). With no artifact registered (or a registered artifact whose regen toolchain is absent
+in this plane) the gate skips with a notice; the live regen+diff enforces at L1/L2 + the equipped CI
+build job. stdlib-only.
 
 Exit: 0 = no drift + all sanity checks pass (or target-absent); 1 = drift / a failed regen / a
        structural-sanity failure; 2 = the framework is mis-configured (an artifact path missing after regen).
@@ -49,7 +53,7 @@ def validate_json_nonempty(text: str) -> str | None:
 
 
 def validate_text_nonempty(text: str) -> str | None:
-    """(pure) A generated text artifact (a CLI --help capture) must be non-blank."""
+    """(pure) A generated text artifact must be non-blank (no text artifact is registered in v1)."""
     return None if text.strip() else "generated text is empty/blank"
 
 
@@ -71,7 +75,10 @@ VALIDATORS = {
 }
 
 # Each artifact: {"name", "regen": [argv...], "path": "<repo-relative>", "validator": <key>}. Populated
-# as each producer lands (the CLI `--help` capture + asset manifest register in their own producer boxes).
+# as each producer lands (v1 registers one: the CLI `--help` capture P0 anticipated has no v1 producer, and
+# the asset manifest - to be produced by stage-engines' stage_all tail per P4.41 (3) - will be per-build output
+# (P4.41 (5)), guarded by the placeholder invariant P4.41 (7) builds, not a drift artifact; build-gates G19,
+# 2026-09-24).
 # A registered artifact whose `path` is missing after regen is a misconfiguration (exit 2).
 ARTIFACTS: list[dict] = [
     # P1.28: the §0.4.5 tauri-specta Rust->TS IPC bindings (producer: convertia-core's

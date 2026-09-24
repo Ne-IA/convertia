@@ -7,7 +7,7 @@ docs/process/, docs/plan/). It enforces TWO families of checks:
   * FORMAT checks (_format.md §7) — the plan-box grammar: marker validity, sub-box consistency,
     header well-formedness, tag validity, reference resolution, needs:-targets exist + acyclic,
     annotation pairing, numbering gap-freeness.
-  * DOC checks 1..31 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
+  * DOC checks 1..33 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
     hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
     parity, the G68 doc-graph leg, the G69 struct-map leg, the check-27 gate-posture-transition leg, etc.
 
@@ -17,7 +17,7 @@ stay target-absent until their phase fills the §04 handlers; G24a made exactly 
 when `tests/corpus/manifest.toml` landed. This file is L(-1) security-critical (G71).
 
 Build status: foundation + the 9 FORMAT checks are implemented + self-tested. The doc-wide checks
-1..31 are added incrementally (P0.3.5 onward, each with its G24 negative fixture); until a doc check is
+1..33 are added incrementally (P0.3.5 onward, each with its G24 negative fixture); until a doc check is
 implemented it is listed in CHECKS as a NotImplemented placeholder that the meta-self-test asserts.
 
 Usage: plan-lint [--check <id>] [--json] [--quiet] [--max-per-check N] [--root <dir>]
@@ -421,7 +421,7 @@ def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  DOC checks (build-gates.md §6, checks 1..31) — added incrementally; active-now ones first.
+#  DOC checks (build-gates.md §6, checks 1..33) — added incrementally; active-now ones first.
 # =============================================================================================
 _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
 # the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 19 classes
@@ -1949,7 +1949,7 @@ def doc29_stale_liveness(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  Check registry — FORMAT checks live; doc checks 1..31 added incrementally (P0.3.5 + P1.66).
+#  Check registry — FORMAT checks live; doc checks 1..33 added incrementally (P0.3.5 + P1.66).
 # =============================================================================================
 # --- check 30: spec-restatement fidelity (the P4.33 QuarantinedByOs reconcile's class catcher) ---------
 # One canonical user-facing string has ONE home — the §2.8.2 / §2.9.1 tables in 02-guarantees.md — and every
@@ -2096,6 +2096,140 @@ def doc30_spec_restatement_fidelity(ctx: Ctx) -> list[Finding]:
                                "without a five-word run of it)"))
     return out
 
+# --- check 32: the SAST pin is single-sourced (the 2026-09-24 semgrep-bump class) ------------------------------
+# requirements-ci.txt pins the Semgrep binary (`semgrep==X`, --require-hashes); its own header line, the
+# build-gates G29 row and the P0.4.2 delivered note restate the current pin in prose. More than once
+# (dfda4fb, d6847d0, the 2026-09-24 re-land of Dependabot #33) the bump carried the notes by hand, and a
+# forgotten note is a stale version literal the doc graph cannot see (G68 resolves links, not numbers). This
+# check reads the pin and requires each restating site to name it backticked, so a bump that leaves a note
+# stale reds at L1 (CLAUDE.md §5: a version pin moves with every doc that restates it; DoD item 2).
+_SAST_PIN_RE = re.compile(r"(?m)^semgrep==([0-9][\w.+-]*)")
+_SAST_PIN_SITES = (
+    ("requirements-ci.txt", r"(?m)^# Pinned EXACT-version .*$", "the requirements-ci.txt header line"),
+    ("docs/security/build-gates.md", r"(?m)^\| \*\*G29\*\* \|.*$", "the build-gates G29 row"),
+    ("docs/plan/P0-build-and-security.md", r"(?ms)^- \[.\] \*\*P0\.4\.2\*\*.*?(?=^- \[)", "the P0.4.2 delivered note"),
+)
+
+
+def _doc_text(ctx: Ctx, rel: str) -> str:
+    text = ctx.docs.get(rel)
+    if text is None:
+        p = ctx.root / rel
+        text = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
+    return text
+
+
+def doc32_sast_pin_sync(ctx: Ctx) -> list[Finding]:
+    """Check 32: the `semgrep==` pin in requirements-ci.txt is named (backticked, or as `semgrep==X`) in the
+    file's own header line, in the build-gates G29 row and in the P0.4.2 delivered note - the restating sites
+    move with the pin, never after it. Target-absent while requirements-ci.txt does not exist; a requirements
+    file without the pin is itself a finding."""
+    req = ctx.root / "requirements-ci.txt"
+    if not req.is_file():
+        return []
+    m = _SAST_PIN_RE.search(req.read_text(encoding="utf-8", errors="replace"))
+    if m is None:
+        return [Finding("32:sast-pin-sync", "requirements-ci.txt", 0,
+                        "no `semgrep==<version>` pin - the SAST binary pin is this file's reason to exist (G29)")]
+    pin = m.group(1)
+    out: list[Finding] = []
+    for rel, site_re, label in _SAST_PIN_SITES:
+        site = re.search(site_re, _doc_text(ctx, rel))
+        if site is None or (f"`{pin}`" not in site.group(0) and f"semgrep=={pin}" not in site.group(0)):
+            out.append(Finding("32:sast-pin-sync", rel, 0,
+                               f"the current Semgrep pin `{pin}` (requirements-ci.txt) is not named in {label} - "
+                               "a version pin moves with every doc that restates it (CLAUDE.md §5, DoD item 2)"))
+    return out
+
+
+# --- check 33: a gate-catalogue row never defers a leg to an unowned box (the G17 JS-leg class) ----------------
+# build-gates G17 promised its `osv-scanner`-over-`pnpm-lock.yaml` leg as "later boxes" from P0.4.1 on; no box
+# owned it, the phase audits read spec sentences and code comments (test-strategy §11.4 (e)), not the catalogue,
+# and the JS graph ran unscanned for four phases. The SHAPE: a deferral adjective - later, future, subsequent,
+# next, follow-on, follow-up, later-phase, own, separate, dedicated, owning, acquisition, staging, stage-slot -
+# optionally wrapped in markdown emphasis, before the noun `box`/`boxes` or `phase`/`phases` (so "in later
+# phases", "a **later** box", "its own acquisition box", "the Lane-B staging box" all read as a deferral; a
+# hyphenated `box-id` does not), in docs/security/build-gates.md. Such a phrase must be owned: a box id
+# (`P<n>.<m>`) that resolves to a real plan box within a few WORDS of it (4 before / 10 after - punctuation-only
+# tokens do not count - inside the same sentence), not merely somewhere on the same line or in a comma-joined
+# neighbour clause. Hard-wrapped paragraphs (§6 items, notes) are joined before the sentence split so a wrap
+# cannot hide the phrase from its owner (test-strategy §11.4 (g)). The adjective list is the declared vocabulary
+# of deferral in this catalogue; growing it is a one-line edit with a leg (the 2026-09-24 sweep found G17, G56,
+# G37 and G19 with it).
+# Scope: the catalogue's gate ROWS (`| **Gnn** |` table rows) and its §6 numbered check items - the places a leg
+# is promised; generic process prose ("a follow-up box if structural") is not a promise and is not scanned.
+# Named residuals: a deferral spelled WITHOUT a listed adjective ("the Lane-B box that wires staging", "the
+# release box", "a P10 box") passes - the vocabulary is enumerated, not inferred, and grows by an adjective plus a
+# leg here (a number word between the adjective and the noun, "the next two boxes", is the same gap; emphasis,
+# backticks and parentheses around the adjective or the noun are tolerated - up to three markers before the
+# adjective, after it and before the noun, so bold-italic passes too; after the noun only an underscore run of
+# up to three is consumed before the word-boundary lookahead, because `_` is the one marker that is a word
+# character (`_box_` / `___box___` would slip otherwise) while `*`, the backtick and `)` are non-word and pass
+# the lookahead unconsumed - the per-member mutation battery is what fixed that shape); ownership is by NAME
+# only (any resolvable id inside the window owns the phrase, a parenthetical one included), not verified against
+# the box's content; non-deferral prose that fits the shape ("each engine gets its own box") reds. Escape hatch:
+# NONE by design - the remedy for a false positive is rewording (a row states facts, not a deferral), never a
+# marker; the remedy for a vocabulary miss is a new adjective + leg.
+_DEFERRAL_ADJECTIVES = ("later", "future", "subsequent", "next", "follow-on", "follow-up", "later-phase", "own",
+                        "separate", "dedicated", "owning", "acquisition", "staging", "stage-slot")
+_ROW_PROMISE_RE = re.compile(
+    r"\b(?:(?:a|an|the|its)\s+)?(?:[*_`(]{0,3}(?:" + "|".join(_DEFERRAL_ADJECTIVES) + r")[*_`)]{0,3}\s+)+"
+    r"(?:P\d+\s+)?[*_`(]{0,3}(?:box(?:es)?|phases?)_{0,3}(?![\w-])", re.IGNORECASE)
+_BOX_ID_RE = re.compile(r"\bP\d+(?:\.\d+)+\b")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.;])\s+")
+_PROMISE_WINDOW = (4, 10)           # WORDS before / after the phrase that may carry its owner id
+_WORD_RE = re.compile(r"[0-9A-Za-z]")
+
+
+def _catalogue_paragraphs(text: str) -> list[tuple[int, str]]:
+    """(pure) (first lineno, joined text) per paragraph: a table row is one paragraph; a hard-wrapped list
+    item, numbered item or blockquote joins its continuation lines; a blank line ends a paragraph."""
+    out: list[tuple[int, str]] = []
+    cur: tuple[int, str] | None = None
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            if cur is not None:
+                out.append(cur)
+            cur = None
+            continue
+        starts_new = (cur is None or line.startswith("|") or line.lstrip().startswith(("- ", "* ", "#"))
+                      or re.match(r"^\s*\d+\.\s", line) is not None
+                      or (line.startswith(">") != cur[1].startswith(">"))
+                      or (not line.startswith((" ", "\t", ">")) and not cur[1].startswith(">")))
+        if starts_new:
+            if cur is not None:
+                out.append(cur)
+            cur = (lineno, line.strip())
+        else:
+            cur = (cur[0], cur[1] + " " + line.lstrip("> ").strip())
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def doc33_gate_row_promise(ctx: Ctx) -> list[Finding]:
+    """Check 33: every deferral-to-a-box phrase in docs/security/build-gates.md is owned by a real plan box named
+    within a few words of it, in the same sentence (module comment above)."""
+    rel = "docs/security/build-gates.md"
+    out: list[Finding] = []
+    for lineno, para in _catalogue_paragraphs(_doc_text(ctx, rel)):
+        if not (para.startswith("|") or re.match(r"^\d+\.\s", para)):
+            continue
+        if not _ROW_PROMISE_RE.search(para):
+            continue
+        for sentence in _SENTENCE_SPLIT_RE.split(para):
+            for pm in _ROW_PROMISE_RE.finditer(sentence):
+                before = [w for w in sentence[:pm.start()].split() if _WORD_RE.search(w)]
+                after = [w for w in sentence[pm.end():].split() if _WORD_RE.search(w)]
+                window = " ".join(before[-_PROMISE_WINDOW[0]:] + after[:_PROMISE_WINDOW[1]])
+                if not any(i in ctx.by_id for i in _BOX_ID_RE.findall(window)):
+                    out.append(Finding("33:gate-row-promise", rel, lineno,
+                                       f"a gate row defers a leg to an unowned box ({pm.group(0)!r} in "
+                                       f"{sentence.strip()[:80]!r}) - name the owning P<n>.<m> box within a few words "
+                                       "of the phrase (test-strategy §11.4 (g); the G17 JS-leg class)"))
+    return out
+
+
 # --- check 31: the phase-boundary sweep binding (the 2026-09-09 scoped-STOP carve-out, made mechanical) ----------
 # The `[!extern]` STOP is scoped to the blocked needs: closure (build-loop.md §3 step 1); the ONE carve-out is the
 # standing phase-end Co-Pilot hardening-sweep box, which blocks its whole successor phase (test-strategy §11.3).
@@ -2187,8 +2321,10 @@ DOC_CHECKS = {
     "29:stale-liveness": doc29_stale_liveness,
     "30:spec-restatement-fidelity": doc30_spec_restatement_fidelity,
     "31:sweep-binding": doc31_sweep_binding,
+    "32:sast-pin-sync": doc32_sast_pin_sync,
+    "33:gate-row-promise": doc33_gate_row_promise,
 }
-CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # doc checks 1..31
+CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # doc checks 1..33
 
 
 def run(ctx: Ctx, only: str | None = None, max_per_check: int | None = None) -> list[Finding]:

@@ -3,7 +3,7 @@
 
 FORMAT-check coverage: for each of the 9 format checks, a CLEAN box yields no finding and a VIOLATING
 box IS flagged (so no check is green-by-vacuity). Plus the base-case golden invariant: the real plan
-passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..31
+passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..33
 get their own legs as they are built. stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import hashlib
@@ -1059,6 +1059,173 @@ rc_real = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, tex
 record("base-case: the REAL plan passes the format checks (exit 0)", rc_real == 0)
 broken = ctx([box(bid="P0.1", raw="X", tags=["NOPE"], title="bad.", refs="")])
 record("base-case: a deliberately-broken box yields findings (would exit 1)", len(m.run(broken)) >= 1)
+
+# --- check 32: the SAST pin is single-sourced (requirements-ci.txt vs its header + the G29 row + the P0.4.2 note)
+_BG32 = "| **G29** | SAST | Semgrep `1.168.0` (bumped to `{v}` 2026-08-25) hash-pinned | push |\n"
+_P032 = "- [x] **P0.4.2** [GATE] Wire SAST · G29\n  > **Delivered:** `semgrep==1.168.0` (bumped to `{v}`)\n- [x] **P0.4.3** [GATE] Next\n"
+_REQ32 = "# Pinned EXACT-version `semgrep=={h}` + its tree\nsemgrep=={p} \\\n    --hash=sha256:aa\n"
+with tempfile.TemporaryDirectory() as _d32:
+    _r32 = Path(_d32)
+    def _c32(req: str | None, v: str = "9.9.9", bg: str | None = None, p0: str | None = None):
+        if req is None:
+            (_r32 / "requirements-ci.txt").unlink(missing_ok=True)
+        else:
+            (_r32 / "requirements-ci.txt").write_text(req, encoding="utf-8")
+        return m.Ctx(root=_r32, boxes=[], by_id={}, plan_files=[], gate_ids=set(),
+                     docs={"docs/security/build-gates.md": _BG32.format(v=bg or v),
+                           "docs/plan/P0-build-and-security.md": _P032.format(v=p0 or v)})
+    record("32 sast-pin-sync: pin 9.9.9 named in the header, the G29 row AND the P0.4.2 note -> clean",
+           m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.9"))) == [])
+    _f32 = m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.10", p="9.9.10")))
+    record("32 sast-pin-sync: the pin moved (9.9.10) but both doc notes still say 9.9.9 -> BOTH doc sites flagged",
+           len(_f32) == 2 and {f.file for f in _f32} == {"docs/security/build-gates.md", "docs/plan/P0-build-and-security.md"})
+    record("32 sast-pin-sync: only the P0.4.2 note stale -> exactly that site flagged",
+           [f.file for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.10", p="9.9.10"), bg="9.9.10", p0="9.9.9"))]
+           == ["docs/plan/P0-build-and-security.md"])
+    record("32 sast-pin-sync: the requirements HEADER line stale (`semgrep==9.9.9` above a 9.9.10 pin) -> flagged (the third site)",
+           any(f.file == "requirements-ci.txt" and "header line" in f.msg
+               for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.10"), v="9.9.10"))))
+    record("32 sast-pin-sync: a requirements file WITHOUT a semgrep== pin -> flagged (the file's reason to exist)",
+           any("no `semgrep==" in f.msg for f in m.doc32_sast_pin_sync(_c32("requests==2.0.0\n"))))
+    record("32 sast-pin-sync: requirements-ci.txt absent -> target-absent, no finding",
+           m.doc32_sast_pin_sync(_c32(None)) == [])
+record("32 sast-pin-sync: the REAL repo is clean (the live pin is named in all three sites)",
+       m.doc32_sast_pin_sync(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[], gate_ids=set(), docs={})) == [])
+
+# --- check 33: a gate row never defers a leg to an unowned box (shape rule, word window, real-box resolution) --
+_B33 = [box("P4.96"), box("P0.4.1"), box("P4.50")]
+def _c33(bg: str):
+    return m.Ctx(root=ROOT, boxes=_B33, by_id={b.box_id: b for b in _B33}, plan_files=[], gate_ids=set(),
+                 docs={"docs/security/build-gates.md": bg})
+record("33 gate-row-promise: 'the JS leg + the floor are later boxes' without a box id -> caught",
+       any("unowned box" in f.msg for f in m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg + the floor are later boxes | push |\n"))))
+record("33 gate-row-promise: 'a later box, P4.96 (authored 2026-09-24)' - the owner named right after it -> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later box, P4.96 (authored 2026-09-24). | push |\n")) == [])
+record("33 gate-row-promise: the id in ANOTHER sentence of the row does not own the promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | Delivered by P0.4.1. The JS leg is a later box. | push |\n")) != [])
+record("33 gate-row-promise: an id ONE word past a period ('...a later box. P4.96 owns the next one.') is in another "
+       "sentence -> caught (the sentence split, not the window, decides)",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later box. P4.96 owns the next one. | push |\n")) != [])
+record("33 gate-row-promise: an id 9 words BEFORE the phrase in a comma-joined run (the r2 review's evasion) -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | Delivered per P4.50, with various other details noted, the JS leg is a later box, more details | push |\n")) != [])
+record("33 gate-row-promise: an em-dash-joined run without a nearby id -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | Delivered per P4.50 — various details — the JS leg is a later box — more | push |\n")) != [])
+record("33 gate-row-promise: an id that resolves to NO plan box (P99.99) does not own the promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later box, P99.99. | push |\n")) != [])
+record("33 gate-row-promise: the window counts WORDS - a comma token plus nine words then the id is still within 10 -> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later box , w1 w2 w3 w4 w5 w6 w7 w8 w9 P4.96 owns it. | push |\n")) == [])
+record("33 gate-row-promise: the deferral adjective 'later' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its later box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'future' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its future box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'subsequent' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its subsequent box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'next' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its next box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'follow-on' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its follow-on box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'follow-up' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its follow-up box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'later-phase' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its later-phase box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'own' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its own box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'separate' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its separate box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'dedicated' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its dedicated box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'owning' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its owning box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'acquisition' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its acquisition box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'staging' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its staging box. | push |\n")) != [])
+record("33 gate-row-promise: the deferral adjective 'stage-slot' before 'box' without an owner -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | this leg lives in its stage-slot box. | push |\n")) != [])
+record("33 gate-row-promise: 'in later phases' (plural, the G19 shape) -> caught",
+       m.doc33_gate_row_promise(_c33("| **G19** | x | the CLI --help + asset manifest in later phases. | push |\n")) != [])
+record("33 gate-row-promise: 'a **later** box' (markdown emphasis inside the phrase) -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | the leg is a **later** box. | push |\n")) != [])
+record("33 gate-row-promise: 'the next phase' -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | the release leg lands in the next phase. | push |\n")) != [])
+record("33 gate-row-promise: 'lands in a later phase' -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | the release leg lands in a later phase. | push |\n")) != [])
+record("33 gate-row-promise: 'its own box-id' (a hyphenated noun) is NOT a deferral -> clean",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | each entry carries its own box-id and its own separate box-ids. | push |\n")) == [])
+record("33 gate-row-promise: 'its own acquisition box' (the G56 pinact shape) -> caught",
+       m.doc33_gate_row_promise(_c33("| **G56** | x | the transitive half remains with its own acquisition box. | push |\n")) != [])
+record("33 gate-row-promise: 'the Lane-B staging box extends check (10)' (the G37 shape) -> caught",
+       m.doc33_gate_row_promise(_c33("| **G37** | x | the Lane-B staging box extends check (10) into the verify step. | push |\n")) != [])
+record("33 gate-row-promise: a hard-wrapped §6 paragraph with the phrase on one line and its owner on the NEXT line -> joined, clean",
+       m.doc33_gate_row_promise(_c33("31. **Title** — the JS leg is a later\n    box, P4.96 (authored 2026-09-24); more text.\n")) == [])
+record("33 gate-row-promise: a hard-wrapped UNOWNED promise ('...is a later' / '    box; more') -> joined, caught "
+       "(without the join the two words never meet)",
+       m.doc33_gate_row_promise(_c33("31. **Title** — the JS leg is a later\n    box; more text.\n")) != [])
+record("33 gate-row-promise: 'future boxes' is the same promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G9** | x | the rest are future boxes | push |\n")) != [])
+record("33 gate-row-promise: an id at word 11 AFTER the phrase (one past the 10-word window) does not own it -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later box w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 P4.96 owns it | push |\n")) != [])
+record("33 gate-row-promise: an id past a SEMICOLON ('...a later box; P4.96 owns it') is in another sentence -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later box; P4.96 owns it | push |\n")) != [])
+record("33 gate-row-promise: punctuation tokens before the phrase do not consume the 4-word window ('P4.96 , — , JS leg "
+       "is a later box') -> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | P4.96 , — , JS leg is a later box | push |\n")) == [])
+record("33 gate-row-promise: 'a later P4 box' (a phase number between the adjective and the noun) is the same promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later P4 box | push |\n")) != [])
+record("33 gate-row-promise: an id exactly FIVE words before the phrase (one past the 4-word window) does not own it -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | P4.96 w1 w2 w3 w4 a later box | push |\n")) != [])
+record("33 gate-row-promise: emphasis on the NOUN ('a later **box**') is the same promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later **box** | push |\n")) != [])
+record("33 gate-row-promise: backticks on the noun ('a later `box`') is the same promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later `box` | push |\n")) != [])
+record("33 gate-row-promise: a parenthesised adjective ('a (later) box') is the same promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a (later) box | push |\n")) != [])
+record("33 gate-row-promise: the article before an EMPHASISED adjective belongs to the phrase ('P4.96 w1 w2 w3 a **later** box': the id is the 4th word before the phrase, not the 5th) -> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | P4.96 w1 w2 w3 a **later** box | push |\n")) == [])
+record("33 gate-row-promise: backticks on the ADJECTIVE ('a `later` box') is the same promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a `later` box | push |\n")) != [])
+record("33 gate-row-promise: parentheses on the NOUN ('a later (box)') is the same promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later (box) | push |\n")) != [])
+record("33 gate-row-promise: underscore emphasis ('a _later_ box') is the same promise -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a _later_ box | push |\n")) != [])
+record("33 gate-row-promise: underscore emphasis on the NOUN ('a later _box_') -> caught (the r8 review: the trailing `_` is "
+       "a word character, so a bare `(?![\\w-])` lookahead let it slip)",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later _box_ | push |\n")) != [])
+record("33 gate-row-promise: double-underscore emphasis on the noun ('a later __box__') -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later __box__ | push |\n")) != [])
+record("33 gate-row-promise: underscore emphasis on the plural phase noun ('in later _phases_') -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg lands in later _phases_ | push |\n")) != [])
+record("33 gate-row-promise: bold-italic on the adjective ('a ***later*** box', three markers a side) -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a ***later*** box | push |\n")) != [])
+record("33 gate-row-promise: mixed bold-italic ('a **_later_** box') -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a **_later_** box | push |\n")) != [])
+record("33 gate-row-promise: bold-italic on the NOUN ('a later ***box***') -> caught (a leading noun class bounded to two "
+       "markers would miss it)",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later ***box*** | push |\n")) != [])
+record("33 gate-row-promise: the article before a BOLD-ITALIC adjective belongs to the phrase ('P4.96 w1 w2 w3 a ***later*** "
+       "box': a leading class bounded to two markers re-anchors at `later` and counts the article) -> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | P4.96 w1 w2 w3 a ***later*** box | push |\n")) == [])
+record("33 gate-row-promise: the article before a BACKTICKED adjective belongs to the phrase ('P4.96 w1 w2 w3 a `later` box': the "
+       "id is the 4th word before the phrase; a leading class without the backtick re-anchors at `later` and counts the article) "
+       "-> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | P4.96 w1 w2 w3 a `later` box | push |\n")) == [])
+record("33 gate-row-promise: the article before a PARENTHESISED adjective belongs to the phrase ('P4.96 w1 w2 w3 a (later) box') "
+       "-> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | P4.96 w1 w2 w3 a (later) box | push |\n")) == [])
+record("33 gate-row-promise: underscore bold-italic on the NOUN ('a later ___box___', three trailing underscores) -> caught",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | the JS leg is a later ___box___ | push |\n")) != [])
+record("33 gate-row-promise: the article `the` belongs to the phrase ('P4.96 w1 w2 w3 the later box': the id is the 4th word "
+       "before) -> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | P4.96 w1 w2 w3 the later box | push |\n")) == [])
+record("33 gate-row-promise: the article `its` belongs to the phrase ('P4.96 w1 w2 w3 its own box') -> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | P4.96 w1 w2 w3 its own box | push |\n")) == [])
+record("33 gate-row-promise: the article `an` belongs to the phrase ('P4.96 w1 w2 w3 an acquisition box') -> clean",
+       m.doc33_gate_row_promise(_c33("| **G17** | x | P4.96 w1 w2 w3 an acquisition box | push |\n")) == [])
+record("33 gate-row-promise: generic process prose outside a row / §6 item ('a follow-up box if structural') is NOT scanned",
+       m.doc33_gate_row_promise(_c33("Note the residual in the commit body + a follow-up box if structural.\n")) == [])
+_bs33, _by33, _pf33 = m.load_plan(ROOT)
+record("33 gate-row-promise: the REAL build-gates.md carries no unowned promise (ids resolved against the real plan)",
+       m.doc33_gate_row_promise(m.Ctx(root=ROOT, boxes=_bs33, by_id=_by33, plan_files=_pf33, gate_ids=set(), docs={})) == [])
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-plan-lint] {len(results) - len(failed)}/{len(results)} assertions passed.")

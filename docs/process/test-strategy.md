@@ -1181,7 +1181,7 @@ embedded type — each one an avoidable mid-phase loop stop. The audit moves tha
 discovery to the boundary, where the Co-Pilot resolves it in batch.
 
 **What.** After the delivery re-test (§11.2), the same sweep audits **every box
-of the next phase** against five surfaces ((e) added 2026-08-27):
+of the next phase** against seven surfaces ((e) added 2026-08-27, (f) 2026-09-09, (g) 2026-09-24):
 
 - **(a) its cited spec `§§`** — they resolve, and they actually decide what the
   box claims (the mis-cite class);
@@ -1210,7 +1210,25 @@ of the next phase** against five surfaces ((e) added 2026-08-27):
   build closure from its own build system, the OS probe. The P4.34 ruling was
   written from the design reading alone and was unsatisfiable on three counts;
   the measured facts go into the box, and its `needs:` / `[!extern]` shape follows
-  from them.
+  from them. Since 2026-09-24 (the P4.97 class) the probe also RUNS the checker a
+  box names over the live inputs it will scan and records what it read: a tool
+  measured fit on its release assets alone (pinact) was unfit on the inputs (it
+  never reads a referenced remote action's metadata file, and `--no-api` errors
+  on a bare SHA), and the inputs themselves held no nested `uses:` to check but one
+  docker `runs.image` tag the rule never mentioned — a check whose live input set
+  is empty scans nothing, and a box that names an actor (P10.62's verify step)
+  names the script, its home and its semantics.
+- **(g) the gate catalogue's own promises (added 2026-09-24 — the G17 JS-leg
+  class)** — a build-gates row that defers a leg to a box it only describes ("later
+  boxes", "its own acquisition box", "the Lane-B staging box") names the owning box
+  beside the phrase: G17 promised its `osv-scanner`-over-`pnpm-lock.yaml` leg that
+  way from P0.4.1 on, no box owned it, and the JS graph ran unscanned until a
+  Co-Pilot pre-flight found 27 advisories by hand (P4.96 owns it now; the same sweep
+  found the G56 transitive-action-pin half → P4.97, the G37 verify step → P10.62 and
+  the G19 manifest promise, retired as per-build output per P4.41 (5)). Surface (e)
+  reads spec sentences and code comments, not the catalogue; plan-lint check 33
+  refuses the shape in build-gates.md unless a real `P<n>.<m>` box is named within a
+  few words of it, so an unowned promise reds at L1 instead of waiting for a sweep.
 
 **Resolution.** Findings the Co-Pilot can resolve are landed as **normal
 dual-reviewed plan/spec edits before the next phase's build session starts**;
