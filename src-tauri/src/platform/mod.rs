@@ -593,8 +593,8 @@ pub(crate) fn available_memory_bytes() -> Option<u64> {
 #[cfg(target_os = "macos")]
 pub(crate) fn available_memory_bytes() -> Option<u64> {
     let page_size = mach_page_size()?;
-    let stats = mach_vm_statistics()?;
-    let pages = u64::from(stats.free_count).saturating_add(u64::from(stats.inactive_count));
+    let counts = mach_vm_statistics()?;
+    let pages = u64::from(counts.free).saturating_add(u64::from(counts.inactive));
     Some(pages.saturating_mul(page_size))
 }
 
@@ -609,11 +609,47 @@ fn mach_page_size() -> Option<u64> {
     u64::try_from(size).ok().filter(|&size| size > 0)
 }
 
-/// One `host_statistics64(HOST_VM_INFO64)` sample (macOS). The host port is acquired ONCE per process and
-/// cached: `mach_host_self` hands out a send RIGHT, and `libc` 0.2.186 exposes no `mach_port_deallocate` to
-/// return it, so acquiring one per sample would leak a right on every poll. [Build-Session-Entscheidung: P4.20]
+/// The two `vm_statistics64` page counts the macOS leg of [`available_memory_bytes`] consumes — the ONLY
+/// fields a `host_statistics64` sample must have filled to be usable (see [`MACH_CONSUMED_ELEMENTS`]).
 #[cfg(target_os = "macos")]
-fn mach_vm_statistics() -> Option<libc::vm_statistics64> {
+#[derive(Clone, Copy, Debug)]
+struct MachPageCounts {
+    /// `vm_statistics64::free_count` — pages on the free list.
+    free: libc::natural_t,
+    /// `vm_statistics64::inactive_count` — pages on the inactive queue.
+    inactive: libc::natural_t,
+}
+
+/// How many `integer_t` elements of `vm_statistics64` the macOS leg consumes: through `inactive_count`, the
+/// last field [`available_memory_bytes`] reads (`free_count` precedes it), derived from the field's offset so
+/// a consumed-field addition moves the requirement with it. `host_statistics64`'s `count` is IN/OUT — the
+/// kernel fills the elements of the struct REVISION it knows and reports that number back with
+/// `KERN_SUCCESS`, so a kernel older than the SDK's struct returns a SHORT count: `libc` 0.2.189 appended
+/// thirty-three `u64` fields to `vm_statistics64` (`swapped_count` + the tag-storage / accounting block; 24 →
+/// 57 fields, 38 → 104 elements) while a macOS 14 kernel fills the 38-element revision it knows. A sample is
+/// usable iff the kernel wrote at least these elements; requiring the SDK's whole struct instead (`count ==
+/// HOST_VM_INFO64_COUNT`, the P4.20 verdict) read every such host as "unknown ⇒ no cap" — the 2026-09-24
+/// macOS CI red of the libc bump. [Corrected by the libc-bump regress fix (Co-Pilot, 2026-09-24): the
+/// verdict binds to the fields consumed, never to the SDK's element count.]
+#[cfg(target_os = "macos")]
+const MACH_CONSUMED_ELEMENTS: usize = (std::mem::offset_of!(libc::vm_statistics64, inactive_count)
+    + std::mem::size_of::<libc::natural_t>())
+    / std::mem::size_of::<libc::integer_t>();
+
+/// The [`mach_vm_statistics`] verdict on the kernel-reported element count: the sample covers the consumed
+/// fields iff the kernel wrote at least [`MACH_CONSUMED_ELEMENTS`] of them. Pure, so the macOS test leg pins
+/// the incident pair (a 38-element kernel revision under a 104-element SDK struct) without a kernel.
+#[cfg(target_os = "macos")]
+fn mach_sample_covers_consumed_fields(count: libc::mach_msg_type_number_t) -> bool {
+    usize::try_from(count).is_ok_and(|written| written >= MACH_CONSUMED_ELEMENTS)
+}
+
+/// One `host_statistics64(HOST_VM_INFO64)` sample (macOS), narrowed to the page counts the leg consumes. The
+/// host port is acquired ONCE per process and cached: `mach_host_self` hands out a send RIGHT, and `libc`
+/// 0.2.186 (the §0.8 floor) exposes no `mach_port_deallocate` to return it, so acquiring one per sample would
+/// leak a right on every poll. [Build-Session-Entscheidung: P4.20]
+#[cfg(target_os = "macos")]
+fn mach_vm_statistics() -> Option<MachPageCounts> {
     use std::sync::OnceLock;
     static HOST_PORT: OnceLock<libc::mach_port_t> = OnceLock::new();
     let host = *HOST_PORT.get_or_init(|| {
@@ -627,10 +663,13 @@ fn mach_vm_statistics() -> Option<libc::vm_statistics64> {
         let port = unsafe { libc::mach_host_self() };
         port
     });
-    let mut stats = std::mem::MaybeUninit::<libc::vm_statistics64>::uninit();
+    // Zero-initialised, not `uninit`: every `vm_statistics64` field is a plain integer for which all-zero
+    // bytes are a valid value, so the struct is initialised on EVERY path and a short kernel write (see
+    // `MACH_CONSUMED_ELEMENTS`) leaves only an un-consumed zero tail behind — never uninitialised memory.
+    let mut stats = std::mem::MaybeUninit::<libc::vm_statistics64>::zeroed();
     let mut count = libc::HOST_VM_INFO64_COUNT;
     // `HOST_VM_INFO64` selects exactly the `vm_statistics64` flavour `stats` is sized for, and `count` is
-    // that struct's own element count, so the kernel fills `stats` and never writes past it.
+    // that struct's own element count, so the kernel fills at most `stats` and never writes past it.
     // SAFETY: `host` is a valid host port and the out-buffer/count pair matches the requested flavour.
     // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let kr = unsafe {
@@ -641,13 +680,20 @@ fn mach_vm_statistics() -> Option<libc::vm_statistics64> {
             &mut count,
         )
     };
-    // `count` is an IN/OUT parameter: the kernel may return KERN_SUCCESS having written FEWER elements than
-    // we asked for (its `vm_statistics64` can be smaller than the SDK's). Reading `assume_init` then would
-    // be UB, so the whole-struct write is REQUIRED, not assumed — a short write reads as unknown ⇒ no cap.
-    // SAFETY: the kernel returned KERN_SUCCESS AND wrote all `HOST_VM_INFO64_COUNT` elements, so the struct
-    // is fully initialised on this path — the only path that reaches the read.
+    // `count` is IN/OUT: on `KERN_SUCCESS` it is the number of elements the kernel actually wrote — its own
+    // revision's, which an older kernel keeps SHORTER than the SDK's struct. The verdict asks only that the
+    // two consumed fields were written; a shorter write reads as unknown ⇒ no cap (the never-break arm).
+    if kr != 0 || !mach_sample_covers_consumed_fields(count) {
+        return None;
+    }
+    // SAFETY: the buffer was zero-initialised and `vm_statistics64` is `repr(C)` integers only, so every byte
+    // holds a valid value on this path however many elements the kernel wrote.
     // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-    (kr == 0 && count == libc::HOST_VM_INFO64_COUNT).then(|| unsafe { stats.assume_init() })
+    let stats = unsafe { stats.assume_init() };
+    Some(MachPageCounts {
+        free: stats.free_count,
+        inactive: stats.inactive_count,
+    })
 }
 
 /// The fallback leg of [`available_memory_bytes`] for a target ConvertIA does not ship (§1 is Windows /
@@ -2745,6 +2791,42 @@ mod available_memory_tests {
             available < 1024 * 1024 * 1024 * 1024 * 1024,
             "§1.10: a petabyte reading signals a units error (kB vs bytes, or a double page-size multiply); \
              got {available}"
+        );
+    }
+
+    // §1.10 (G15), the macOS leg's element-count verdict — the 2026-09-24 CI red replayed: `libc` 0.2.189
+    // grew `vm_statistics64` to 104 elements while the macos-14 kernel fills the 38-element revision it
+    // knows (XNU's REV1 count, inferred from the kernel source — the CI proves only "short of the SDK's
+    // count"), and the P4.20 `count == HOST_VM_INFO64_COUNT` verdict read that sample as unknown. The fixed
+    // verdict accepts it — the two consumed fields are the 1st and 3rd elements of EVERY revision — holds
+    // exactly at its inclusive boundary, and rejects a write that stops short of them.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_mach_verdict_accepts_a_kernel_revision_shorter_than_the_sdk_struct() {
+        use super::{mach_sample_covers_consumed_fields, MACH_CONSUMED_ELEMENTS};
+        assert_eq!(
+            MACH_CONSUMED_ELEMENTS, 3,
+            "§1.10: free_count (1st) through inactive_count (3rd) are the consumed elements"
+        );
+        assert!(
+            mach_sample_covers_consumed_fields(38),
+            "§1.10: the 38-element REV1 revision the macos-14 kernel fills (the 2026-09-24 incident) is usable"
+        );
+        assert!(
+            mach_sample_covers_consumed_fields(3),
+            "§1.10: a write of exactly the consumed elements is usable — the boundary is inclusive"
+        );
+        assert!(
+            mach_sample_covers_consumed_fields(libc::HOST_VM_INFO64_COUNT),
+            "§1.10: the SDK's own full count stays a usable sample"
+        );
+        assert!(
+            !mach_sample_covers_consumed_fields(2),
+            "§1.10: a write that stops before inactive_count is unusable (unknown ⇒ no cap)"
+        );
+        assert!(
+            !mach_sample_covers_consumed_fields(0),
+            "§1.10: an empty write is unusable"
         );
     }
 
