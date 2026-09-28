@@ -103,60 +103,21 @@
 
 | ID | Gate | Tool / mechanism | Blocks | Scope / fail-mode |
 |---|---|---|---|---|
-| **G1** | Opus + Sonnet pre-commit dual review | two model reviewers critique the staged diff; recorded as a `Dual-Review: opus=… sonnet=…` commit trailer (presence/well-formedness gated by G12) | commit (self-gate) | always-on; **quality amplifier, NOT a security control** (only the deterministic gates G2+ are security controls — §0). The prose contract is below. |
+| **G1** | Opus + Sonnet pre-commit dual review | two model reviewers critique the staged diff; recorded as a `Dual-Review: opus=… sonnet=…` commit trailer (presence/well-formedness gated by G12) | commit (self-gate) | always-on; **quality amplifier, NOT a security control** (only the deterministic gates G2+ are security controls — §0). The contract is [build-loop.md §3 Step 5](../process/build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1). |
 
-> **G1 has a catalogue ROW (above) AND the prose contract (below).** Every gate
-> cited in a box header `· <Gnn>` ref must resolve to a `| **Gnn** |` row
+> **G1 has a catalogue ROW (above) and a canonical contract in build-loop.md §3 Step 5.**
+> Every gate cited in a box header `· <Gnn>` ref must resolve to a `| **Gnn** |` row
 > (`_format.md` §3.1/§7); the P0 dual-review boxes (P0.1.3 / P0.6.1–P0.6.3) cite
 > `G1` as a header ref, so the row is mandatory. The row is the machine target; the
-> prose paragraphs that follow are the human contract.
+> DoD bullet below is one of the three DoD copies plan-lint check 14 holds identical.
 
-**G1 — Opus + Sonnet pre-commit dual review.** *Plane L0.* Before each build
-commit, two model reviewers (`opus` + `sonnet`) critique the **staged diff**
-(`git diff --cached`, inline — not a SHA) for completeness, correctness, and
-spec-conformance, plus the relevant spec `§§` + this catalogue.
-- Output per reviewer: findings ranked **P0→P3**, each with a one-line reason +
-  spec-`§`/file ref; convergence/divergence stated explicitly.
-- **P0/P1 → fix in the working tree, re-stage, re-review** (loop). **No push
-  between fix and re-review** (no fix-push cycle). **P2/P3 →** documented in the
-  commit body + a follow-up box if structural.
-- Recorded as a machine-readable commit trailer of the **exact** form
-  `Dual-Review: opus=GO sonnet=GO` (or `NOGO`) — the *evidence of review* is
-  mandatory; each reviewer's findings + convergence/divergence are recorded verbatim
-  in the commit body (so a "both GO, 0 findings" on a non-trivial diff is an
-  auditable smell for Co-Pilot spot-audit).
-- **Staged-diff sanity (the trailer attests *this exact staged diff*).** Immediately
-  before `git commit`, `git diff --cached --stat` MUST match the file set the two
-  reviewers saw at GO; any file added/removed after GO **requires re-review** (no
-  silent post-review staging).
-- **Test-integrity scrutiny (HIGH-SCRUTINY — the "no green-by-rewrite" semantic
-  leg).** A diff that **MODIFIES / RELAXES / SKIPS / DELETES a test**, or flips a test
-  **red→green** (a rewritten/weakened assertion, an added `#[ignore]`/`it.skip`/
-  `describe.skip`/`.only`/`test.skip`/`xfail`, a `#[should_panic]` added to a
-  previously-real assertion, or a removed/commented-out assertion in a changed test),
-  is an **explicit reviewer scrutiny item**: both reviewers verify it is **NOT
-  suppressing a real regression** (the default is the CODE is wrong, not the test) and
-  that the **(1) old-expectation-genuinely-obsolete (spec-`§`/decision cited) + (2)
-  new-expectation-correct (verified vs the spec / by reading the real result back, not
-  "it's green now")** justification is **present in the commit body**. A red→green test
-  edit lacking the (1)+(2) justification is a **P0/P1** finding. This is the
-  **SEMANTIC** half of the discipline; the **mechanical** signal that an unjustified
-  test-suppression marker entered the diff is **G70** (the G8-deferral analogue for
-  tests — same diff-scan posture as G8/G21; see its own L2 row below for the marker
-  set + the `[Test-Change]` tag form). G70 flags + requires the justification, G1 judges whether the
-  rewrite is legitimate — together they ensure the ability to change a test is
-  **preserved but verified** (a justified change passes normally). Doctrine:
-  [test-strategy.md](../process/test-strategy.md) §8.
-- **Class-closure scrutiny (the owner's 2026-08-26 root-cause rule — rubric item 6).**
-  When the diff FIXES a defect (a bug, a red gate, a review finding, a broken
-  assumption), both reviewers ask whether the defect CLASS can recur; if yes, the
-  commit must close it — the sibling sweep plus a **permanent catcher** (a gate leg /
-  lint / self-test / spec note / Loop-memory entry; a closure outside the diff under
-  review must be NAMED in the commit body) — or record why it is a genuine one-off. An
-  instance-only fix with its class silently open is a **P1**. Proportionality is part
-  of the rule (a one-line note is a valid closure where a mechanical gate would be
-  disproportionate). Canonical text: the [build-loop.md](../process/build-loop.md)
-  rubric, drift-guarded by plan-lint check 19.
+**G1 — Opus + Sonnet pre-commit dual review.** *Plane L0.* Two model reviewers (`opus` + `sonnet`) critique
+each build commit's staged diff before the commit. The protocol lives in
+[build-loop.md §3 Step 5](../process/build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1) and is not
+restated here. It covers the reviewer inputs and review brief, and the canonical rubric: its item 5 is the
+semantic half of the no-green-by-rewrite discipline whose mechanical signal is G70, and its item 6 is the
+owner's class-closure rule. It also covers the P0–P3 severity bar, the round cap and park, the post-GO rule
+and the review record. The commit-message shape is Step 6; G12 checks the trailer at pre-push.
 - **Definition-of-Done.** A box is "done" only when it satisfies the ConvertIA DoD
   (authored in [build-loop.md](../process/build-loop.md), P0.6): (a) spec-`§`
   referenced or marked tooling-only; (b) spec synced in the same commit; (c) tests
@@ -218,7 +179,7 @@ spec-conformance, plus the relevant spec `§§` + this catalogue.
 
 | ID | Gate | Tool / mechanism | Blocks | Scope / fail-mode |
 |---|---|---|---|---|
-| **G12** | Dual-review trailer present + well-formed *(L2 — moved here from §3 in P0 review r3)* | the build commit body carries a trailer matching `^Dual-Review: opus=(GO\|NOGO) sonnet=(GO\|NOGO)$`; skipped for check-off/`[!extern]`. Runs at **pre-push** (not commit-msg) because it needs **conditional skip logic over the whole push range** — the bodies are read via `git log --format=%B <old>..<new>` and the check-off/`[!extern]` commits in the range are excluded. **Skip-regex parity (mandatory):** the exact check-off/`[!extern]` subject-pattern regex is a **single committed shared script** that BOTH the L2 pre-push hook AND the L4 CI mirror call (a drift between the German/English commit-subject pattern the Build-Loop produces and the regex would false-pass or false-fail valid check-off commits) — extended into the G54 two-plane parity assertion (any conditional-skip logic must be byte-identical across both planes, extracted to the shared script, mirroring the fastpath-commit pattern). **The check-off shape is a DOUBLE predicate** (pinned in build-loop.md so the loop emits exactly what the skip-regex recognises): subject matches **`chore(todo): .* (abgehakt|done)`** AND the diff is **markdown-only** (`git diff --name-only <commit>^..<commit>` has no non-`.md` path) — closing the subject-only vs diff-shape ambiguity; a **G54 planted-positive** asserts a check-off subject+md-only-diff skips while a build-commit subject or a non-md diff does not. **Findings-block-presence sub-check (turns the §4 "auditable smell" into a machine invariant):** G12 today checks only that the trailer is well-formed; security-concept §4 admits it "never checks that two live models actually ran", so the sole defence against a well-formed-but-unbacked `GO` is a PROSE rule in build-loop.md — and in a single-session autonomous loop, silently emitting `GO` without calling the API is the highest-value cheat. So G12 additionally asserts that **whenever the trailer says `opus=GO sonnet=GO`, the commit body carries each reviewer's NON-EMPTY findings block** (the §1 verbatim per-reviewer findings + convergence/divergence record): a **both-GO + empty/absent findings block on a non-trivial (non-check-off, non-`[!extern]`) diff FAILS the gate**, it is no longer merely a smell. (This does not make G1 a security control — a determined cheat can fabricate a findings block — but it raises the cost from "emit one trailer line" to "fabricate a plausible per-reviewer finding set", and a fabricated block remains an auditable Co-Pilot spot-audit target.) **Delivered P0.3.3** (`scripts/check-dual-review`): the SINGLE shared script both planes invoke — L2 pre-push (`resolve_base()..HEAD`) + the L4 mirror in the `workflow-security` CI job (`--base ${{ github.event.before }}` via env, push-only, `fetch-depth: 0`), so the check-off skip-regex (the `chore(todo): … (abgehakt|done)` + md-only-diff double predicate) lives in ONE place and cannot drift across planes (the mandated parity is structural). Findings-block-presence is a body-marker presence heuristic over the BODY only (the SUBJECT is excluded — a box-id like `(P0.3.3)` must not satisfy the `P[0-3]` marker; raises the cost of a fabricated GO, not a strict per-reviewer parse). An absent/unresolvable full-hex `--base` (a force-pushed `github.event.before`) routes to the HEAD-tip-only check via a `^{commit}` existence peel. `g24-dual-review.py` = 13 legs (incl. the double-predicate: md-only exempt, a `.rs` file / empty file-list NOT; the box-id-in-subject regression guard; the absent-base tip-only fallback). The explicit gate-planes parity meta-assertion is unnecessary given the single-script design. **NB the "check-off/`[!extern]`" wording above:** `[!extern]` is a plan-BOX status marker that yields NO commit (the loop skips + collects it, build-loop.md P0.6), so there is no `[!extern]` commit-subject to skip — only the check-off double-predicate is a real commit-level exemption | push | conditional; fail-closed |
+| **G12** | Dual-review trailer present + well-formed *(L2 — moved here from §3 in P0 review r3)* | the build commit body carries a trailer matching `^Dual-Review: opus=(GO\|NOGO) sonnet=(GO\|NOGO)$`; skipped for check-off/`[!extern]`. Runs at **pre-push** (not commit-msg) because it needs **conditional skip logic over the whole push range** — the bodies are read via `git log --format=%B <old>..<new>` and the check-off/`[!extern]` commits in the range are excluded. **Skip-regex parity (mandatory):** the exact check-off/`[!extern]` subject-pattern regex is a **single committed shared script** that BOTH the L2 pre-push hook AND the L4 CI mirror call (a drift between the German/English commit-subject pattern the Build-Loop produces and the regex would false-pass or false-fail valid check-off commits) — extended into the G54 two-plane parity assertion (any conditional-skip logic must be byte-identical across both planes, extracted to the shared script, mirroring the fastpath-commit pattern). **The check-off shape is a DOUBLE predicate** (pinned in build-loop.md so the loop emits exactly what the skip-regex recognises): subject matches **`chore(todo): .* (abgehakt|done)`** AND the diff is **markdown-only** (`git diff --name-only <commit>^..<commit>` has no non-`.md` path) — closing the subject-only vs diff-shape ambiguity; a **G54 planted-positive** asserts a check-off subject+md-only-diff skips while a build-commit subject or a non-md diff does not. **Review-marker sub-check:** when the trailer says `opus=GO sonnet=GO`, the commit body (subject and `Dual-Review:`/`L-neg1-ack:`/`Co-Authored-By:` lines excluded) must carry a review marker — `review`, `finding(s)`, `NOGO`, `P0`–`P3`, `verdict` or `skeptic`, case-insensitive; the build-loop Step 6 `Review:` line satisfies it. A presence heuristic, not a per-reviewer parse: it raises the cost of a bare `GO/GO` trailer and cannot prove two live models ran (security-concept §2); the load-bearing defence is the build-loop Step 5 two-live-reviews rule, and a fabricated record stays a Co-Pilot spot-audit target. **Delivered P0.3.3** (`scripts/check-dual-review`): the SINGLE shared script both planes invoke — L2 pre-push (`resolve_base()..HEAD`) + the L4 mirror in the `workflow-security` CI job (`--base ${{ github.event.before }}` via env, push-only, `fetch-depth: 0`), so the check-off skip-regex (the `chore(todo): … (abgehakt|done)` + md-only-diff double predicate) lives in ONE place and cannot drift across planes (the mandated parity is structural). Findings-block-presence is a body-marker presence heuristic over the BODY only (the SUBJECT is excluded — a box-id like `(P0.3.3)` must not satisfy the `P[0-3]` marker; raises the cost of a fabricated GO, not a strict per-reviewer parse). An absent/unresolvable full-hex `--base` (a force-pushed `github.event.before`) routes to the HEAD-tip-only check via a `^{commit}` existence peel. `g24-dual-review.py` = 13 legs (incl. the double-predicate: md-only exempt, a `.rs` file / empty file-list NOT; the box-id-in-subject regression guard; the absent-base tip-only fallback). The explicit gate-planes parity meta-assertion is unnecessary given the single-script design. **NB the "check-off/`[!extern]`" wording above:** `[!extern]` is a plan-BOX status marker that yields NO commit (the loop skips + collects it, build-loop.md P0.6), so there is no `[!extern]` commit-subject to skip — only the check-off double-predicate is a real commit-level exemption | push | conditional; fail-closed |
 | **G13** | Full type-check *(mirror)* | `tsc --noEmit` whole project. **Delivered (P0.4.7):** the whole-project leg is `check-ts-gate --full` (L2 pre-push + L4 `gate-tooling`); target-absent until the P1 `package.json`/`tsconfig.json` land, then fail-closed. | push | always; fail-closed |
 | **G14** | Full lint *(mirror)* | `clippy --all-targets --all-features -D warnings` (incl. the G4 no-panic-sloppiness `unwrap_used`/`expect_used`/`panic`/`indexing_slicing` deny set + the exhaustive-match deny) + `eslint` whole tree. **Delivered (P0.4.1):** the Rust whole-tree leg is `scripts/check-rust-lint-contract --full` (L2 pre-push + L4 CI; target-absent until the P1 crates); the eslint leg is P0.4.7 | push | always; fail-closed |
 | **G15** | Unit + integration tests *(mirror)* | `cargo test` (incl. real-file round-trips) + `vitest run`. **Atomicity-under-interruption (§6.4.2):** the kill is injected **specifically in the post-`sync_all()`-pre-`rename` window** (a `#[cfg(test)]` fence in `crate::fs_guard::atomic_publish`, all 3 OS) so it exercises the §2.1.3 two-state invariant at the critical boundary, not an uninteresting pre-sync kill. **Scoped mutation-testing sub-leg (release-tier, owner-decidable required-vs-informational):** `cargo-mutants` over `crate::fs_guard` + `crate::detection` + `crate::outcome` (the no-harm/atomicity/no-misroute kernel) — line coverage proves a line executed, not that a test would CATCH a regression there. **Detection-layer KAT (known-answer test, §6.4.1 made machine-enforceable at L2 cost):** a committed `tests/detect-kat.toml` pins canonical files to their EXACT `FormatId` — one entry per ambiguous case (DOC vs XLS from the same OLE2 magic; detected-but-unsupported; uncertain) — read by the G15 unit test, so a toolchain bump (`quick-xml`) or a detect refactor that silently changes the result for an ambiguous signature is caught at **L2**, not only at L4 by the corpus | push (mutants: release-tier) | always; fail-closed |
@@ -634,7 +595,7 @@ Invariant checks (initial set; expanded during P0 review):
     canonical-verbatim-phrase discipline as checks 15/18). The rubric block joins the L(-1) security-critical-file
     set. Stdlib-only.
 20. **Recorded reviewer-family decision present in `build-loop.md` (r6 — the one non-deterministic control's
-    open residual is now forced to a recorded decision, not left open).** security-concept §4 states Opus+Sonnet
+    open residual is now forced to a recorded decision, not left open).** security-concept §2 states Opus+Sonnet
     share lineage so "both GO, 0 findings" is a CORRELATED signal and says the same-vendor choice is "an owner
     call recorded here, not silently assumed" — but it was neither closed nor decided. This check asserts
     `build-loop.md` carries the **verbatim recorded owner decision** (either "one reviewer is a different model

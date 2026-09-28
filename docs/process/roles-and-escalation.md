@@ -162,7 +162,7 @@ proceed, tagged** (§3).
   except the phase-end sweep box, which blocks its WHOLE successor phase
   (test-strategy §11.3).
 
-Two further blockers route the same way (their mechanics live in build-loop.md, the
+Further blockers route the same way (their mechanics live in build-loop.md, the
 *who* is here):
 
 - **(e) A provably-misfiring required gate** — a required gate failing **closed on a
@@ -188,6 +188,14 @@ Two further blockers route the same way (their mechanics live in build-loop.md, 
   `[!extern]` precondition box (the P4.89 pattern) — the trigger stops the caged edit, not
   the loop, which continues outside that closure (except the phase-end sweep box, which
   blocks its WHOLE successor phase, test-strategy §11.3).
+- **(h) G1 non-convergence** — a P0/P1 is still open when review round 4 ends
+  ([build-loop.md §3 step 5](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1)). The loop
+  parks the box (the
+  [build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape) park
+  procedure) and posts one Co-Pilot line. The Co-Pilot answers with a landed commit — a split, a
+  ruling on the disputed point, or a `>` note naming the points narrowed rounds may examine — then
+  releases the park; the box restarts at R1. The stop is scoped: the loop continues outside the
+  parked box's `needs:` closure.
 
 ### NOT escalation (decide yourself, tagged)
 
@@ -294,9 +302,9 @@ view:
 - The owner writes a **stop word** (`stop` / `halt` / `pause`) → save state, wait.
 - A **spec-internal contradiction** (trigger (a)) → unconditional, regardless of
   severity, never silently reconciled.
-- A **dual-review P0 that is genuinely not fixable** — but **only after** the
-  pattern lookup (§3): a P0 with an established pattern is **not** a hard-stop, apply
-  the pattern.
+- **G1 non-convergence** (trigger (h)) — an open P0/P1 after review round 4 → park
+  the box; the stop is scoped and the loop continues outside the parked box's
+  `needs:` closure (§4(d)).
 - **Reviewer unavailability** (trigger (f)) — two live reviews unobtainable after
   bounded retry.
 - **Consecutive gate-red pushes** beyond the build-loop.md threshold, despite fix

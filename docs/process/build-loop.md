@@ -122,7 +122,7 @@ not in the box.
 > P0.1.7 documentation-wiring & context-routing audit.
 
 At the end of session-start, emit exactly one line and **wait for a start word**
-(see §10) — do not proactively build:
+(see §7) — do not proactively build:
 
 ```
 Bereit. Letzte abgehakte Box: <id>, naechste baubare Box: <id>.
@@ -204,6 +204,9 @@ closure below is the one exception).
   successor phase** is the phase-end sweep box (test-strategy §11.3): the loop never
   enters `P(n+1)` while `P(n)`'s sweep is open — the phase-boundary stop is unchanged.
 - **`[!]`** (blocked) → read the note under it, skip, mention at the phase end.
+- **Parked** (a `parked/<box-id>.patch` file under the git dir, §6 park procedure) →
+  skip it and its `needs:` closure like an `[!extern]` block; it is re-selected once
+  the Co-Pilot releases the park.
 - **Auto-unlock scan:** after each check-off (and at startup), scan for `[!]` boxes
   carrying an `unlocked-by: <box-id>` marker whose dep is now `[x]`, and flip them
   `[!]`→`[ ]` (`_format.md`'s reverse-unlock direction).
@@ -299,13 +302,26 @@ escalate** (the loop is downstream of the spec).
 
 ### Step 5 — Pre-commit Opus + Sonnet dual review (G1)
 
-**Stage selectively first** — `git add <specific files>` (**never `git add -A`**),
-then `git diff --cached --stat`. Spawn **two** reviewers, in parallel, on the
-**staged diff** (`git diff --cached`, inline — **not** a SHA, because it is not yet
-committed). Their model IDs are **pinned exactly** (like every other tool); a
-deprecation/rename surfaces as an escalation, never a silent skip. Both receive the
-**reviewer rubric** below verbatim, plus the relevant spec `§§`, this catalogue,
-CLAUDE.md, and the box.
+**Stage selectively first** — `git add <specific files>` (**never `git add -A`**), then
+`git diff --cached --stat`, and record the index tree (`git write-tree`) as the round's tree
+id. Spawn **two** reviewers (opus + sonnet) in parallel. Each receives exactly: the **reviewer
+rubric** below verbatim; the **staged diff** inline (`git diff --cached` — **not** a SHA,
+because it is not yet committed); the box (header through its last `>` note); the full text of
+every spec `§` the box cites; the build-gates.md rows of every `Gnn` the box cites and of every
+gate whose script or config the diff touches; CLAUDE.md §3 and §5; and the **review brief**.
+The brief is the commit body's fields `Box/§/Gates:` through `Class:` (Step 6), written before
+R1 and committed as reviewed, plus the gate transcript: one `<gate>: exit <n>` line per gate run
+on the final staged tree. Record the model IDs the harness ran on the body's `Models:` line; a
+model deprecation or rename surfaces as an escalation, never a silent skip.
+
+**Reviewer contract.** Reviewers never change the shared tree, index or `target/` (no
+checkout, stash, reset, commit or edit). A reviewer that must run code, a mutant or a repro does
+it in its own scratch clone — a real `git clone`, never a junction or symlink of the repo — with
+the staged diff applied and `CARGO_TARGET_DIR` inside the clone, reused across that reviewer's
+rounds of the box. Reviewers run targeted commands (one test module, one gate script, one
+repro), never the full suite; the brief carries the gate transcript. A third reviewer or a lens
+run, when used, runs once, before R1, under the same severity bar. After every round the loop
+compares `git write-tree` with the round's tree id before it edits anything.
 
 ```text
 === ConvertIA dual-review rubric (canonical — emitted to BOTH reviewers verbatim) ===
@@ -338,25 +354,40 @@ build commit. Input: the STAGED diff (git diff --cached, inline). Critique it fo
      sibling sweep (the same pattern grepped across plan/spec/code/gates) PLUS a
      permanent catcher (a gate leg / lint / self-test / spec note / Loop-memory entry)
      so the recurrence is caught mechanically, never re-learned — OR explicitly record
-     in the commit body why the defect is a genuine one-off (or where that closure
-     is homed, with the box id). A closure landing outside the diff under review
-     (a Loop-memory entry) MUST be NAMED in the commit body, so the reviewer can
-     see it. An instance-only fix that leaves its class silently
+     on the brief's Class: line why the defect is a genuine one-off (or where that
+     closure is homed, with the box id). A closure landing outside the diff under
+     review (a Loop-memory entry) MUST be NAMED on the brief's Class: line. An
+     instance-only fix that leaves its class silently
      open is a P1. (Scope guard: this asks for the CATCHER, not for gold-plating —
      a one-line memory/spec note IS a valid closure when a mechanical gate would be
      disproportionate; name the judgment.)
   7. PROSE ECONOMY (owner rule, 2026-09-09) — a count, an unmeasured "because"
      mechanism claim, or a coverage/done-ness claim in a comment, a plan note or the
-     commit body that no mechanical checker cross-checks is a defect in the PROSE,
+     brief that no mechanical checker cross-checks is a defect in the PROSE,
      never a request for more prose: the fix is to reword it to the observable
-     EFFECT or to drop it. Rank an unmeasured claim P2 (P1 only where a decision
-     rests on it). Ask for a checker, a hedge or a deletion — not for narrative.
+     EFFECT or to drop it. Rank an unmeasured claim P2. Ask for a checker, a hedge
+     or a deletion — not for narrative.
 
-Rank every finding P0 (must-fix, blocks) → P1 (must-fix) → P2 → P3. Give each one a
-one-line reason WITH a spec-§ or file ref. State convergence/divergence explicitly:
-"both agree on X" / "opus additionally: Y" / "divergence: opus sees A, sonnet sees B".
-Even at zero findings, give ONE line saying why the diff is clean. Do NOT collapse
-the two reviews — each reviewer reports separately.
+Rank every finding:
+  P0    — a CLAUDE.md §3 guardrail broken, a gate weakened or bypassed, or something
+          built that the spec forbids.
+  P1    — a concrete failure, written as "scenario: <input/state> -> <wrong output |
+          crash | behaviour the cited § requires and the diff lacks>"; an unswept
+          sibling with the same scenario as a fixed P0/P1; a test or leg that stays
+          green when the behaviour it claims to pin is removed; a test change without
+          the item-5 (1)+(2) proof; an item-6 omission; an unmet DoD item — for DoD (b)
+          only where normative text (a spec §, a gate-row contract, a test assertion)
+          states behaviour the diff changed.
+  P2/P3 — everything else, never blocking: wording, counts and mechanism claims in
+          comments, plan notes or the brief; descriptive prose left stale; sweep
+          breadth over sites that carry no defect.
+A P0/P1 without its scenario line is recorded as P2. One line per finding: severity,
+file:line, summary, and for a P0/P1 its scenario. State convergence/divergence
+explicitly: "both agree on X" / "opus additionally: Y" / "divergence: opus sees A,
+sonnet sees B". Even at zero findings, give ONE line saying why the diff is clean. Do
+NOT collapse the two reviews — each reviewer reports separately. In a delta round (R2
+onward) verify each prior P0/P1 fix and review the fix delta; outside the delta report
+only a P0, or a P1 whose scenario you reproduced.
 
 SPEC-CONTRADICTION is a finding CLASS ABOVE P0: if two spec §§ disagree (a §
 cross-reference inconsistency), flag it as SPEC-CONTRADICTION — it is an
@@ -365,30 +396,54 @@ downstream of the spec and cannot pick a side).
 === end rubric ===
 ```
 
-**Consolidating findings:**
+**Consolidating findings and rounds:**
 
-- **P0 / P1** → **fix in the working tree, re-stage the affected files, and
-  re-review** (loop). **No push between a fix and its re-review — there is no
-  fix-push cycle.** Repeat until both reviewers are GO with no open P0/P1.
-- **P2 / P3** → documented in the commit body + the status line; raise a follow-up
-  box if structural; not a blocker.
-- **Divergence-resolution rule (canonical):** a **P0/P1 GO-vs-NOGO divergence is
-  treated as NOGO — the stricter reviewer wins.** A **P2/P3 divergence is resolved
-  by the loop** with a recorded `[Build-Session-Entscheidung]` rationale — **unless**
-  it is a SPEC-CONTRADICTION, which is the unconditional hard-stop + escalate above.
-- **SPEC-CONTRADICTION** (either reviewer) → **hard-stop + escalate**, never a
-  working-tree fix.
+- **R1** is a full review. **P0 / P1** → fix in the working tree, re-stage the affected files,
+  and re-review. **No push between a fix and its re-review — there is no fix-push cycle.**
+  Repeat until both reviewers are GO with no open P0/P1.
+- **R2 onward are delta rounds.** Resume the SAME two reviewer agents (SendMessage) with one
+  message: `G1 R<n> delta — <box-id>`, the prior round's P0/P1 lines with their scenarios,
+  `git diff <tree R(n-1)> <tree R(n)>` inline, the new gate transcript, and "apply the rubric's
+  delta-round rule; reply with a verdict line and one line per finding". An agent that cannot
+  be resumed (crash, context limit) is replaced by a fresh one given the same inputs plus the
+  prior findings lines and the delta.
+- **Withdrawal.** Only the reviewer who raised a P0/P1 withdraws it. The loop may rebut it with
+  evidence (a spec cite, a reproduction, a gate transcript) in the next delta round; it never
+  down-ranks a finding itself.
+- **R3 triage.** Entering R3, the loop settles each still-open P0/P1 one way: fix it; delete the
+  disputed claim — only in a comment, a plan note or the brief, never normative spec text;
+  refuse the exotic input form — only in first-party tooling or gate parsers with a declared
+  input model, fail-closed, never a spec-required product input; or split the box, where the
+  GO-able part meets the DoD on its own and the rest becomes a sub-box.
+- **Round cap.** `open P0/P1 after round == 4` → park the box (§6 park procedure), a scoped
+  stop. A split, re-cut or released box restarts at R1.
+- **P2 / P3** → never blocking and not applied (except the post-GO rule below): one
+  `Open P2/P3:` body line each; one that a later box must act on also gets a `>` note on
+  that box or a new box with a `needs:` edge.
+- **Divergence-resolution rule (canonical):** a **P0/P1 GO-vs-NOGO divergence is treated as
+  NOGO — the stricter reviewer wins.** A P2/P3 divergence needs no resolution (both lines go
+  to `Open P2/P3:`) — **unless** it is a SPEC-CONTRADICTION, which is the unconditional
+  hard-stop + escalate above.
+- **SPEC-CONTRADICTION** (either reviewer) → **hard-stop + escalate**, never a working-tree fix.
+- **Post-GO (the single home of this rule; other documents point here).** Both reviewers' GO
+  freezes the staged diff; record its tree id. The only edit permitted after GO is deleting a
+  sentence a reviewer flagged, or correcting a factual error in it, when that sentence sits in
+  a code comment, the box's own plan note or the brief. Never after GO: a spec, SSOT, security
+  or process doc, an L(-1) path, or any non-comment line. Each such edit goes on a `Post-GO:`
+  body line and is re-confirmed by the same two reviewers (one message each: the edit as a
+  diff, verdict line only). A P0, or a P1 with a scenario, opens a delta round. Any other
+  change after GO opens a delta round.
 - **Reviewer availability:** on a reviewer error / timeout / rate-limit / 5xx,
   retry with backoff a bounded number of times, then **HARD-STOP + escalate** to
   Co-Pilot. **NEVER** auto-emit a `GO` trailer with fewer than **two live**
   reviews; never silently degrade to one or zero reviewers. (G12 checks the trailer
-  is well-formed and that a `GO/GO` on a non-trivial diff carries each reviewer's
-  non-empty findings block, but it cannot prove two live models ran — this rule is
-  the load-bearing defence against a well-formed-but-unbacked `GO`.)
-- **Staged-diff sanity (the trailer attests *this exact staged diff*):**
-  immediately before `git commit`, `git diff --cached --stat` MUST match the file
-  set the two reviewers saw at GO; any file added/removed after GO **requires
-  re-review** — no silent post-review staging.
+  is well-formed and that a `GO/GO` commit's body carries a review marker — a
+  presence heuristic, not a per-reviewer parse — and cannot prove two live models
+  ran; this rule is the load-bearing defence against a well-formed-but-unbacked `GO`.)
+- **Staged-diff sanity (the trailer attests *this exact staged diff*):** immediately before
+  `git commit`, `git diff <GO tree> $(git write-tree)` MUST be empty or consist only of the
+  `Post-GO:` edits both reviewers re-confirmed. Any other difference (a file added or removed,
+  a code or test line changed) needs a delta round. There is no silent post-review staging.
 
 > **Recorded reviewer-family decision (do not run without it — plan-lint check 20
 > asserts this is present).** Opus and Sonnet share model lineage, so "both `GO`,
@@ -398,11 +453,11 @@ downstream of the spec and cannot pick a side).
 > radius regardless of reviewer correlation; G1 is a quality amplifier. The
 > accepted residual ships **with a concrete spot-audit cadence: a Co-Pilot
 > auditable-smell spot-audit at every phase boundary AND a random ≥1-in-10-box
-> sample** of the committed `GO/GO` findings blocks (a "both GO, 0 findings" on a
-> non-trivial diff is the audit target). **The flip option remains open** — making
-> one reviewer a different model family (e.g. a non-Anthropic model) to make
-> "independent" literally true is a future owner decision that can be taken at any
-> time.
+> sample** of the committed `GO/GO` Review records (both prongs run at the phase-end
+> sweep, test-strategy §11.2) (a "both GO, 0 findings" on a non-trivial diff is the
+> audit target). **The flip option remains open** — making one reviewer a different
+> model family (e.g. a non-Anthropic model) to make "independent" literally true is a
+> future owner decision that can be taken at any time.
 
 **Skip the dual review only** for: **(a)** a check-off commit with no code/config
 diff (a markdown-only `chore(todo): … abgehakt`/`done` commit); **(b)** an
@@ -410,35 +465,44 @@ diff (a markdown-only `chore(todo): … abgehakt`/`done` commit); **(b)** an
 
 ### Step 6 — Commit + push (gates run; never bypass)
 
-Commit message — **Conventional-commit** form (G11), subject on the first line, no
-special characters in the subject (`—`/`#` only in the body):
+Commit message — **Conventional-commit** form (G11), in this template:
 
 ```
-<type>(<scope>): <short summary>
+<type>(<scope>): <box-id> <summary>
 
-<spec-§ ref> · <box-id> · <P2/P3 findings, if any>
+Box/§/Gates: <box-id> · §<x.y> … · G<nn> …
+What: <file group> — <what changed>
+Decisions: <file:line> per [Build-Session-Entscheidung] / [Derived-Assumption] site, or none
+Tests: <tests added or changed, with their level>; Test-Change <file:line> — <(2) read-back evidence>
+Class: <closed: sibling sweep + catcher | one-off: reason | homed: box-id | n/a>
+Models: opus=<model id> sonnet=<model id>
+Review: r1 opus=NOGO sonnet=GO
+  P1 (opus) <file:line> <summary> — scenario: <…> → fixed
+Review: r2 opus=GO sonnet=GO
+Open P2/P3: <severity> <file:line> <summary>, or none
+Post-GO: <file:line> <deleted or corrected sentence>, re-confirmed   (only when used)
 
 Dual-Review: opus=GO sonnet=GO
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+<the attribution line the harness prescribes>
 ```
 
 - `<type>` ∈ `feat|fix|chore|docs|refactor|test|perf|ci|build`; `<scope>` is
-  `[a-z0-9._-]+`. The **`Dual-Review:` trailer** is mandatory and machine-checked
-  at pre-push (G12, exact form `Dual-Review: opus=(GO|NOGO) sonnet=(GO|NOGO)`); each
-  reviewer's findings + convergence/divergence are recorded **verbatim** in the
-  body. **Rollback convention** (solo on `main`): `chore(scope): roll back —
-  <reason>` — **no `revert` type** for build-session commits.
-- **Body economy (owner rule, 2026-09-09).** The body is evidence, not narrative:
-  WHY (what the box builds and the spec `§` that decides it — a few lines), WHAT
-  (one line per file group), the decisions a later reader needs (the
-  `[Build-Session-Entscheidung]` sites, the residuals, the class closure), and the
-  review record as a **findings LIST** — each reviewer's findings verbatim as
-  `severity file:line — summary → resolution`, one line each, plus one
-  convergence/divergence line — never the reviewers' prose. A count appears only
-  where a checker cross-checks it (the runner's `N legs` rows, `--shortstat`); a
-  mechanism is written as its observable effect, never as an unmeasured
-  "because". Aim for ≤ 60 lines; a body past 120 lines is itself a review smell
-  (rubric item 7).
+  `[a-z0-9._-]+`; at most **100 characters**. A box commit starts the summary with its
+  box id. A commit that builds no box (a Co-Pilot act, a re-land) uses
+  `<type>(<scope>): <summary>` and writes `none` for the box on the `Box/§/Gates:` line.
+  **Rollback convention** (solo on `main`): `chore(scope): roll back — <reason>`, with
+  **no `revert` type** for build-session commits.
+- `Box/§/Gates:` through `Class:` are the review brief (Step 5), committed as reviewed.
+  After GO the loop adds only `Models:`, the `Review:` lines, `Open P2/P3:` and
+  `Post-GO:`. The review record is one `Review:` line per round plus one indented line
+  per P0/P1 finding (severity, raising reviewer, file:line, summary, scenario,
+  resolution) — never the reviewers' prose. The **`Dual-Review:` trailer** is
+  mandatory, sits in the final trailer block, and is machine-checked at pre-push (G12,
+  exact form `Dual-Review: opus=(GO|NOGO) sonnet=(GO|NOGO)`).
+- **Body economy (owner rule, 2026-09-09).** The body is evidence, not narrative.
+  Write it in the template's fields. A count appears only where a checker
+  cross-checks it (the runner's `N legs` rows, `--shortstat`); a mechanism is written
+  as its observable effect, never as an unmeasured "because". Aim for ≤ 40 lines.
 - **Push exit code MUST be observed reliably.** The agent tool environment does not
   propagate a subprocess exit code the way a plain shell does: `| tee` masks the
   hook's non-zero exit, and a naive `$?` can capture the tool-call's own success
@@ -470,8 +534,9 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   code**, not the test. A test edit to get green is permitted **only** after proving
   **both** (1) the old expectation is genuinely obsolete (cite the spec-`§`/decision)
   **and** (2) the new expectation is correct (verified vs the spec / by reading the
-  real result back, never "it's green now"); that **(1)+(2) justification goes in the
-  commit body** and the edit is a **high-scrutiny item for the step-5 dual review**
+  real result back, never "it's green now"); the (1) cite sits in the G70
+  `[Test-Change]` tag at the changed test and the (2) read-back evidence on the brief's
+  `Tests:` line, and the edit is a **high-scrutiny item for the step-5 dual review**
   (rubric point 5). The mechanical signal that an unjustified test-suppression marker
   (`#[ignore]`/`it.skip`/a `should_panic` on a real assertion/a removed assertion)
   slipped in is **G70** — it FLAGS + REQUIRES the `[Test-Change: <box-id> —
@@ -540,6 +605,8 @@ with a precedent is never escalated), then decide, and tag the choice site with
 - **A provably-misfiring required gate** — see the gate-quarantine procedure (§6).
 - **Reviewer unavailability** — two live reviews cannot be obtained after bounded
   retry (§3 step 5).
+- **G1 non-convergence** — a P0/P1 still open after review round 4 (§3 step 5). A
+  scoped stop: park the box (§6) and continue outside its `needs:` closure.
 
 Everything else: **decide and proceed, tagged.** When two genuinely professional
 options exist, decide strictly at the owner's core-rule anchor (CLAUDE.md §6 —
@@ -572,11 +639,11 @@ A change is **done** only when:
 - **(d)** **Hard gates green** (`cargo clippy -D warnings`, `tsc --noEmit`,
   eslint/stylelint, `cargo fmt`/prettier, the test suite, `plan-lint`/`spec-lint`)
   — **without** `--no-verify` and without `core.hooksPath` redirection.
-- **(e)** **The Opus + Sonnet pre-commit dual review (G1) is through** — both
-  reviewers' findings + convergence/divergence recorded verbatim in the commit
-  body, trailer `Dual-Review: opus=… sonnet=…` present. P0/P1 findings fixed in the
-  working tree, re-staged, re-reviewed before push (no fix-push cycle); P2/P3 noted
-  in the body.
+- **(e)** **The Opus + Sonnet pre-commit dual review (G1) is through** — the review
+  recorded in the commit body (one `Review:` line per round, one line per P0/P1
+  finding with its resolution — §3 step 6), trailer `Dual-Review: opus=… sonnet=…`
+  present. P0/P1 findings fixed in the working tree, re-staged, re-reviewed before
+  push (no fix-push cycle); P2/P3 on the body's `Open P2/P3:` lines.
 - **(f)** **Inline decision tags set** at every non-spec choice site —
   `[Build-Session-Entscheidung: <box-id>]`, directly at the code site, not only in
   the commit body.
@@ -593,9 +660,10 @@ A change is **done** only when:
 
 - The owner writes a stop word (`stop` / `halt` / `pause`).
 - **3 consecutive gate-red pushes** despite fix attempts.
-- A **dual-review P0 that is genuinely not fixable** — but only after the
-  pattern-lookup (§4): a P0 with an established pattern is **not** a hard-stop, apply
-  the pattern.
+- **G1 non-convergence** — `open P0/P1 after round == 4` (§3 step 5), and only after the
+  pattern lookup (§4): a P0/P1 with an established pattern is fixed, not parked. A
+  scoped stop: run the park procedure below and continue outside the box's `needs:`
+  closure.
 - A **spec-internal contradiction** (two `§§` disagree) — unconditional, regardless
   of severity, never silently reconciled.
 - **Reviewer unavailability** — two live reviews unobtainable after bounded retry.
@@ -616,6 +684,20 @@ A change is **done** only when:
   retried with backoff; if it cannot be resolved the loop hard-stops + escalates rather than
   proceed past an unobserved CI run (distinct from the step-0 startup health check, which
   fail-opens if the API is unreachable).
+
+**Park procedure (a scoped stop for one box).** (1) `git add -N` the box's new files, then
+write `git diff --binary HEAD -- <the box's paths>` to
+`$(git rev-parse --git-common-dir)/parked/<box-id>.patch`, first line `# base <HEAD sha>`; the git
+dir survives the session and never shows in `git status`. (2) Restore only the box's paths:
+`git apply --check -R` the patch, then `git restore --staged --worktree -- <the box's paths>`; it
+also drops step (1)'s intent-to-add entries and deletes the new files, so `git status` lists no
+box path — never a blanket `reset --hard`, `clean` or `stash`. (3) Post one
+Co-Pilot line (§8): `Co-Pilot: park <box-id> — <reason> — patch <absolute path> @ <base sha7>`.
+(4) Continue outside the box's `needs:` closure (§3 step 1 skips a parked box); when nothing
+buildable remains, stop. The Co-Pilot answers with a landed commit — a split of the box, a ruling
+on the disputed point, or a `>` note naming the points narrowed rounds may examine — then renames
+the file to `<box-id>.patch.released`. The loop re-selects the box, may `git apply` the released
+patch as its starting point, restarts at R1, and deletes the released file when the box commits.
 
 **Token-Notbremse / cadence numbers (the ConvertIA v1 baselines — `plan-lint` check
 15 asserts these appear verbatim here):**
@@ -739,7 +821,7 @@ and stop.
 surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here):**
 
 - **(a)** A **partial staged state** → `git reset HEAD` + re-read the box (no
-  half-staged commit).
+  half-staged commit); a box re-entered after a crash restarts its G1 review at R1.
 - **(b)** **Committed-but-CI-red** → a **NEW** commit fixing it; **never amend a
   pushed commit**.
 - **(c)** **Pushed-but-not-checked-off** → the normal open-box scan (§3 step 1)

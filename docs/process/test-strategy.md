@@ -962,9 +962,12 @@ stays a normal, first-class move; it just has to be **verified and recorded**, n
   test.** The red test did its job.
 - A **test-change that flips a test red→green** (a rewritten/relaxed assertion, a
   newly-added suppression marker, a removed/commented-out assertion) is a
-  **HIGH-SCRUTINY event for the G1 dual review** (§5 of build-loop.md): the two
-  reviewers explicitly ask **"is this suppressing a real regression?"**, and the
-  **(1)+(2) justification is recorded in the commit body**.
+  **HIGH-SCRUTINY event for the G1 dual review**
+  ([build-loop.md §3 step 5](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1),
+  rubric item 5): the two reviewers explicitly ask **"is this suppressing a real
+  regression?"**, and the (1) cite sits in the G70 `[Test-Change]` tag at the changed
+  test and the (2) read-back evidence on the commit's `Tests:` line, which the
+  reviewers receive in the review brief.
 
 ### 8.2 It does NOT forbid — it flags + requires justification
 
@@ -1134,6 +1137,11 @@ delivered *system*.
 - **Evidence:** what was attacked, with what tooling, what was found, what
   landed — recorded in the sweep's evidence-commit bodies; the box check-off
   itself stays a bare marker flip.
+- **G1 spot-audit (the reviewer-family cadence, build-loop.md §3 step 5):** the sweep reads a
+  random ≥1-in-10-box sample of the phase's box commits plus every `GO/GO` commit whose Review
+  record carries no finding on a non-trivial diff, and checks each record against its diff — do
+  the `Review:` lines and the P0/P1 resolutions match what the diff does? A mismatch goes to the
+  owner as reviewer-family evidence (the flip option); the commit is never rewritten.
 - **Re-bless (added 2026-09-09 — the owner's cage-by-direction decision):** the sweep
   re-blesses the monotone leg-name sets of the tool canaries
   (`scripts/gate-selftests/_monotone_pin.py --bless <tool>` for `compile-engine-asset`,

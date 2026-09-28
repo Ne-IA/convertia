@@ -241,11 +241,11 @@ A change is **done** only when:
 4. **Hard gates green** (`cargo clippy -D warnings`, `tsc --noEmit`, eslint/stylelint,
    `cargo fmt`/prettier, the test suite, `plan-lint`/`spec-lint`) — **without**
    `--no-verify` and without `core.hooksPath` redirection.
-5. **The Opus + Sonnet pre-commit dual review (G1) is through** — both reviewers'
-   findings + convergence/divergence recorded verbatim in the commit body, trailer
-   `Dual-Review: opus=… sonnet=…` present. **P0/P1 findings are fixed in the
-   working tree, re-staged and re-reviewed before push** (no fix-push cycle);
-   P2/P3 noted in the body.
+5. **The Opus + Sonnet pre-commit dual review (G1) is through** — the review
+   recorded in the commit body (one `Review:` line per round, one line per P0/P1
+   finding with its resolution), trailer `Dual-Review: opus=… sonnet=…` present.
+   **P0/P1 findings are fixed in the working tree, re-staged and re-reviewed before
+   push** (no fix-push cycle); P2/P3 on the body's `Open P2/P3:` lines.
 6. **Inline decision tags set** at every non-spec choice site —
    `[Build-Session-Entscheidung: <box-id>]` for self-made pattern/naming/default
    choices, directly at the code site, not only in the commit body.
