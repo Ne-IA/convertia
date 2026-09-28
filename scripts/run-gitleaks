@@ -4,27 +4,37 @@
 Wraps the pinned, vendored, checksum-verified gitleaks BINARY (.gate-tools/bin/gitleaks) so the
 range-base fallback chain is ONE testable place, not duplicated/forgotten across the hooks + CI:
 
-  --staged   L1 (pre-commit):  `gitleaks git --staged`  — the diff being committed.
-  --range    L2 (pre-push):    `gitleaks git <base>..HEAD` — all unpushed commits, the LAST local
-             catch before a secret goes public. Base = the first of `@{u}` -> `origin/<branch>` ->
-             `origin/main` -> `origin/HEAD` that resolves; if NONE resolve (first push to an empty
-             remote) it FULL-scans every commit (no range), the safe direction. NOT skipped by the
-             docs-only fastpath — a secret can live in a `.md`.
-  --dir      L4 (CI clean-checkout): `gitleaks dir .` — the whole working tree.
-  --history  L5 (nightly schedule):  `gitleaks git` over the ENTIRE commit history (the CI job must
+  --staged   L1 (pre-commit):  `gitleaks git --staged .`  — the diff being committed.
+  --range    L2 (pre-push):    `gitleaks git --log-opts=<base>..HEAD .` — all unpushed commits, the
+             LAST local catch before a secret goes public. Base = the first of `@{u}` ->
+             `origin/<branch>` -> `origin/main` -> `origin/HEAD` that resolves; if NONE resolve (first
+             push to an empty remote) it FULL-scans every commit (no range), the safe direction. NOT
+             skipped by the docs-only fastpath — a secret can live in a `.md`.
+  --dir      L4 (CI clean-checkout): `gitleaks dir <repo root>` — the whole working tree.
+  --history  L5 (nightly schedule):  `gitleaks git .` over the ENTIRE commit history (the CI job must
              check out with fetch-depth: 0; a default shallow checkout scans only the tip).
 
-All modes use the committed .gitleaks.toml + (if present) the .gitleaks-baseline.json, run --redact
-(never print a secret), and pass gitleaks' exit code straight through (1 = leak found = the gate
-fails). The pure resolve_base() is driven by the G24 first-push self-test. stdlib-only.
-L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+The positional argument of `gitleaks git` is the REPOSITORY PATH (`gitleaks git [flags] [repo]`),
+so a commit range rides `--log-opts` and every `git` mode names the repository explicitly (git_scan).
+The P0.3.1 range leg passed `<base>..HEAD` as that positional: gitleaks tried to chdir into it,
+scanned 0 commits and exited 0, so the pre-push leg read nothing on every push until this fix.
+
+All modes use the committed .gitleaks.toml + (if present) the .gitleaks-baseline.json and run --redact
+(never print a secret). gitleaks LOGS a failure of its own `git` call at level ERR and still exits 0,
+so its exit code alone cannot tell a clean scan from one that read nothing: run_scan() relays the log
+and fails closed (exit 2) on any error-level line. The G24 self-test (g24-run-gitleaks.py) drives
+resolve_base(), the error-line classifier, run_scan()'s verdict over a stand-in scanner and every
+mode end-to-end against a planted secret.
+stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
 Usage: run-gitleaks {--staged | --range | --dir | --history}
-Exit:  0 = clean; 1 = leak found / gitleaks error; 2 = bad invocation / gitleaks binary missing.
+Exit:  0 = clean; 1 = leak found / gitleaks error exit; 2 = bad invocation / gitleaks binary missing /
+       gitleaks logged an error (a scan that errored is never reported clean).
 """
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -79,6 +89,58 @@ def common_args() -> list[str]:
     return args
 
 
+def git_scan(gl: str, *flags: str) -> list[str]:
+    """The `gitleaks git` argv over the repository in the working directory. The repository is the
+    command's only positional and is always passed explicitly as `.`; a commit range goes in `--log-opts`."""
+    return [gl, "git", *flags, *common_args(), "."]
+
+
+# a gitleaks console log line is `<time> <LEVEL> <message>` (zerolog), colour-coded even into a pipe
+# [Build-Session-Entscheidung: P0.3.1] every error level counts (ERR, FTL, PNC), never an allow-list of
+# known git messages: gitleaks itself logs git's rename-detection-limit notice at WRN and a git failure at
+# ERR (both measured on the pinned 8.30.1), so its own level is the classification this gate reuses.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_ERROR_LEVELS = frozenset({"ERR", "FTL", "PNC"})
+
+
+def error_lines(log: str) -> list[str]:
+    """(pure) The gitleaks log lines at an error level, colour codes stripped. The level is read from the
+    first two tokens only (`<time> <LEVEL> …`), so a message that merely contains `ERR` is not a hit."""
+    hits = []
+    for raw in log.splitlines():
+        line = _ANSI_RE.sub("", raw).strip()
+        if any(tok in _ERROR_LEVELS for tok in line.split()[:2]):
+            hits.append(line)
+    return hits
+
+
+def run_scan(cmd: list[str]) -> int:
+    """Run gitleaks, relay its output, and return the gate verdict: gitleaks' own exit code, except that
+    an exit 0 beside an error-level log line is a failed scan (2), never a clean one."""
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    sys.stdout.write(p.stdout)
+    sys.stdout.flush()
+    sys.stderr.write(p.stderr)
+    sys.stderr.flush()
+    errors = error_lines(f"{p.stdout}\n{p.stderr}")
+    rc = p.returncode
+    # [Build-Session-Entscheidung: P0.3.1] an errored scan exits 2 (the "scan did not run as intended" code
+    # of a missing binary or config), never 1: a leak finding and a scan that read nothing stay
+    # distinguishable in the hook output and in the self-test; a finding beside an error keeps its 1.
+    if errors:
+        fail("gitleaks logged an error - a scan that errored may have read nothing, so it is never reported "
+             "clean: " + " | ".join(errors[:3]))
+        if rc == 0:
+            return 2
+    if rc == 0:
+        out("no leaks found")
+    elif rc == 1:
+        fail("a secret/credential was detected - the push/commit is blocked (rotate the secret; it is NOT enough to amend)")
+    else:
+        fail(f"gitleaks errored (rc={rc})")
+    return rc
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="G2 gitleaks secrets-scan driver (P0.3.1)")
     mode = ap.add_mutually_exclusive_group(required=True)
@@ -107,26 +169,19 @@ def main(argv: list[str] | None = None) -> int:
                  "check out with fetch-depth: 0")
             return 2
         out("scanning the ENTIRE commit history")
-        cmd = [gl, "git", *common_args()]
+        cmd = git_scan(gl)
     elif args.staged:
-        cmd = [gl, "git", "--staged", *common_args()]
+        cmd = git_scan(gl, "--staged")
     else:  # --range
         base = resolve_base()
         if base is None:
             out("no range base resolved (first push / empty remote) - FULL-scanning every commit")
-            cmd = [gl, "git", *common_args()]
+            cmd = git_scan(gl)
         else:
             out(f"scanning the unpushed range {base}..HEAD")
-            cmd = [gl, "git", f"{base}..HEAD", *common_args()]
+            cmd = git_scan(gl, f"--log-opts={base}..HEAD")
 
-    rc = subprocess.run(cmd).returncode
-    if rc == 0:
-        out("no leaks found")
-    elif rc == 1:
-        fail("a secret/credential was detected - the push/commit is blocked (rotate the secret; it is NOT enough to amend)")
-    else:
-        fail(f"gitleaks errored (rc={rc})")
-    return rc
+    return run_scan(cmd)
 
 
 if __name__ == "__main__":

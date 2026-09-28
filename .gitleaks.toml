@@ -7,7 +7,7 @@
 #
 # The pinned, vendored, checksum-verified gitleaks BINARY runs this (NOT gitleaks/gitleaks-action,
 # which needs a commercial licence for org-owned repos). Planes: `git --staged` at L1, `git
-# @{u}..HEAD` range at L2 (excluded from the docs-only fastpath — a secret can be in a .md), `dir`
+# --log-opts=<base>..HEAD` range at L2 (excluded from the docs-only fastpath — a secret can be in a .md), `dir`
 # full-tree at L4, full-HISTORY `git` nightly at L5. This file + the baseline are L(-1)
 # (scripts/l-neg1-files.toml, G71); the allowlist is growth-guarded by check-gitleaks-allowlist (G2).
 
