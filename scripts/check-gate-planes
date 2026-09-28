@@ -24,13 +24,24 @@ gates slot into) - is well-formed and complete:
       dead path = a guard that can never bind). This validates STRUCTURE only; the phase-aware WIRING
       assertion (was a DUE flip actually wired?) is plan-lint check 27 - the prevention for the G71/P1
       defect class (a scheduled fail-soft -> fail-closed flip that was promised in prose but never wired).
+  (5) Python isolation: every Python interpreter token in a plane file - `lefthook.yml`,
+      `.github/workflows/*.yml|*.yaml`, `.github/actions/**/action.yml|.yaml` - is followed by `-P`,
+      so neither the script directory nor the working directory is on `sys.path`: a file placed
+      beside a gate (`scripts/re.py`, `scripts/json/__init__.py`) would otherwise shadow the stdlib
+      module the gate imports, and it runs at import, before any code of the gate can check for it.
+      An interpreter token is `python`, `python3` or `python3.N`, optionally path-prefixed or
+      `.exe`-suffixed, followed by a blank, `<` or the line end; comment text is excluded
+      (quote-aware: a `#` inside a quoted string is not a comment, and an unterminated quote keeps
+      the rest of the line, so the scan over-reports rather than under-reports). A missing
+      `lefthook.yml`, zero workflow files or an unreadable plane file is a finding (fail-closed).
+      This leg reads the repository's plane files whichever config path the command names.
 
 This is the plane-DEFINITION-integrity sibling of G54 (plane-EXECUTION integrity: hooks installed
 + not redirected). stdlib-only (tomllib, Python 3.11+). fail-closed: any defect -> exit 1.
 L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
-Usage: check-gate-planes [<gate-planes.toml>]   (default: the committed scripts/gate-planes.toml)
-Exit:  0 = config sound; 1 = a defect; 2 = config missing / unparseable.
+Usage: python3 -P scripts/check-gate-planes [<gate-planes.toml>]   (default: the committed scripts/gate-planes.toml)
+Exit:  0 = config and plane files sound; 1 = a defect; 2 = config missing / unparseable.
 """
 from __future__ import annotations
 
@@ -73,6 +84,83 @@ def fail(msg: str) -> None:
 def plane_tokens(value: object) -> list[str]:
     """Split a (possibly multi-plane) field into its non-empty, whitespace-stripped tokens."""
     return [t for t in _SEP.split(str(value).strip()) if t]
+
+
+# (5) Python isolation. An interpreter token starts at a word boundary (a `/` or `\` before it is a
+# path prefix, so `/usr/bin/python3` and `C:\Python312\python.exe` count; `setup-python@` and
+# `python-version` never match) and ends at a blank, a `<` (`python3<<'PY'`) or the line end
+# (`... | python3`). The token after it must be `-P`.
+# [Build-Session-Entscheidung: P0.2.12] the interpreter spellings are python / python3 / python3.N, path-prefixed
+# or .exe-suffixed; the Windows `py` launcher and a gate executed through its shebang carry no such token and are
+# outside this leg.
+_PY_CMD_RE = re.compile(r"(?<![\w.-])python(?:3(?:\.\d+)?)?(?:\.exe)?(?=[ \t<]|$)")
+_DASH_P_RE = re.compile(r"[ \t]+-P(?=[ \t<]|$)")
+_PY_ISOLATION_MSG = ("a Python invocation without -P - the script dir or cwd would sit on sys.path and a "
+                     "file beside the gate could shadow a module it imports")
+
+
+def strip_line_comment(line: str) -> str:
+    """(pure) The line without its YAML/shell comment. A `#` outside quotes at column 0 or after a
+    blank starts the comment; `'` and `"` open quoted spans (a backslash escapes inside `"`), and a
+    `#` inside one is text. An unterminated quote leaves the rest of the line in place, so the
+    scan over-reports rather than hides an invocation behind a stray apostrophe."""
+    quote: str | None = None
+    escaped = False
+    for i, ch in enumerate(line):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            return line[:i]
+    return line
+
+
+def python_isolation_findings(name: str, text: str) -> list[str]:
+    """(pure) One finding per Python interpreter token in `text` not followed by `-P`, as
+    `<name>:<line>: ...`. Lines are git's: split at LF only, a trailing CR dropped."""
+    findings: list[str] = []
+    for lineno, raw in enumerate(text.split("\n"), start=1):
+        code = strip_line_comment(raw.rstrip("\r"))
+        for m in _PY_CMD_RE.finditer(code):
+            if not _DASH_P_RE.match(code, m.end()):
+                findings.append(f"{name}:{lineno}: {_PY_ISOLATION_MSG}")
+    return findings
+
+
+def plane_isolation_findings(root: Path) -> list[str]:
+    """Leg (5) over the plane files under `root`: `lefthook.yml`, `.github/workflows/*.yml|*.yaml`
+    and `.github/actions/**/action.yml|.yaml`. A missing `lefthook.yml`, zero workflow files or a
+    plane file that cannot be read as UTF-8 is a finding (fail-closed)."""
+    findings: list[str] = []
+    files: list[Path] = []
+    lefthook = root / "lefthook.yml"
+    if lefthook.is_file():
+        files.append(lefthook)
+    else:
+        findings.append("lefthook.yml is missing - the L1-L3 plane file cannot be checked for -P (fail-closed)")
+    workflows_dir = root / ".github" / "workflows"
+    workflows = sorted({p for pat in ("*.yml", "*.yaml") for p in workflows_dir.glob(pat) if p.is_file()})
+    if not workflows:
+        findings.append(".github/workflows/ holds no *.yml or *.yaml file - the L4 plane cannot be checked "
+                        "for -P (fail-closed)")
+    actions_dir = root / ".github" / "actions"
+    actions = sorted({p for pat in ("action.yml", "action.yaml") for p in actions_dir.rglob(pat) if p.is_file()})
+    for path in files + workflows + actions:
+        name = path.relative_to(root).as_posix()
+        try:
+            text = path.read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            findings.append(f"{name}: cannot be read as UTF-8 ({type(e).__name__}) - not checked for -P (fail-closed)")
+            continue
+        findings.extend(python_isolation_findings(name, text))
+    return findings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -210,12 +298,17 @@ def main(argv: list[str] | None = None) -> int:
                     fail(f"posture_flag {gate!r} plane file {p!r} does not exist (dead guard path)")
                     problems += 1
 
+    # (5) Python isolation over the repository's plane files (independent of the config path).
+    for finding in plane_isolation_findings(ROOT):
+        fail(finding)
+        problems += 1
+
     if problems:
         print(f"[G54b] gate-plane config FAILED ({problems} problem(s)).", file=sys.stderr)
         return 1
     print(f"[G54b] gate-plane config OK ({len(planes)} planes, "
           f"{len(fail_opens)} justified fail-open exception(s), "
-          f"{len(posture_flags)} posture-flag gate(s))")
+          f"{len(posture_flags)} posture-flag gate(s), every plane Python invocation -P)")
     return 0
 
 

@@ -9,8 +9,22 @@ malformed shape:
     multi-plane ("L1/L2/L4" + covered_by "L1") and whitespace (" L4 ") evasions; a dangling
     covered_by/fail_open_at plane ("L99"); an inline-array `fail_open` mis-scoped into the last
     [[plane]]; a plain [fail_open] table (must FAIL CLEANLY, no Python traceback); unparseable TOML.
+  - leg (5) Python isolation: each interpreter spelling without `-P` (bare, `-m`, stdin, `-c`,
+    `python3.N`, path-prefixed, `.exe`, line end, `<<`) is caught and its `-P` form is clean; comment
+    text and a quoted `#` are handled; the real planes are clean, and stripping their `-P` flags
+    reports one finding per invocation; a missing lefthook.yml, zero workflows, an unreadable plane
+    file and an action.yml are covered; main() runs the leg; setup-dev spawns install-gate-tools
+    with `-P`. The incident is replayed: a planted
+    `scripts/argparse.py` and `scripts/json/__init__.py` run when a gate starts without `-P`, and
+    never with `-P` or under the runner's PYTHONSAFEPATH=1.
 stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,8 +33,12 @@ for _stream in (sys.stdout, sys.stderr):          # the console's codepage is no
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
-CHECK = Path(__file__).resolve().parents[2] / "scripts" / "check-gate-planes"
-REAL = Path(__file__).resolve().parents[2] / "scripts" / "gate-planes.toml"
+REPO = Path(__file__).resolve().parents[2]
+CHECK = REPO / "scripts" / "check-gate-planes"
+REAL = REPO / "scripts" / "gate-planes.toml"
+_loader = importlib.machinery.SourceFileLoader("cgp", str(CHECK))
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cgp", _loader))
+_loader.exec_module(m)
 results: list[tuple[str, bool]] = []
 
 # a minimal VALID config (all 7 planes, fail-closed default, one justified fail-open)
@@ -133,6 +151,204 @@ _pf_plain = VALID + ('[posture_flag]\ngate = "G71"\nscript = "scripts/check-l-ne
 _rc2, _err2 = run(_pf_plain)
 record("plain [posture_flag] table fails cleanly (rc 1, no traceback)",
        _rc2 == 1 and "Traceback" not in _err2, f"rc={_rc2}, traceback={'Traceback' in _err2}")
+
+# --- leg (5) Python isolation: every plane Python invocation passes -P first -------------------
+# The incident first: a file placed beside a gate shadows the stdlib module the gate imports, and it
+# runs at import, before the gate's own code. `scripts/gate` imports argparse and json; the planted
+# `scripts/argparse.py` and `scripts/json/__init__.py` each write a marker. The ambient
+# PYTHONSAFEPATH (the runner sets it for this canary) is removed so the replay sees a bare start.
+_GATE = "import argparse\nimport json\n"
+_PLANT = "import os\nopen(os.path.join(os.environ['G24_SHADOW_MARKERS'], {name!r}), 'w').close()\n"
+
+
+def _shadow_markers(flags: list[str], safepath_env: bool) -> list[str] | None:
+    """The markers the planted shadows wrote when `scripts/gate` ran with `flags`; None on a crash."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            scripts = Path(td) / "scripts"
+            (scripts / "json").mkdir(parents=True)
+            markers = Path(td) / "markers"
+            markers.mkdir()
+            (scripts / "gate").write_text(_GATE, encoding="utf-8")
+            (scripts / "argparse.py").write_text(_PLANT.format(name="argparse"), encoding="utf-8")
+            (scripts / "json" / "__init__.py").write_text(_PLANT.format(name="json"), encoding="utf-8")
+            env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
+            env["G24_SHADOW_MARKERS"] = str(markers)
+            if safepath_env:
+                env["PYTHONSAFEPATH"] = "1"
+            p = subprocess.run([sys.executable, *flags, str(scripts / "gate")], cwd=td, env=env,
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if p.returncode != 0:
+                print(f"[g24-gate-planes] shadow replay rc={p.returncode}: {p.stderr.strip()[:300]}")
+                return None
+            return sorted(f.name for f in markers.iterdir())
+    except OSError as e:
+        print(f"[g24-gate-planes] shadow replay raised: {type(e).__name__}: {e}")
+        return None
+
+
+_bare = _shadow_markers([], False)
+record("5 incident: without -P the planted scripts/argparse.py and scripts/json/ both run when the gate "
+       "imports argparse and json", _bare == ["argparse", "json"], f"markers={_bare}")
+_dash_p = _shadow_markers(["-P"], False)
+record("5 incident: with -P neither planted shadow runs", _dash_p == [], f"markers={_dash_p}")
+_safe_env = _shadow_markers([], True)
+record("5 incident: under PYTHONSAFEPATH=1 (the runner's child env) neither planted shadow runs",
+       _safe_env == [], f"markers={_safe_env}")
+
+
+def iso(text: str) -> int:
+    """The number of leg-(5) findings over one plane text."""
+    return len(m.python_isolation_findings("plane.yml", text))
+
+
+record("5 caught: bare `python3 scripts/x`", iso("      run: python3 scripts/x\n") == 1)
+record("5 clean: `python3 -P scripts/x`", iso("      run: python3 -P scripts/x --flag\n") == 0)
+record("5 caught: `python3 -m pip`", iso("          python3 -m pip install -r r.txt\n") == 1)
+record("5 clean: `python3 -P -m pip`", iso("          python3 -P -m pip install -r r.txt\n") == 0)
+record("5 caught: stdin `python3 - <<'PY'`", iso("          python3 - >> \"$GITHUB_OUTPUT\" <<'PY'\n") == 1)
+record("5 caught: `python -c`", iso("        run: python -c 'print(1)'\n") == 1)
+record("5 caught: `python3.12 scripts/x`", iso("        run: python3.12 scripts/x\n") == 1)
+record("5 caught: a path-prefixed interpreter (`/usr/bin/python3`, `C:\\Python312\\python.exe`)",
+       iso("        run: /usr/bin/python3 scripts/x\n") == 1
+       and iso("        run: C:\\Python312\\python.exe scripts/x\n") == 1)
+record("5 caught: an interpreter at the line end (`cat x | python3`, also before a CRLF) and before a heredoc "
+       "(`python3<<'PY'`)",
+       iso("          cat x | python3\n") == 1 and iso("          cat x | python3\r\n") == 1
+       and iso("          python3<<'PY'\n") == 1 and iso("          python3 -P<<'PY'\n") == 0)
+record("5 caught: `-P` must be the token right after the interpreter (`python3 scripts/x -P` passes it to the "
+       "script)", iso("      run: python3 scripts/x -P\n") == 1)
+record("5 caught: every invocation on a line counts (one bare of two = 1, two bare = 2)",
+       iso("      run: python3 -P scripts/a || python3 scripts/b\n") == 1
+       and iso("      run: python3 scripts/a || python3 scripts/b\n") == 2)
+record("5 clean: comment text (`# system python3 is 3.10`; a trailing `# python3 x` after a -P run)",
+       iso("      # system python3 is 3.10, so setup-python pins 3.12\n") == 0
+       and iso("      run: python3 -P scripts/x  # python3 scripts/y\n") == 0)
+record("5 caught: a `#` inside quotes is not a comment (`echo \"a #b\" && python3 scripts/x`)",
+       iso("      run: echo \"a #b\" && python3 scripts/x\n") == 1)
+record("5 caught: an unterminated quote keeps the rest of the line (`echo it's # python3 x`)",
+       iso("      run: echo it's fine # python3 scripts/x\n") == 1)
+record("5 clean: non-invocation spellings (`actions/setup-python@`, `python-version: '3.12'`, "
+       "`` `python3` ``, `python3-config`)",
+       iso("        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0\n"
+           "          python-version: '3.12'\n"
+           "      - name: 'needs `python3` on PATH'\n"
+           "        run: python3-config --includes\n") == 0)
+record("5 finding: names the file and git's line (LF split, a CRLF line end tolerated)",
+       m.python_isolation_findings("a.yml", "x: 1\r\n  run: python3 s\n")
+       == [f"a.yml:2: {m._PY_ISOLATION_MSG}"])
+record("5 strip_line_comment: `#` at column 0 or after a blank starts a comment; `a#b` and quoted `#` are "
+       "text; a backslash escapes inside double quotes",
+       m.strip_line_comment("# x") == "" and m.strip_line_comment("a # b") == "a "
+       and m.strip_line_comment("a#b") == "a#b" and m.strip_line_comment("'a # b' # c") == "'a # b' "
+       and m.strip_line_comment('"a \\" # b" # c') == '"a \\" # b" ')
+
+record("5 E2E: the real plane files are clean", m.plane_isolation_findings(REPO) == [],
+       "; ".join(m.plane_isolation_findings(REPO)[:3]))
+
+
+def _stripped_real_counts() -> list[tuple[str, int, int]]:
+    """(plane file, -P flags removed, findings after the removal) for every real plane file."""
+    out = []
+    files = [REPO / "lefthook.yml", *sorted((REPO / ".github" / "workflows").glob("*.y*ml"))]
+    for path in files:
+        text = path.read_bytes().decode("utf-8")
+        stripped, n = re.subn(r"\bpython3 -P(?= )", "python3", text)
+        out.append((path.name, n, len(m.python_isolation_findings(path.name, stripped))))
+    return out
+
+
+_real = _stripped_real_counts()
+_by_name = {name: (n, found) for name, n, found in _real}
+record("5 E2E: removing every `-P` from the real planes reports one finding per removed flag, and "
+       "lefthook.yml and ci.yml each carry invocations",
+       all(n == found for _, n, found in _real)
+       and _by_name.get("lefthook.yml", (0, 0))[0] > 0 and _by_name.get("ci.yml", (0, 0))[0] > 0,
+       ", ".join(f"{name} {n}/{found}" for name, n, found in _real))
+
+
+def _plane_root(td: str, lefthook: str | None, workflows: dict[str, bytes],
+                actions: dict[str, bytes] | None = None) -> Path:
+    root = Path(td)
+    if lefthook is not None:
+        (root / "lefthook.yml").write_text(lefthook, encoding="utf-8")
+    wf = root / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    for name, data in workflows.items():
+        (wf / name).write_bytes(data)
+    for rel, data in (actions or {}).items():
+        target = root / ".github" / "actions" / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return root
+
+
+_CLEAN = "      run: python3 -P scripts/x\n"
+with tempfile.TemporaryDirectory() as _td:
+    _found = m.plane_isolation_findings(_plane_root(_td, None, {"ci.yml": _CLEAN.encode()}))
+record("5 fail-closed: a missing lefthook.yml is a finding",
+       len(_found) == 1 and _found[0].startswith("lefthook.yml is missing"), f"{_found}")
+with tempfile.TemporaryDirectory() as _td:
+    _found = m.plane_isolation_findings(_plane_root(_td, _CLEAN, {}))
+record("5 fail-closed: zero workflow files is a finding",
+       len(_found) == 1 and _found[0].startswith(".github/workflows/ holds no"), f"{_found}")
+with tempfile.TemporaryDirectory() as _td:
+    _found = m.plane_isolation_findings(_plane_root(_td, _CLEAN, {"ci.yml": b"      run: python3 \xff scripts/x\n"}))
+record("5 fail-closed: a plane file that is not UTF-8 is a finding",
+       len(_found) == 1 and _found[0].startswith(".github/workflows/ci.yml: cannot be read as UTF-8"), f"{_found}")
+with tempfile.TemporaryDirectory() as _td:
+    _found = m.plane_isolation_findings(_plane_root(
+        _td, _CLEAN, {"a.yaml": b"      run: python3 scripts/x\n"},
+        {"setup/action.yml": b"    - run: python3 scripts/x\n", "b/c/action.yaml": b"    - run: python3 -m pip\n"}))
+record("5 scope: a .yaml workflow and every .github/actions/**/action.y*ml are scanned",
+       sorted(f.split(":", 1)[0] for f in _found)
+       == [".github/actions/b/c/action.yaml", ".github/actions/setup/action.yml", ".github/workflows/a.yaml"],
+       f"{_found}")
+
+
+def _main_rc(lefthook: str) -> tuple[int, str]:
+    """(rc, stderr) of the real main() over the minimal VALID config with ROOT patched to a temp plane root."""
+    saved = m.ROOT
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = _plane_root(td, lefthook, {"ci.yml": _CLEAN.encode()})
+            cfg = root / "gp.toml"
+            cfg.write_text(VALID, encoding="utf-8")
+            m.ROOT = root
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = m.main([str(cfg)])
+            return rc, err.getvalue()
+    finally:
+        m.ROOT = saved
+
+
+def _setup_dev_spawn() -> list[str] | None:
+    """The argv scripts/setup-dev spawns install-gate-tools with (its `run` stubbed, nothing executed)."""
+    try:
+        loader = importlib.machinery.SourceFileLoader("sdv", str(REPO / "scripts" / "setup-dev"))
+        sd = importlib.util.module_from_spec(importlib.util.spec_from_loader("sdv", loader))
+        loader.exec_module(sd)
+        calls: list[list[str]] = []
+        sd.run = lambda cmd, **kw: calls.append([str(c) for c in cmd]) or subprocess.CompletedProcess(cmd, 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            sd.install_gate_tools()
+        return calls[0] if len(calls) == 1 else None
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        print(f"[g24-gate-planes] setup-dev spawn leg raised: {type(e).__name__}: {e}")
+        return None
+
+
+_sd = _setup_dev_spawn()
+record("5 spawner: scripts/setup-dev runs install-gate-tools as `<python> -P scripts/install-gate-tools`",
+       _sd is not None and len(_sd) == 3 and _sd[1] == "-P" and _sd[2].endswith("install-gate-tools"), f"{_sd}")
+
+_rc_bad, _err_bad = _main_rc("      run: python3 scripts/x\n")
+_rc_ok, _err_ok = _main_rc(_CLEAN)
+record("5 wiring: main() runs leg (5) over the repository's plane files (a bare invocation -> rc 1 naming "
+       "lefthook.yml:1; the -P form -> rc 0)",
+       _rc_bad == 1 and "lefthook.yml:1: a Python invocation without -P" in _err_bad and _rc_ok == 0,
+       f"bad rc={_rc_bad}, ok rc={_rc_ok}")
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-gate-planes] {len(results) - len(failed)}/{len(results)} assertions passed.")

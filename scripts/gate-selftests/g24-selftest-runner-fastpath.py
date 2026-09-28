@@ -13,7 +13,8 @@ the purge of every `__pycache__` under scripts/ on entry (the ORDERING observed 
 never narrated), the PYTHONDONTWRITEBYTECODE=1 child environment proven from the wiring (the
 ambient variable is popped for the leg, so inheritance cannot fake it), and the fail-closed
 refusal when a cache SURVIVES the purge (the length-preserving-mutation-poisons-pycache
-class - see `_purge_bytecode_caches` in the runner). Named with the g24- prefix DELIBERATELY: it is a G24
+class - see `_purge_bytecode_caches` in the runner). The PYTHONSAFEPATH=1 child environment (G54b
+leg (5)) is pinned the same way, its ambient value popped. Named with the g24- prefix DELIBERATELY: it is a G24
 wiring/planted-positive self-test for an internal fastpath of the G24 runner, not a G10
 `test-*-fastpath-pattern` detector.
 
@@ -273,6 +274,44 @@ record("wiring: main() purges the gate plane's caches BEFORE the first canary (o
        _wiring_leg())
 
 
+def _safe_path_env_leg() -> bool:
+    """G54b leg (5): every canary child runs with PYTHONSAFEPATH=1, so neither its own directory
+    nor the working directory is on sys.path in it or in any Python grandchild. Under the runner
+    this canary inherits PYTHONSAFEPATH=1 itself, so the ambient value is popped for the leg and
+    the child env must carry it from the wiring."""
+    saved = m.SELFTEST_DIR, m.ROOT, m.subprocess
+    ambient = os.environ.pop("PYTHONSAFEPATH", None)
+    envs: list = []
+
+    def _popen(cmd, **kwargs):
+        envs.append(kwargs.get("env"))
+        return _FakeProc("[g24-fake] 1/1 assertions passed.\n")
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            selftests = Path(td) / "scripts" / "gate-selftests"
+            selftests.mkdir(parents=True)
+            (selftests / "g24-fake.py").write_text("", encoding="utf-8")
+            m.SELFTEST_DIR, m.ROOT = selftests, Path(td)
+            m.subprocess = _fake_subprocess(_popen)
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = m.main([])
+            return (rc == 0 and len(envs) == 1 and envs[0] is not None
+                    and envs[0].get("PYTHONSAFEPATH") == "1" and "PYTHONSAFEPATH" not in os.environ)
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        print(f"[g24-selftest-runner-fastpath] safe-path env leg raised: {type(e).__name__}: {e}")
+        return False
+    finally:
+        m.SELFTEST_DIR, m.ROOT, m.subprocess = saved
+        if ambient is not None:
+            os.environ["PYTHONSAFEPATH"] = ambient
+
+
+record("wiring: every canary child runs with PYTHONSAFEPATH=1 proven from the wiring, the ambient value "
+       "popped (G54b leg (5): no script-dir or cwd entry on sys.path in the child or its Python grandchildren)",
+       _safe_path_env_leg())
+
+
 def _survivor_leg() -> bool:
     saved = m.SELFTEST_DIR, m.ROOT, m.subprocess, m._purge_bytecode_caches
     calls: list = []
@@ -440,7 +479,9 @@ record("ci.yml keeps the FULL --require-network prelude and never passes --chang
 
 # The sibling-canary convention (the r2 opus P3): the last leg pins the others, so a
 # silently-deleted canary leg reds the canary itself - this file newly carries a P0 closure.
-record("the canary's own leg count is pinned (41 + this pin)", len(results) == 41)
+# [Test-Change: G54b -P isolation — old-obsolete+new-correct, security-concept §3: 41 -> 42, the one added leg
+# is the PYTHONSAFEPATH wiring leg above; the count is the live total minus this pin]
+record("the canary's own leg count is pinned (42 + this pin)", len(results) == 42)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-selftest-runner-fastpath] {len(results) - len(failed)}/{len(results)} assertions passed.")

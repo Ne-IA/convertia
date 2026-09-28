@@ -9,7 +9,7 @@ poisoned or typosquatted gate tool both misses real findings AND can read CI
 secrets, so every gate tool is pinned by exact version and verified by content.
 
 stdlib-only (tomllib / hashlib / urllib), so it runs on a clean checkout with no
-bootstrap dependency beyond Python >= 3.11. Invoke as `python3 scripts/install-gate-tools`.
+bootstrap dependency beyond Python >= 3.11. Invoke as `python3 -P scripts/install-gate-tools`.
 
 The recorded sha256 was CORROBORATED at pin-establishment (the tool's own
 signature/attestation OR >=2 independent origins; see each tool's `corroboration`

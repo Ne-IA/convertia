@@ -93,7 +93,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: 'G18a: the sub-workspace lockfile is version-synced to the root Cargo.lock (leg D)'
-        run: python3 scripts/check-lockfile-integrity
+        run: python3 -P scripts/check-lockfile-integrity
 
       # The fuzz targets path-dep on convertia-core (the lib), whose compile closure is the same as
       # compile-sanity's: the Tauri v2 gtk/webkit/soup/jsc/dbus -sys crates resolve system libs via

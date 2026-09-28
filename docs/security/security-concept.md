@@ -169,6 +169,12 @@ inspect an inert directory and pass while no hook fires. (L4/G25 remains the imm
 net regardless; this closes the local-plane-completeness claim the design otherwise could
 not honestly make.)
 
+**Gate isolation from the tree it checks.** A gate that resolves an import from the checkout
+can be subverted by a file placed beside it: `scripts/re.py` shadows `re` for every
+`python3 scripts/<gate>` run before the gate's code executes, which no in-gate check can
+catch. Every plane therefore runs its Python gates as `python3 -P`, and the canary runner sets
+`PYTHONSAFEPATH=1`; G54b (leg (5)) fails a plane Python invocation without `-P`.
+
 ## 4. Security principles (the invariants the gates defend)
 
 1. **Fully offline, zero egress.** No update check, no telemetry, no font/asset

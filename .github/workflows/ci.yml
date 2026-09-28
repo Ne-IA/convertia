@@ -54,7 +54,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install + verify pinned gate tools
-        run: python3 scripts/install-gate-tools
+        run: python3 -P scripts/install-gate-tools
       # Tauri v2's gtk/webkit/soup/jsc/dbus `-sys` crates have build scripts that resolve their system
       # libraries via pkg-config, so the Linux leg needs the matching `-dev` packages to COMPILE (the ubuntu
       # leg first hit this once the P1.12 Tauri tree landed: "Package 'gdk-3.0' / 'pango' … not found").
@@ -106,37 +106,37 @@ jobs:
       # all three OS, so a pinned-tool bump that breaks a stable script's parsing - or a new gate
       # whose self-test was never wired here - is caught. Replaces the former per-self-test steps.
       - name: 'G10: continuous-armed-canary — run EVERY gate-script self-test (P0.2.13 prelude)'
-        run: python3 scripts/run-gate-selftests --require-network
-      - name: 'G54b: defense-in-depth plane-config integrity (gate-planes.toml)'
-        run: python3 scripts/check-gate-planes
+        run: python3 -P scripts/run-gate-selftests --require-network
+      - name: 'G54b: defense-in-depth plane-config integrity (gate-planes.toml) + plane Python -P isolation'
+        run: python3 -P scripts/check-gate-planes
       - name: 'G2: gitleaks secrets scan — full working tree (clean-checkout dir mode)'
-        run: python3 scripts/run-gitleaks --dir
+        run: python3 -P scripts/run-gitleaks --dir
       - name: 'G2: gitleaks allowlist/baseline growth-guard'
-        run: python3 scripts/check-gitleaks-allowlist
+        run: python3 -P scripts/check-gitleaks-allowlist
       - name: 'G47: WebView CSP + Tauri capability structural lint'
-        run: python3 scripts/check-csp-capabilities
+        run: python3 -P scripts/check-csp-capabilities
       - name: 'G21: deferral / dead-marker scan — full production tree (fail-closed)'
-        run: python3 scripts/check-deferral --full
+        run: python3 -P scripts/check-deferral --full
       - name: 'G7/G20: plan-lint / spec-lint doc-consistency (all checks, full)'
-        run: python3 scripts/plan-lint
+        run: python3 -P scripts/plan-lint
       - name: 'G18/G18b: supply-chain policy growth-guard (cargo-deny live P1.59; cargo-vet config now, live run deferred to P10.59)'
-        run: python3 scripts/check-supply-chain
+        run: python3 -P scripts/check-supply-chain
       - name: 'G53: core-crate forbidden-dependency walk (image-worker copyleft excluded from the MIT core; live P1)'
-        run: python3 scripts/check-core-deps
+        run: python3 -P scripts/check-core-deps
       - name: 'G18c/G18d: JS/WebView supply-chain posture (.npmrc registry pin + lifecycle lockdown; pnpm-lock guard live P1)'
-        run: python3 scripts/check-js-supply-chain
+        run: python3 -P scripts/check-js-supply-chain
       - name: 'G19: generated-artifact drift-check framework (regen + git diff --exit-code; targets registered in P1)'
-        run: python3 scripts/check-generated-drift
+        run: python3 -P scripts/check-generated-drift
       - name: 'G9: repo-invariant grep gate (all invariants a-f LIVE over the real repo source since P1)'
-        run: python3 scripts/check-repo-invariants
+        run: python3 -P scripts/check-repo-invariants
       - name: 'G51: prose typo gate (typos over the public-facing-prose scope; .typos.toml allowlist)'
-        run: python3 scripts/run-typos
+        run: python3 -P scripts/run-typos
       - name: 'G52: EOL/charset/final-newline hygiene (editorconfig-checker + committed .editorconfig)'
-        run: python3 scripts/check-editorconfig
+        run: python3 -P scripts/check-editorconfig
       - name: 'G70: test-suppression-marker scan — full test tree (no green-by-rewrite; live over the committed fixture crates, grows from P1)'
-        run: python3 scripts/check-test-suppression --full
+        run: python3 -P scripts/check-test-suppression --full
       - name: 'G73: .rs contract-test-fn reference resolution over ipc/** (fail-closed; the .rs analogue of the G68 doc-graph cross-resolution net; live since P2)'
-        run: python3 scripts/check-rs-test-refs
+        run: python3 -P scripts/check-rs-test-refs
       # P1.59 G17: warm the RustSec advisory-db so the `cargo audit --no-fetch` leg in the
       # check-rust-lint-contract step below is LIVE (a clean runner ships the pinned cargo-audit but no db).
       # Linux-only - the audit reads the OS-agnostic Cargo.lock, so it runs once (on macOS/Windows the db
@@ -157,20 +157,20 @@ jobs:
           done
           echo "advisory-db clone failed after 3 attempts" >&2; exit 1
       - name: 'G3/G4/G14/G17: Rust lint/format/test/audit contract (rustfmt/clippy policy frozen; live fmt/clippy/test/audit in P1)'
-        run: python3 scripts/check-rust-lint-contract --full
+        run: python3 -P scripts/check-rust-lint-contract --full
       - name: 'G74: .rs comment-attachment integrity over the push range (the splice-hijack class; an empty/zero before-SHA - pull_request/schedule/first push - skips with notice)'
-        run: python3 scripts/check-doc-splice --range --base "${{ github.event.before }}"
+        run: python3 -P scripts/check-doc-splice --range --base "${{ github.event.before }}"
       - name: 'G74: rustdoc intra-doc-link integrity (deny broken + private links, private items documented - a rename that strands a doc link fails here; per-OS builds catch the cfg-gated dangles)'
         # ONE driver everywhere: scripts/check-doc-links pins RUSTDOCFLAGS on the child env IN-PROCESS
         # (immune to the pwsh inline-prefix trap - the 4723967 red - on every OS leg) and is the same
         # command the L2 pre-push slot runs, so the local plane cannot fork from CI (the P4.22 gap).
-        run: python3 scripts/check-doc-links
+        run: python3 -P scripts/check-doc-links
       - name: 'G29: unsafe-policy gate (#![deny(unsafe_code)] + one allow-listed FFI module; cross-platform, live deny/allow scan in P1)'
-        run: python3 scripts/check-unsafe-policy --full
+        run: python3 -P scripts/check-unsafe-policy --full
       - name: 'G48/G16: in-core fuzz-harness + per-numeric-IPC-arg overflow contract (frozen target/bounds/fixture set + date-pinned nightly; live harness in P3)'
-        run: python3 scripts/check-fuzz-contract --full
+        run: python3 -P scripts/check-fuzz-contract --full
       - name: 'G5/G6/G13: TypeScript lint/type-check/format/test contract (tsconfig strict + eslint no-any/fc.gen + prettier/stylelint/vitest frozen; live tsc/eslint/prettier/vitest in P1)'
-        run: python3 scripts/check-ts-gate --full
+        run: python3 -P scripts/check-ts-gate --full
       # P1.56 §6.7.1 step-4b: the ATTRIBUTABLE automated-a11y (vitest-axe jsdom) leg (G33a) — asserts
       # ARIA-role/state validity + focus-order over the rendered React tree (NOT colour contrast, which
       # jsdom cannot compute — that is the Lane-B headed @axe-core/webdriverio leg, §6.4.6a). Its OWN step
@@ -181,7 +181,7 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm run test:a11y
       - name: 'G57: Principle-11 English-only / string-ownership lint (no i18n-runtime import + strings/ui.ts non-empty + no inline literal; live in P1)'
-        run: python3 scripts/check-english-only --full
+        run: python3 -P scripts/check-english-only --full
       # P1.52.3 §6.7.1 step-1 YAML/config-hygiene leg: yamllint over .github/ + the root config YAML
       # (structure / indentation / key-duplication; ruleset .yamllint). Distinct from actionlint (G49,
       # workflow semantics), zizmor (G50, workflow security) and editorconfig-checker (G52, EOL/charset).
@@ -192,8 +192,8 @@ jobs:
       - name: 'P1.52.3 §6.7.1: yamllint — YAML/config-hygiene over .github/ + config YAML'
         if: runner.os == 'Linux'
         run: |
-          python3 -m pip install --require-hashes -r requirements-yamllint.txt
-          python3 -m yamllint -c .yamllint .github/ lefthook.yml pnpm-workspace.yaml .yamllint
+          python3 -P -m pip install --require-hashes -r requirements-yamllint.txt
+          python3 -P -m yamllint -c .yamllint .github/ lefthook.yml pnpm-workspace.yaml .yamllint
       # P1.54 §6.7.1 step-3: generate the coverage reports the G27 per-domain + G28 diff live tiers read.
       # Linux-only — §6.7.1 runs the OS-agnostic test leg on the Linux runner (only compile-sanity fans to
       # the matrix), so coverage is measured once on Linux. cargo-llvm-cov is already on PATH (the bare
@@ -217,7 +217,7 @@ jobs:
           cargo llvm-cov report --lcov --output-path target/llvm-cov/coverage.lcov
           pnpm run test:coverage
       - name: 'G27: coverage-floor contract — freeze (all OS) + per-domain LINE floors live over cargo-llvm-cov/vitest (Linux, P1.54); the increase-only ratchet is the workflow-security leg'
-        run: python3 scripts/check-coverage --full
+        run: python3 -P scripts/check-coverage --full
       # P1.54 G28: changed-lines diff coverage over the push range — Linux (the report-bearing leg) + push
       # only (the build-loop's commits; the floors are empty-of-diff on a fork-PR / first push). Needs the
       # full history (fetch-depth: 0 above) to range github.event.before..HEAD; fail-OPEN if the base does
@@ -226,15 +226,15 @@ jobs:
         if: runner.os == 'Linux' && github.event_name == 'push'
         env:
           BEFORE: ${{ github.event.before }}
-        run: python3 scripts/check-coverage --base "$BEFORE"
+        run: python3 -P scripts/check-coverage --base "$BEFORE"
       - name: 'G18a: lockfile-integrity contract — drift-set freeze + --locked/--frozen-lockfile flag-scan + git diff --exit-code drift-guard + (E) sub-workspace --locked resolve (--deep) (live drift-guard; CI flag-scan live since P1 — build commands landed)'
-        run: python3 scripts/check-lockfile-integrity --deep
+        run: python3 -P scripts/check-lockfile-integrity --deep
       - name: 'G30: build-matrix contract — native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (stdlib fat-header parse; sidecar slice-assertion target-absent until P1+ stage-engines)'
-        run: python3 scripts/check-build-matrix
+        run: python3 -P scripts/check-build-matrix
       - name: 'G22/G23: completeness — format membership-parity bijection logic + the conversion-command(start_conversion)→test git walk (G23 LIVE fail-closed since P3.63; G22 target-absent until the P4.60 Rust guard §04↔registry↔corpus bijection)'
-        run: python3 scripts/check-completeness
+        run: python3 -P scripts/check-completeness
       - name: 'G24a: corpus / crash-fixture integrity — SHA-256 manifest + provenance/licence + bijection + LFS-resolution governance (.gitattributes/.lfsconfig); LIVE fail-closed since P3.30 (manifest.toml present)'
-        run: python3 scripts/check-corpus-integrity
+        run: python3 -P scripts/check-corpus-integrity
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
       #   The structural-freeze contracts above (rust-lint / unsafe-policy / ts-gate / coverage /
@@ -272,13 +272,13 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install + verify pinned workflow tools (actionlint, zizmor)
-        run: python3 scripts/install-gate-tools --tool actionlint --tool zizmor
+        run: python3 -P scripts/install-gate-tools --tool actionlint --tool zizmor
       - name: 'G49: actionlint over .github/workflows'
         run: .gate-tools/bin/actionlint
       - name: 'G50: zizmor workflow security audit (offline, regular persona)'
         run: .gate-tools/bin/zizmor --offline --persona regular .github/workflows/
       - name: 'G56: CI supply-chain config hygiene (dependabot 4-eco, id-token, concurrency polarity, timeouts, perms)'
-        run: python3 scripts/check-ci-supply-chain
+        run: python3 -P scripts/check-ci-supply-chain
       # G56a fail-CLOSED on trusted events (push + schedule) via the fine-grained admin-READ PAT
       # (REPO_ADMIN_READ_TOKEN — the default GITHUB_TOKEN holds no admin scope); fork-PRs (GitHub
       # withholds secrets from fork-triggered runs) stay fail-soft on the default token, which loses
@@ -286,33 +286,33 @@ jobs:
       # + the weekly schedule canary BOTH --enforce. (G56a CI path: fail-soft -> fail-closed.)
       - name: 'G56a: branch-protection / repo-config — fail-CLOSED (push + schedule; admin-read PAT)'
         if: github.event_name != 'pull_request'
-        run: python3 scripts/check-branch-protection --enforce
+        run: python3 -P scripts/check-branch-protection --enforce
         env:
           GH_TOKEN: ${{ secrets.REPO_ADMIN_READ_TOKEN }}
       - name: 'G56a: branch-protection / repo-config — fail-soft (fork-PR; secrets withheld)'
         if: github.event_name == 'pull_request'
-        run: python3 scripts/check-branch-protection
+        run: python3 -P scripts/check-branch-protection
         env:
           GH_TOKEN: ${{ github.token }}
       - name: 'G71: L(-1)-ack change-control over the push range (fail-CLOSED, P1.66; --enforce)'
         env:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
-        run: python3 scripts/check-l-neg1-ack --base "$BEFORE" --enforce
+        run: python3 -P scripts/check-l-neg1-ack --base "$BEFORE" --enforce
       - name: 'G12: Dual-Review trailer over the push range (L4 mirror of the L2 pre-push gate)'
         if: github.event_name == 'push'        # build-loop commits only; fork-PR commits carry no trailer
         env:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
-        run: python3 scripts/check-dual-review --base "$BEFORE"
+        run: python3 -P scripts/check-dual-review --base "$BEFORE"
       - name: 'G11: conventional-commit subject over the push range (L4 mirror of the L3 commit-msg gate)'
         if: github.event_name == 'push'        # push ranges only: a fork PR is re-landed by the maintainer (roles §5a), never merged as its own commits
         env:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
-        run: python3 scripts/check-commit-msg --base "$BEFORE"
+        run: python3 -P scripts/check-commit-msg --base "$BEFORE"
       - name: 'G27: coverage-floor increase-only decrease-guard over the push range (the authoritative ratchet leg; needs full history)'
         if: github.event_name == 'push'        # the floors are empty in P0 (no-op) + fail-closes the moment a floor lands in P1
         env:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
-        run: python3 scripts/check-coverage --base "$BEFORE"
+        run: python3 -P scripts/check-coverage --base "$BEFORE"
       # NOTE: the g24-*/g54-* self-tests for these gates (ci-supply-chain, release-tag-trust,
       # branch-protection) run in the gate-tooling job's G10 continuous-armed-canary prelude
       # (3-OS), not here — one auto-discovering runner is the single source of self-test truth.
@@ -334,10 +334,10 @@ jobs:
         # --require-hashes installs Semgrep + its FULL transitive tree, every wheel hash-verified
         # (requirements-ci.txt, G29/§0). shellcheck is the gate-tools.toml binary pin.
         run: |
-          python3 -m pip install --require-hashes -r requirements-ci.txt
-          python3 scripts/install-gate-tools --tool shellcheck
+          python3 -P -m pip install --require-hashes -r requirements-ci.txt
+          python3 -P scripts/install-gate-tools --tool shellcheck
       - name: 'G29: SAST — armed-canary prelude (planted-positives) → semgrep --validate → scan (vendored rulesets, offline) → shellcheck'
-        run: python3 scripts/check-sast --full
+        run: python3 -P scripts/check-sast --full
 
   # §6.7.1 step-5 compile-sanity (G30, P1.58): prove the app COMPILES + LINKS as a Tauri app on all three
   # OS — the "empty window builds on 3 OS from clean checkout" proof. The live counterpart to the P0 G30
@@ -453,17 +453,17 @@ jobs:
       # triple, so cross-triple group invariants are exercised there, not here.
       - name: '§6.1.3 check-mode pass — fetch / compile / stage validate the committed manifests (host triple), write nothing'
         run: |
-          python3 scripts/fetch-engine-assets --all --check
-          python3 scripts/fetch-engine-assets --all --source --check
-          python3 scripts/compile-engine-asset --all --check
-          python3 scripts/stage-engines --check
+          python3 -P scripts/fetch-engine-assets --all --check
+          python3 -P scripts/fetch-engine-assets --all --source --check
+          python3 -P scripts/compile-engine-asset --all --check
+          python3 -P scripts/stage-engines --check
       # NB: this job must stay free of `actions/cache` steps — its run bodies name both
       # `.engine-cache` and `scripts/stage-engines`, so adding a cache step here would trip the
       # G56 rule-(10) pairing refusal (correctly: this job is the check/derive leg, not a consumer).
       - name: 'derive the per-entry cache matrix from engines.lock (empty manifest → empty matrices, the jobs below skip)'
         id: plan
         run: |
-          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          python3 -P - >> "$GITHUB_OUTPUT" <<'PY'
           import importlib.machinery, importlib.util, json, sys
           from pathlib import Path
 
@@ -545,7 +545,7 @@ jobs:
         run: |
           MODE_FLAG=""
           [ "$ENTRY_MODE" = "source" ] && MODE_FLAG="--source"
-          python3 scripts/fetch-engine-assets --engine "$ENTRY_GROUP" --target "$ENTRY_TRIPLE" $MODE_FLAG
+          python3 -P scripts/fetch-engine-assets --engine "$ENTRY_GROUP" --target "$ENTRY_TRIPLE" $MODE_FLAG
       - name: 'save the populated entry under the same key'
         if: steps.restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -615,7 +615,7 @@ jobs:
         env:
           ENTRY_GROUP: ${{ matrix.entry.group }}
           ENTRY_TRIPLE: ${{ matrix.entry.triple }}
-        run: python3 scripts/compile-engine-asset --engine "$ENTRY_GROUP" --target "$ENTRY_TRIPLE"
+        run: python3 -P scripts/compile-engine-asset --engine "$ENTRY_GROUP" --target "$ENTRY_TRIPLE"
       - name: 'save the compiled entry under the same key'
         if: steps.restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0

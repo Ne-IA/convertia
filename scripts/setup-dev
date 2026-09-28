@@ -3,7 +3,7 @@
 
 Does the whole local setup the gate plane needs:
   1. install + checksum-verify the pinned gate tools  -> .gate-tools/bin
-     (python3 scripts/install-gate-tools)
+     (python3 -P scripts/install-gate-tools)
   2. install the lefthook git-hook plane (pre-commit/pre-push)
   3. REPAIR lefthook's generated hooks so they work on ANY repo path, then
   4. verify each generated hook parses under POSIX sh, and
@@ -24,7 +24,7 @@ A non-interactive `git commit -S` (every Build-Loop commit) would wedge silently
 pin `gpg.ssh.program` to the native Windows OpenSSH ssh-keygen, which talks to the
 agent's named pipe and signs without a prompt. Non-Windows: a harmless no-op.
 
-Idempotent. stdlib-only (Python 3.12+ - `scripts/stage-engines` uses `Path.is_junction()`, 3.12; CI pins 3.12). Run:  python3 scripts/setup-dev
+Idempotent. stdlib-only (Python 3.12+ - `scripts/stage-engines` uses `Path.is_junction()`, 3.12; CI pins 3.12). Run:  python3 -P scripts/setup-dev
 Exit: 0 = ready; non-zero = a step failed (with a clear message).
 """
 from __future__ import annotations
@@ -58,7 +58,7 @@ def die(msg: str) -> None:
 
 def install_gate_tools() -> None:
     step("1/5  install + verify pinned gate tools")
-    p = run([sys.executable, str(REPO / "scripts" / "install-gate-tools")])
+    p = run([sys.executable, "-P", str(REPO / "scripts" / "install-gate-tools")])
     if p.returncode != 0:
         die("install-gate-tools failed (see output above)")
 

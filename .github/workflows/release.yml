@@ -42,7 +42,7 @@ jobs:
       - name: 'G56b: release-tag trust gate (ancestry + green-history + signed-tag); aborts BEFORE any secret'
         env:
           GH_TOKEN: ${{ github.token }}   # github.token, NOT a release secret - guard runs pre-secret
-        run: python3 scripts/check-release-tag-trust
+        run: python3 -P scripts/check-release-tag-trust
       - name: Fail-closed until the Lane-B pipeline is assembled (P10)
         run: |
           echo "The Lane-B release pipeline (build / size / SBOM / minisign / attest /"
