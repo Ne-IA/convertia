@@ -54,7 +54,7 @@ mirror = "L2 + L4"
 id = "L3"
 name = "commit-msg"
 trigger = "git commit (chronologically BEFORE L2, which fires at git push)"
-enforcement = "lefthook commit-msg; conventional-commit format + the dual-review trailer"
+enforcement = "lefthook commit-msg; conventional-commit subject format + the subject/body length caps (G11)"
 mirror = "L3 + L4"
 
 [[plane]]

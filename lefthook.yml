@@ -8,10 +8,10 @@
 #
 # CHRONOLOGICAL PLANE <-> HOOK MAPPING (security-concept sec3):
 #   pre-commit = L1  (fires at `git commit`;                  soft budget < 10 s; diff-scoped)
-#   commit-msg = L3  (fires at `git commit`, BEFORE pre-push; conventional-commit + dual-review trailer)
+#   commit-msg = L3  (fires at `git commit`, BEFORE pre-push; conventional-commit subject + length caps (G11))
 #   pre-push   = L2  (fires at `git push`;                    budget < 3 min; range / full-tree)
 # Stated explicitly so commit-msg (L3) is never wired into pre-push or omitted.
-# commit-msg (L3) is DECLARED below as of P0.3.3 (G11 conventional-commit subject);
+# commit-msg (L3) is DECLARED below as of P0.3.3 (G11 conventional-commit subject + length caps);
 # G12 (the Dual-Review trailer) is the L2 pre-push half of the commit-hygiene plane.
 #
 # GATE SLOTS: each L1/L2/L3 gate is added to the slots below by the box that BUILDS
@@ -86,7 +86,7 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
 
 commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)
   commands:
-    conventional:    # G11 - conventional-commit subject; lefthook passes the msg-file path as {1}
+    conventional:    # G11 - conventional-commit subject + subject/body length caps; lefthook passes the msg-file path as {1}
       run: python3 scripts/check-commit-msg {1}
 
 pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box

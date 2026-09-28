@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""check-commit-msg - G11 conventional-commit subject gate (P0.3.3).
+"""check-commit-msg - G11 commit-message gate: conventional-commit subject + subject/body length caps (P0.3.3).
 
 Two modes, fail-CLOSED in BOTH planes (G11 needs no admin token / absent target, so no P0 fail-soft):
   * L3 commit-msg hook (fires at `git commit`): `check-commit-msg <commit-msg-file>` validates the one
-    subject git is about to write (lefthook passes it as {1}).
+    message git is about to write (lefthook passes it as {1}).
   * L4 CI mirror (fires after push): `check-commit-msg --base <ref> [--head <ref>]` re-validates EVERY
-    commit subject in the push range on a clean checkout, catching a local `--no-verify` bypass - the
+    commit message in the push range on a clean checkout, catching a local `--no-verify` bypass - the
     L3 plane declares `mirror = "L3 + L4"` (scripts/gate-planes.toml), so the immutable CI net re-runs
     it. Sibling range gates: check-l-neg1-ack (G71), check-dual-review (G12).
 
@@ -16,10 +16,43 @@ convention `chore(scope): roll back — <reason>` is a normal `chore(...)` subje
 unchanged. Auto-generated merge/revert/fixup/squash subjects are accepted (git writes them; they are
 not box commits). stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
+LENGTH CAPS (auto-subjects are exempt from both):
+  * the subject is at most SUBJECT_MAX (100) characters - code points, trailing whitespace stripped - and
+    is one line: git's subject (`%s`, the `--oneline` title) is the whole first paragraph joined into one
+    line, so a blank line (or the message end) must follow the subject line - the blank line Conventional
+    Commits requires before a body;
+  * the body is at most BODY_MAX (120) counted lines. body_line_count counts them in four steps over the
+    lines the plane reads (message_lines, below): (1) drop the subject (the first non-blank line);
+    (2) strip trailing blank lines; (3) drop the final blank-separated paragraph when it holds at most
+    TRAILER_MAX (5) lines and every one has git's trailer shape (`Token: value` - the Dual-Review /
+    L-neg1-ack / attribution block); a longer trailer-shaped final paragraph is body text and counts in
+    full; (4) count the non-blank lines that remain.
+WHAT A LINE IS (both planes): each plane reads the message as bytes, never through newline translation,
+and splits it only at LF, where git splits it - a lone CR, FF, VT, U+001C..U+001E, U+0085, U+2028 or
+U+2029 stays inside its line, as it stays inside git's subject. Whitespace is git's (GIT_SPACE): a line's
+trailing space/TAB/CR is stripped and a line of only those is blank, while FF, VT or a Unicode space is
+text. A byte that is not UTF-8 counts as one character. The `\\S` of SUBJECT_RE and TRAILER_LINE_RE is
+Unicode's non-space, so a description or a trailer value of only FF or a Unicode space fails its shape
+(fail-closed).
+WHAT EACH PLANE READS (message_lines): the L4 mirror reads the stored message (`%B`, with no signature
+output and in UTF-8, whatever the host's log config), which git has already cleaned, so every line in it
+is text git keeps - a `#` line or a scissors line included. The L3 hook reads the UNCLEANED message file
+and applies git's edit cleanup first: everything from git's scissors line
+(`# ------------------------ >8 ------------------------`, the `git commit -v` cut line) on and every
+`#` comment line are dropped. For an edited commit (`-e`, the editor, `-v`) both planes read the same
+lines; a g24 leg drives a real `git commit -v -e` through a copying hook and compares the two counts. A
+`-F`/`-m` commit is not edited, so git stores its `#` lines and its scissors tail (whitespace cleanup);
+the L3 hook cannot tell the two cases apart and drops them, and the L4 mirror counts them - L4 counts
+exactly the stored lines, so a line L3 missed still meets the cap there.
+Residual (fail-closed): comment lines are the `#`-prefixed ones only. Under a non-default
+`core.commentChar` the L3 hook counts that char's comment lines (and, under `-v`, the diff below that
+char's scissors line), so such a message can red at L3 and never pass over the cap.
+
 Usage: check-commit-msg <commit-message-file>          (the L3 commit-msg hook; git passes it as {1})
        check-commit-msg --base <ref> [--head <ref>]    (the L4 CI mirror over the push range;
                                                          in CI pass --base "$GITHUB_EVENT_BEFORE")
-Exit:  0 = every subject valid (or an accepted auto-subject); 1 = a non-conventional subject; 2 = bad invocation.
+Exit:  0 = every message valid (or an accepted auto-subject); 1 = a non-conventional subject, a subject
+       that runs onto a second line, or a length cap exceeded; 2 = bad invocation.
 """
 from __future__ import annotations
 
@@ -36,17 +69,83 @@ TYPES = ("feat", "fix", "chore", "docs", "refactor", "test", "perf", "ci", "buil
 # the authoritative build-gates G11 regex: lowercase `[a-z0-9._-]` scope, no breaking-change `!`
 # (v1 is one release — no breaking-change ceremony; tightening here matches the G11 catalogue row).
 SUBJECT_RE = re.compile(r"^(?:" + "|".join(TYPES) + r")(?:\([a-z0-9._-]+\))?: .*\S")
-# auto-subjects git itself writes (not box commits) — accepted as-is
+# auto-subjects git itself writes (not box commits) — accepted as-is, exempt from both length caps
 AUTO_RE = re.compile(r"^(Merge |Revert |fixup! |squash! |amend! )")
 
+SUBJECT_MAX = 100   # characters (code points) of the subject line, trailing git whitespace stripped
+BODY_MAX = 120      # counted body lines (body_line_count)
+# [Build-Session-Entscheidung: P0.3.3] the final trailer block leaves the count only while it holds at
+# most TRAILER_MAX lines, so no more than 5 stored lines ever escape the body cap: the build-loop Step 6
+# block is at most three lines (Dual-Review, L-neg1-ack on an L(-1) commit, the attribution), a re-landed
+# contributor commit keeps its Signed-off-by (CONTRIBUTING), and the fifth line leaves room for a second
+# co-author.
+TRAILER_MAX = 5
+# [Build-Session-Entscheidung: P0.3.3] at L3 a comment line is a `#`-prefixed line, never the configured
+# `core.commentChar`: reading git config there would make the hook's verdict depend on a host setting the
+# L4 mirror (the stored %B, which core.commentChar never re-shapes) never sees, and the residual is
+# fail-closed - a non-default comment char's lines count at L3, which can red a message near the cap and
+# never pass one over it.
+SCISSORS = "# " + "-" * 24 + " >8 " + "-" * 24          # git's cut line (`git commit -v`)
+TRAILER_LINE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*: \S")   # git's trailer shape `Token: value`
+# git's whitespace, its ctype isspace set: git strips only these from a line's end and treats only a line of
+# these as blank; it stores FF, VT, a Unicode space and a Unicode line separator as text (measured with git
+# 2.53 and -F: all four kept at the end of the subject line and as a line of their own). Python's bare
+# str.strip()/rstrip()/splitlines() use Unicode's wider sets, so G11 calls none of them bare on a message.
+GIT_SPACE = " \t\n\r"
+OK_TEXT = (f"[G11] commit message OK (conventional subject, <={SUBJECT_MAX}-char subject, "
+           f"<={BODY_MAX}-line body)")
 
-def subject_of(message: str) -> str | None:
-    """The first non-comment, non-blank line of the commit message (None if the message is empty)."""
-    for line in message.splitlines():
-        if line.startswith("#") or not line.strip():
-            continue
-        return line.rstrip()
+
+def decode_message(raw: bytes) -> str:
+    """(pure) A commit message's bytes as text, exactly as git holds them: no newline translation (a lone
+    CR stays inside its line), and each byte that is not UTF-8 becomes one code point of its own."""
+    # [Build-Session-Entscheidung: P0.3.3] errors="surrogateescape", never "replace": "replace" folds up to
+    # three undecodable bytes into one U+FFFD, so the subject cap would measure fewer characters than the
+    # bytes git stores; an undecodable byte counts as one character.
+    return raw.decode("utf-8", errors="surrogateescape")
+
+
+def is_blank(line: str) -> bool:
+    """(pure) git's blank line: nothing but git's whitespace (GIT_SPACE)."""
+    return not line.strip(GIT_SPACE)
+
+
+def message_lines(message: str, *, stored: bool) -> list[str]:
+    """(pure) The lines G11 reads, split at LF only (git's line break). stored=True - the L4 mirror's
+    `%B`, which git has already cleaned: every line is text git keeps. stored=False - the L3 hook's
+    uncleaned file with git's edit cleanup applied: everything from the scissors line on and every `#`
+    comment line dropped."""
+    lines = message.split("\n")
+    if stored:
+        return lines
+    if SCISSORS in lines:
+        lines = lines[:lines.index(SCISSORS)]
+    return [line for line in lines if not line.startswith("#")]
+
+
+def subject_of(message: str, *, stored: bool) -> str | None:
+    """The first non-blank line the plane reads (None if there is none), trailing git whitespace
+    stripped - at L3 the first non-comment, non-blank line of the hook file, at L4 the first non-blank
+    line of `%B`."""
+    for line in message_lines(message, stored=stored):
+        if not is_blank(line):
+            return line.rstrip(GIT_SPACE)
     return None
+
+
+def body_line_count(message: str, *, stored: bool) -> int:
+    """(pure) The counted body lines of a commit message - the BODY_MAX unit (the module docstring's
+    four steps over message_lines)."""
+    lines = message_lines(message, stored=stored)
+    start = next((i for i, line in enumerate(lines) if not is_blank(line)), len(lines))
+    body = lines[start + 1:]
+    while body and is_blank(body[-1]):
+        body.pop()
+    cut = max((i for i, line in enumerate(body) if is_blank(line)), default=-1) + 1
+    last = body[cut:]
+    if last and len(last) <= TRAILER_MAX and all(TRAILER_LINE_RE.match(line) for line in last):
+        body = body[:cut]
+    return sum(1 for line in body if not is_blank(line))
 
 
 def validate_subject(subject: str | None) -> str | None:
@@ -55,28 +154,78 @@ def validate_subject(subject: str | None) -> str | None:
         return "empty commit message — a conventional-commit subject is required"
     if AUTO_RE.match(subject):
         return None
-    if SUBJECT_RE.match(subject):
+    if not SUBJECT_RE.match(subject):
+        return (f"subject {subject!r} is not a conventional commit — expected "
+                f"`<type>(scope)!: description` with type in {{{', '.join(TYPES)}}} "
+                "(e.g. `feat(gates): …`; rollback = `chore(scope): roll back — <reason>`)")
+    if len(subject) > SUBJECT_MAX:
+        return f"subject is {len(subject)} characters; the cap is {SUBJECT_MAX}"
+    return None
+
+
+def validate_subject_line(message: str, *, stored: bool) -> str | None:
+    """(pure) None if a blank line (or the message end) follows the subject line, or the subject is an
+    auto-subject; else the error reason. git's subject (`%s`) is the whole first paragraph joined, so the
+    subject cap measures git's subject only when that paragraph is the one subject line."""
+    # [Build-Session-Entscheidung: P0.3.3] a second subject line is rejected, never joined and measured:
+    # joining would make G11's subject differ from its first line, which the conventional-commit check and
+    # every reader of the first line use; Conventional Commits already puts a blank line before the body,
+    # and no commit in this repository's history has a two-line first paragraph.
+    lines = message_lines(message, stored=stored)
+    start = next((i for i, line in enumerate(lines) if not is_blank(line)), None)
+    if start is None or AUTO_RE.match(lines[start]) or start + 1 == len(lines) or is_blank(lines[start + 1]):
         return None
-    return (f"subject {subject!r} is not a conventional commit — expected "
-            f"`<type>(scope)!: description` with type in {{{', '.join(TYPES)}}} "
-            "(e.g. `feat(gates): …`; rollback = `chore(scope): roll back — <reason>`)")
+    return (f"the subject runs onto a second line ({lines[start + 1][:40]!r}) — git's subject (%s) is the "
+            "whole first paragraph, so a blank line must follow the subject")
+
+
+def validate_body(message: str, *, stored: bool) -> str | None:
+    """(pure) None if the body is within BODY_MAX counted lines (or the subject is an auto-subject);
+    else the error reason."""
+    subject = subject_of(message, stored=stored)
+    if subject is not None and AUTO_RE.match(subject):
+        return None
+    n = body_line_count(message, stored=stored)
+    if n > BODY_MAX:
+        return (f"body has {n} counted lines; the cap is {BODY_MAX} (non-blank lines after the subject; "
+                f"a final trailer block of at most {TRAILER_MAX} lines not counted)")
+    return None
+
+
+def validate_message(message: str, *, stored: bool) -> str | None:
+    """(pure) None if the whole message passes G11; else the reason - the subject check, the one-line
+    subject check, then the body check (every failing reason, `; `-joined). stored selects the plane's
+    reading (message_lines)."""
+    reasons = [r for r in (validate_subject(subject_of(message, stored=stored)),
+                           validate_subject_line(message, stored=stored),
+                           validate_body(message, stored=stored)) if r]
+    return "; ".join(reasons) or None
 
 
 def validate_messages(messages: list[str]) -> list[tuple[int, str | None, str]]:
-    """(pure) the violations in a list of commit messages, as (index, subject, reason) per invalid one.
-    The L4 range-mirror's logic, split from the git I/O so it is unit-testable without a repo."""
+    """(pure) the violations in a list of stored commit messages (`%B`), as (index, subject, reason) per
+    invalid one. The L4 range-mirror's logic, split from the git I/O so it is unit-testable without a repo."""
     violations: list[tuple[int, str | None, str]] = []
     for i, message in enumerate(messages):
-        subject = subject_of(message)
-        err = validate_subject(subject)
+        err = validate_message(message, stored=True)
         if err:
-            violations.append((i, subject, err))
+            violations.append((i, subject_of(message, stored=True), err))
     return violations
 
 
 def git(*args: str) -> tuple[int, str]:
     p = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     return p.returncode, p.stdout
+
+
+def stored_message(sha: str) -> str:
+    """One commit's stored message (`%B`), read as bytes (decode_message): subprocess text mode would turn
+    a lone CR into a line break git never made. --no-show-signature and --encoding=UTF-8 keep a host's
+    log.showSignature (verification output printed above the message) and i18n.logOutputEncoding from
+    re-shaping it."""
+    p = subprocess.run(["git", "log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", sha],
+                       capture_output=True)
+    return decode_message(p.stdout)
 
 
 def _resolves(ref: str) -> bool:
@@ -110,20 +259,20 @@ def commits_in_range(base: str | None, head: str) -> list[str] | None:
 
 
 def check_file(path: Path) -> int:
-    """L3 mode: validate the single pending commit-message file."""
+    """L3 mode: validate the single pending commit-message file (read as bytes, decode_message)."""
     if not path.is_file():
         print(f"[G11] FAIL: commit-message file not found: {path}", file=sys.stderr)
         return 2
-    err = validate_subject(subject_of(path.read_text(encoding="utf-8", errors="replace")))
+    err = validate_message(decode_message(path.read_bytes()), stored=False)
     if err:
         print(f"[G11] FAIL: {err}", file=sys.stderr)
         return 1
-    print("[G11] conventional-commit subject OK")
+    print(OK_TEXT)
     return 0
 
 
 def check_range(base_arg: str | None, head: str) -> int:
-    """L4 mode: validate every commit subject in base..head (the push range)."""
+    """L4 mode: validate every commit message in base..head (the push range)."""
     base = resolve_base(base_arg)
     commits = commits_in_range(base, head)
     if commits is None:
@@ -135,18 +284,19 @@ def check_range(base_arg: str | None, head: str) -> int:
     if base is None:
         print(f"[G11] no range base resolved — validating only the tip commit {commits[0][:12]} "
               "(degraded; L3 has the full range)")
-    messages = [git("log", "-1", "--format=%B", sha)[1] for sha in commits]
+    messages = [stored_message(sha) for sha in commits]
     violations = validate_messages(messages)
     if violations:
         for i, _subject, reason in violations:
             print(f"[G11] FAIL: {commits[i][:12]} {reason}", file=sys.stderr)
         return 1
-    print(f"[G11] conventional-commit subject OK over {len(commits)} commit(s) in range")
+    print(f"{OK_TEXT} over {len(commits)} commit(s) in range")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="G11 conventional-commit subject gate (P0.3.3)")
+    ap = argparse.ArgumentParser(
+        description="G11 commit-message gate: conventional-commit subject + subject/body length caps (P0.3.3)")
     ap.add_argument("msgfile", nargs="?",
                     help="the pending commit-message file (the L3 commit-msg hook mode)")
     ap.add_argument("--base", default=None,

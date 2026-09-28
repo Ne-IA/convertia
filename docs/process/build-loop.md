@@ -491,7 +491,9 @@ Dual-Review: opus=GO sonnet=GO
   box id. A commit that builds no box (a Co-Pilot act, a re-land) uses
   `<type>(<scope>): <summary>` and writes `none` for the box on the `Box/§/Gates:` line.
   **Rollback convention** (solo on `main`): `chore(scope): roll back — <reason>`, with
-  **no `revert` type** for build-session commits.
+  **no `revert` type** for build-session commits. G11 rejects a subject over 100
+  characters or one not followed by a blank line (L3 + L4; merge/revert/fixup/squash/amend
+  exempt).
 - `Box/§/Gates:` through `Class:` are the review brief (Step 5), committed as reviewed.
   After GO the loop adds only `Models:`, the `Review:` lines, `Open P2/P3:` and
   `Post-GO:`. The review record is one `Review:` line per round plus one indented line
@@ -503,6 +505,8 @@ Dual-Review: opus=GO sonnet=GO
   Write it in the template's fields. A count appears only where a checker
   cross-checks it (the runner's `N legs` rows, `--shortstat`); a mechanism is written
   as its observable effect, never as an unmeasured "because". Aim for ≤ 40 lines.
+  G11 rejects a body over 120 counted lines (the non-blank lines git stores after
+  the subject; a final trailer block of at most 5 lines is not counted).
 - **Push exit code MUST be observed reliably.** The agent tool environment does not
   propagate a subprocess exit code the way a plain shell does: `| tee` masks the
   hook's non-zero exit, and a naive `$?` can capture the tool-call's own success
