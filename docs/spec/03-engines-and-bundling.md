@@ -105,7 +105,7 @@ v1**; **MPL** (LibreOffice) invoked;
 SPDX `ImageMagick`, Apache-2.0-style) — both unrestricted and link-OK (ImageMagick is
 **not** GPL and is a **required** component, not a fallback).
 
-**Startup-fault classification `[DECIDED]` [Co-Pilot ruling 2026-09-15 — owner may overturn] (the
+**Startup-fault classification `[DECIDED — Co-Pilot ruling 2026-09-15, owner-ratified]` (the
 home §7.2.3 names).** Every engine program the §7.2.3 presence loop checks (FFmpeg and FFprobe,
 LibreOffice, poppler's `pdftotext`, pandoc, the image worker; each once the build declares it,
 §7.2.3 Build-window posture) is **startup-required**: absent or non-runnable → `EngineMissing`,

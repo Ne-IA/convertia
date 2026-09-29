@@ -362,7 +362,7 @@ present and usable:
   cover a crash mid-probe; the `soffice` probe keeps its §3.5.2 profile inside it, and
   the spawn runs under the §1.7 watchdog. Presence and integrity stay in step 3; the macOS
   caveat below applies on top.
-- **Build-window posture `[DECIDED]` [Co-Pilot ruling 2026-09-15 — owner may overturn]:**
+- **Build-window posture `[DECIDED — Co-Pilot ruling 2026-09-15, owner-ratified]`:**
   the presence and integrity roster is the engine programs this build DECLARES (its
   `bundle.externalBin` entries and engine `bundle.resources` trees, read from the compiled
   config), not every row of the §3.3.3 program table, so a build that does not ship an
@@ -499,7 +499,7 @@ fn ensure_executable(p: &Path) -> io::Result<()> {
   {engine name}, then try again."* The `{engine name}` is the friendly sidecar name (e.g.
   "FFmpeg", "LibreOffice", "pandoc") so the user knows **which** "Open Anyway" to click; the
   §2.8 catalog owns the string (this is the fixed text it carries). *(Reconciled
-  2026-09-07, Co-Pilot ruling, owner may overturn: the §2.8.2 row carried a sidecar-LESS
+  2026-09-07, Co-Pilot ruling, owner-ratified: the §2.8.2 row carried a sidecar-LESS
   string with no substitution, so the cross-claim in the previous sentence did not hold;
   the ruling kept §2.8's ownership and this section's wording, and §2.8.2 now carries this
   literal with the `{engine name}` substitution. No normative content of this section
