@@ -2,8 +2,9 @@
 """g24-dual-review.py - G24 self-test for check-dual-review (P0.3.3, G12).
 
 Proves the Dual-Review-trailer gate: a well-formed trailer + narrative passes; a missing/ill-formed
-trailer fails; a GO/GO trailer with NO review narrative fails; and a docs-`.md`-only `chore(todo): …
-(abgehakt|done)` check-off is exempt (while the same subject with a non-.md file is NOT). stdlib-only.
+trailer fails; a GO/GO trailer with NO review narrative fails; and no commit is exempt — the retired
+check-off shape (`chore(todo): … (abgehakt|done)`, docs-`.md`-only) without a trailer fails, both in
+`evaluate_commit` and through the real CLI over a range in a temp repo. stdlib-only.
 Exit 0 = all held; 1 = a self-test failed.
 """
 import importlib.machinery
@@ -32,48 +33,41 @@ def record(name: str, ok: bool) -> None:
 
 GOOD_BODY = ("feat(gates): a real box\n\nG1 review found 2 P2 findings, fixed.\n\n"
              "Dual-Review: opus=GO sonnet=GO\nL-neg1-ack: owner\n")
-SUBJECT = "feat(gates): a real box"
 
 # a well-formed GO/GO trailer WITH a narrative -> OK
-record("GO/GO + narrative -> OK", m.evaluate_commit(SUBJECT, GOOD_BODY, ["scripts/x"]) is None)
+record("GO/GO + narrative -> OK", m.evaluate_commit(GOOD_BODY) is None)
 
 # missing trailer -> error
-record("missing trailer -> error",
-       m.evaluate_commit(SUBJECT, "feat(gates): x\n\nno trailer here\n", ["scripts/x"]) is not None)
+record("missing trailer -> error", m.evaluate_commit("feat(gates): x\n\nno trailer here\n") is not None)
 
 # ill-formed trailer -> error
 record("ill-formed trailer (opus=YES) -> error",
-       m.evaluate_commit(SUBJECT, "x\n\nDual-Review: opus=YES sonnet=GO\n", ["scripts/x"]) is not None)
+       m.evaluate_commit("x\n\nDual-Review: opus=YES sonnet=GO\n") is not None)
 
 # GO/GO but NO narrative (bare trailer) -> error
 record("GO/GO but bare body (no narrative) -> error",
-       m.evaluate_commit(SUBJECT, "feat(gates): x\n\nDual-Review: opus=GO sonnet=GO\nCo-Authored-By: y\n",
-                         ["scripts/x"]) is not None)
+       m.evaluate_commit("feat(gates): x\n\nDual-Review: opus=GO sonnet=GO\nCo-Authored-By: y\n") is not None)
 
 # GO/GO, a box-id in the SUBJECT but a bare body -> error (the subject's (P0.3.3) must NOT satisfy the
 # P[0-3] marker — the findings-block scans the BODY only; this is the P1 regression guard)
 record("GO/GO, box-id in subject but bare body -> error",
-       m.evaluate_commit("feat(gates): commit-hygiene (P0.3.3)",
-                         "feat(gates): commit-hygiene (P0.3.3)\n\nDual-Review: opus=GO sonnet=GO\nCo-Authored-By: y\n",
-                         ["scripts/x"]) is not None)
+       m.evaluate_commit("feat(gates): commit-hygiene (P0.3.3)\n\nDual-Review: opus=GO sonnet=GO\n"
+                         "Co-Authored-By: y\n") is not None)
 
 # NOGO/NOGO well-formed trailer (no findings-block required) -> OK
 record("well-formed NOGO trailer -> OK (no narrative requirement)",
-       m.evaluate_commit(SUBJECT, "x\n\nDual-Review: opus=NOGO sonnet=NOGO\n", ["scripts/x"]) is None)
+       m.evaluate_commit("x\n\nDual-Review: opus=NOGO sonnet=NOGO\n") is None)
 
-# check-off commit (chore(todo) + .md-only) -> EXEMPT even with no trailer
-record("check-off (chore(todo)+md-only) -> exempt, no trailer needed",
-       m.evaluate_commit("chore(todo): P0.3.3 abgehakt", "chore(todo): P0.3.3 abgehakt\n",
-                         ["docs/plan/P0.md"]) is None)
-
-# same check-off subject but a NON-.md file -> NOT exempt -> needs trailer -> error
-record("check-off subject but a .rs file -> NOT exempt -> error",
-       m.evaluate_commit("chore(todo): P0.3.3 abgehakt", "chore(todo): P0.3.3 abgehakt\n",
-                         ["src/x.rs"]) is not None)
-
-# check-off subject but EMPTY file list -> NOT exempt (no files = not a docs-only tick)
-record("check-off subject + empty file list -> NOT exempt",
-       m.evaluate_commit("chore(todo): abgehakt", "chore(todo): abgehakt\n", []) is not None)
+# [Test-Change: P0.3.3 — old-obsolete+new-correct, build-gates G12 row] old: a docs-`.md`-only
+# `chore(todo): … (abgehakt|done)` commit was exempt (a `.rs` file or an empty file list was not);
+# obsolete: the check-off rides in the box commit (build-loop.md Step 7), so the exemption and its
+# double predicate retire and `evaluate_commit` takes the message alone (the legs above only drop the
+# unused subject/file arguments). New: the old skip shape without a trailer is an ordinary commit ->
+# error, under both keywords the retired subject regex accepted, and through the real CLI below.
+record("check-off shape `chore(todo): … abgehakt` without a trailer -> error (no check-off exemption)",
+       m.evaluate_commit("chore(todo): P0.3.3 abgehakt\n") is not None)
+record("check-off shape `chore(todo): … done` without a trailer -> error (no check-off exemption)",
+       m.evaluate_commit("chore(todo): P0.3.3 done\n") is not None)
 
 # has_findings_block: subject + only-trailers body -> False (the subject is excluded)
 record("has_findings_block: subject + trailers-only body -> False",
@@ -81,9 +75,17 @@ record("has_findings_block: subject + trailers-only body -> False",
 record("has_findings_block: marker in the BODY (not the subject) -> True",
        m.has_findings_block("feat: x\n\nfixed a P1 issue in review\nDual-Review: opus=GO sonnet=GO\n"))
 
-# --- commit_shas range resolution (L4 --base) in real temp repos -----------------------------
+# --- commit_shas range resolution (L4 --base) + the CLI over a range, in real temp repos -----------
+# The throwaway-repo git calls (and the gate run inside the throwaway repo) get an environment WITHOUT the
+# GIT_* location variables a hook plane could carry (GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE / ...): with one
+# of them absolute, `git -C <tmp> commit` would operate on the OUTER repository. GIT_EXEC_PATH stays.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
+
+
 def git(repo, *a):
-    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
+    return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=True).stdout.strip()
 
 
 def in_repo(repo, fn):
@@ -105,6 +107,16 @@ with tempfile.TemporaryDirectory() as td:
     # no upstream / no base -> tip-only
     rc, shas, rng = in_repo(repo, lambda: m.commit_shas(None))
     record("commit_shas(None, no upstream) -> tip-only", rc == 0 and len(shas) == 1)
+    # the retired exemption end to end (the P0.3.3 Test-Change above): a docs-`.md`-only `chore(todo): …
+    # abgehakt` commit without a trailer, read by the real CLI over `--base <parent>..HEAD` (the L4 mirror's
+    # form) -> exit 1, naming that commit
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "docs").mkdir(); (repo / "docs" / "plan.md").write_text("- [x] box\n", encoding="utf-8")
+    git(repo, "add", "-A"); git(repo, "-c", "core.hooksPath=", "commit", "-q", "-m", "chore(todo): box abgehakt")
+    cli = subprocess.run([sys.executable, "-P", str(SCRIPT), "--base", base], cwd=str(repo), capture_output=True,
+                         text=True, encoding="utf-8", errors="replace")
+    record("CLI: a docs-only `chore(todo): … abgehakt` commit without a trailer -> exit 1 (no exemption)",
+           cli.returncode == 1 and "missing a well-formed" in cli.stderr and "chore(todo): box abgehakt" in cli.stderr)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-dual-review] {len(results) - len(failed)}/{len(results)} assertions passed.")

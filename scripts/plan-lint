@@ -1160,8 +1160,8 @@ def _greedy_letters(text: str) -> list[str]:
     greedily: scan every `(x)` in document order, append x only when it is the NEXT expected letter,
     skip all others. This reads the DoD's ORDERED identifier sequence while ignoring incidental
     letter refs that do not form an a-first in-order run — build-loop.md §5's leading blockquote
-    "item (c)'s …" and its trailing "Items (g) and (h) fire independently", and build-gates' very
-    next "*Skipped only* for: (a) … (b) …" bullet (excluded by region-slicing anyway). A reorder,
+    "item (c)'s …" and its trailing "Items (g) and (h) fire independently" (build-gates' neighbouring
+    bullets are excluded by region-slicing anyway). A reorder,
     a dropped item or an added item all yield a sequence != the canonical a..h, so each is caught
     (build-gates §6 check 14: "identical IN ORDER … not merely the same SET")."""
     seq: list[str] = []
@@ -1177,8 +1177,8 @@ def _gates_g1_dod_region(gates: str) -> str | None:
     """The build-gates G1 `- **Definition-of-Done.**` prose-contract bullet body, sliced from that
     bullet's start to the next top-level `- ` list bullet — so the G1 DoD letters are read in
     ISOLATION from build-gates' OTHER (a)-(h) enumerations (e.g. the G29 `(a)/(b)` plugin-surface
-    list, the §6 check descriptions) and from the immediately-following "*Skipped only* … (a) …
-    (b) …" bullet's own letters. Anchored on the bold bullet prefix (NOT a bare "Definition-of-Done"
+    list, the §6 check descriptions) and from any following sibling bullet's own letters. Anchored
+    on the bold bullet prefix (NOT a bare "Definition-of-Done"
     substring, which also occurs in the §6 check-14 description) so the first match is the contract
     bullet. None if the bullet is absent (the caller reports it, fail-closed)."""
     lines = _lf(gates).split("\n")

@@ -99,7 +99,7 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 -P scripts/check-l-neg1-ack --enforce
     gitleaks:        # G2 - scan the unpushed range (the last local catch before a secret goes public)
       run: python3 -P scripts/run-gitleaks --range
-    dual-review:     # G12 - the Dual-Review trailer on each unpushed non-check-off commit
+    dual-review:     # G12 - the Dual-Review trailer on each unpushed commit
       run: python3 -P scripts/check-dual-review
     deferral:        # G21 - full production-tree deferral/dead-marker scan (fail-closed; no diff-base excuse)
       run: python3 -P scripts/check-deferral --full
