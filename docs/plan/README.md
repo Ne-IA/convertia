@@ -13,8 +13,10 @@
 > every box runs the gate system in [`docs/security/build-gates.md`](../security/build-gates.md)
 > (`G1..Gnn`) + the dual review. The repo's own rules are in
 > [`CLAUDE.md`](../../CLAUDE.md); the box format the loop reads is
-> [`_format.md`](_format.md). **P0 is bootstrapped manually** (DECISION B); the loop
-> starts at P1.
+> [`_format.md`](_format.md). What boxes and Co-Pilot acts deliberately leave outside
+> their work at hand is recorded in the [residual ledger](residual-ledger.md) and
+> triaged at each phase-end sweep. **P0 is bootstrapped manually** (DECISION B); the
+> loop starts at P1.
 
 ## How this plan is used
 

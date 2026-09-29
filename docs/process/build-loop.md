@@ -11,10 +11,11 @@
 >
 > **Conflict order (unchanged, every layer):**
 > **SSOT > spec > security/process docs > plan > code > conversation.**
-> When two layers disagree, the higher one wins — **never silently reconcile,
-> always escalate**. A spec-internal contradiction (two `§§` disagree) is an
-> **unconditional hard-stop + escalate** regardless of severity — the Build-Loop is
-> downstream of the spec and cannot pick a side.
+> When two layers disagree, the higher one wins — **never silently**: a spec
+> contradiction first runs the pre-check ([roles-and-escalation.md](roles-and-escalation.md)
+> §4(a)); a rank-ordered pair is reconciled in the open in the same commit, a
+> same-rank fork is a scoped stop + escalate — the Build-Loop is downstream of the
+> spec and never picks a side it cannot rank.
 
 ---
 
@@ -72,8 +73,9 @@ missed something** — re-read the referenced spec section in full, or escalate.
 box is a pointer; the spec is the contract.
 
 **Build it fully — no stub as a default** (SSOT Principle 1: completeness within
-scope; CLAUDE.md §6: the cleanest / most-complete / most-professional solution
-ALWAYS wins over token-cost, session speed, and "pragmatism"). A stub is only ever
+scope; CLAUDE.md §6: the cleanest, most complete, most professional solution for
+the work at hand always wins over token cost, session speed and pragmatism — scope,
+not quality, bounds it). A stub is only ever
 a **named, compile-time interface shell** that a **named, scheduled** box fills
 (the P3 `crate::isolation` interface shells P4 expands are the sanctioned example,
 plan/README.md P3) — never a quiet placeholder, never a "Phase 2 / for now / comes
@@ -249,8 +251,10 @@ Read every referenced spec `§` **in full** (not the box's paraphrase) and every
 referenced gate ID in `build-gates.md`. The acceptance bar, the column/enum lists,
 the error kinds, the IPC schemas, and the fail-mode of each gate are there. **If
 the spec is incomplete or ambiguous for what the box needs → escalate (§7), do not
-improvise.** If two spec `§§` contradict each other → **unconditional hard-stop +
-escalate** (the loop is downstream of the spec).
+improvise.** If two spec `§§` contradict each other → run the pre-check
+(roles-and-escalation §4(a)) first: build a compatible pair, reconcile a rank-ordered
+pair in the same commit with a `Spec-Reconcile:` body line, and park the box (the §6
+park procedure) + escalate a same-rank fork (a scoped stop).
 
 ### Step 4 — Build per spec + write tests at the highest sensible level
 
@@ -347,19 +351,23 @@ build commit. Input: the STAGED diff (git diff --cached, inline). Critique it fo
      now"). A red→green test edit lacking that (1)+(2) justification is a P0/P1
      finding. (Mechanical signal: G70 flags an unjustified suppression marker; YOUR job
      is the SEMANTIC call — test-strategy.md §8.)
-  6. CLASS-CLOSURE (owner rule, 2026-08-26 — CLAUDE.md §10) — when the diff FIXES a
-     defect (a bug, a red gate, a review finding, a broken assumption), ask: "can this
-     or a SIBLING of it recur?" If yes, the commit must EITHER close the class — the
-     sibling sweep (the same pattern grepped across plan/spec/code/gates) PLUS a
-     permanent catcher (a gate leg / lint / self-test / spec note / Loop-memory entry)
-     so the recurrence is caught mechanically, never re-learned — OR explicitly record
-     on the brief's Class: line why the defect is a genuine one-off (or where that
-     closure is homed, with the box id). A closure landing outside the diff under
-     review (a Loop-memory entry) MUST be NAMED on the brief's Class: line. An
-     instance-only fix that leaves its class silently
-     open is a P1. (Scope guard: this asks for the CATCHER, not for gold-plating —
-     a one-line memory/spec note IS a valid closure when a mechanical gate would be
-     disproportionate; name the judgment.)
+  6. CLASS-CLOSURE (owner rule, 2026-08-26 — CLAUDE.md §10) — scope: a defect that
+     already exists on main (a red CI run, a bug in committed code, an escalation, a
+     sweep finding, or a review finding that shows the pattern in committed code). A
+     finding confined to the diff under review is fixed at every instance in the diff
+     and needs nothing more. For an in-scope fix ask: "can this or a SIBLING of it
+     recur?" If yes, the commit carries the sibling sweep (the pattern grepped across
+     plan/spec/code/gates) AND a closure. The closure is a NEW permanent catcher (a gate
+     leg / lint / self-test) only when the class guards a security control, has
+     recurred (a second instance in git history), or turned main red while the local
+     gates were green; otherwise it is a one-line repo-homed note (CONTRIBUTING.md
+     "Known gate traps" or the owning doc). Lowest rung first: prevent at the source,
+     a note, a regex or plan-lint leg, a parser leg (only for a bypass of a security
+     control). The Class: line names the closure or the one-off reason. A class left
+     silently open is a P1. What bounds this item is SCOPE, not quality: a catcher
+     beyond this trigger is an improvement outside the work at hand, not asked for;
+     it goes to the residual ledger with its reason (CLAUDE.md §6), never silently
+     dropped and never executed mid-box.
   7. PROSE ECONOMY (owner rule, 2026-09-09) — a count, an unmeasured "because"
      mechanism claim, or a coverage/done-ness claim in a comment, a plan note or the
      brief that no mechanical checker cross-checks is a defect in the PROSE,
@@ -388,10 +396,16 @@ NOT collapse the two reviews — each reviewer reports separately. In a delta ro
 onward) verify each prior P0/P1 fix and review the fix delta; outside the delta report
 only a P0, or a P1 whose scenario you reproduced.
 
-SPEC-CONTRADICTION is a finding CLASS ABOVE P0: if two spec §§ disagree (a §
-cross-reference inconsistency), flag it as SPEC-CONTRADICTION — it is an
-unconditional hard-stop + escalate, NEVER a working-tree fix (the loop is
-downstream of the spec and cannot pick a side).
+SPEC-CONTRADICTION is a finding CLASS ABOVE P0: two spec §§ (or the spec and the
+SSOT) that no single implementation satisfies. A diff may instead reconcile a
+RANK-ORDERED pair in the open (a Spec-Reconcile: line in the review brief): a
+normative clause beats an illustrative literal, [DECIDED] beats [REC] or an untagged
+statement, the owning § beats a restatement of it, a higher layer beats a lower one.
+Argue the losing reading as strongly as you can; confirm the ranking only if it
+still loses. Flag SPEC-CONTRADICTION when you dispute the ranking, when the pair is
+same-rank, or when either side is SSOT text, restates a CLAUDE.md §3 guardrail or
+sits in spec §0.10, §0.11 or §2.12. It parks the box (a scoped stop + escalate) and
+is NEVER a working-tree fix.
 === end rubric ===
 ```
 
@@ -418,12 +432,18 @@ downstream of the spec and cannot pick a side).
   stop. A split, re-cut or released box restarts at R1.
 - **P2 / P3** → never blocking and not applied (except the post-GO rule below): one
   `Open P2/P3:` body line each; one that a later box must act on also gets a `>` note on
-  that box or a new box with a `needs:` edge.
+  that box or a new box with a `needs:` edge. Every `Open P2/P3:` line — and every
+  improvement outside the work at hand, as its own `Open P2/P3: improvement …` line — is
+  the intake of the [residual ledger](../plan/residual-ledger.md), which the Co-Pilot
+  collects and triages at the phase-end sweep (test-strategy §11.2); the loop never edits
+  the ledger file.
 - **Divergence-resolution rule (canonical):** a **P0/P1 GO-vs-NOGO divergence is treated as
   NOGO — the stricter reviewer wins.** A P2/P3 divergence needs no resolution (both lines go
-  to `Open P2/P3:`) — **unless** it is a SPEC-CONTRADICTION, which is the unconditional
-  hard-stop + escalate above.
-- **SPEC-CONTRADICTION** (either reviewer) → **hard-stop + escalate**, never a working-tree fix.
+  to `Open P2/P3:`) — **unless** it is a SPEC-CONTRADICTION, which is the scoped stop +
+  escalate above.
+- **SPEC-CONTRADICTION** (either reviewer, including a disputed `Spec-Reconcile:` ranking) →
+  run the §6 park procedure and escalate (the scoped stop of roles-and-escalation §4(a)),
+  never a working-tree fix.
 - **Post-GO (the single home of this rule; other documents point here).** Both reviewers' GO
   freezes the staged diff; record its tree id. The only edit permitted after GO is deleting a
   sentence a reviewer flagged, or correcting a factual error in it, when that sentence sits in
@@ -472,8 +492,9 @@ Commit message — **Conventional-commit** form (G11), in this template:
 Box/§/Gates: <box-id> · §<x.y> … · G<nn> …
 What: <file group> — <what changed>
 Decisions: <file:line> per [Build-Session-Entscheidung] / [Derived-Assumption] site, or none
+Spec-Reconcile: <lower §> → <higher §> wins (<rule>)   (only when used)
 Tests: <tests added or changed, with their level>; Test-Change <file:line> — <(2) read-back evidence>
-Class: <closed: sibling sweep + catcher | one-off: reason | homed: box-id | n/a>
+Class: <closed: sibling sweep + catcher | closed: sibling sweep + note <where> | one-off: reason | homed: box-id | n/a>
 Models: opus=<model id> sonnet=<model id>
 Review: r1 opus=NOGO sonnet=GO
   P1 (opus) <file:line> <summary> — scenario: <…> → fixed
@@ -595,10 +616,12 @@ with a precedent is never escalated), then decide, and tag the choice site with
 
 **Escalate to the Co-Pilot session** only when one of these is genuinely true:
 
-- **Spec / SSOT contradiction** — two `§§` disagree, or the spec disagrees with the
-  SSOT. **Unconditional hard-stop + escalate** (never a working-tree fix).
-- **Cross-phase architecture decision with no source** — a design choice that binds
-  later phases and is not derivable from the spec/SSOT.
+- **Spec / SSOT contradiction the pre-check cannot rank** — run roles-and-escalation
+  §4(a) first: a compatible pair is built, a rank-ordered pair is reconciled in the same
+  commit with a `Spec-Reconcile:` body line; a same-rank fork, or a pair the pre-check
+  excludes, is a scoped stop + escalate (never a working-tree fix).
+- **A decision observable outside the crate that binds later phases, with no spec/SSOT
+  source** (roles-and-escalation §4(b)); an internal seam is tagged, not escalated.
 - **Scope / legal conflict** — the box implies work outside the
   *Explicitly Out of Scope* line (store/marketing/legal advice/binary code-signing),
   or a license/copyleft conflict.
@@ -612,9 +635,9 @@ with a precedent is never escalated), then decide, and tag the choice site with
   scoped stop: park the box (§6) and continue outside its `needs:` closure.
 
 Everything else: **decide and proceed, tagged.** When two genuinely professional
-options exist, decide strictly at the owner's core-rule anchor (CLAUDE.md §6 —
-cleanest / most-complete / most-professional wins), **not** reflexively by the
-cheaper one.
+options exist, decide strictly at the owner's core-rule anchor (CLAUDE.md §6 — the
+cleanest, most complete, most professional solution for the work at hand wins; scope,
+not quality, bounds it), **not** reflexively by the cheaper one.
 
 ---
 
@@ -667,8 +690,9 @@ A change is **done** only when:
   pattern lookup (§4): a P0/P1 with an established pattern is fixed, not parked. A
   scoped stop: run the park procedure below and continue outside the box's `needs:`
   closure.
-- A **spec-internal contradiction** (two `§§` disagree) — unconditional, regardless
-  of severity, never silently reconciled.
+- A **spec contradiction the pre-check cannot rank** (roles-and-escalation §4(a)) —
+  regardless of severity, never silently reconciled; the loop runs the park procedure
+  below and keeps building outside the box's `needs:` closure.
 - **Reviewer unavailability** — two live reviews unobtainable after bounded retry.
 - An **anomalous CI cancel** (a `cancelled` run with no successor — §3 step 6).
 - A needed **L(-1) security-critical-file edit** — the loop NEVER edits a
@@ -793,7 +817,7 @@ A P1-or-worse finding, a clarification, or a spec inner contradiction goes on it
 **own** line immediately after, never inlined:
 
 ```
-Co-Pilot: 1 item — SPEC-CONTRADICTION §2.7.2 vs §2.14.2 on cross-volume publish (hard-stop, escalated)
+Co-Pilot: 1 item — SPEC-CONTRADICTION §2.7.2 vs §2.14.2 on cross-volume publish (scoped stop, escalated)
 ```
 
 Batched boxes: **one status line per box** (each with the shared SHA + shared review
@@ -844,12 +868,15 @@ surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here
    itself a committed, dual-reviewed, gated change).
 3. **Two live reviews or no `GO`** — never auto-emit a trailer with fewer than two
    live reviewers.
-4. **Spec contradiction = hard-stop**, never silently reconciled — the loop is
-   downstream of the spec.
+4. **A spec contradiction is never silently reconciled** — the loop reconciles only a
+   pair the roles-and-escalation §4(a) pre-check ranks, in the open; a same-rank fork is
+   a scoped stop + escalate (the loop is downstream of the spec).
 5. **Conflict order, always:** SSOT > spec > security/process docs > plan > code >
    conversation.
-6. **Build fully, no stub as a default** — the cleanest / most-complete /
-   most-professional solution wins over token-cost and speed (CLAUDE.md §6).
+6. **Build fully, no stub as a default** — the cleanest, most complete, most
+   professional solution for the work at hand wins over token cost, session speed and
+   pragmatism; scope, not quality, bounds it, and an improvement outside the scope is a
+   residual-ledger line, never mid-box work (CLAUDE.md §6).
 
 ---
 

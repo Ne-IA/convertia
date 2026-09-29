@@ -53,6 +53,20 @@ Per-OS development prerequisites (toolchains, the platform WebView runtime, syst
 dependencies), the `tauri dev` / `tauri build` commands, and how to obtain the bundled engine
 binaries for a local run are documented in [DEVELOPMENT.md](DEVELOPMENT.md).
 
+## Known gate traps
+
+A gate that fires for a reason other than a real defect costs a contributor, human or agent, a round
+trip. One line per trap: the trigger, the gate, the fix. An entry here is the closure the root-cause rule
+([CLAUDE.md](CLAUDE.md) §10) accepts for a gate-trap class that guards no security control, has not
+recurred and never turned `main` red; a class that does gets a mechanical catcher instead.
+
+- **An edit to the G1 rubric in `docs/process/build-loop.md` alone** — `run-gate-selftests --changed`
+  (L2 pre-push) does not scope `docs/process/`, so the check-19 pin-uniqueness leg of
+  `g24-plan-lint.py` first runs at L4 — run `python3 -P scripts/run-gate-selftests` locally before
+  pushing.
+- **A new doc linked only inside backticks** (`` `[x](y)` ``) — `plan-lint` check 25 strips inline code
+  before reading links, so the doc is an orphan — link it with a plain markdown link.
+
 ## How to contribute
 
 External contributions come as **GitHub pull requests against `main`**. Keep the change focused,

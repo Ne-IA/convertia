@@ -11,8 +11,10 @@
 >
 > **Conflict order (unchanged, every layer):**
 > **SSOT > spec > security/process docs > plan > code > conversation.**
-> When two layers disagree, the higher one wins — **never silently reconcile,
-> always escalate**. This file is a *security/process doc*: it is **above** the plan
+> When two layers disagree, the higher one wins — **never silently**: a difference the
+> pre-check in [roles-and-escalation.md](../process/roles-and-escalation.md) §4(a) can rank
+> is reconciled in the open, in the same commit; anything it cannot rank escalates. This
+> file is a *security/process doc*: it is **above** the plan
 > it describes, so if a box in `P*.md` contradicts the format here, the box is wrong
 > and `plan-lint` fails it.
 >
@@ -176,8 +178,11 @@ those are in the spec `§§`.
 and quotes at most the decided literal it depends on; it does not paraphrase the
 mechanism. A paraphrase is a second copy that drifts — the spec-restatement class
 `plan-lint` check 30 polices inside the spec is authorial here — and every drift is a
-spec-contradiction hard-stop the loop meets mid-box. The pre-fill audit (test-strategy
-§11.4) strips restated prose back to references as it passes.
+plan-vs-spec difference the loop must reconcile mid-box (the spec wins,
+roles-and-escalation §4(a)). The pre-fill audit (test-strategy §11.4) strips restated
+prose back to references as it passes. A note that records a Co-Pilot ruling uses the
+ruling tag of the spec's decision-tag legend ([spec README](../spec/README.md)
+Conventions), never a reopen clause.
 
 ---
 
@@ -405,6 +410,7 @@ The plan is **split per phase**, indexed by a README:
 |---|---|
 | [`docs/plan/README.md`](README.md) | **The index.** The phase skeleton (`P0`..`P11`) — each phase's goal, scope, spec home, and a link to its phase file — plus the sequencing philosophy (walking-skeleton-first) and the conflict rule. It carries **no atomic `[ ]` boxes**; it is the map, not the territory. |
 | [`docs/plan/P0-build-and-security.md`](P0-build-and-security.md) | **P0** — the bootstrap phase (clusters P0.1–P0.7). Built **manually** (DECISION B), not by the loop. |
+| [`docs/plan/residual-ledger.md`](residual-ledger.md) | **The residual ledger** — what boxes and Co-Pilot acts left outside their work at hand (CLAUDE.md §6), one plain bullet each, triaged per phase at the sweep (test-strategy §11.2). No `[ ]` boxes; the loop never builds from it. |
 | `docs/plan/P<n>-<slug>.md` | **One file per later phase** (`P1-foundation-and-scaffolding.md`, …, `P11-final-e2e-and-acceptance.md`). The atomic `[ ]` boxes for that phase live here, added in the fill pass. |
 
 - **File naming:** `P<n>-<kebab-slug>.md`, the slug from the phase title in the

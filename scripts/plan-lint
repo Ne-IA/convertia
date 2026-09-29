@@ -1334,7 +1334,7 @@ _RUBRIC_PHRASES = (
     #   in-block, so renaming the dimension away would slip through — G1 P0.6.2 P3 hardening)
     "SUPPRESSING A REAL REGRESSION",                   # the test-integrity high-scrutiny (no-green-by-rewrite) item
     "convergence/divergence",                          # divergence handling
-    "SPEC-CONTRADICTION is a finding CLASS ABOVE P0",  # the unconditional-hard-stop class above P0
+    "SPEC-CONTRADICTION is a finding CLASS ABOVE P0",  # the scoped-stop class above P0 (roles §4(a))
 )
 
 

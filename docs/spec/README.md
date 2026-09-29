@@ -37,9 +37,14 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 
 ## Conventions
 
-- **Decision tags:** `[DECIDED]` (fixed here / by the SSOT), `[OPEN]` (a genuine
-  unresolved owner-level call — collected in the log below), `[DEFER: …]` (design is
-  decided; only an empirical number or a real-world validation remains).
+- **Decision tags:** `[DECIDED]` (fixed here / by the SSOT), `[REC]` (an `[OPEN]` resolved with a
+  recommended default; it ranks below `[DECIDED]`), `[OPEN]` (a genuine unresolved owner-level call —
+  collected in the log below), `[DEFER: …]` (design is decided; only an empirical number or a
+  real-world validation remains). A Co-Pilot ruling reads `[DECIDED — Co-Pilot ruling <YYYY-MM-DD>]`,
+  the date being the day its commit landed (it names the ruling: "the 2026-09-15 ruling"), and
+  `[DECIDED — Co-Pilot ruling <YYYY-MM-DD>, owner-ratified]` once the owner ratified it. A ruling binds
+  from landing and carries no reopen clause; the owner overturns it by an ordinary edit
+  ([roles-and-escalation §4](../process/roles-and-escalation.md)).
 - **SSOT references** by section *name* (e.g. *Never harm the original*).
 - Code/identifiers in English; this doc in English (public OSS repo).
 

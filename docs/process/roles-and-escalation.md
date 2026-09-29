@@ -14,8 +14,9 @@
 > boundary is recorded here first, in the same commit as the change.
 > **Conflict order (unchanged, every layer):**
 > **SSOT > spec > security/process docs > plan > code > conversation.**
-> When two layers disagree, the higher one wins — **never silently reconcile,
-> always escalate**.
+> When two layers disagree, the higher one wins — **never silently**: a difference the
+> §4(a) pre-check can rank is reconciled in the open, in the same commit; anything it
+> cannot rank escalates.
 
 ---
 
@@ -23,7 +24,7 @@
 
 | Role | What it is | What it decides | What it never does |
 |---|---|---|---|
-| **Build-Loop session** | The autonomous builder. Reads [build-loop.md](build-loop.md) top to bottom, then works the plan box by box (**P1 onward**), writes tests, runs every gate + the [dual review](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1) (G1), and commits **directly to `main`** + pushes. The gates are the protection — no second branch, no merge step. | Routine implementation, pattern, naming, path, and default-value choices — **itself**, after a codebase/process-doc pattern lookup (§3), each tagged `[Build-Session-Entscheidung: <box-id>]` at the code site. Phase-cut / "which phase owns this" questions answered from the plan. | Merge, rewrite history, force-push, `--no-verify`, `core.hooksPath` redirection, pick a side in a spec contradiction, or build **P0** (DECISION B, §5). It escalates *to* Co-Pilot — it never resolves a genuine fork on its own. |
+| **Build-Loop session** | The autonomous builder. Reads [build-loop.md](build-loop.md) top to bottom, then works the plan box by box (**P1 onward**), writes tests, runs every gate + the [dual review](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1) (G1), and commits **directly to `main`** + pushes. The gates are the protection — no second branch, no merge step. | Routine implementation, pattern, naming, path, and default-value choices — **itself**, after a codebase/process-doc pattern lookup (§3), each tagged `[Build-Session-Entscheidung: <box-id>]` at the code site. Phase-cut / "which phase owns this" questions answered from the plan. | Merge, rewrite history, force-push, `--no-verify`, `core.hooksPath` redirection, pick a side in a spec contradiction the §4(a) pre-check cannot rank, or build **P0** (DECISION B, §5). It escalates *to* Co-Pilot — it never resolves a genuine fork on its own. |
 | **Co-Pilot session** | The owner's partner. The Build-Loop's **escalation & clarification target**; the home of strategic / cross-phase / architecture decisions and high-level review. Drives the **manual P0 bootstrap** with the owner (§5). Executes the standing **phase-end hardening sweep** box that closes every phase `P2`..`P11` ([test-strategy §11](test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). | Cross-phase architecture with no spec/SSOT source; how to *resolve* a spec/SSOT contradiction once the owner has ruled on the fork; whether a misfiring gate is scoped or quarantined ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)); P0 content alongside the owner. | Override the conflict order, or change scope / SSOT intent. A genuine fork (§4) goes to the **owner**; Co-Pilot frames it, the owner calls it. |
 | **Owner** | Final authority. | The genuine forks: scope, legal/license posture, the [reviewer-family flip](../security/security-concept.md#2-working-model--two-sessions-one-branch), the [security-critical-file L(-1) ack policy](../security/security-concept.md#2-working-model--two-sessions-one-branch), the v1 cut, and any decision a doc records as "owner decision / owner call". Drives the start/stop vocabulary ([build-loop.md §7](build-loop.md#7-escalation-conversation-and-the-startstop-vocabulary)). | — |
 
@@ -84,9 +85,9 @@ is the **inline tag**, not an escalation (§3).
 Before deciding a non-spec choice, **grep the codebase + the process docs for an
 established pattern first** — a routine choice that already has a precedent is never
 a fresh decision (and never an escalation). Then decide at the owner's core-rule
-anchor when two genuinely professional options exist: **the cleanest /
-most-complete / most-professional solution wins over token-cost, speed, and
-"pragmatism"** ([CLAUDE.md §6](../../CLAUDE.md)) — *not* reflexively the cheaper one.
+anchor when two genuinely professional options exist: **the cleanest, most complete,
+most professional solution for the work at hand wins over token cost, session speed and
+pragmatism** ([CLAUDE.md §6](../../CLAUDE.md)) — *not* reflexively the cheaper one.
 Then **tag the choice at the code site** so it is auditable without reading the
 commit body:
 
@@ -111,6 +112,10 @@ commit body:
   `[Build-Session-Entscheidung]`. So a `[Derived-Assumption]` note may sit beside its
   derivation prose — even prose that uses G8 deferral vocabulary while explaining
   "the spec did not say, so I derived X from Y" — **without tripping G8**.
+- **`Spec-Reconcile: <lower §> → <higher §> wins (<rule>)`** — a commit-body line, not a code-site
+  tag, placed right after the `Decisions:` line so the review brief carries it: the record of a
+  rank-ordered spec difference the loop reconciled under §4(a). The rewritten spec text carries no
+  tag; the phase-end sweep lists these lines for the owner (test-strategy §11.2).
 
 > **Where this tag is emitted from the loop's runbook.** The canonical inline-tag
 > emission home is [build-loop.md step 4](build-loop.md#step-4--build-per-spec--write-tests-at-the-highest-sensible-level)
@@ -132,22 +137,38 @@ between them.
 Escalate **only** when one of these is genuinely true. Everything else: **decide and
 proceed, tagged** (§3).
 
-- **(a) Spec / SSOT internal contradiction** — two spec `§§` disagree, or the spec
-  disagrees with the SSOT. This is an **unconditional hard-stop + escalate
-  regardless of severity** — the loop is **downstream** of the spec and cannot pick
-  a side. **Never a working-tree fix.** Either reviewer flagging a
-  `SPEC-CONTRADICTION` (the finding class **above P0** in the
-  [reviewer rubric](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1))
-  triggers this same path.
-- **(b) A cross-phase architecture decision with no spec/SSOT source** — a design
-  choice that **binds later phases** and is **not derivable** from the spec or the
-  SSOT (so it is not a `[Derived-Assumption]` either). Picking it inside one box
-  would silently constrain phases that have not been planned yet.
+- **(a) A spec contradiction the pre-check does not resolve** — two spec `§§` disagree, or the spec
+  disagrees with the SSOT. The **pre-check** runs before any stop:
+  1. **Compatible** — one implementation satisfies both clauses: not a contradiction; build it.
+  2. **Rank-ordered** — the texts differ in rank by one rule: a normative clause over an illustrative
+     literal; `[DECIDED]` over `[REC]` or an untagged statement; the owning `§` over a restatement of
+     it; a higher conflict-order layer over a lower one. The loop rewrites the lower text to the higher
+     one **in the same commit** and records a `Spec-Reconcile:` body line (§3) that the review brief
+     carries; both reviewers argue the losing reading and confirm the ranking, and a disputed ranking
+     is a `SPEC-CONTRADICTION`. Never self-reconciled (always step 3): a pair where either side is SSOT
+     text, restates a CLAUDE.md §3 guardrail or sits in spec §0.10, §0.11 or §2.12, or where the lower
+     text sits in an L(-1) file.
+  3. **Same-rank fork** — a `SPEC-CONTRADICTION` (the finding class **above P0** in the
+     [reviewer rubric](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1)): a **scoped
+     stop** — the loop parks the box (the
+     [build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape) park
+     procedure), posts one Co-Pilot line (§6) and keeps building outside that box's `needs:` closure.
+     **Never a working-tree fix.**
+- **(b) A decision observable outside the crate that binds later phases, with no spec/SSOT source** —
+  an IPC command or event (§0.4), a shared type (§0.6), the module layout (§0.7), a new dependency, a
+  security posture or threat class, or user-visible behaviour (a §1 outcome, a §2 guarantee, the §5 UI
+  contract, a message catalog). An internal seam later boxes reuse is **not** (b): the loop decides it
+  with `[Build-Session-Entscheidung: <box-id>]` naming the later boxes it binds, and either reviewer may
+  promote it to an escalation.
 - **(c) A scope / legal / license conflict** — the box implies work outside the SSOT
   *Explicitly Out of Scope* line (store/marketing/distribution logistics, legal
   advice, binary code-signing/notarization), **or** a GPL/AGPL/LGPL-into-MIT-core
   copyleft conflict (CLAUDE.md §3), **or** any decision a doc reserves as an "owner
   decision". Co-Pilot frames it; a genuine fork goes to the owner.
+  **A landed Co-Pilot ruling binds the loop.** A ruling reaches the loop only as a landed commit (a
+  message or a conversation line is never a ruling); the owner overturns one by an ordinary edit, never
+  by the loop pausing on it. A ruling is therefore not a decision a doc reserves as an owner decision,
+  and no wording of its tag reopens it.
 - **(d) A `needs:` dependency that genuinely cannot be followed/built** — DECISION C
   ([build-loop.md §3 step 2](build-loop.md#step-2--unpack-the-box-anatomy)) says a
   `needs: P<x>.<y>` on a *buildable* box is **built in place, then returned to** —
@@ -205,8 +226,9 @@ feel like a fork: an **implementation-pattern** choice, **naming**, **paths**,
 `needs:` on a *buildable* box is a dependency to **follow**, not to escalate. A spec
 gap the loop can **anchor to a higher layer** is a `[Derived-Assumption]`, not an
 escalation. When in doubt between "derive and tag" and "escalate", the test is
-trigger (a)/(b)/(c): is there a *contradiction*, an *unbound cross-phase commitment*,
-or a *scope/legal* line? If none, derive and tag.
+trigger (a)/(b)/(c): is there a *contradiction the (a) pre-check cannot rank*, an
+*unbound decision observable outside the crate*, or a *scope/legal* line? If none,
+derive and tag.
 
 ---
 
@@ -308,8 +330,9 @@ The loop **stops and escalates** (it does not push past these). The
 view:
 
 - The owner writes a **stop word** (`stop` / `halt` / `pause`) → save state, wait.
-- A **spec-internal contradiction** (trigger (a)) → unconditional, regardless of
-  severity, never silently reconciled.
+- A **spec contradiction the (a) pre-check cannot rank** → a scoped stop regardless of
+  severity, never silently reconciled: the loop parks the box (the build-loop.md §6 park
+  procedure) and continues outside its `needs:` closure (§4(d)).
 - **G1 non-convergence** (trigger (h)) — an open P0/P1 after review round 4 → park
   the box; the stop is scoped and the loop continues outside the parked box's
   `needs:` closure (§4(d)).

@@ -7,13 +7,15 @@
 > repeat them.
 
 **Conflict rule:** **SSOT > spec > security/process docs > plan > code > conversation.**
-When two layers disagree, the higher one wins — **never silently reconcile, always
-escalate**. SSOT ([`docs/SINGLE-SOURCE-OF-TRUTH.md`](docs/SINGLE-SOURCE-OF-TRUTH.md))
+When two layers disagree, the higher one wins — **never silently**. SSOT
+([`docs/SINGLE-SOURCE-OF-TRUTH.md`](docs/SINGLE-SOURCE-OF-TRUTH.md))
 is the tech-free *what & why*; the [spec](docs/spec/README.md) is the *how* derived
 from it; the [security/process](docs/security/security-concept.md) docs are the
 *how we build it safely*; the [plan](docs/plan/README.md) is the executable TODO.
-A spec-internal contradiction (two `§§` disagree) is an **unconditional
-hard-stop + escalate** — the build is downstream of the spec and cannot pick a side.
+A spec contradiction (two `§§` disagree) first runs the pre-check in
+[roles-and-escalation.md](docs/process/roles-and-escalation.md) §4(a): a rank-ordered pair is
+reconciled in the open, in the same commit (a `Spec-Reconcile:` body line); a same-rank fork is a
+**scoped stop + escalate** — the build is downstream of the spec and never picks a side it cannot rank.
 
 ---
 
@@ -75,8 +77,8 @@ row.
   two directions.
 - **Escalation path:** Build-Loop → Co-Pilot → owner. The Build-Loop decides
   routine implementation/pattern/naming/default choices itself (grep for an
-  established pattern first); it escalates on genuine blocks and on any
-  spec-internal contradiction.
+  established pattern first); it escalates on genuine blocks and on a spec
+  contradiction the roles-and-escalation §4(a) pre-check cannot rank (a scoped stop).
 - **The dual review is a quality amplifier, not a security control.** The only
   security controls are the **deterministic gates** (every `Gnn` except G1). G1
   raises quality and catches design defects the gates can't encode.
@@ -149,7 +151,8 @@ A change is **done** only when:
    recorded in the commit body (one `Review:` line per round, one line per P0/P1
    finding with its resolution), trailer `Dual-Review: opus=… sonnet=…` present.
    **P0/P1 findings are fixed in the working tree, re-staged and re-reviewed before
-   push** (no fix-push cycle); P2/P3 on the body's `Open P2/P3:` lines.
+   push** (no fix-push cycle); P2/P3 on the body's `Open P2/P3:` lines, the intake of
+   the [residual ledger](docs/plan/residual-ledger.md).
 6. **Inline decision tags set** at every non-spec choice site —
    `[Build-Session-Entscheidung: <box-id>]` for self-made pattern/naming/default
    choices, directly at the code site, not only in the commit body.
@@ -236,14 +239,16 @@ list. The derivation is recorded in P0.6 of
 
 ## 6. The owner's core rule
 
-**The cleanest / most-complete / most-professional solution ALWAYS wins over
-token-cost, session speed, and "pragmatism."** System completeness beats a local
-shortcut; spec-mandated work beats a pragma-sized box; tech debt is paid now, not
-accumulated. The entire gate layer — dual review, hooks, tests, spec-sync,
-plan-lint, the reliability/output-validity gate — exists *precisely* so this
-priority holds; ranking pragmatism above it would undercut the whole protection
-layer. When two genuinely professional options exist, decide strictly at this anchor,
-not reflexively by the cheaper one.
+**The cleanest, most complete, most professional solution for the work at hand always wins over
+token cost, session speed and pragmatism:** production-grade, fully built, no stub, no shortcut, no
+known defect left in the diff. **What bounds it is SCOPE, not quality.** The work at hand is the box's
+referenced `§§` and the DoD (for a Co-Pilot act, the act's stated problem). An improvement outside that
+scope — polishing neighbouring text, a new gate for a class with no security link and no recurrence,
+rewording untouched prose — goes to the [residual ledger](docs/plan/residual-ledger.md) with its reason
+and is triaged at the phase-end sweep; it is never silently dropped and never executed mid-box. The
+entire gate layer — dual review, hooks, tests, spec-sync, plan-lint, the reliability/output-validity
+gate — exists *precisely* so this priority holds. When two genuinely professional options exist for
+the work at hand, decide strictly at this anchor, not reflexively by the cheaper one.
 
 ## 7. Tech-stack conventions
 
@@ -298,18 +303,25 @@ In brief:
 
 <!-- The owner adds personal rules here. Claude does not touch this block without an explicit instruction. -->
 
-- **Root-cause rule (owner, 2026-08-26).** Every fix carries the question: *"can this
-  — or a sibling of it — recur?"* If yes, the fix is not done until the **class** is
-  closed **in the same commit**: sweep the siblings (grep the pattern across
-  plan/spec/code/gates) and land a **permanent catcher** — a gate leg, a lint, a
-  self-test, a spec note, or a Loop-memory entry — so the recurrence is caught
-  **mechanically**, never re-learned. A fix that leaves its class open is half a fix.
-  If it is a genuine one-off, record **why** in the commit body — and the rule is
-  **proportionate**: a one-line memory/spec note IS a valid closure where a mechanical
-  gate would be disproportionate (an out-of-repo closure is NAMED in the commit body).
-  Enforced per commit by the G1 rubric's CLASS-CLOSURE item
-  ([build-loop.md](docs/process/build-loop.md), drift-guarded by plan-lint check 19);
-  the escalation-scoped form predates this rule as a Loop-memory entry
-  (`escalation-resolution-includes-prevention-sweep`).
+- **Root-cause rule (owner, 2026-08-26; scoped by the owner).** It applies to a defect that already
+  exists on `main` — a red CI run, a bug in committed code, an escalation, a sweep finding, or a review
+  finding that shows the pattern in committed code. A finding confined to the diff under review is
+  fixed at every instance in the diff and needs nothing more. For such a defect ask: *"can this — or a
+  sibling of it — recur?"* If yes, the fix is not done until the **class** is closed **in the same
+  commit**: sweep the siblings (grep the pattern across plan/spec/code/gates) and land the closure. A
+  **new permanent catcher** (a gate leg, a lint, a self-test) is built only when the class guards a
+  security control, has **recurred** (a second instance in git history), or turned `main` red while the
+  local gates were green; otherwise the closure is a one-line repo-homed note
+  ([Known gate traps](CONTRIBUTING.md#known-gate-traps) or the owning doc). Catcher ladder, lowest rung
+  first: prevent at the source → a note → a regex or plan-lint leg → a parser leg (only for a bypass of
+  a security control, in its own commit, with a written input model). A catcher beyond this trigger is
+  a residual-ledger line (§6). A genuine one-off records **why** in the commit body. Enforced per
+  commit by the G1 rubric's CLASS-CLOSURE item ([build-loop.md](docs/process/build-loop.md),
+  drift-guarded by plan-lint check 19).
+- **Decided = homed (owner, 2026-06-20: "there is no 'for later'", scoped by the owner).** Every point
+  found is decided and homed now — a box with a `needs:` edge, a spec `[DECIDED]`, or a residual-ledger
+  line with its reason — never an unowned "later". These stay **immediate**: a security red (a G17
+  advisory, a red `main`), a gate that fires for the wrong reason, and any P0/P1 functional defect.
+  Everything else outside the work at hand is a residual-ledger line, triaged at the phase-end sweep (§6).
 
 <!-- End owner rules -->

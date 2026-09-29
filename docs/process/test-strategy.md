@@ -672,9 +672,9 @@ content-floor tags); this file owns the **conventions** for *how tests reach it*
 
 ## 4. Build fully — no skeleton/stub (wired to the deferral gate · G8)
 
-The owner's core rule (CLAUDE.md §6: the cleanest / most-complete / most-
-professional solution **always** wins over token-cost, speed, and "pragmatism")
-applies to tests as hard as to code. **A test is not "done" as a skeleton.** The
+The owner's core rule (CLAUDE.md §6: the cleanest, most complete, most professional
+solution for the work at hand **always** wins over token cost, session speed and
+pragmatism) applies to tests as hard as to code. **A test is not "done" as a skeleton.** The
 only sanctioned stub is a **named, compile-time interface shell** filled by a
 **named, scheduled** box (the P3 `crate::isolation` shells P4 expands are the
 sanctioned example) — never a quiet placeholder, never a "Phase 2 / for now / comes
@@ -1154,6 +1154,14 @@ delivered *system*.
 - **Caged tails (added 2026-09-15):** before the box flips, the sweep lands, under
   owner-ack, every caged tail a box of the phase declared as reds-nothing (the P4.41
   G38 planted positives, floor rows, tool pins, gate-row wording).
+- **Residual-ledger triage:** before the box flips, the Co-Pilot copies every `Open P2/P3:` intake line
+  of the phase's commits (found with `git log --grep='^Open P2/P3:'` over the phase range) into the
+  phase's section of the [residual ledger](../plan/residual-ledger.md) and gives each line exactly one
+  outcome: **done** (mechanical and small, at most 10 per phase, the fixing commit's SHA recorded),
+  **boxed** (a successor-phase box, with a `needs:` edge where it binds) or **declined** (a one-line
+  reason). The `[x]` needs every line triaged, not executed. The same pass lists the phase's
+  `Spec-Reconcile:` body lines (`git log --grep='^Spec-Reconcile:'`) for the owner's one-pass bless;
+  the bless is not a precondition of the `[x]`.
 - **Watch health:** the sweep reads the Dependabot job history the way
   roles-and-escalation §5a does; a failing or silent ecosystem job is a sweep
   finding.

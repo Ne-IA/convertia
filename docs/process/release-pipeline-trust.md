@@ -25,8 +25,9 @@
 > recorded here first, in the same commit as the change.
 > **Conflict order (every layer):**
 > **SSOT > spec > security/process docs > plan > code > conversation.**
-> When two layers disagree, the higher one wins — never silently reconcile, always
-> escalate.
+> When two layers disagree, the higher one wins — never silently: a difference the
+> pre-check in [roles-and-escalation.md](roles-and-escalation.md) §4(a) can rank is
+> reconciled in the open, in the same commit; anything it cannot rank escalates.
 
 ---
 

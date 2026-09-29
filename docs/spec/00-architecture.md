@@ -1448,7 +1448,7 @@ convertia/
 ├─ assets/                         # static brand assets
 │  └─ branding/                    # logo / brand source art
 ├─ docs/                           # all documentation (the doc graph G68 guards)
-│  ├─ plan/                        # P0..P11 + README + _format.md
+│  ├─ plan/                        # P0..P11 + README + _format.md + residual-ledger.md
 │  ├─ process/                     # build-loop / test-strategy / roles / vuln-response / gate-status / p0-completion / minisign-key-custody / release-pipeline-trust
 │  ├─ security/                    # security-concept.md + build-gates.md (G1..Gnn)
 │  └─ spec/                        # the spec (how) — 00-architecture … 07-app-shell
