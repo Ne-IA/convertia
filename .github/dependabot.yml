@@ -3,9 +3,9 @@
 # Opens bump PRs for github-actions + Rust(cargo) + JS(npm/pnpm) + Python(pip). G56
 # asserts this file carries all four `package-ecosystem` entries (the pin-and-watch
 # discipline is symmetric across the actions graph, the crate graph, the pnpm graph,
-# AND the pip gate-toolchain layer in requirements-ci.txt). Missing manifests
-# (Cargo.toml/package.json land in P1.51) are tolerated - Dependabot skips an
-# ecosystem whose manifest is absent, no error.
+# AND the pip gate-toolchain layer in requirements-ci.txt). Every ecosystem's manifest
+# exists; a failing or silent ecosystem job is a finding, never an empty queue
+# (roles-and-escalation sec 5a, watch health).
 #
 # Single-branch model: every bump PR is Co-Pilot/owner-reviewed; the autonomous
 # Build-Loop NEVER opens, reviews, or auto-merges these (roles-and-escalation sec 5a).
@@ -32,16 +32,24 @@ updates:
     open-pull-requests-limit: 5
     labels: ["bot:dependabot", "type:dependencies"]
 
-  - package-ecosystem: "npm"              # pnpm workspace + pnpm-lock.yaml  (scaffolded P1.51)
+  - package-ecosystem: "npm"              # pnpm workspace + pnpm-lock.yaml  (LIVE)
     directory: "/"
     schedule: { interval: "weekly", day: "monday", time: "04:00" }
     commit-message: { prefix: "deps(npm)" }
     open-pull-requests-limit: 5
     labels: ["bot:dependabot", "type:dependencies"]
+    groups:
+      # minor + patch version updates arrive as ONE weekly PR, each re-landed by the Co-Pilot
+      # (roles-and-escalation sec 5a); a major version and every security update stay their own PR.
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    # No committed frozen-lockfile setting: pnpm honours one even for Dependabot's lockfile-only resolve,
+    # which failed every npm job from 2026-06-23 until GitHub paused it; check-js-supply-chain refuses it.
 
   - package-ecosystem: "pip"              # requirements-ci.txt - the gate-tool layer  (LIVE)
     directory: "/"
-    schedule: { interval: "weekly", day: "monday", time: "04:00" }
+    schedule: { interval: "monthly", time: "04:00" }
     commit-message: { prefix: "deps(pip)" }
     open-pull-requests-limit: 5
     labels: ["bot:dependabot", "type:dependencies"]

@@ -12,8 +12,20 @@ freezes the JS supply-chain posture (stdlib only):
     without the scan having to read the URL; a fail-closed token scan over the escape-decoded text then
     rejects any foreign host and any non-registry SCHEME (git+/git:/ssh:/file:/protocol-relative //)
     anywhere else (the G18c block below);
-  * G18d LIFECYCLE LOCKDOWN - `.npmrc` keeps the install posture locked (no `enable-pre-post-scripts`,
-    no `unsafe-perm`, `frozen-lockfile` on); once a pnpm manifest exists (P1) the build-script allowlist
+  * G18d LIFECYCLE LOCKDOWN - `.npmrc` keeps the install posture locked (`enable-pre-post-scripts` and
+    `unsafe-perm` each pinned to exactly `false`, since pnpm reads an absent key and any other value as ON,
+    and neither re-set in `pnpm-workspace.yaml`, whose keys pnpm reads over `.npmrc`) and refuses any
+    committed frozen-lockfile setting - an `.npmrc` `frozen-lockfile` key at any value or a
+    `frozenLockfile` / `frozenLockfileIfExists` token in `pnpm-workspace.yaml` - because CI's pin is G18a's
+    `--frozen-lockfile` flag-scan and a committed setting also freezes Dependabot's
+    `pnpm install --lockfile-only` resolve. In `pnpm-workspace.yaml` every setting this guard refuses is
+    a token search at any value, and a `${` anywhere is refused, since pnpm substitutes the environment
+    into that file's keys (the pnpm-workspace.yaml block below). `.npmrc` is read the way pnpm's own ini
+    reader reads it, it may carry only the keys this guard evaluates (_NPMRC_KEYS: a key such as
+    `userconfig` makes pnpm load a further config file), and the spellings a static read cannot settle
+    (a `[section]` header, an array key, an environment-substituted key, a key that decodes to a
+    non-string) are refused fail-closed (the
+    `.npmrc` reader block below); once a pnpm manifest exists (P1) the build-script allowlist
     (`onlyBuiltDependencies` / pnpm-11 `allowBuilds`) stays <= the frozen count, FAIL-CLOSED on a
     present-but-unparseable allowlist, and a committed manifest WITHOUT a committed lockfile FAILS
     (mirrors the Rust check-supply-chain workspace-state - never a silent skip on a real workspace);
@@ -33,7 +45,10 @@ a re-audit of this gate against the new pnpm config surface. `.npmrc` is L(-1)
 
 Exit: 0 = posture OK (+ live checks pass or target-absent); 1 = a relaxation / a foreign-or-non-registry
        resolution / a scoped-registry override / a grown-or-unparseable allowlist / a lock-missing
-       manifest; 2 = a config file is missing or unparseable.
+       manifest / a committed frozen-lockfile setting / a lifecycle pin re-set in pnpm-workspace.yaml /
+       a refused setting, a source-redirect prefix or a `${` in pnpm-workspace.yaml /
+       an `.npmrc` key this guard does not evaluate or a spelling it cannot settle;
+       2 = a config file is missing or unparseable.
 """
 from __future__ import annotations
 
@@ -64,6 +79,79 @@ _INSTALL_HOOKS = ("preinstall", "install", "postinstall", "prepare", "preprepare
 
 ALLOWED_REGISTRY = "https://registry.npmjs.org/"
 ALLOWED_HOST = "registry.npmjs.org"
+# A committed frozen-lockfile setting is refused at ANY value (G18a). pnpm 10.13.1 freezes a
+# `--lockfile-only` resolve (Dependabot's) on exactly two settings, `frozenLockfile` and
+# `frozenLockfileIfExists` (its install step reads
+# `opts.frozenLockfile || opts.frozenLockfileIfExists && existsNonEmptyWantedLockfile`, and the `ci` default
+# feeds `frozenLockfileIfExists` only when the install is not lockfile-only; `preferFrozenLockfile` does not
+# freeze). In .npmrc it is every key the reader block below maps to `frozen-lockfile`, the one key pnpm
+# 10.13.1 honours there, matched with any case and an optional `-` / `_` (`frozenLockfile`,
+# `FROZEN-LOCKFILE` and `frozen_lockfile` do not freeze pnpm 10.13.1, measured, and are refused
+# fail-closed); every other .npmrc spelling, `frozen-lockfile-if-exists` included (not read there,
+# measured), is refused as a key outside _NPMRC_KEYS. In pnpm-workspace.yaml, where pnpm copies every key
+# into its settings, it is a token search for either setting in any case, with an optional `-` / `_` after
+# `frozen` (a separator after `lockfile` ends the shorter token, so `frozen-lockfile-if-exists` matches too),
+# over the raw and the escape-decoded text with nothing excised (workspace_frozen_lockfile_problems);
+# `preferFrozenLockfile` and a longer key do not match. A setting the refusal cannot see still fails the
+# Dependabot npm job, which the watch-health triage reads (roles-and-escalation §5a).
+_FROZEN_KEY_RE = re.compile(r"frozen[-_]?lockfile", re.IGNORECASE)
+_FROZEN_TOKEN_RE = re.compile(r"(?<![A-Za-z])frozen[-_]?lockfile(?:ifexists)?(?![A-Za-z])", re.IGNORECASE)
+# The two lifecycle pins must each be present and exactly `false` (G18d): pnpm 10.13.1 reads an absent key
+# as ON (its defaults: `enable-pre-post-scripts` true, `unsafe-perm` true unless running as root) and every
+# value but `false` as ON too - a bare key, an empty value, `FALSE`, `yes` (measured: the root project's
+# `pre<script>` ran under each). The pins live in .npmrc only: pnpm copies every pnpm-workspace.yaml key
+# over the .npmrc value (measured: `enablePrePostScripts: true` there ran the `pre<script>` with the .npmrc
+# pin at `false`, and `unsafePerm: true` read as true), so a token naming either pin in pnpm-workspace.yaml
+# is refused at any value, found as the frozen token is (workspace_lifecycle_problems).
+_LIFECYCLE_PINS = {
+    "enable-pre-post-scripts": "npm pre/post script hooks must stay OFF (a dep could run arbitrary code on install)",
+    "unsafe-perm": "must stay off",
+}
+_LIFECYCLE_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?:enable[-_]?pre[-_]?post[-_]?scripts|unsafe[-_]?perm)(?![A-Za-z])",
+                                 re.IGNORECASE)
+# The pnpm-workspace.yaml block. pnpm 10.13.1 reads every key of that file as a setting, in any YAML key form
+# (`pnpm config get` read `configDependencies`, `onlyBuiltDependenciesFile`, `patchedDependencies` and
+# `dangerouslyAllowAllBuilds` from the block, quoted, flow and explicit forms alike, measured), so a `^key:` line
+# read cannot see them. Every setting this guard refuses there is therefore a token search at any value, found
+# as the frozen token is (any case, an optional `-` / `_` between words, raw and escape-decoded, nothing
+# excised): the frozen and lifecycle tokens above, the four settings just named (install-time code, patches and
+# the build-script allowlist; `dangerouslyAllowAllBuilds` ran a dependency's postinstall in the quoted, flow,
+# explicit and hex-escaped key forms, and under `false` plus a more-indented continuation line, a plain scalar
+# pnpm reads as the truthy `false on`, measured), and `registries` (a `registries` map re-pointed resolution
+# over the .npmrc pin in the block, flow and quoted form, measured - the registry pin lives in .npmrc only, as
+# the lifecycle pins do). A source-redirect spec prefix (_REDIRECT_SPEC's set) is refused anywhere in the file:
+# a flow-form `overrides` and a hex-escaped `link:` value in a block-form one each rewrote a dependency to a
+# local link (measured), and the `^overrides:` block reader below read neither. pnpm also substitutes the
+# environment into every top-level key and string value there (`${NAME}` / `${NAME-fallback}`, a global
+# replace), so a key composed across `${` hides every token: `${UNSET-frozen}Lockfile`, its hex-escaped
+# `\x24{` twin and `${UNSET-regis}tries` each took effect (measured). A static read cannot settle that, so a
+# `${` anywhere in the file is refused, raw or escape-decoded (workspace_env_problems).
+_PATCHED_DEPS_TOKEN_RE = re.compile(r"(?<![A-Za-z])patched[-_]?dependencies(?![A-Za-z])", re.IGNORECASE)
+_CONFIG_DEPS_TOKEN_RE = re.compile(r"(?<![A-Za-z])config[-_]?dependencies(?![A-Za-z])", re.IGNORECASE)
+_ONLYBUILT_FILE_TOKEN_RE = re.compile(r"(?<![A-Za-z])only[-_]?built[-_]?dependencies[-_]?file(?![A-Za-z])",
+                                      re.IGNORECASE)
+_ALLOW_ALL_BUILDS_TOKEN_RE = re.compile(r"(?<![A-Za-z])dangerously[-_]?allow[-_]?all[-_]?builds(?![A-Za-z])",
+                                        re.IGNORECASE)
+_REGISTRIES_TOKEN_RE = re.compile(r"(?<![A-Za-z])registries(?![A-Za-z])", re.IGNORECASE)
+_REDIRECT_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:(?:file|link|portal|git|ssh|https?):|git\+)", re.IGNORECASE)
+_ENV_EXPR_RE = re.compile(r"\$\{")
+# The committed .npmrc carries only the keys this guard evaluates: `registry`, a scoped `<scope>:registry`
+# key (the override check below) and the two lifecycle pins. Any other key is refused fail-closed, because a
+# key can change what pnpm reads beyond this one file: `userconfig`, `globalconfig`, `prefix` (its
+# `etc/npmrc`) and `workspace-prefix` (its `.npmrc`) each load a further config file (measured through pnpm
+# 10.13.1: a `frozen-lockfile=true` there froze the resolve through each of the four, and a foreign
+# `@scope:registry` there was read through the first three), and `pnpmfile` loads install-time code from any
+# path (measured). A new key is an owner-acked edit of this list (L(-1)).
+_NPMRC_KEYS = ("registry", *_LIFECYCLE_PINS)
+_FROZEN_REASON = ("refused at ANY value: `true` freezes Dependabot's `pnpm install --lockfile-only` resolve "
+                  "(ERR_PNPM_OUTDATED_LOCKFILE, the dead npm watch) and any other value overrides pnpm's own "
+                  "CI-default freeze; CI's pin is the explicit `--frozen-lockfile` G18a (B) requires on every "
+                  "workflow install - remove the setting (G18a)")
+_UNLISTED_REASON = ("the committed .npmrc carries only `registry`, scoped `<scope>:registry` keys, "
+                    "`enable-pre-post-scripts` and `unsafe-perm`; any other key can change what pnpm reads "
+                    "(`userconfig`, `globalconfig`, `prefix` and `workspace-prefix` load a further config file, "
+                    "`pnpmfile` loads install-time code, measured) - refused fail-closed; a new key is an "
+                    "owner-acked edit of _NPMRC_KEYS (G18c/G18d)")
 EXPECTED_ONLYBUILT_COUNT = 0          # the build-script allowlist; a bump is reviewed HERE with a box-id
 _UNCOUNTABLE = 10 ** 9                 # fail-closed sentinel: an allowlist that is present but unparseable
 
@@ -266,22 +354,115 @@ def fail(msg: str) -> None:
     print(f"[G18c/d] FAIL: {msg}", file=sys.stderr)
 
 
-def parse_npmrc(text: str) -> dict[str, str]:
-    """(pure) Parse an .npmrc into a key->value dict (ignores full-line ; / # comments + blanks; npm
-    .npmrc has NO inline comments, so a value keeps everything after `=`)."""
-    out: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith((";", "#")):
+# The .npmrc reader: pnpm 10.13.1 reads .npmrc with the `ini` decode bundled in pnpm.cjs, then passes each
+# key through @pnpm/npm-conf, so this reader follows that code, and each spelling below was measured through
+# pnpm 10.13.1 itself. Lines split at CR/LF runs; a line whose first non-blank character is `;` or `#` is a
+# comment; keys and values are trimmed with JavaScript's whitespace set (U+FEFF included, which Python's
+# strip() leaves); a value wrapped in "..." or '...' is JSON-decoded, and any other value ends at its first
+# unescaped `;` or `#` (an inline comment); a bare key (no `=`) reads as `true`; a line whose value holds
+# U+2028 or U+2029 is skipped (a JavaScript `.` stops at them); keys are case-sensitive (`REGISTRY` is not
+# `registry`) and the last spelling of a key wins. What a static read cannot settle is refused fail-closed
+# (npmrc_unmodelled_problems): a `[section]` header (pnpm reads `[frozen-lockfile]` as that key, and moves
+# every key after a header out of the top level), an array key `name[]` (pnpm collects the key into a list),
+# a key holding `${` (npm-conf substitutes the environment into keys: `${UNSET-frozen-lockfile}` reads as
+# `frozen-lockfile`) and a quoted key that decodes to a non-string JSON value (`'["unsafe-perm"]'` reads as
+# `unsafe-perm`). A key the reader reads outside _NPMRC_KEYS is refused by evaluate_npmrc.
+_JS_WS = ("\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+          "\u2028\u2029\u202f\u205f\u3000\ufeff")
+_INI_LINE_SPLIT_RE = re.compile(r"[\r\n]+")
+
+
+def _reject_json_constant(name: str) -> object:
+    raise ValueError(f"JSON.parse has no {name}")
+
+
+def _ini_unsafe(raw: str) -> tuple[str, bool]:
+    """(pure) The `ini` package's unsafe() on one key or value: (the text pnpm reads, whether that is a string).
+    A text wrapped in "..." or '...' is JSON-decoded (a single-quoted one after its quotes are dropped) and kept
+    as it stands when the decode fails; any other text ends at its first unescaped `;` or `#`, where `\\;`,
+    `\\#` and `\\\\` unescape and every other backslash stays. A non-string JSON result comes back as its JSON
+    text with False, as does a nesting too deep for Python's decoder (JavaScript decodes it)."""
+    val = raw.strip(_JS_WS)
+    if val[:1] in ("\"", "'") and val.endswith(val[:1]):
+        body = val[1:-1] if val[0] == "'" else val
+        try:
+            decoded = json.loads(body, parse_constant=_reject_json_constant)
+        except RecursionError:
+            return body, False
+        except ValueError:
+            return body, True
+        if isinstance(decoded, str):
+            return decoded, True
+        return json.dumps(decoded), False
+    out: list[str] = []
+    escaped = False
+    for ch in val:
+        if escaped:
+            out.append(ch if ch in "\\;#" else "\\" + ch)
+            escaped = False
+        elif ch in ";#":
+            break
+        elif ch == "\\":
+            escaped = True
+        else:
+            out.append(ch)
+    if escaped:
+        out.append("\\")
+    return "".join(out).strip(_JS_WS), True
+
+
+def _read_npmrc(text: str) -> tuple[dict[str, str], list[str]]:
+    """(pure) The .npmrc as pnpm 10.13.1 reads it (the reader block above): (the top-level key -> value map,
+    the fail-closed problems for each spelling a static read cannot settle)."""
+    cfg: dict[str, str] = {}
+    problems: list[str] = []
+    for line in _INI_LINE_SPLIT_RE.split(text):
+        lead = line.lstrip(_JS_WS)
+        if not lead or lead[0] in ";#":
+            continue                                    # a blank or comment line
+        if lead[0] == "[":
+            problems.append(f".npmrc line {lead.rstrip(_JS_WS)[:80]!r} is (or reads like) an ini `[section]` "
+                            "header - pnpm reads `[name]` as a key `name` holding an object (`[frozen-lockfile]` "
+                            "freezes the resolve, measured) and moves every key after a header out of the top "
+                            "level, which this guard does not model; refused fail-closed - keep .npmrc a flat "
+                            "list of `key=value` lines (G18c/G18d)")
             continue
-        if "=" in line:
-            k, _, v = line.partition("=")
-            out[k.strip().lower()] = v.strip()
-    return out
+        key_part, eq, rest = line.partition("=")
+        if not key_part or (eq and ("\u2028" in rest or "\u2029" in rest)):
+            continue                                    # ini's line pattern does not match: pnpm skips the line
+        key, key_is_str = _ini_unsafe(key_part)
+        if not key_is_str:
+            problems.append(f".npmrc key {key_part.strip(_JS_WS)[:80]!r} decodes to the JSON value {key[:80]} - "
+                            "pnpm makes it a key by string conversion (`'[\"unsafe-perm\"]'` reads as "
+                            "`unsafe-perm`, measured); refused fail-closed (G18c/G18d)")
+            continue
+        if len(key) > 2 and key.endswith("[]"):
+            key = key[:-2]
+            problems.append(f".npmrc key `{key}[]` is an ini array key - pnpm collects `{key}` into a list, "
+                            "which this guard does not model; refused fail-closed (G18c/G18d)")
+        if key == "__proto__":
+            continue                                    # ini drops it
+        if "${" in key:
+            problems.append(f".npmrc key `{key}` holds `${{` - npm-conf substitutes the environment into a key "
+                            "(`${UNSET-frozen-lockfile}` reads as `frozen-lockfile`, measured), which a static "
+                            "read cannot settle; refused fail-closed (G18c/G18d)")
+        cfg[key] = _ini_unsafe(rest)[0] if eq else "true"
+    return cfg, problems
+
+
+def parse_npmrc(text: str) -> dict[str, str]:
+    """(pure) The top-level .npmrc key -> value map as pnpm 10.13.1 reads it (_read_npmrc)."""
+    return _read_npmrc(text)[0]
+
+
+def npmrc_unmodelled_problems(text: str) -> list[str]:
+    """(pure) The fail-closed refusals for the .npmrc spellings a static read cannot settle (_read_npmrc)."""
+    return _read_npmrc(text)[1]
 
 
 def evaluate_npmrc(cfg: dict[str, str]) -> list[str]:
-    """(pure) Registry-pin + lifecycle-lockdown problems in the parsed .npmrc."""
+    """(pure) Registry-pin + lifecycle-lockdown + committed-frozen-lockfile + unlisted-key problems in the
+    parsed .npmrc."""
     problems: list[str] = []
     if cfg.get("registry") != ALLOWED_REGISTRY:
         problems.append(f"`registry` is {cfg.get('registry')!r}, not the pinned {ALLOWED_REGISTRY!r} - "
@@ -293,14 +474,16 @@ def evaluate_npmrc(cfg: dict[str, str]) -> list[str]:
             if val.rstrip("/") != ALLOWED_REGISTRY.rstrip("/"):
                 problems.append(f"scoped/per-registry override `{key}={val}` points off the allowed "
                                 f"origin - a scoped dep would resolve from it (source-substitution, G18c)")
-    if cfg.get("enable-pre-post-scripts", "false").lower() == "true":
-        problems.append("`enable-pre-post-scripts=true` - npm pre/post script hooks must stay OFF (a dep "
-                        "could run arbitrary code on install) (G18d)")
-    if cfg.get("unsafe-perm", "false").lower() == "true":
-        problems.append("`unsafe-perm=true` - must stay off (G18d)")
-    if cfg.get("frozen-lockfile", "true").lower() != "true":
-        problems.append("`frozen-lockfile` is not true - CI must install against the committed lockfile, "
-                        "never silently resolve a different graph (G18a JS analogue)")
+    for key, why in _LIFECYCLE_PINS.items():
+        if cfg.get(key) != "false":
+            shown = repr(cfg[key]) if key in cfg else "absent"
+            problems.append(f"`{key}` is {shown}, not the pinned `false` - pnpm reads an absent key and every "
+                            f"value but `false` as ON; {why} (G18d)")
+    for key, val in cfg.items():
+        if _FROZEN_KEY_RE.fullmatch(key):
+            problems.append(f"`{key}={val}` is committed in .npmrc - {_FROZEN_REASON}")
+        elif key not in _NPMRC_KEYS and not key.endswith(":registry"):
+            problems.append(f".npmrc key `{key}` is not one this guard evaluates - {_UNLISTED_REASON}")
     return problems
 
 
@@ -353,40 +536,68 @@ def workspace_onlybuilt_count(text: str) -> int | None:
     return _list_count_under(text, "onlyBuiltDependencies")
 
 
+def _workspace_token_found(ws_text: str, token_re: re.Pattern[str]) -> bool:
+    """(pure) Whether `token_re` finds a token in the raw pnpm-workspace.yaml text or in its escape-decoded
+    text, with nothing excised (workspace_frozen_lockfile_problems says why each view is needed)."""
+    return any(token_re.search(view) for view in (ws_text, decode_yaml_escapes(ws_text)))
+
+
 def workspace_registries_problems(text: str) -> list[str]:
-    """(pure) pnpm-workspace.yaml supports a first-class `registries:` map (a `default:` registry + per-
-    scope `\"@scope\":` registries) that re-points resolution with NO .npmrc involvement - the YAML
-    analogue of the .npmrc registry pin / scoped-registry override (G18c). Every value under it must be
-    the allowed origin; fail-closed on a present-but-unparseable block."""
-    m = re.search(r"(?m)^registries:\s*$", text)
-    if not m:
-        if re.search(r"(?m)^registries:\s*\S", text):     # inline/anchor form we will not parse
-            return ["pnpm-workspace.yaml `registries:` is in an inline/anchor form this guard cannot "
-                    "parse - fail-closed; write it as a plain block of `key: url` lines (G18c)"]
-        return []
-    problems: list[str] = []
-    saw_entry = False
-    for line in text[m.end():].splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        if not line.startswith((" ", "\t")):
-            break                                          # a new top-level key ends the block
-        mm = re.match(r"\s+(\S+)\s*:\s*(\S+)\s*$", line)
-        if not mm:
-            problems.append(f"pnpm-workspace.yaml `registries:` has an unparseable entry {s!r} - "
-                            "fail-closed (G18c)")
-            continue
-        saw_entry = True
-        val = mm.group(2).strip().strip("\"'")
-        if val.rstrip("/") != ALLOWED_REGISTRY.rstrip("/"):
-            problems.append(f"pnpm-workspace.yaml registries.{mm.group(1).strip(chr(34) + chr(39))} = "
-                            f"{val} points off the allowed origin {ALLOWED_REGISTRY} (source-"
-                            "substitution, G18c)")
-    if not saw_entry and not problems:
-        problems.append("pnpm-workspace.yaml `registries:` block is present but has no parseable entry - "
-                        "fail-closed (G18c)")
-    return problems
+    """(pure) pnpm-workspace.yaml has a first-class `registries` map (a `default` registry + per-scope
+    `\"@scope\"` registries) that pnpm reads over the .npmrc pin - the YAML analogue of the .npmrc registry
+    pin / scoped-registry override (G18c); it re-pointed resolution in the block, flow and quoted form
+    (measured), which a `^registries:` line read does not see. The registry pin lives in .npmrc only, so a
+    `registries` token there is refused at any value (the pnpm-workspace.yaml block above)."""
+    if _workspace_token_found(text, _REGISTRIES_TOKEN_RE):
+        return ["pnpm-workspace.yaml carries a `registries` token (raw or escape-decoded, a comment included - "
+                "nothing is excised) - pnpm reads a pnpm-workspace.yaml `registries` map over the .npmrc pin (it "
+                "re-pointed resolution in the block, flow and quoted form, measured); the registry pin lives in "
+                ".npmrc only - remove it (G18c)"]
+    return []
+
+
+def workspace_env_problems(ws_text: str) -> list[str]:
+    """(pure) pnpm substitutes the environment into every top-level pnpm-workspace.yaml key and string value
+    (the pnpm-workspace.yaml block above), so a key composed across `${` hides every token search here
+    (`${UNSET-frozen}Lockfile: true` froze the lockfile-only resolve, measured). A `${` anywhere in the file,
+    raw or escape-decoded (a double-quoted `\\x24{` decodes to one, and pnpm substituted it, measured), is
+    refused fail-closed (G18c/G18d)."""
+    if _workspace_token_found(ws_text, _ENV_EXPR_RE):
+        return ["pnpm-workspace.yaml carries `${` (raw or escape-decoded, a comment included - nothing is "
+                "excised) - pnpm substitutes the environment into that file's keys and string values "
+                "(`${UNSET-frozen}Lockfile: true` froze the lockfile-only resolve and `${UNSET-regis}tries` "
+                "re-pointed resolution, measured), which a static read cannot settle; refused fail-closed "
+                "(G18c/G18d)"]
+    return []
+
+
+def workspace_frozen_lockfile_problems(ws_text: str) -> list[str]:
+    """(pure) pnpm-workspace.yaml carries pnpm settings as well, so a `frozenLockfile` or
+    `frozenLockfileIfExists` there is the same committed setting the .npmrc refusal covers (G18a); both
+    froze the lockfile-only resolve (measured). pnpm 10.13.1 reads the key as a block, flow, JSON,
+    explicit (`? `), anchored-and-aliased, merged (`<<:`) or env-fallback (`${UNSET-frozenLockfile}`) key and
+    through a double-quoted escape (`\\x4C`, `\\u004C`, an escaped line break) - each measured; a key composed
+    across `${` (`${UNSET-frozen}Lockfile`) is workspace_env_problems' refusal - so the token
+    is searched in the escape-decoded text and in the raw text (the decoder glues a key onto a plain value
+    that ends in a backslash on the line before, which pnpm reads as two lines, measured), and nothing is
+    excised: a line starting with `#` inside a multi-line quoted flow scalar is live YAML (measured), so a
+    comment naming the setting is refused as well."""
+    if _workspace_token_found(ws_text, _FROZEN_TOKEN_RE):
+        return ["pnpm-workspace.yaml carries a `frozenLockfile` token (or `frozenLockfileIfExists`; raw or "
+                f"escape-decoded, a comment included - nothing is excised) - {_FROZEN_REASON}"]
+    return []
+
+
+def workspace_lifecycle_problems(ws_text: str) -> list[str]:
+    """(pure) pnpm copies every pnpm-workspace.yaml key over the .npmrc lifecycle pins (the _LIFECYCLE_PINS
+    comment), so a token naming either pin there is refused at any value, searched as the frozen token is
+    (G18d)."""
+    if _workspace_token_found(ws_text, _LIFECYCLE_TOKEN_RE):
+        return ["pnpm-workspace.yaml carries an `enablePrePostScripts` / `unsafePerm` token (raw or escape-decoded, "
+                "a comment included - nothing is excised) - pnpm reads a pnpm-workspace.yaml setting over the "
+                ".npmrc pin (`enablePrePostScripts: true` ran the root project's `pre<script>` with the .npmrc "
+                "pin at `false`, measured); the lifecycle pins live in .npmrc only - remove it (G18d)"]
+    return []
 
 
 _BUILD_ALLOWLIST_KEYS = ("onlyBuiltDependencies", "allowBuilds")   # pnpm 10 / pnpm 11
@@ -492,13 +703,17 @@ def install_mutation_problems(pkg: dict, ws_text: str, patches_present: bool) ->
     `patchedDependencies` + a `patches/` dir; a SOURCE-redirect spec (file/link/portal/git/url) in any
     dependency-spec location - package.json dependencies/devDependencies/optionalDependencies/
     peerDependencies/overrides/resolutions AND pnpm-workspace.yaml overrides/resolutions/catalog/
-    catalogs; and root install-lifecycle scripts. Forbidden outright in a zero-egress product. (A
+    catalogs (plus a source-redirect prefix anywhere in that file); and root install-lifecycle scripts.
+    Forbidden outright in a zero-egress product; in pnpm-workspace.yaml each outright-refused setting is a
+    token search at any value (the pnpm-workspace.yaml block at the top of this file). (A
     subdir package.json in a future multi-package workspace is a P1-activation refinement - only the
     root package.json + workspace yaml exist in v1's single front-end package.)"""
     problems: list[str] = []
     pnpm = pkg.get("pnpm") if isinstance(pkg.get("pnpm"), dict) else {}
-    if pnpm.get("patchedDependencies") or re.search(r"(?m)^\s*patchedDependencies:\s*\S", ws_text) \
-            or re.search(r"(?m)^\s*patchedDependencies:\s*$", ws_text) or patches_present:
+    # In pnpm-workspace.yaml each setting refused below is a token search at any value (the pnpm-workspace.yaml
+    # block at the top of this file: pnpm read each of them from the block, quoted, flow and explicit key forms)
+    if pnpm.get("patchedDependencies") or _workspace_token_found(ws_text, _PATCHED_DEPS_TOKEN_RE) \
+            or patches_present:
         problems.append("a committed pnpm `patchedDependencies` / `patches/` exists - an install-time "
                         "patch mutates a third-party dependency's source (the resolution URL stays "
                         "npmjs.org, so the URL guard is blind to it); forbidden in a zero-egress product")
@@ -511,23 +726,24 @@ def install_mutation_problems(pkg: dict, ws_text: str, patches_present: bool) ->
     # whose documented role is to supply .pnpmfile.cjs hooks + patch files + the build allowlist - it
     # defeats the .pnpmfile.cjs + patchedDependencies + allowlist forbids at once, behind a clean
     # registry tarball the URL guard cannot flag. Forbidden outright.
-    if pnpm.get("configDependencies") or re.search(r"(?m)^configDependencies:", ws_text):
+    if pnpm.get("configDependencies") or _workspace_token_found(ws_text, _CONFIG_DEPS_TOKEN_RE):
         problems.append("a committed pnpm `configDependencies` exists - a registry-sourced config package "
                         "injects install-time hooks / patches / the build-script allowlist BEFORE graph "
                         "resolution (defeating the .pnpmfile.cjs + patchedDependencies + allowlist forbids "
                         "behind a clean registry tarball); forbidden in a zero-egress product")
     # onlyBuiltDependenciesFile: a FILE pointer for the build allowlist sidesteps the inline count guard
-    if pnpm.get("onlyBuiltDependenciesFile") or re.search(r"(?m)^onlyBuiltDependenciesFile:", ws_text):
+    if pnpm.get("onlyBuiltDependenciesFile") or _workspace_token_found(ws_text, _ONLYBUILT_FILE_TOKEN_RE):
         problems.append("`onlyBuiltDependenciesFile` points the build-script allowlist at a separate file, "
                         "sidestepping the inline count - keep the allowlist inline (G18d)")
     # dangerouslyAllowAllBuilds (pnpm 10.9.0+): runs EVERY dependency's build/lifecycle script with no
     # allowlist - one key re-opens the whole lifecycle-code-exec surface G18d locks down. pnpm copies the
     # raw js-yaml value into config and gates on a BARE truthiness check (`if (opts.dangerouslyAllowAll
-    # Builds)`), so ANY JS-truthy scalar (true/True/yes/on/y/enabled/1/"true"/!!bool true) enables it.
-    # Detect FAIL-CLOSED: flag the key whenever it is present with any value that is NOT a falsy literal.
-    falsy = r"(?:false|no|off|0|null|~)\s*(?:#.*)?$"
-    if pnpm.get("dangerouslyAllowAllBuilds") or re.search(rf"(?mi)^dangerouslyAllowAllBuilds:\s*(?!{falsy})\S", ws_text):
-        problems.append("`dangerouslyAllowAllBuilds` is set - it auto-runs EVERY dependency's build/"
+    # Builds)`), so ANY JS-truthy scalar (true/True/yes/on/y/enabled/1/"true"/!!bool true) enables it, and a
+    # line read cannot settle the value (`false` plus a more-indented continuation line is the truthy plain
+    # scalar `false on`, measured): in pnpm-workspace.yaml the token is refused at any value.
+    if pnpm.get("dangerouslyAllowAllBuilds") or _workspace_token_found(ws_text, _ALLOW_ALL_BUILDS_TOKEN_RE):
+        problems.append("`dangerouslyAllowAllBuilds` is set (in pnpm-workspace.yaml: the token at any value, raw "
+                        "or escape-decoded, a comment included) - it auto-runs EVERY dependency's build/"
                         "lifecycle script with NO allowlist (bypasses the onlyBuiltDependencies guard "
                         "entirely); forbidden (G18d)")
     # packageExtensions: injects dependency sub-maps into a third-party package's manifest at resolve
@@ -544,6 +760,15 @@ def install_mutation_problems(pkg: dict, ws_text: str, patches_present: bool) ->
     problems += _redirect_specs_in_map("resolutions", pkg.get("resolutions"))
     for key in ("overrides", "resolutions", "catalog", "catalogs"):
         problems += _yaml_redirect_block(ws_text, key)
+    # the block reader above names the key; the control is the prefix token anywhere in the file (the
+    # pnpm-workspace.yaml block at the top of this file: a flow-form `overrides` and a hex-escaped `link:` value
+    # each rewrote a dependency to a local link that the block reader did not see, measured)
+    if _workspace_token_found(ws_text, _REDIRECT_TOKEN_RE):
+        problems.append("pnpm-workspace.yaml carries a source-redirect spec prefix (`file:` / `link:` / `portal:` / "
+                        "`git+` / `git:` / `ssh:` / `http:` / `https:`; raw or escape-decoded, a comment included - "
+                        "nothing is excised) - pnpm reads a dependency spec from any key form and through an escape "
+                        "(a flow-form `overrides` and a hex-escaped `link:` value each rewrote a dependency to a "
+                        "local link, measured); refused wherever it appears (G18d)")
     scripts = pkg.get("scripts") if isinstance(pkg.get("scripts"), dict) else {}
     for hook in _INSTALL_HOOKS:
         if hook in scripts:
@@ -642,7 +867,8 @@ def main() -> int:
     if not NPMRC.is_file():
         print(f"[G18c/d] {NPMRC} missing", file=sys.stderr)
         return 2
-    problems = evaluate_npmrc(parse_npmrc(NPMRC.read_text(encoding="utf-8")))
+    npmrc_text = NPMRC.read_text(encoding="utf-8")
+    problems = evaluate_npmrc(parse_npmrc(npmrc_text)) + npmrc_unmodelled_problems(npmrc_text)
     for sub in nonroot_npmrc(ROOT):
         problems.append(f"a committed non-root .npmrc exists ({sub.relative_to(ROOT).as_posix()}) - pnpm "
                         "reads per-directory .npmrc, so only a single repo-root .npmrc may carry the pin "
@@ -660,6 +886,9 @@ def main() -> int:
     ws_text = PNPM_WORKSPACE.read_text(encoding="utf-8") if PNPM_WORKSPACE.is_file() else ""
     if ws_text:
         problems += workspace_registries_problems(ws_text)
+        problems += workspace_frozen_lockfile_problems(ws_text)
+        problems += workspace_lifecycle_problems(ws_text)
+        problems += workspace_env_problems(ws_text)
 
     # committed install-time source-mutation / code (patchedDependencies+patches, source-redirect
     # overrides, root install-lifecycle scripts) - the resolution-URL guard is blind to these
@@ -708,8 +937,9 @@ def main() -> int:
         lock_state = "target-absent (no lockfile yet)"
         floor_state = "§0.8 floor skipped (no lockfile yet)"
     print(f"[G18c/d] JS supply-chain posture OK (registry pinned to {ALLOWED_HOST}, no scoped override; "
-          f"pre/post-scripts + unsafe-perm off; frozen-lockfile on; lockfile resolution-shape + URL + "
-          f"onlyBuiltDependencies checks {lock_state}; {floor_state})")
+          f"pre/post-scripts + unsafe-perm off; no unlisted .npmrc key; no refused pnpm-workspace.yaml setting; "
+          f"no committed frozen-lockfile (CI pin = the G18a flag-scan); "
+          f"lockfile resolution-shape + URL + onlyBuiltDependencies checks {lock_state}; {floor_state})")
     return 0
 
 

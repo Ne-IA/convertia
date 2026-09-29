@@ -281,6 +281,14 @@ sits at the **maintenance-process layer**, outside the v1 build-box plan — rec
 here as an explicit decision so its absence from the plan boxes is deliberate, not a
 silent gap.
 
+**Watch health (DECIDED).** At every triage the Co-Pilot reads `gh run list --workflow "Dependabot Updates"
+--limit 20`: a failing ecosystem job is a finding, fixed like a red gate, and an ecosystem with no recent job
+is a silent watch, never an empty queue. GitHub pauses a version-update job after 15 consecutive failures;
+the fix plus an edit of `.github/dependabot.yml` (or a manual "Check for updates") restarts it. The npm job
+failed every run from 2026-06-23 — the committed `.npmrc` `frozen-lockfile` key froze its lockfile-only
+resolve — until it paused; `check-js-supply-chain` now refuses that key. npm minor and patch updates arrive
+as one grouped PR.
+
 **Bootstrap hold for `engines.lock` bumps (P1–P3, DECIDED — r15):** the §6.5 re-validation
 machinery (the §6.4.3 runner + the P4.61 pair-status ledger) does not exist until P4 — so
 during **P1–P3** a Dependabot/CVE `engines.lock` bump is **HELD as a Co-Pilot review item

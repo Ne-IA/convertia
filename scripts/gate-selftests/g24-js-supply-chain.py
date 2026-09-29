@@ -2,13 +2,21 @@
 """g24-js-supply-chain.py - G24 self-test for check-js-supply-chain (P0.3.8, G18c/G18d).
 
 Proves the JS/WebView supply-chain posture guard: a foreign/unpinned registry, an enabled pre/post
-script hook, unsafe-perm, or a relaxed frozen-lockfile in .npmrc is caught; a pnpm-lock.yaml resolution
-URL from a non-allowed host is caught; the onlyBuiltDependencies allowlist count is read from both pnpm
-manifest forms; the REAL committed .npmrc evaluates clean and main() is target-absent-OK. stdlib-only.
+script hook, unsafe-perm (in .npmrc, or re-set in pnpm-workspace.yaml), an .npmrc key the guard does not
+evaluate (`userconfig` and its siblings load a further config file), or ANY committed frozen-lockfile setting
+(.npmrc key or pnpm-workspace.yaml) is caught - the dead-Dependabot-watch incident replayed, and every
+.npmrc / pnpm-workspace.yaml spelling measured through pnpm 10.13.1 read the way pnpm reads it; in
+pnpm-workspace.yaml every refused setting is caught in any key form and a `${` or a source-redirect
+prefix anywhere; a
+pnpm-lock.yaml resolution URL from a non-allowed host is caught; the onlyBuiltDependencies allowlist
+count is read from both pnpm manifest forms; the REAL committed .npmrc evaluates clean and main() is
+target-absent-OK. stdlib-only.
 Exit 0 = all held; 1 = a self-test failed.
 """
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -29,9 +37,39 @@ def record(name: str, ok: bool) -> None:
     print(f"[{'PASS' if ok else 'FAIL'}] {name}")
 
 
+# [Test-Change: P0.3.8 - old-obsolete+new-correct, build-gates G18a row] old: `frozen-lockfile=true` was the
+# clean posture; new: the key is refused at any value, because it froze Dependabot's lockfile-only resolve
+# (ERR_PNPM_OUTDATED_LOCKFILE in every npm update job) and CI's pin is the G18a `--frozen-lockfile` flag-scan.
 def good() -> dict:
     return {"registry": "https://registry.npmjs.org/", "enable-pre-post-scripts": "false",
-            "unsafe-perm": "false", "frozen-lockfile": "true"}
+            "unsafe-perm": "false"}
+
+
+# the committed .npmrc as it stood before the key's retirement - the incident text, embedded, never read from git
+_INCIDENT_NPMRC = (
+    "# .npmrc — JS/WebView supply-chain lockdown (G18c registry pin + G18d lifecycle-script posture).\n"
+    "# Authored P0.3.8; the live pnpm-lock-URL guard + the onlyBuiltDependencies allowlist activate in P1\n"
+    "# once the pnpm workspace + lockfile exist. The WebView is the ENTIRE T2 attack surface, so its supply\n"
+    "# chain matches the Rust-side discipline (the JS analogue of deny.toml [sources] + [bans]).\n"
+    "# L(-1) security-critical (scripts/l-neg1-files.toml, G71) — structurally guarded by\n"
+    "# scripts/check-js-supply-chain.\n"
+    "\n"
+    "# G18c — pin the registry: every dependency resolves from the public npm registry, nowhere else\n"
+    "# (dependency-confusion / source-substitution defence; check-js-supply-chain asserts every\n"
+    "# pnpm-lock.yaml resolution URL is from this origin once the lockfile lands).\n"
+    "registry=https://registry.npmjs.org/\n"
+    "\n"
+    "# G18d — install-lifecycle-script lockdown. pnpm 10 already blocks dependency build/lifecycle scripts\n"
+    "# by default (only an explicit onlyBuiltDependencies allowlist may run them); these pin that posture so\n"
+    "# a malicious dep cannot run arbitrary code via postinstall the moment `pnpm install` runs in CI (which\n"
+    "# holds the signing secrets at release time).\n"
+    "enable-pre-post-scripts=false\n"
+    "unsafe-perm=false\n"
+    "\n"
+    "# G18a (JS analogue) — CI installs against the committed lockfile; a drifted lockfile fails rather than\n"
+    "# silently resolving a different graph than the audited/SBOM'd one.\n"
+    "frozen-lockfile=true\n"
+)
 
 
 # --- .npmrc posture ---------------------------------------------------------------------------
@@ -44,12 +82,318 @@ c = good(); c["enable-pre-post-scripts"] = "true"
 record("enable-pre-post-scripts=true -> caught", any("pre/post" in p for p in m.evaluate_npmrc(c)))
 c = good(); c["unsafe-perm"] = "true"
 record("unsafe-perm=true -> caught", any("unsafe-perm" in p for p in m.evaluate_npmrc(c)))
+# [Test-Change: P0.3.8 - old-obsolete+new-correct, build-gates G18a row] the `=false` leg keeps its assertion
+# under the any-value refusal; the `=true` key, the camel key and the incident text are refused alongside it.
 c = good(); c["frozen-lockfile"] = "false"
-record("frozen-lockfile=false -> caught", any("frozen-lockfile" in p for p in m.evaluate_npmrc(c)))
+record("a committed frozen-lockfile=false -> caught (any value)",
+       any("frozen-lockfile" in p for p in m.evaluate_npmrc(c)))
+
+
+def _frozen_refusals(problems: list) -> list:
+    return [p for p in problems if "is committed in .npmrc" in p]
+
+
+c = good(); c["frozen-lockfile"] = "true"
+record("a committed frozen-lockfile=true -> caught (the key that froze the Dependabot resolve)",
+       [p.startswith("`frozen-lockfile=true`") for p in _frozen_refusals(m.evaluate_npmrc(c))] == [True])
+record("a committed frozenLockfile=true (camel key; pnpm 10.13.1 ignores it, refused fail-closed) -> caught",
+       [p.startswith("`frozenLockfile=true`") for p in
+        _frozen_refusals(m.evaluate_npmrc({**good(), **m.parse_npmrc("frozenLockfile=true\n")}))] == [True])
+_incident = m.evaluate_npmrc(m.parse_npmrc(_INCIDENT_NPMRC))
+record("the incident replay: the pre-retirement .npmrc text -> caught, the one problem names frozen-lockfile",
+       len(_incident) == 1 and _incident[0].startswith("`frozen-lockfile=true` is committed in .npmrc"))
+
+
+# every spelling below was measured through pnpm 10.13.1 (`pnpm install --lockfile-only` froze, or the root
+# project's `pre<script>` ran): the .npmrc reader must read each one the way pnpm does
+_CLEAN_NPMRC = "registry=https://registry.npmjs.org/\nenable-pre-post-scripts=false\nunsafe-perm=false\n"
+
+
+def _npmrc_problems(text: str) -> list:
+    """What main() raises for an .npmrc text: the evaluated map plus the unmodelled spellings."""
+    return m.evaluate_npmrc(m.parse_npmrc(text)) + m.npmrc_unmodelled_problems(text)
+
+
+def _frozen_named(extra: str, value: str = "true") -> bool:
+    """The clean .npmrc plus `extra` raises exactly one frozen-lockfile refusal, naming the key and the value
+    pnpm reads."""
+    return ([p.startswith(f"`frozen-lockfile={value}`") for p in _frozen_refusals(_npmrc_problems(_CLEAN_NPMRC + extra))]
+            == [True])
+
+
+def _unmodelled(extra: str, needle: str) -> bool:
+    return any(needle in p for p in m.npmrc_unmodelled_problems(_CLEAN_NPMRC + extra))
+
+
+record("the clean .npmrc fixture -> no problem at all (the spelling legs below start from zero)",
+       _npmrc_problems(_CLEAN_NPMRC) == [])
+record(".npmrc a bare `frozen-lockfile` line -> caught, read as `true`", _frozen_named("frozen-lockfile\n"))
+record(".npmrc a double-quoted key \"frozen-lockfile\"=true -> caught", _frozen_named('"frozen-lockfile"=true\n'))
+record(".npmrc a single-quoted key 'frozen-lockfile'=true -> caught", _frozen_named("'frozen-lockfile'=true\n"))
+record(".npmrc an array key frozen-lockfile[]=true -> caught, and the array key is refused",
+       _frozen_named("frozen-lockfile[]=true\n") and _unmodelled("frozen-lockfile[]=true\n", "ini array key"))
+record(".npmrc a bare key with an inline comment `frozen-lockfile ;c` -> caught, read as `true`",
+       _frozen_named("frozen-lockfile ;c\n"))
+record(".npmrc a value with an inline comment `frozen-lockfile=true #c` -> caught, the comment dropped",
+       _frozen_named("frozen-lockfile=true #c\n"))
+record(".npmrc a JSON-escaped quoted key \"frozen\\u002dlockfile\"=true -> caught",
+       _frozen_named('"frozen\\u002dlockfile"=true\n'))
+record(".npmrc a BOM before the key (JavaScript's trim drops U+FEFF) -> caught",
+       _frozen_named("\ufefffrozen-lockfile=true\n"))
+record(".npmrc a BOM before a quoted key (trimmed before the quote test, as JavaScript does) -> caught",
+       _frozen_named("\ufeff\"frozen-lockfile\"=true\n"))
+record(".npmrc an empty value `frozen-lockfile=` -> caught (any value)", _frozen_named("frozen-lockfile=\n", ""))
+record(".npmrc a `[frozen-lockfile]` section header -> refused (pnpm reads it as that key)",
+       _unmodelled("[frozen-lockfile]\n", "`[section]`"))
+record(".npmrc an env-fallback key ${UNSET-frozen-lockfile}=true -> refused (npm-conf substitutes keys)",
+       _unmodelled("${UNSET-frozen-lockfile}=true\n", "holds `${`"))
+record(".npmrc a key decoding to a JSON array '[\"unsafe-perm\"]'=true -> refused (pnpm reads `unsafe-perm`)",
+       _unmodelled("'[\"unsafe-perm\"]'=true\n", "decodes to the JSON value"))
+record(".npmrc a 3050-deep JSON array key around \"unsafe-perm\" (pnpm reads `unsafe-perm`, measured) -> refused",
+       _unmodelled("'" + "[" * 3050 + '"unsafe-perm"' + "]" * 3050 + "'=true\n", "decodes to the JSON value"))
+record(".npmrc a 200000-deep JSON array key (past every Python decoder: the RecursionError path) -> refused, no crash",
+       _unmodelled("'" + "[" * 200000 + '"unsafe-perm"' + "]" * 200000 + "'=true\n", "decodes to the JSON value"))
+record(".npmrc FROZEN-LOCKFILE=true and frozen_lockfile=true (pnpm 10.13.1 ignores both) -> caught fail-closed",
+       all([p.startswith(f"`{k}=true`") for p in _frozen_refusals(_npmrc_problems(_CLEAN_NPMRC + f"{k}=true\n"))]
+           == [True] for k in ("FROZEN-LOCKFILE", "frozen_lockfile")))
+# [Test-Change: P0.3.8 - old-obsolete+new-correct, build-gates G18d row] old: the spelling stayed clean; new:
+# the .npmrc may carry only the keys the gate evaluates (a key such as `userconfig` loads a further config
+# file, measured), so this key reds as unlisted - and still never as the frozen setting, which pnpm does not
+# read it as (measured: not frozen).
+_BACKSLASH_KEY = _npmrc_problems(_CLEAN_NPMRC + "frozen\\-lockfile=true\n")
+record(".npmrc `frozen\\-lockfile=true` (a backslash ini keeps, pnpm does not freeze) -> refused as an unlisted "
+       "key, never as the frozen setting",
+       _frozen_refusals(_BACKSLASH_KEY) == []
+       and [p.startswith(".npmrc key `frozen\\-lockfile` is not one this guard evaluates") for p in _BACKSLASH_KEY]
+       == [True])
+record(".npmrc a `;frozen-lockfile=true` comment line -> NOT caught",
+       _npmrc_problems(_CLEAN_NPMRC + ";frozen-lockfile=true\n") == [])
+_EVIL = "registry=https://evil.example.com/\n"
+_PINS = "enable-pre-post-scripts=false\nunsafe-perm=false\n"
+for _label, _text in (("a case variant REGISTRY= (pnpm keys are case-sensitive)",
+                       _EVIL + "REGISTRY=https://registry.npmjs.org/\n" + _PINS),
+                      ("a `[x]` section moving the second registry out of the top level",
+                       _PINS + _EVIL + "[x]\nregistry=https://registry.npmjs.org/\n"),
+                      ("an array key registry[]= in front of the pin",
+                       _PINS + "registry[]=https://evil.example.com/\nregistry=https://registry.npmjs.org/\n"),
+                      ("a U+2028 in the second value (pnpm skips that line)",
+                       _PINS + _EVIL + "registry=https://registry.npmjs.org/\u2028\n")):
+    record(f".npmrc a foreign registry masked by {_label} -> caught", _npmrc_problems(_text) != [])
+_epps = "`enable-pre-post-scripts`"
+for _label, _text in (("a bare `enable-pre-post-scripts` line after the pin", _CLEAN_NPMRC + "enable-pre-post-scripts\n"),
+                      ("`enable-pre-post-scripts=FALSE`", _CLEAN_NPMRC.replace("scripts=false", "scripts=FALSE")),
+                      ("an empty `enable-pre-post-scripts=`", _CLEAN_NPMRC.replace("scripts=false", "scripts=")),
+                      ("`enable-pre-post-scripts=yes`", _CLEAN_NPMRC.replace("scripts=false", "scripts=yes")),
+                      ("an absent `enable-pre-post-scripts` (pnpm defaults it to true)",
+                       _CLEAN_NPMRC.replace("enable-pre-post-scripts=false\n", ""))):
+    record(f".npmrc {_label} -> caught (pnpm runs the pre/post hooks)",
+           any(p.startswith(_epps) and "pre/post" in p for p in _npmrc_problems(_text)))
+record(".npmrc an absent `unsafe-perm` (pnpm defaults it to true unless running as root) -> caught",
+       any(p.startswith("`unsafe-perm` is absent") for p in
+           _npmrc_problems(_CLEAN_NPMRC.replace("unsafe-perm=false\n", ""))))
+record(".npmrc `enable-pre-post-scripts=\"false\"` and `=false ;c` (pnpm reads false) -> clean",
+       all(_npmrc_problems(_CLEAN_NPMRC.replace("scripts=false", v)) == [] for v in
+           ('scripts="false"', "scripts=false ;c")))
+
+
+def _unlisted(extra: str, key: str) -> bool:
+    """The clean .npmrc plus `extra` raises exactly one problem: the unlisted-key refusal naming `key`."""
+    return ([p.startswith(f".npmrc key `{key}` is not one this guard evaluates")
+             for p in _npmrc_problems(_CLEAN_NPMRC + extra)] == [True])
+
+
+# each key below makes pnpm 10.13.1 load a further config file: with that file committed holding
+# `frozen-lockfile=true`, `install --lockfile-only` froze (ERR_PNPM_NO_LOCKFILE) and `config get` read true;
+# through `userconfig` / `globalconfig` a foreign `@s:registry` was read the same way (measured)
+record(".npmrc `userconfig=./rc2` (pnpm loads ./rc2 as a config file) -> refused",
+       _unlisted("userconfig=./rc2\n", "userconfig"))
+record(".npmrc `globalconfig=./rc2` (pnpm loads ./rc2 as a config file) -> refused",
+       _unlisted("globalconfig=./rc2\n", "globalconfig"))
+record(".npmrc `prefix=./p` (pnpm loads ./p/etc/npmrc as a config file) -> refused",
+       _unlisted("prefix=./p\n", "prefix"))
+record(".npmrc `workspace-prefix=./w` (pnpm loads ./w/.npmrc as a config file) -> refused",
+       _unlisted("workspace-prefix=./w\n", "workspace-prefix"))
+record(".npmrc a quoted key `\"userconfig\"=./rc2` (pnpm loads ./rc2, measured) -> refused under the decoded name",
+       _unlisted("\"userconfig\"=./rc2\n", "userconfig"))
+record(".npmrc `pnpmfile=tools/h.cjs` (pnpm runs the hook file at that path, measured) -> refused",
+       _unlisted("pnpmfile=tools/h.cjs\n", "pnpmfile"))
+record(".npmrc `USERCONFIG=./rc2` and `frozen-lockfile-if-exists=true` (pnpm 10.13.1 reads neither, measured) "
+       "-> refused fail-closed",
+       _unlisted("USERCONFIG=./rc2\n", "USERCONFIG")
+       and _unlisted("frozen-lockfile-if-exists=true\n", "frozen-lockfile-if-exists"))
+record(".npmrc a scoped `@myscope:registry` on the allowed origin -> clean (a scoped key is the override check's)",
+       _npmrc_problems(_CLEAN_NPMRC + "@myscope:registry=https://registry.npmjs.org/\n") == [])
+
+_WS_REFUSAL = "carries a `frozenLockfile` token"
+record("pnpm-workspace.yaml frozenLockfile: true (flush or indented) -> caught",
+       all(any(_WS_REFUSAL in p for p in m.workspace_frozen_lockfile_problems(t)) for t in
+           ("packages:\n  - '.'\nfrozenLockfile: true\n", "  frozenLockfile: true\n")))
+record("pnpm-workspace.yaml frozenLockfile: false -> caught (any value)",
+       any(_WS_REFUSAL in p for p in m.workspace_frozen_lockfile_problems("frozenLockfile: false\n")))
+record("pnpm-workspace.yaml a quoted key (\"frozenLockfile\" / 'frozenLockfile') -> caught",
+       all(any(_WS_REFUSAL in p for p in m.workspace_frozen_lockfile_problems(t)) for t in
+           ('"frozenLockfile": true\n', "'frozenLockfile': true\n")))
+record("pnpm-workspace.yaml the kebab key frozen-lockfile: and the snake key frozen_lockfile: -> caught fail-closed",
+       all(any(_WS_REFUSAL in p for p in m.workspace_frozen_lockfile_problems(t)) for t in
+           ("frozen-lockfile: true\n", "frozen_lockfile: true\n")))
+record("pnpm-workspace.yaml frozenLockfileExtra: true (a longer key) -> NOT caught",
+       m.workspace_frozen_lockfile_problems("frozenLockfileExtra: true\n") == [])
+record("pnpm-workspace.yaml preferFrozenLockfile: true (a different setting) -> NOT caught",
+       m.workspace_frozen_lockfile_problems("preferFrozenLockfile: true\n") == [])
+_WS_PKGS = "packages:\n  - '.'\n"
+for _label, _text in (("a flow mapping {packages: ['.'], frozenLockfile: true} and its JSON twin",
+                       ("{packages: ['.'], frozenLockfile: true}\n", '{"packages": ["."], "frozenLockfile": true}\n')),
+                      ("an explicit key `? frozenLockfile` / `: true`", (_WS_PKGS + "? frozenLockfile\n: true\n",)),
+                      ("a hex escape \"frozen\\x4Cockfile\"", (_WS_PKGS + '"frozen\\x4Cockfile": true\n',)),
+                      ("a unicode escape \"frozen\\u004Cockfile\"", (_WS_PKGS + '"frozen\\u004Cockfile": true\n',)),
+                      ("an escaped line break inside the quoted key",
+                       (_WS_PKGS + '? "frozen\\\n  Lockfile"\n: true\n',)),
+                      ("a `#` line that is live YAML inside a multi-line quoted flow scalar",
+                       ("{packages: ['.'], \"x\n#\", frozenLockfile: true}\n",)),
+                      ("an anchored value used as an aliased key", (_WS_PKGS + "x: &k frozenLockfile\n? *k\n: true\n",)),
+                      ("a merge key <<: {frozenLockfile: true}", (_WS_PKGS + "<<: {frozenLockfile: true}\n",)),
+                      ("an env-fallback key ${UNSET-frozenLockfile}", (_WS_PKGS + "${UNSET-frozenLockfile}: true\n",)),
+                      ("a comment naming the setting (nothing is excised)", (_WS_PKGS + "# frozenLockfile: true\n",)),
+                      ("a plain value ending in a backslash on the line before (only the raw view keeps the key)",
+                       (_WS_PKGS + "x: a\\\nfrozenLockfile: true\n",))):
+    record(f"pnpm-workspace.yaml {_label} -> caught",
+           all(any(_WS_REFUSAL in p for p in m.workspace_frozen_lockfile_problems(t)) for t in _text))
+record("REPLAY (R2 review): pnpm-workspace.yaml frozenLockfileIfExists: true (froze the lockfile-only resolve once a "
+       "lockfile exists, measured) -> caught",
+       any(_WS_REFUSAL in p for p in m.workspace_frozen_lockfile_problems(_WS_PKGS + "frozenLockfileIfExists: true\n")))
+record("pnpm-workspace.yaml frozenLockfileIfExists as a hex escape (froze, measured), kebab, snake or case variant "
+       "-> caught",
+       all(any(_WS_REFUSAL in p for p in m.workspace_frozen_lockfile_problems(_WS_PKGS + t)) for t in
+           ('"frozenLockfile\\x49fExists": true\n', "frozen-lockfile-if-exists: true\n",
+            "frozen_lockfile_if_exists: true\n", "FrozenLockfileIfExists: true\n")))
+record("pnpm-workspace.yaml frozenLockfileIfExistsExtra: true (a longer key) -> NOT caught",
+       m.workspace_frozen_lockfile_problems(_WS_PKGS + "frozenLockfileIfExistsExtra: true\n") == [])
+_WS_LIFECYCLE = "carries an `enablePrePostScripts` / `unsafePerm` token"
+record("pnpm-workspace.yaml enablePrePostScripts: true (ran the root `pre<script>` over the .npmrc pin, measured) "
+       "-> caught",
+       any(_WS_LIFECYCLE in p for p in m.workspace_lifecycle_problems(_WS_PKGS + "enablePrePostScripts: true\n")))
+record("pnpm-workspace.yaml unsafePerm: true (`config get unsafe-perm` read true over the .npmrc pin, measured) "
+       "-> caught",
+       any(_WS_LIFECYCLE in p for p in m.workspace_lifecycle_problems(_WS_PKGS + "unsafePerm: true\n")))
+record("pnpm-workspace.yaml a lifecycle token at `false`, kebab, snake, flow, hex-escaped or in a comment -> caught "
+       "(any value, nothing excised)",
+       all(any(_WS_LIFECYCLE in p for p in m.workspace_lifecycle_problems(t)) for t in
+           (_WS_PKGS + "enablePrePostScripts: false\n", _WS_PKGS + "enable-pre-post-scripts: true\n",
+            _WS_PKGS + "unsafe_perm: true\n", "{packages: ['.'], unsafePerm: true}\n",
+            _WS_PKGS + '"enable\\x50rePostScripts": true\n', _WS_PKGS + "# unsafePerm: true\n")))
+record("pnpm-workspace.yaml a longer key either side (unsafePermExtra, xUnsafePerm) and the plain packages list "
+       "-> NOT caught",
+       all(m.workspace_lifecycle_problems(_WS_PKGS + t) == [] for t in
+           ("unsafePermExtra: true\n", "xUnsafePerm: true\n", "")))
+
+# pnpm 10.13.1 substitutes the environment into every top-level pnpm-workspace.yaml key and string value, so a key
+# composed across `${` carries no token: each form below took effect through pnpm (measured) while every token
+# search stayed clean - one leg per composed form, each also proving the token search alone misses it
+_WS_ENV = "carries `${`"
+_WS_REGISTRIES = "carries a `registries` token"
+for _label, _text, _token_fn in (
+        ("${UNSET-frozen}Lockfile: true (froze the lockfile-only resolve)", "${UNSET-frozen}Lockfile: true\n",
+         m.workspace_frozen_lockfile_problems),
+        ("frozen${UNSET-Lockfile}: true (froze)", "frozen${UNSET-Lockfile}: true\n", m.workspace_frozen_lockfile_problems),
+        ("${UNSET-frozen}LockfileIfExists: true (froze a seeded lock)", "${UNSET-frozen}LockfileIfExists: true\n",
+         m.workspace_frozen_lockfile_problems),
+        ("${UNSET-enable}PrePostScripts: true (ran the root `pre<script>` over the .npmrc pin)",
+         "${UNSET-enable}PrePostScripts: true\n", m.workspace_lifecycle_problems),
+        ("${UNSET-unsafe}Perm: true (`config get unsafe-perm` read true)", "${UNSET-unsafe}Perm: true\n",
+         m.workspace_lifecycle_problems),
+        ("${UNSET-dangerously}AllowAllBuilds: true (ran a dependency's postinstall)",
+         "${UNSET-dangerously}AllowAllBuilds: true\n", lambda t: m.install_mutation_problems({}, t, False)),
+        ("${UNSET-regis}tries: {default: <foreign>} (re-pointed resolution)",
+         "${UNSET-regis}tries: {default: 'https://evil.invalid/'}\n", m.workspace_registries_problems),
+        ("\"\\x24{UNSET-frozen}Lockfile\": true (froze; only the escape-decoded view shows the `${`)",
+         '"\\x24{UNSET-frozen}Lockfile": true\n', m.workspace_frozen_lockfile_problems)):
+    record(f"pnpm-workspace.yaml {_label} -> caught by the `${{` refusal (its token search alone misses it)",
+           any(_WS_ENV in p for p in m.workspace_env_problems(_WS_PKGS + _text))
+           and _token_fn(_WS_PKGS + _text) == [])
+record("pnpm-workspace.yaml a `${` in a string value or a comment -> caught (fail-closed, nothing excised)",
+       all(any(_WS_ENV in p for p in m.workspace_env_problems(_WS_PKGS + t)) for t in
+           ("x: '${HOME}'\n", "# ${UNSET-x}\n")))
+record("pnpm-workspace.yaml a `$` not followed by `{` ($HOME, `$ {x}`) and the plain packages list -> NOT caught",
+       all(m.workspace_env_problems(_WS_PKGS + t) == [] for t in ("x: '$HOME'\n", "x: '$ {y}'\n", "")))
+
+
+# every other pnpm-workspace.yaml setting the guard refuses outright: pnpm 10.13.1 read each from the block,
+# quoted, flow and explicit key forms alike (`pnpm config get`, measured), so each is a token at any value
+def _ws_key_forms(key: str, val: str) -> tuple[str, ...]:
+    return (_WS_PKGS + f"{key}: {val}\n", _WS_PKGS + f'"{key}": {val}\n', f"{{packages: ['.'], {key}: {val}}}\n",
+            _WS_PKGS + f"? {key}\n: {val}\n")
+
+
+for _key, _kebab, _val, _needle in (
+        ("configDependencies", "config-dependencies", "{x: '1.0.0+sha512-AAAA'}", "`configDependencies` exists"),
+        ("onlyBuiltDependenciesFile", "only-built-dependencies-file", "allow.json",
+         "`onlyBuiltDependenciesFile` points"),
+        ("patchedDependencies", "patched-dependencies", "{x@1.0.0: patches/x.patch}",
+         "`patchedDependencies` / `patches/`"),
+        ("dangerouslyAllowAllBuilds", "dangerously-allow-all-builds", "true", "`dangerouslyAllowAllBuilds` is set")):
+    record(f"pnpm-workspace.yaml {_key} in the block, quoted, flow and explicit key forms (pnpm read each, measured) "
+           "-> caught",
+           all(any(_needle in p for p in m.install_mutation_problems({}, t, False)) for t in _ws_key_forms(_key, _val)))
+    _hex = _key[:4] + f"\\x{ord(_key[4]):02X}" + _key[5:]
+    record(f"pnpm-workspace.yaml {_key} as a hex-escaped key, a kebab or snake key or in a comment -> caught (raw or "
+           "decoded, fail-closed, nothing excised)",
+           all(any(_needle in p for p in m.install_mutation_problems({}, _WS_PKGS + t, False)) for t in
+               (f'"{_hex}": {_val}\n', f"{_kebab}: {_val}\n", _kebab.replace("-", "_") + f": {_val}\n",
+                f"# {_key}: {_val}\n")))
+record("REPLAY (R3 review): pnpm-workspace.yaml dangerouslyAllowAllBuilds as an explicit key or a hex-escaped key "
+       "(each ran a dependency's postinstall, measured) -> caught",
+       all(any("`dangerouslyAllowAllBuilds` is set" in p for p in m.install_mutation_problems({}, t, False)) for t in
+           (_WS_PKGS + "? dangerouslyAllowAllBuilds\n: true\n", _WS_PKGS + '"dangerously\\x41llowAllBuilds": true\n')))
+record("pnpm-workspace.yaml dangerouslyAllowAllBuilds: false plus a more-indented `on` line (the truthy plain scalar "
+       "`false on`; pnpm ran a dependency's postinstall, measured) -> caught",
+       any("`dangerouslyAllowAllBuilds` is set" in p
+           for p in m.install_mutation_problems({}, _WS_PKGS + "dangerouslyAllowAllBuilds: false\n  on\n", False)))
+record("pnpm-workspace.yaml registries in the flow, quoted and explicit key forms (the first two re-pointed "
+       "resolution over the .npmrc pin, measured) -> caught",
+       all(any(_WS_REGISTRIES in p for p in m.workspace_registries_problems(t)) for t in
+           _ws_key_forms("registries", "{default: 'https://evil.invalid/'}")[1:]))
+record("pnpm-workspace.yaml registries as a hex-escaped key, a case variant or in a comment -> caught (fail-closed, "
+       "nothing excised)",
+       all(any(_WS_REGISTRIES in p for p in m.workspace_registries_problems(_WS_PKGS + t)) for t in
+           ('"regis\\x74ries": {}\n', "Registries: {}\n", "# registries: {}\n")))
+record("pnpm-workspace.yaml a longer key either side of each refused setting, and onlyBuiltDependencies (not the "
+       "File pointer) -> NOT caught",
+       all(m.install_mutation_problems({}, _WS_PKGS + t, False) == [] and m.workspace_registries_problems(_WS_PKGS + t)
+           == [] for t in ("configDependenciesX: 1\n", "xConfigDependencies: 1\n", "patchedDependenciesX: 1\n",
+                           "xPatchedDependencies: 1\n", "onlyBuiltDependenciesFileX: 1\n",
+                           "xOnlyBuiltDependenciesFile: 1\n", "dangerouslyAllowAllBuildsX: 1\n",
+                           "xDangerouslyAllowAllBuilds: 1\n", "registriesX: 1\n", "xRegistries: 1\n",
+                           "onlyBuiltDependencies: []\n")))
+
+# a source-redirect spec prefix is refused anywhere in pnpm-workspace.yaml: pnpm reads a dependency spec from any
+# key form and through an escape, which the `^overrides:` block reader does not
+_WS_REDIRECT = "carries a source-redirect spec prefix"
+record("REPLAY: pnpm-workspace.yaml a flow-form {packages: ['.'], overrides: {is-number: 'link:./y'}} (the lock "
+       "recorded `link:y`, measured) -> caught, where the block reader sees nothing",
+       any(_WS_REDIRECT in p for p in
+           m.install_mutation_problems({}, "{packages: ['.'], overrides: {is-number: 'link:./y'}}\n", False))
+       and m._yaml_redirect_block("{packages: ['.'], overrides: {is-number: 'link:./y'}}\n", "overrides") == [])
+record("REPLAY: pnpm-workspace.yaml a block-form override with the hex-escaped value \"\\x6cink:./y\" (the lock "
+       "recorded `link:y`, measured) -> caught, where the block reader sees nothing",
+       any(_WS_REDIRECT in p for p in
+           m.install_mutation_problems({}, _WS_PKGS + 'overrides:\n  is-number: "\\x6cink:./y"\n', False))
+       and m._yaml_redirect_block(_WS_PKGS + 'overrides:\n  is-number: "\\x6cink:./y"\n', "overrides") == [])
+record("pnpm-workspace.yaml each source-redirect prefix (file: link: portal: git+ git: ssh: http: https:, any case) "
+       "in a nested flow catalog -> caught",
+       all(any(_WS_REDIRECT in p for p in
+               m.install_mutation_problems({}, _WS_PKGS + f"catalogs:\n  r: {{react: '{v}x'}}\n", False)) for v in
+           ("file:", "link:", "portal:", "git+", "git:", "ssh:", "http:", "https:", "LINK:")))
+record("pnpm-workspace.yaml a version pin, an npm: alias, workspace:, `profile:` and `unlink:` -> NOT caught",
+       all(m.install_mutation_problems({}, _WS_PKGS + t, False) == [] for t in
+           ("overrides:\n  x: ^1.2.3\n", "overrides:\n  x: npm:y@^1\n", "catalog:\n  x: workspace:*\n",
+            "profile: x\n", "unlink: x\n")))
 
 # --- .npmrc parsing ---------------------------------------------------------------------------
 parsed = m.parse_npmrc("# comment\n\nregistry=https://registry.npmjs.org/\n; semicolon comment\nunsafe-perm=false\n")
-record("parse_npmrc ignores comments/blanks + lowercases keys",
+# [Test-Change: P0.3.8 - old-obsolete+new-correct, build-gates G18d row] old label: "+ lowercases keys" - the
+# reader no longer folds case, because pnpm 10.13.1 reads keys case-sensitively (a `REGISTRY=` line after a
+# foreign `registry=` masked it under the fold, measured); the assertion is unchanged and holds.
+record("parse_npmrc ignores comments/blanks",
        parsed.get("registry") == "https://registry.npmjs.org/" and parsed.get("unsafe-perm") == "false")
 
 # --- pnpm-lock resolution-URL guard (G18c) ----------------------------------------------------
@@ -306,14 +650,19 @@ record("pnpm 11 allowBuilds list is counted",
        m._list_count_under("allowBuilds:\n  - esbuild\n", "allowBuilds") == 1)
 
 # --- R2 fixes: pnpm-workspace registries: block + .pnpmfile.cjs (source-substitution / install code) -
+# [Test-Change: P0.3.8 - old-obsolete+new-correct, build-gates G18c row] old: the refusal named the entry
+# (`registries.default`) and a block on the allowed origin was clean; new: the registry pin lives in .npmrc only,
+# so a `registries` token is refused at any value under one message - the per-entry block read was a `^registries:`
+# line read, and pnpm re-pointed resolution through the flow and the quoted-key map it never saw (measured).
 record("pnpm-workspace registries.default off-origin -> caught",
-       any("registries.default" in p for p in
+       any(_WS_REGISTRIES in p for p in
            m.workspace_registries_problems("registries:\n  default: https://evil.example.com/\n")))
 record("pnpm-workspace registries '@scope' off-origin -> caught",
        m.workspace_registries_problems('registries:\n  "@my-org": https://evil.example.com/\n') != [])
-record("pnpm-workspace registries all pointing at the allowed origin -> clean",
-       m.workspace_registries_problems('registries:\n  default: https://registry.npmjs.org/\n'
-                                       '  "@my-org": https://registry.npmjs.org/\n') == [])
+record("pnpm-workspace registries all pointing at the allowed origin -> caught (the pin lives in .npmrc only)",
+       any(_WS_REGISTRIES in p for p in
+           m.workspace_registries_problems('registries:\n  default: https://registry.npmjs.org/\n'
+                                           '  "@my-org": https://registry.npmjs.org/\n')))
 record("pnpm-workspace registries inline/anchor form -> fail-closed",
        m.workspace_registries_problems("registries: &r {default: https://x/}\n") != [])
 record("no registries: block -> clean", m.workspace_registries_problems("packages:\n  - 'apps/*'\n") == [])
@@ -391,8 +740,13 @@ record("dangerouslyAllowAllBuilds absent/false -> NOT caught",
 record("dangerouslyAllowAllBuilds: every JS-truthy scalar pnpm honors -> caught (fail-closed)",
        all(m.install_mutation_problems({}, f"dangerouslyAllowAllBuilds: {v}\n", False) != [] for v in
            ("true", "True", "TRUE", "yes", "Yes", "on", "y", "enabled", "1", '"true"', "!!bool true")))
-record("dangerouslyAllowAllBuilds: a falsy literal -> NOT caught (clean)",
-       all(m.install_mutation_problems({}, f"dangerouslyAllowAllBuilds: {v}\n", False) == [] for v in
+# [Test-Change: P0.3.8 - old-obsolete+new-correct, build-gates G18d row] old: a falsy literal on the key's line
+# was clean; new: the pnpm-workspace.yaml token is refused at any value, because a line read cannot settle the
+# value - `dangerouslyAllowAllBuilds: false` plus a more-indented `on` line is the truthy plain scalar `false on`,
+# and pnpm ran the dependency's postinstall under it (measured). The package.json `False` leg above stays clean.
+record("dangerouslyAllowAllBuilds: a falsy literal -> caught (the pnpm-workspace.yaml token at any value)",
+       all(any("`dangerouslyAllowAllBuilds` is set" in p
+               for p in m.install_mutation_problems({}, f"dangerouslyAllowAllBuilds: {v}\n", False)) for v in
            ("false", "False", "FALSE", "no", "off", "0", "null", "~", "false  # default")))
 record("dangerouslyAllowAllBuilds: a QUOTED-falsy (JS-truthy string pnpm honors) -> caught (R8 boundary lock)",
        all(m.install_mutation_problems({}, f"dangerouslyAllowAllBuilds: {v}\n", False) != [] for v in
@@ -412,7 +766,7 @@ with tempfile.TemporaryDirectory() as _td2:
 with tempfile.TemporaryDirectory() as _td:
     base = Path(_td)
     (base / ".npmrc").write_text("registry=https://registry.npmjs.org/\nenable-pre-post-scripts=false\n"
-                                 "unsafe-perm=false\nfrozen-lockfile=true\n", encoding="utf-8")
+                                 "unsafe-perm=false\n", encoding="utf-8")
     _orig = (m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES, m.PINNED_FLOORS_JS)
     m.NPMRC, m.PNPM_LOCK = base / ".npmrc", base / "pnpm-lock.yaml"
     m.PNPM_WORKSPACE, m.PACKAGE_JSON = base / "pnpm-workspace.yaml", base / "package.json"
@@ -432,6 +786,31 @@ with tempfile.TemporaryDirectory() as _td:
         (base / ".pnpmfile.cjs").write_text("module.exports = {}\n", encoding="utf-8")
         rc_pnpmfile = m.main()
         (base / ".pnpmfile.cjs").unlink()
+        (base / "pnpm-workspace.yaml").write_text("packages:\n  - '.'\nfrozenLockfile: true\n", encoding="utf-8")
+        _ws_err = io.StringIO()
+        with contextlib.redirect_stderr(_ws_err):
+            rc_ws_frozen = m.main()
+        (base / "pnpm-workspace.yaml").write_text("packages:\n  - '.'\nenablePrePostScripts: true\n",
+                                                  encoding="utf-8")
+        _wl_err = io.StringIO()
+        with contextlib.redirect_stderr(_wl_err):
+            rc_ws_lifecycle = m.main()
+        (base / "pnpm-workspace.yaml").write_text("packages:\n  - '.'\n${UNSET-frozen}Lockfile: true\n",
+                                                  encoding="utf-8")
+        _we_err = io.StringIO()
+        with contextlib.redirect_stderr(_we_err):
+            rc_ws_env = m.main()
+        (base / "pnpm-workspace.yaml").unlink()
+        _npmrc_clean = (base / ".npmrc").read_text(encoding="utf-8")
+        (base / ".npmrc").write_text(_npmrc_clean + "[x]\n", encoding="utf-8")
+        _rc_err = io.StringIO()
+        with contextlib.redirect_stderr(_rc_err):
+            rc_npmrc_section = m.main()
+        (base / ".npmrc").write_text(_npmrc_clean + "userconfig=./rc2\n", encoding="utf-8")
+        _uc_err = io.StringIO()
+        with contextlib.redirect_stderr(_uc_err):
+            rc_npmrc_unlisted = m.main()
+        (base / ".npmrc").write_text(_npmrc_clean, encoding="utf-8")
     finally:
         (m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES,
          m.PINNED_FLOORS_JS) = _orig
@@ -440,10 +819,23 @@ with tempfile.TemporaryDirectory() as _td:
     record("main(): a lockfile with only allowed-registry resolutions -> pass", rc_clean == 0)
     record("main(): a committed .pnpmfile.cjs -> FAIL (no install-time code in a zero-egress product)",
            rc_pnpmfile == 1)
+    record("main(): a pnpm-workspace.yaml frozenLockfile: true over the clean fixture -> FAIL, naming the setting "
+           "(the workspace refusal is wired)", rc_ws_frozen == 1 and _WS_REFUSAL in _ws_err.getvalue())
+    record("main(): a `[x]` section header in the clean fixture's .npmrc -> FAIL, naming it (the unmodelled-"
+           "spelling refusal is wired)", rc_npmrc_section == 1 and "`[section]`" in _rc_err.getvalue())
+    record("main(): a pnpm-workspace.yaml enablePrePostScripts: true over the clean fixture -> FAIL, naming it (the "
+           "workspace lifecycle refusal is wired)", rc_ws_lifecycle == 1 and _WS_LIFECYCLE in _wl_err.getvalue())
+    record("main(): a pnpm-workspace.yaml `${UNSET-frozen}Lockfile: true` over the clean fixture -> FAIL, naming the "
+           "`${` (the workspace env refusal is wired)", rc_ws_env == 1 and _WS_ENV in _we_err.getvalue())
+    record("main(): a `userconfig=./rc2` line in the clean fixture's .npmrc -> FAIL, naming the key (the unlisted-key "
+           "refusal is wired)",
+           rc_npmrc_unlisted == 1 and ".npmrc key `userconfig` is not one this guard evaluates" in _uc_err.getvalue())
 
 # --- the REAL committed .npmrc + main() -------------------------------------------------------
 record("the REAL committed .npmrc evaluates clean",
        m.evaluate_npmrc(m.parse_npmrc(m.NPMRC.read_text(encoding="utf-8"))) == [])
+record("the REAL committed .npmrc has no spelling the reader cannot settle",
+       m.npmrc_unmodelled_problems(m.NPMRC.read_text(encoding="utf-8")) == [])
 record("main() exits 0 (.npmrc posture OK; lockfile resolution-URL + onlyBuilt + §0.8 floor live over the real lock)",
        m.main() == 0)
 

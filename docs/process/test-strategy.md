@@ -1154,6 +1154,9 @@ delivered *system*.
 - **Caged tails (added 2026-09-15):** before the box flips, the sweep lands, under
   owner-ack, every caged tail a box of the phase declared as reds-nothing (the P4.41
   G38 planted positives, floor rows, tool pins, gate-row wording).
+- **Watch health:** the sweep reads the Dependabot job history the way
+  roles-and-escalation §5a does; a failing or silent ecosystem job is a sweep
+  finding.
 - **Who:** the Co-Pilot session (roles-and-escalation §1); an L(-1) surface
   touched by a fix follows the normal owner-ack path (G71).
 - **Second leg:** after the delivery re-test, the same sweep runs the
