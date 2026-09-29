@@ -245,6 +245,9 @@ record("13 plugin-surface: fs registered via the Builder form -> caught (init|Bu
            'name = "tauri-plugin-fs"\n', "tauri_plugin_fs::Builder::new().build()")))
 record("13 plugin-surface: an UNLISTED plugin (http) -> caught (neither granted nor forced-inert)",
        any("http" in p and "neither" in p for p in m._plugin_surface_drift('name = "tauri-plugin-http"\n', "")))
+record("13 plugin-surface: tauri-plugin-store (retired, §7.4.2) -> caught (off the allowlist)",
+       any("tauri-plugin-store" in p and "neither" in p
+           for p in m._plugin_surface_drift('name = "tauri-plugin-store"\n', "")))
 
 # --- check 28: §0.4.2 closed app:// event surface — exactly {fault,intake,close-requested}, const-homed ---
 _AE_MOD = "src-tauri/src/ipc/mod.rs"

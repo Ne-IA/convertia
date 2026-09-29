@@ -76,8 +76,9 @@ FORBIDDEN_CRATES = {
 }
 # the §0.10-granted tauri-plugin allowlist — every `tauri-plugin-*` in Cargo.lock must be on this set OR
 # the forced-transitive-inert set below; the LIVE presence-scan `_tauri_plugin_checks` (the 2nd enforcer
-# beside plan-lint check 13) asserts it. These five are deliberately Rust-side-only (no fs/http/etc.).
-TAURI_PLUGIN_ALLOWLIST = {"single-instance", "dialog", "opener", "store", "log"}
+# beside plan-lint check 13) asserts it. These four are the registered plugins (no fs/http/etc.; only
+# `log` holds a WebView grant, G47) — tauri-plugin-store retired 2026-09-29, §7.4.2.
+TAURI_PLUGIN_ALLOWLIST = {"single-instance", "dialog", "opener", "log"}
 # forced-transitive-INERT plugins: dragged into the closure by a granted plugin but never a surface.
 # tauri-plugin-fs is a mandatory transitive dep of tauri-plugin-dialog (re-exports tauri_plugin_fs::FilePath
 # + uses FsExt) — a TYPE library only; §0.10 grants the WebView NO fs plugin. Its `.plugin()`-registration is

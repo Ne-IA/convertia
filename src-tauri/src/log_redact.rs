@@ -16,9 +16,10 @@
 //! owner-decidable hardening), so this door plus the documented convention are the v1 structural
 //! control.
 //!
-//! **Out of scope: ConvertIA's OWN diagnostic paths.** The app's config-dir location (logged by
-//! `crate::prefs` on a store fallback) is **not** a user file — §7.4.2 explicitly permits recording
-//! it — so it does not route through here. The stance covers *user* file paths only.
+//! **Out of scope: ConvertIA's OWN diagnostic paths.** The app's config-dir location (the §7.4.2
+//! `settings.json` home; `crate::prefs`'s fallback lines log only an `io::ErrorKind`, never it) is
+//! **not** a user file — §7.4.2 explicitly permits recording it — so it does not route through here.
+//! The stance covers *user* file paths only.
 //!
 //! **Directory-path inputs — the dir-leaf contract (P2.137).** Call sites pass FILE paths (§7.5.3's
 //! subject is "a user file"). For a directory-leaf input — a trailing-separator path, or a plain path
@@ -45,16 +46,16 @@
 //! being forced into an unrelated tier module. A leaf file adds no directory, so it is inert to the
 //! §1a / §0.7 structural map (G69) and needs no §0.7 physical-tree row.
 
-// The redaction door has no PRODUCTION caller yet — today the crate logs only ConvertIA's own config
-// path (`crate::prefs`, out of the stance's scope above); the first *user*-path log sites land with
-// their producers (P2.94 verbose diagnostics, the P3+ run / P4 engine-argv log sites). It is
+// The redaction door has no PRODUCTION caller yet — today no production log site renders a path
+// (`crate::prefs` logs an `io::ErrorKind`, never its config path, §7.4.2); the first *user*-path log
+// sites land with their producers (P2.94 verbose diagnostics, the P3+ run / P4 engine-argv log sites). It is
 // exercised by the §6.4.1 tests below now; `expect` (not `allow`) auto-flags the moment the first
 // real caller lands, matching `crate::prefs` / `crate::platform` / `crate::domain`.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §7.5.3 basename-only redaction door has no production caller yet — today the crate logs only ConvertIA's own config path (crate::prefs, out of the stance's scope); the first user-path log sites land with their producers (P2.94 verbose / P3+ run / P4 engine argv). Exercised by the §6.4.1 tests now."
+        reason = "the §7.5.3 basename-only redaction door has no production caller yet — today no production log site renders a path (crate::prefs logs an io::ErrorKind, never its config path, §7.4.2); the first user-path log sites land with their producers (P2.94 verbose / P3+ run / P4 engine argv). Exercised by the §6.4.1 tests now."
     )
 )]
 

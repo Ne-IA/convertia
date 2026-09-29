@@ -23,13 +23,15 @@ publish = false
 serde = { version = "1.0.228", features = ["derive"] }
 # [Build-Session-Entscheidung: P2.85] §7.4.2 prefs read: `prefs::from_store_values` is a PURE helper
 # (test-strategy §1.1a — no `AppHandle` in its signature, so it is coverage-counted + unit-tested, NOT
-# boot-glue-exempt) that narrows the store's `serde_json::Value`s via `as_str`/`as_bool` (a wrong JSON type →
-# the key's default, the §7.4.2 best-effort tolerance) — so it NAMES `serde_json::Value` in PRODUCTION.
-# Promoted from the former P1.16 dev-only edge (the `window_model` / §6.4.x round-trip test parsers, which
-# still use it): serde_json is ALREADY in the shipped MIT-core closure transitively (via `tauri`), so this
-# promotion adds NO newly-resolved package, NO SBOM/G53 row, and it is not a §0.8-floored crate
-# (check-supply-chain PINNED_FLOORS lists only the codegen/runtime-pinned crates). Caret-pinned to the
-# lock-resolved 1.0.150 (the normal-lib convention `serde`/`uuid` use; `=`-exact is for the specta tools).
+# boot-glue-exempt) that narrows the settings file's `serde_json::Value`s via `as_str`/`as_bool` (a wrong JSON
+# type → the key's default, the §7.4.2 best-effort tolerance) — so it NAMES `serde_json::Value` in PRODUCTION.
+# With tauri-plugin-store retired (§7.4.2), `prefs::from_settings_bytes` also parses the `settings.json`
+# bytes with `serde_json::from_slice`: `crate::prefs` owns the file, no plugin. Promoted from the former
+# P1.16 dev-only edge (the `window_model` / §6.4.x round-trip test parsers, which still use it): serde_json
+# is ALREADY in the shipped MIT-core closure transitively (via `tauri`), so this promotion adds NO
+# newly-resolved package, NO SBOM/G53 row, and it is not a §0.8-floored crate (check-supply-chain
+# PINNED_FLOORS lists only the codegen/runtime-pinned crates). Caret-pinned to the lock-resolved 1.0.150
+# (the normal-lib convention `serde`/`uuid` use; `=`-exact is for the specta tools).
 serde_json = "1.0.150"
 specta = { version = "2.0.0-rc", features = ["derive", "uuid"] }
 tauri = "2.11.3"
@@ -37,7 +39,6 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-log = "2.8.0"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-single-instance = "2.4.2"
-tauri-plugin-store = "2.4.3"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 # [P3.4] §3.2.2 `TempPath = tempfile::TempPath` — the publish-temp type the `Invocation.out_tmp` engine-output
 # field holds (a path whose file is deleted on drop, matching §2.1 "deleted on drop / never a placeholder").

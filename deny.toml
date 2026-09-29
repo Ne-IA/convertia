@@ -119,8 +119,9 @@ deny = [
   { crate = "curl-sys" },
 ]
 # NOTE — the "deny EVERY tauri-plugin-* except the §0.10-granted allowlist {single-instance, dialog,
-# opener, store, log}" rule cannot be expressed natively in cargo-deny (it has no deny-pattern-with-
-# exceptions). It is enforced structurally instead by TWO independent presence-enforcers —
+# opener, log}" rule (tauri-plugin-store retired 2026-09-29, §7.4.2) cannot be expressed natively in
+# cargo-deny (it has no deny-pattern-with-exceptions). It is enforced structurally instead by TWO
+# independent presence-enforcers —
 # scripts/check-supply-chain (this gate's own structural Cargo.lock scan, no cargo binary) AND plan-lint
 # check 13 (which additionally forbids the forced-inert dep from being `.plugin()`-registered) — that
 # assert every `tauri-plugin-*` crate in Cargo.lock is on that allowlist, or is the forced-transitive-inert

@@ -550,7 +550,7 @@ fn argv_has_verbose(argv: &[String]) -> bool {
 /// plugin-init `set_max_level`; this setup-stage read is the §7.5.3 "resolve the verbose level once at
 /// startup". A mid-session About-toggle only persists the new value — `setup` runs once — so it takes effect
 /// on the NEXT launch (§7.5.3 / §5.9 "applies after restart"). Best-effort: `prefs::load` never fails
-/// (§7.4.2), so an unreadable store simply yields the `false` default. AppHandle-coupled boot-glue (the
+/// (§7.4.2), so an unreadable settings file simply yields the `false` default. AppHandle-coupled boot-glue (the
 /// §1.1a boot-stage pattern — not `tauri::test`-mockable; the decision is the pure unit-tested
 /// `argv_has_verbose` + the §7.4.2-tested `prefs::load`, so only this thin plumbing is un-executed; the
 /// `AppHandle` signature makes it G28 diff-floor-exempt, and it is signature- + wiring-source-scan-pinned).
@@ -1774,8 +1774,8 @@ pub fn run() -> tauri::Result<()> {
         // (was empty in P1.14): it re-focuses the `main` window + forwards the second launch's argv through
         // the §7.8.1 funnel as `SecondInstance` (the §7.1.1 hand-off). dialog + opener are called Rust-side
         // (DialogExt/OpenerExt) so they take NO WebView grant (§0.10); log gets log:default in
-        // capabilities/main.json (P1.21) — the only WebView plugin grant; store is used Rust-side only
-        // (StoreExt), with no WebView grant (§0.10).
+        // capabilities/main.json (P1.21) — the only WebView plugin grant; the §7.4 prefs blob needs no
+        // plugin (`crate::prefs` owns settings.json, §7.4.2).
         //
         // [Build-Session-Entscheidung: P2.51] §7.1.1 single-instance LOCK SCOPE — per-OS-user, NOT
         // machine-global. The PLUGIN owns the lock (this box adds no locking logic), so the scope is a
@@ -1800,7 +1800,6 @@ pub fn run() -> tauri::Result<()> {
         ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
         // [Build-Session-Entscheidung: P2.89] §7.5.1/§7.5.2 logging — the configured plugin (local rotating
         // file + dev stderr, level `info`, no `Stdout`/network sink) from `log_plugin()`. The target
         // whitelist + level live in that helper (`log_targets()` is the pure, tested §3 zero-egress control);

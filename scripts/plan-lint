@@ -1019,13 +1019,14 @@ def doc12_ipc_surface_drift(ctx: Ctx) -> list[Finding]:
 
 
 # Check 13's §0.10 plugin-surface model. `_PLUGIN_ALLOW` = the plugins we deliberately REGISTER via
-# `.plugin()` (some Rust-side-only with no capability — dialog/opener/single-instance, §0.10).
+# `.plugin()` (all but `log` Rust-side-only with no capability — dialog/opener/single-instance, §0.10;
+# tauri-plugin-store is retired, §7.4.2).
 # `_PLUGIN_INERT` = forced-transitive deps a granted plugin drags into the closure but that are NEVER a
 # surface: tauri-plugin-fs is a mandatory transitive dep of tauri-plugin-dialog (dialog re-exports
 # tauri_plugin_fs::FilePath + uses FsExt across its picker API; not feature-disableable) — a TYPE library
 # only. §0.10 grants the WebView NO fs plugin, so fs is allowed in the closure ONLY while it stays inert:
 # asserted NOT `.plugin()`-registered here; its fs: CAPABILITY surface is independently denied by G47.
-_PLUGIN_ALLOW = frozenset({"single-instance", "dialog", "opener", "store", "log"})
+_PLUGIN_ALLOW = frozenset({"single-instance", "dialog", "opener", "log"})
 _PLUGIN_INERT = frozenset({"fs"})
 
 

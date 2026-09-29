@@ -114,13 +114,18 @@ record("the REAL committed deny.toml [graph].targets equals the frozen shipped-t
        "forms via _graph_targets)", m._graph_targets(m._load(m.DENY)) == m.EXPECTED_GRAPH_TARGETS)
 
 # --- tauri-plugin presence scan (the 2nd structural enforcer beside plan-lint check 13; P1.14) -------
-record("tauri-plugin presence: a granted plugin (store) -> clean",
-       m._tauri_plugin_drift('name = "tauri-plugin-store"\n') == [])
+# [Test-Change: P0.3.6 — old-obsolete+new-correct, §7.4.2 store plugin retired 2026-09-29] the granted-clean
+# leg used tauri-plugin-store, which left the allowlist with the plugin; log is a granted plugin.
+record("tauri-plugin presence: a granted plugin (log) -> clean",
+       m._tauri_plugin_drift('name = "tauri-plugin-log"\n') == [])
+record("tauri-plugin presence: tauri-plugin-store (retired, §7.4.2) -> caught (off the allowlist)",
+       any("tauri-plugin-store" in p and "neither" in p
+           for p in m._tauri_plugin_drift('name = "tauri-plugin-store"\n')))
 record("tauri-plugin presence: tauri-plugin-fs (forced-transitive-inert dialog dep) -> clean",
        m._tauri_plugin_drift('name = "tauri-plugin-dialog"\nname = "tauri-plugin-fs"\n') == [])
 record("tauri-plugin presence: an UNLISTED plugin (http) -> caught (unexpected surface, T2/T2c)",
        any("http" in p and "neither" in p for p in m._tauri_plugin_drift('name = "tauri-plugin-http"\n')))
-record("tauri-plugin presence: the 5 granted + forced-inert fs together -> clean",
+record("tauri-plugin presence: every granted plugin + forced-inert fs together -> clean",
        m._tauri_plugin_drift("".join(f'name = "tauri-plugin-{n}"\n'
                                      for n in sorted(m.TAURI_PLUGIN_ALLOWLIST | m.TAURI_PLUGIN_INERT))) == [])
 record("tauri-plugin presence: the granted allowlist + the forced-inert set are DISJOINT (fs is not granted)",

@@ -18,7 +18,7 @@
 //     §0.6 is the Rust source of truth for the domain model, mirrored to the WebView via the
 //     §0.4.5 generated `bindings.ts` (the typed IPC door), which is empty of these DTOs until
 //     P2 authors the C-commands. They are deliberately NOT the final domain types.
-// Distinct from the Rust-side `tauri-plugin-store` `settings.json` prefs blob (P1.14/P2.85);
+// Distinct from the core-owned `settings.json` prefs blob (`crate::prefs`, §7.4.2);
 // this is the in-memory frontend app store. [Build-Session-Entscheidung: P1.31]
 import { create } from "zustand";
 

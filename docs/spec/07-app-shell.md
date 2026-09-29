@@ -66,14 +66,13 @@ using the official **`tauri-plugin-single-instance`** (v2) (the per-OS-user scop
 // then the remaining §0.8 plugins are registered in the same Builder chain:
 //   .plugin(tauri_plugin_dialog::init())   // §0.4.1 C2a/C2b native pickers via DialogExt
 //   .plugin(tauri_plugin_opener::init())   // §7.7 open-folder/file/url via OpenerExt
-//   .plugin(tauri_plugin_store::Builder::default().build())  // §7.4 settings.json
 //   .plugin(tauri_plugin_log::Builder::new()...build())      // §7.5 rotating log
 ```
 
 **Plugin registration order `[DECIDED]`:** `tauri-plugin-single-instance` is registered
 **first** (it must win before any window is created); the remaining §0.8 plugins —
 `tauri-plugin-dialog` (the C2a/C2b native pickers, called Rust-side via `DialogExt`, §0.4.1),
-`tauri-plugin-opener` (§7.7), `tauri-plugin-store` (§7.4) and `tauri-plugin-log` (§7.5) —
+`tauri-plugin-opener` (§7.7) and `tauri-plugin-log` (§7.5) —
 follow in the same Builder chain. `tauri_plugin_dialog::init()` is **required** for
 `app.dialog().file().pick_file(..)` / `.pick_folder(..)` to exist in the C2a/C2b handlers
 (without it both pickers fail to compile).
@@ -823,13 +822,24 @@ per-location fallback applies if it has since become read-only/gone) — it is a
 *hint*, never a guarantee. The blob's location/mechanism is §7.4.2; it is
 **core-owned** — the WebView holds no `store:` grant (§0.10) and never reads or writes the file.
 
-### 7.4.2 If shipped: where it lives & how `[REC]`
+### 7.4.2 Where it lives & how — core-owned `[DECIDED]`
 
-- **Mechanism:** the official **`tauri-plugin-store`** (a single JSON file,
-  `settings.json`), or a hand-rolled equivalent — either is fine; the store plugin
-  is the lower-effort default. Used **Rust-side only**, opened by the ABSOLUTE
-  `app_config_dir()` path (a relative name resolves against `BaseDirectory::AppData`, not
-  the config dir, on Linux).
+- **Mechanism `[DECIDED 2026-09-29]`:** `crate::prefs` owns `settings.json` directly
+  (`std::fs` + `serde_json`, no plugin). **Read:** the file at
+  `app.path().app_config_dir()/settings.json` (an absolute path), at most 64 KiB; an absent
+  file yields the §7.4.1 defaults silently (first launch); an unreadable, oversize or
+  non-object document yields the defaults plus one log line (§7.5); each key narrows on its
+  own (a wrong-typed key falls back to its default). **Write:** one key per write,
+  read-modify-write under one process-local lock — load the current object as above (unknown
+  keys kept; a non-object document is replaced by a fresh object), serialise, write a sibling
+  file in the config dir, flush it (`sync_all`) and rename it over `settings.json` (an atomic
+  replace on all three OS), creating the config dir first. (SUPERSEDED `[DECIDED 2026-09-29]`:
+  `tauri-plugin-store` and the former 'or a hand-rolled equivalent — either is fine' `[REC]`.
+  Measured against the then-pinned 2.4.5 source: every mutating `Store` call
+  (`set`/`delete`/`clear`/`reset`) emits a `store://change` event carrying the store's absolute
+  path and the new value to every webview, which a page may `listen` for under `core:default`,
+  so a core write of `lastDestinationMode` would put an absolute path on an event — the §0.10
+  no-path rule forbids it.)
 - **Core-owned `[DECIDED 2026-09-29]`:** the WebView holds no `store:` permission (§0.10);
   `crate::prefs` alone reads and writes `settings.json`; the WebView reaches
   `theme`/`verboseLog` only through typed core IPC commands that carry no path, store name
