@@ -307,11 +307,11 @@ def _tauri_plugin_drift(lock_text: str) -> list[str]:
 
 def _tauri_plugin_checks() -> list[str]:
     """Run the structural tauri-plugin PRESENCE scan when a Cargo.lock exists (root OR src-tauri/);
-    skip-with-notice when no workspace yet (the P0 pre-P1 posture — plan-lint check 13 also skips then)."""
+    skip-with-notice when there is none (plan-lint check 13 reports a missing root Cargo.lock as a finding)."""
     lock = next((p for p in CARGO_LOCK_CANDIDATES if p.is_file()), None)
     if lock is None:
-        print("[G18] no Cargo.lock yet (lands in P1) - skipping the tauri-plugin presence scan "
-              "(plan-lint check 13 + this 2nd enforcer both fail-closed the moment the lock exists)")
+        print("[G18] no Cargo.lock - skipping the tauri-plugin presence scan "
+              "(plan-lint check 13 reports the missing lock as a finding)")
         return []
     return _tauri_plugin_drift(lock.read_text(encoding="utf-8", errors="replace"))
 

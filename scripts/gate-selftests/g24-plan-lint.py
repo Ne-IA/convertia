@@ -222,9 +222,11 @@ record("25 doc-graph: a dangling cross-doc link -> caught",
 record("25 freshness: a doc naming a non-documented (deleted/renamed) gate -> caught",
        any("freshness" in f.msg and "G9999" in f.msg for f in m.doc25_doc_graph(
            dctx({"docs/x.md": "we still use G9999 here\n", "docs/security/build-gates.md": "| **G2** | x |\n"}))))
-record("25 forward-allowlist: a dangling link to a registered forward-target -> NOT a dangling finding",
-       not any("dangling" in f.msg for f in m.doc25_doc_graph(
-           dctx({"docs/spec/README.md": "[v](../process/vuln-response.md)\n"}))))
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] the forward-target allowlist
+# is gone (its three docs landed), so a dangling link whose basename it once excused is a finding like any other.
+record("25 forward-allowlist: a dangling link whose basename was on the retired allowlist -> caught (no allowlist)",
+       any("dangling" in f.msg and "nowhere/vuln-response.md" in f.msg for f in m.doc25_doc_graph(
+           dctx({"docs/spec/README.md": "[v](../nowhere/vuln-response.md)\n"}))))
 record("25 forward-allowlist: a dangling link to an UNREGISTERED target -> still caught (no cue evasion)",
        any("dangling" in f.msg for f in m.doc25_doc_graph(
            dctx({"docs/spec/README.md": "[x](gone.md) — but this is planned for later\n"}))))
@@ -328,6 +330,10 @@ with tempfile.TemporaryDirectory() as _d29:
     (_root29 / "src-tauri" / "src").mkdir(parents=True)
     (_root29 / "src-tauri" / "src" / "planted.rs").write_text(
         "// the hull stays dead until P0.1 wires it\n", encoding="utf-8")
+    # [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] the other two scope
+    # roots exist too: a missing one is now its own finding (the `missing target` legs), not a silent skip.
+    (_root29 / "crates").mkdir()
+    (_root29 / "xtask" / "src").mkdir(parents=True)
     record("29 stale-liveness: the REAL entry point fires on a planted scratch root (discovery + [x] parse proven)",
            len(m.doc29_stale_liveness(m.build_ctx(_root29))) == 1)
 
@@ -351,8 +357,11 @@ _SEEDED = [("`cargo-acl`/cackle", "informational", "2026-06-18"),
            ("`G65`", "informational", "2026-06-19")]             # P0.7.15 — engine-subprocess coverage-guided fuzz
 record("23 gate-status: a clean 8-row ledger (all registered gates) -> no finding",
        m.doc23_ratchet_log(dctx(_ledger(_SEEDED))) == [])
-record("23 gate-status: absent ledger -> skip (target-absent, not a finding)",
-       m.doc23_ratchet_log(dctx({})) == [])
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] the ledger landed (P0.4.5),
+# so its absence is a finding, never a skip.
+record("23 gate-status: absent ledger -> caught (a missing target is a finding)",
+       [f.msg for f in m.doc23_ratchet_log(dctx({}))]
+       == ["docs/process/gate-status.md is missing or empty — fail-closed"])
 record("23 gate-status: a missing required gate (no Kani row) -> caught",
        any("kani" in f.msg.lower() for f in m.doc23_ratchet_log(dctx(_ledger([r for r in _SEEDED if r[0] != "Kani"])))))
 record("23 gate-status: a malformed status ('maybe') -> caught",
@@ -401,8 +410,11 @@ record("_extract_fenced_block: None when no fenced block carries the marker",
        m._extract_fenced_block("```\nunrelated\n```\n", "MARK here") is None)
 record("19 reviewer-rubric: a complete fenced rubric block -> no finding",
        m.doc19_reviewer_rubric(dctx({_BL: _RUBRIC_OK})) == [])
-record("19 reviewer-rubric: absent build-loop.md -> skip (target-absent, not a finding)",
-       m.doc19_reviewer_rubric(dctx({})) == [])
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] build-loop.md landed (P0.1.3),
+# so its absence is a finding, never a skip (the same flip for checks 14/15/18/20 below).
+_BL_MISSING = ["docs/process/build-loop.md is missing or empty — fail-closed"]
+record("19 reviewer-rubric: absent build-loop.md -> caught (a missing target is a finding)",
+       [f.msg for f in m.doc19_reviewer_rubric(dctx({}))] == _BL_MISSING)
 record("19 reviewer-rubric: no fenced rubric block at all -> caught (absent/empty)",
        any("absent or empty" in f.msg for f in m.doc19_reviewer_rubric(dctx({_BL: "# bl\n\nprose, no rubric\n"}))))
 record("19 reviewer-rubric: a rubric MISSING the SPEC-CONTRADICTION-above-P0 phrase -> caught",
@@ -446,8 +458,9 @@ _FAM_OK = ("# Build-Loop\n\nRecorded reviewer-family decision: the two reviewers
            "1-in-10-box sample; the flip option remains open.\n")
 record("20 reviewer-family: a build-loop.md with the full decision + cadence -> no finding",
        m.doc20_reviewer_family(dctx({_BL: _FAM_OK})) == [])
-record("20 reviewer-family: absent build-loop.md -> skip (target-absent, not a finding)",
-       m.doc20_reviewer_family(dctx({})) == [])
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] see check 19 above.
+record("20 reviewer-family: absent build-loop.md -> caught (a missing target is a finding)",
+       [f.msg for f in m.doc20_reviewer_family(dctx({}))] == _BL_MISSING)
 record("20 reviewer-family: a build-loop.md MISSING the spot-audit cadence -> caught",
        any("spot-audit" in f.msg for f in m.doc20_reviewer_family(dctx({_BL: _FAM_OK.replace("spot-audit", "review")}))))
 record("20 reviewer-family: a build-loop.md MISSING the explicit acceptance -> caught",
@@ -516,10 +529,11 @@ record("14 region: an INDENTED DoD bullet ends at its own sibling (a following i
        m._greedy_letters(m._gates_g1_dod_region(
            "  - **Definition-of-Done.** (a) x;(b) x;(c) x;(d) x;(e) x;(f) x;(g) x;(h) x.\n"
            "  - **Note:** a ninth item (i) does not belong here.\n") or "") == list("abcdefgh"))
-# integration: aligned -> clean; each source drifting -> caught; target-absent -> skip; real docs pass
+# integration: aligned -> clean; each source drifting -> caught; a missing build-loop.md -> caught; real docs pass
 record("14 dod-parity: three aligned copies -> no finding", m.doc14_dod_parity(_c14()) == [])
-record("14 dod-parity: absent build-loop.md -> skip (target-absent, not a finding)",
-       m.doc14_dod_parity(_c14(with_bl=False)) == [])
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] see check 19 above.
+record("14 dod-parity: absent build-loop.md -> caught (a missing target is a finding)",
+       [f.msg for f in m.doc14_dod_parity(_c14(with_bl=False))] == _BL_MISSING)
 record("14 dod-parity: build-loop.md §5 dropping item (f) -> caught",
        any("build-loop.md" in f.file and "!= canonical" in f.msg
            for f in m.doc14_dod_parity(_c14(bl=_BL5_OK.replace("**(f)**", "**(x)**")))))
@@ -557,8 +571,9 @@ _HS_OK = ("# Build-Loop\n\n## 6. Hard-stops\n\n"
           "- >= 3 consecutive push failures = hard-stop + escalate.\n")
 record("15 hard-stop: a build-loop.md with all four operator-anchored thresholds -> no finding",
        m.doc15_hard_stop_parity(dctx({_BL: _HS_OK})) == [])
-record("15 hard-stop: absent build-loop.md -> skip (target-absent, not a finding)",
-       m.doc15_hard_stop_parity(dctx({})) == [])
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] see check 19 above.
+record("15 hard-stop: absent build-loop.md -> caught (a missing target is a finding)",
+       [f.msg for f in m.doc15_hard_stop_parity(dctx({}))] == _BL_MISSING)
 record("15 hard-stop: the soft-stop >= 8 string reverted to the '~8' prose form -> caught",
        any(">= 8" in f.msg for f in m.doc15_hard_stop_parity(
            dctx({_BL: _HS_OK.replace("soft-stop fires when committed-box-count >= 8", "soft-stop ~8 boxes")}))))
@@ -587,8 +602,9 @@ _NP_OK = ("# Build-Loop\n\n## 3. The loop\n\n"
           "- Push is idempotent on retry — a re-push is a safe no-op.\n")
 record("18 named-proc: a build-loop.md with both procedures + their sub-rules -> no finding",
        m.doc18_named_procedure(dctx({_BL: _NP_OK})) == [])
-record("18 named-proc: absent build-loop.md -> skip (target-absent, not a finding)",
-       m.doc18_named_procedure(dctx({})) == [])
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] see check 19 above.
+record("18 named-proc: absent build-loop.md -> caught (a missing target is a finding)",
+       [f.msg for f in m.doc18_named_procedure(dctx({}))] == _BL_MISSING)
 record("18 named-proc: the crash-recovery procedure header dropped -> caught",
        any("Crash-recovery procedure" in f.msg for f in m.doc18_named_procedure(
            dctx({_BL: _NP_OK.replace("Crash-recovery procedure", "Recovery steps")}))))
@@ -776,12 +792,21 @@ record("registry: every DOC_CHECKS key has its numbered item in build-gates.md �
        "definition is a dangling cross-reference - the check-31 r1 P1 catcher)",
        all(m.re.search(rf"^{k.split(':')[0]}\. \*\*", _real.docs.get("docs/security/build-gates.md", ""), m.re.M)
            for k in m.DOC_CHECKS))
-record("21 t2-taint-xor: pending (neither CodeQL nor Semgrep live) -> skip []",
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] the old leg read the real
+# repo under a "neither live -> skip" label while the real repo has the Semgrep ruleset (exactly one live);
+# neither live is now a finding (§6 item 21: "not both, not neither"), so each arm gets its own root.
+record("21 t2-taint-xor: the real repo (the Semgrep taint ruleset live, no CodeQL marker) -> clean",
        m.doc21_taint_xor(_real) == [])
-# the target-absent stubs all skip today (their P0.6/P1 targets are unauthored). NB check 23 is NO LONGER
-# here: P0.4.5 created docs/process/gate-status.md, so doc23 is now ACTIVE and is exercised by its own
-# dedicated legs above (the gate-status block) — keeping it in this "stubs skip" tuple would pass for the
-# wrong reason (the real ledger is clean, the active path) under a misleading label (P0.4.5 G1 P2 fix).
+with tempfile.TemporaryDirectory() as _t21:
+    _r21 = Path(_t21)
+    _c21 = m.Ctx(root=_r21, boxes=[], by_id={}, plan_files=[], docs={}, gate_ids=set())
+    record("21 t2-taint-xor: NEITHER a CodeQL marker NOR the Semgrep ruleset live -> caught",
+           any("NEITHER" in f.msg for f in m.doc21_taint_xor(_c21)))
+    (_r21 / ".github").mkdir()
+    (_r21 / ".github" / "codeql-default-setup").write_text("CodeQL javascript-typescript\n", encoding="utf-8")
+    (_r21 / "scripts" / "semgrep-rules").mkdir(parents=True)
+    record("21 t2-taint-xor: BOTH a CodeQL marker AND the Semgrep ruleset live -> caught (XOR)",
+           any("BOTH" in f.msg for f in m.doc21_taint_xor(_c21)))
 # --- check 24: p0-completion.md run_url is an immutable Actions-run URL (P0.6.10) --------------------
 # The stub is BORN-GREEN: run_url holds the pattern-valid placeholder run `0` until the P0-exit commit
 # fills the real run id. check 24 reddens ANY run_url: token that is not an Actions-run URL, so a non-URL
@@ -792,8 +817,11 @@ _PC_OK = ("# ConvertIA — P0 Completion Record\n\n## Record\n\n"
 _PC = "docs/process/p0-completion.md"
 record("24 p0-completion: a pattern-valid Actions-run URL (the runs/0 placeholder) -> no finding",
        m.doc24_p0_completion(dctx({_PC: _PC_OK})) == [])
-record("24 p0-completion: absent p0-completion.md -> skip (target-absent, not a finding)",
-       m.doc24_p0_completion(dctx({})) == [])
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] the record landed (P0.6.10),
+# so its absence is a finding, never a skip.
+record("24 p0-completion: absent p0-completion.md -> caught (a missing target is a finding)",
+       [f.msg for f in m.doc24_p0_completion(dctx({}))]
+       == ["docs/process/p0-completion.md is missing or empty — fail-closed"])
 record("24 p0-completion: a non-URL placeholder token -> caught",
        any("does not match" in f.msg for f in m.doc24_p0_completion(
            dctx({_PC: _PC_OK.replace("https://github.com/Ne-IA/convertia/actions/runs/0", "<pending-at-exit>")}))))
@@ -801,11 +829,9 @@ record("24 p0-completion: a filled real run id passes",
        m.doc24_p0_completion(dctx({_PC: _PC_OK.replace("runs/0", "runs/27820505219")})) == [])
 record("24 p0-completion: the REAL committed p0-completion.md stub passes (born-green)",
        m.doc24_p0_completion(_real) == [])
-# With p0-completion.md authored (P0.6.10), doc24 is now ACTIVE too — so ALL SIX P0.6/P0.3.5 doc-checks
-# (14/15/18/19/20/24) are live with dedicated real-doc legs and NONE remains a target-absent skip under a
-# misleading label. The only target-absent skips that survive are the per-check synthetic dctx({}) probes
-# (each paired with its real-doc leg), never a real check passing for the wrong reason — the P0.4.5-G1-P2
-# principle (see check 23 above), now fully discharged across the P0.6 activations.
+# Every doc check over a landed target reports a missing target: the synthetic dctx({}) probes above assert
+# the finding (each paired with its real-doc leg), and the `missing target` family below covers the checks
+# that had no such probe plus the registry-wide posture.
 
 # --- check 26 (G69) structural-map integrity — the real logic, driven by pure fns (P0.3.13) ------
 # [Test-Change: P0.3.13 G69 re-key — old-obsolete+new-correct, build-gates §6 check 26] the bind moved from
@@ -1078,8 +1104,11 @@ record("30 restatement: the SSOT is in scope (it OUTRANKS the spec - the round-1
 record("30 restatement: docs/plan is OUT of scope (history quotes - the named residual)",
        m.doc30_spec_restatement_fidelity(dctx({"docs/spec/02-guarantees.md": _g30,
            "docs/plan/P5-images.md": "> \"Could not launch it - click \"Open Anyway\" beside it, then try again.\"\n"})) == [])
-record("30 restatement: target-absent (no catalog section) -> clean skip",
-       m.doc30_spec_restatement_fidelity(dctx({"docs/spec/05-ui-ux.md": "This file looks damaged and could not\n"})) == [])
+# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] the catalog landed, so a
+# 02-guarantees.md yielding no canonical string is a finding, never a clean skip.
+record("30 restatement: a missing catalog (no catalog section) -> caught (a missing target is a finding)",
+       [f.msg for f in m.doc30_spec_restatement_fidelity(dctx({"docs/spec/05-ui-ux.md": "This file looks damaged and could not\n"}))]
+       == ["the §2.8.2/§2.9.1 canonical-string catalog in docs/spec/02-guarantees.md is missing or empty — fail-closed"])
 record("30 restatement: non-vacuity - the REAL 02-guarantees.md yields a full catalog (>= 50 canonical strings)",
        len(m._canonical_strings((ROOT / "docs/spec/02-guarantees.md").read_text(encoding="utf-8"))) >= 50)
 record("30 restatement: the REAL spec set passes (every cross-file quotation is verbatim)",
@@ -1118,8 +1147,10 @@ with tempfile.TemporaryDirectory() as _d32:
                for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.10"), v="9.9.10"))))
     record("32 sast-pin-sync: a requirements file WITHOUT a semgrep== pin -> flagged (the file's reason to exist)",
            any("no `semgrep==" in f.msg for f in m.doc32_sast_pin_sync(_c32("requests==2.0.0\n"))))
-    record("32 sast-pin-sync: requirements-ci.txt absent -> target-absent, no finding",
-           m.doc32_sast_pin_sync(_c32(None)) == [])
+    # [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] requirements-ci.txt
+    # landed, so its absence is a finding, never target-absent.
+    record("32 sast-pin-sync: requirements-ci.txt absent -> caught (a missing target is a finding)",
+           [f.msg for f in m.doc32_sast_pin_sync(_c32(None))] == ["requirements-ci.txt is missing or empty — fail-closed"])
 record("32 sast-pin-sync: the REAL repo is clean (the live pin is named in all three sites)",
        m.doc32_sast_pin_sync(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[], gate_ids=set(), docs={})) == [])
 
@@ -1257,6 +1288,74 @@ record("33 gate-row-promise: generic process prose outside a row / §6 item ('a 
 _bs33, _by33, _pf33 = m.load_plan(ROOT)
 record("33 gate-row-promise: the REAL build-gates.md carries no unowned promise (ids resolved against the real plan)",
        m.doc33_gate_row_promise(m.Ctx(root=ROOT, boxes=_bs33, by_id=_by33, plan_files=_pf33, gate_ids=set(), docs={})) == [])
+
+# --- missing target: a doc check over a landed target reports its absence (build-gates §6, G7) ------------------
+# Each leg removes exactly one target and expects exactly the finding that names it; the registry leg then pins
+# the posture for every check at once, so a new check that passes silently on a missing target reds here.
+_SEC, _BGD = "docs/security/security-concept.md", "docs/security/build-gates.md"
+
+
+def _miss(rel: str, what: str = "") -> str:
+    return f"{what or rel} is missing or empty — fail-closed"
+
+
+def _msgs(findings) -> list[str]:
+    return [f.msg for f in findings]
+
+
+record("missing target: 2 cross-reference - no numbered heading in docs/spec/, docs/security/ or docs/process/ -> caught",
+       _msgs(m.doc2_cross_reference(dctx({"docs/a.md": "# x\n"})))
+       == [_miss("", "the numbered-heading set of docs/spec/, docs/security/ and docs/process/ (the § targets)")])
+record("missing target: 5 gate-catalogue - security-concept.md alone missing, then build-gates.md alone -> each caught",
+       _msgs(m.doc5_gate_catalogue(dctx({_BGD: "| **G2** | x |\n"}))) == [_miss(_SEC)]
+       and _msgs(m.doc5_gate_catalogue(dctx({_SEC: "uses G2\n"}))) == [_miss(_BGD)])
+record("missing target: 8 threat-parity - security-concept.md missing -> caught; build-gates.md missing -> caught beside the row checks",
+       _msgs(m.doc8_threat_parity(dctx({_BGD: "| **G2** | x |\n"}))) == [_miss(_SEC)]
+       and _miss(_BGD) in _msgs(m.doc8_threat_parity(dctx({_SEC: "| **T1** d | c | G48 |\n"}))))
+_CAT = "the build-gates `| **Gnn** |` catalogue"
+record("missing target: 11 span-bound / 17 forward-idea / 22 gate-id-gap - a build-gates.md with no Gnn row -> each caught",
+       all(_msgs(fn(dctx({_BGD: "# gates, no rows\n"}))) == [_miss(_BGD, _CAT)]
+           for fn in (m.doc11_span_bound, m.doc17_forward_idea_status, m.doc22_gate_id_gap_free)))
+record("missing target: 16 planted-positive - security-concept.md alone missing, then build-gates.md alone -> each caught",
+       _msgs(m.doc16_planted_positive(dctx({_BGD: "| **G2** | x | fail-closed |\n"}))) == [_miss(_SEC)]
+       and _msgs(m.doc16_planted_positive(dctx({_SEC: "| **T1** d | c | G2 |\n"}))) == [_miss(_BGD)])
+record("missing target: 24 p0-completion - a record without a `run_url:` field -> caught",
+       _msgs(m.doc24_p0_completion(dctx({"docs/process/p0-completion.md": "# P0 record\n\ndate: 2026-01-01\n"})))
+       == [_miss("", "the `run_url:` field of docs/process/p0-completion.md")])
+record("missing target: 25 doc-graph - no build-gates catalogue for the gate-name freshness axis -> caught",
+       _miss(_BGD) in _msgs(m.doc25_doc_graph(dctx({"docs/a.md": "names G7\n"}))))
+with tempfile.TemporaryDirectory() as _tmt:
+    _rmt = Path(_tmt)
+
+    def _cmt(docs=None):
+        return m.Ctx(root=_rmt, boxes=[], by_id={}, plan_files=[], docs=docs or {}, gate_ids=set())
+
+    record("missing target: 12 ipc-surface - no src-tauri/src and no golden -> both caught",
+           _msgs(m.doc12_ipc_surface_drift(_cmt())) == [_miss("src-tauri/src"), _miss("src-tauri/ipc-commands.golden")])
+    record("missing target: 13 plugin-surface - no Cargo.lock and no src-tauri/src -> both caught",
+           _msgs(m.doc13_plugin_surface_drift(_cmt())) == [_miss("Cargo.lock"), _miss("src-tauri/src")])
+    record("missing target: 28 app-event - no src-tauri/src -> caught",
+           _msgs(m.doc28_app_event_surface_drift(_cmt())) == [_miss("src-tauri/src")])
+    record("missing target: 29 stale-liveness - each of the three scope roots missing -> caught",
+           _msgs(m.doc29_stale_liveness(_cmt())) == [_miss("src-tauri/src"), _miss("crates"), _miss("xtask/src")])
+    record("missing target: 27 posture - no gate-planes.toml -> caught",
+           _msgs(m.doc27_gate_posture_transition(_cmt())) == [_miss("scripts/gate-planes.toml")])
+    record("missing target: 33 gate-row-promise - no build-gates.md -> caught",
+           _msgs(m.doc33_gate_row_promise(_cmt())) == [_miss(_BGD)])
+    record("missing target: 10 manifest-currency - no ffmpeg-*.lock -> NO finding (the one target-absent check, P6.4/P6.5)",
+           m.doc10_manifest_currency(_cmt()) == [])
+    # the posture over the whole registry: an empty root with no docs and no boxes leaves exactly the documented
+    # no-target set silent - 1 (registered no-op), 3/4/6/7/9 (scope scans), 10 (target-absent), 31 (the plan,
+    # whose absence exits 2 in main) - and every other doc check reports a missing target
+    _silent = {cid for cid, fn in m.DOC_CHECKS.items() if not fn(_cmt())}
+    record("missing target: registry - on an empty root only checks 1, 3, 4, 6, 7, 9, 10 and 31 report nothing",
+           _silent == {"1:matrix-parity", "3:heading-hierarchy", "4:numbering-gap-free", "6:forbidden-tokens",
+                       "7:generated-file-sanity", "9:inventory-parity", "10:manifest-currency", "31:sweep-binding"})
+    (_rmt / "scripts").mkdir()
+    (_rmt / "scripts" / "gate-planes.toml").write_text('[[fail_open]]\ngate = "G71"\n', encoding="utf-8")
+    record("missing target: 27 posture - a gate-planes.toml without a [[posture_flag]] row -> caught",
+           _msgs(m.doc27_gate_posture_transition(_cmt()))
+           == [_miss("scripts/gate-planes.toml", "the [[posture_flag]] registry in scripts/gate-planes.toml")])
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-plan-lint] {len(results) - len(failed)}/{len(results)} assertions passed.")
