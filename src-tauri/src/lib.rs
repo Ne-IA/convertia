@@ -1773,8 +1773,9 @@ pub fn run() -> tauri::Result<()> {
         // `#[cfg(desktop)]` guard is needed. [Build-Session-Entscheidung: P2.52] the callback is now WIRED
         // (was empty in P1.14): it re-focuses the `main` window + forwards the second launch's argv through
         // the §7.8.1 funnel as `SecondInstance` (the §7.1.1 hand-off). dialog + opener are called Rust-side
-        // (DialogExt/OpenerExt) so they take NO WebView grant (§0.10); store/log get store:default/log:default
-        // in capabilities/main.json (P1.21).
+        // (DialogExt/OpenerExt) so they take NO WebView grant (§0.10); log gets log:default in
+        // capabilities/main.json (P1.21) — the only WebView plugin grant; store is used Rust-side only
+        // (StoreExt), with no WebView grant (§0.10).
         //
         // [Build-Session-Entscheidung: P2.51] §7.1.1 single-instance LOCK SCOPE — per-OS-user, NOT
         // machine-global. The PLUGIN owns the lock (this box adds no locking logic), so the scope is a

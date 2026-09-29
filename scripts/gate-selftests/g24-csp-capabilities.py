@@ -2,8 +2,9 @@
 """g24-csp-capabilities.py - G24 self-test for check-csp-capabilities (P0.3.2, G47).
 
 Proves the CSP/capability lint CATCHES every §0.10 widening (a remote CSP origin, a missing/extra
-directive, a flipped dangerous key, a re-enabled updater, a remote window url, devtools, ANY capability
-grant beyond core/log/store — incl. shell:allow-spawn/default, fs:/opener:/dialog:/http:/updater:, a
+directive, a flipped dangerous key, a re-enabled updater, a remote window url, devtools, ANY permission
+outside the exact core:default/log:default set — incl. store:default, a non-default core:/log: token, a
+scoped object entry, shell:allow-spawn/default, fs:/opener:/dialog:/http:/updater:, a
 `remote`/`urls` grant, an INLINE conf capability — a missing/wrong dns-prefetch meta, a custom URL
 scheme, a `bundle.fileAssociations` / `CFBundleDocumentTypes` file-association, a wrong/absent
 `bundle.macOS.minimumSystemVersion` OS-floor) and PASSES the locked posture — plus the live main()
@@ -131,9 +132,19 @@ c = valid_conf()
 c["app"]["security"]["capabilities"] = ["main"]   # a STRING entry is a file ref (dir-scan covers it) -> OK
 record("INLINE capability STRING ref -> not flagged (file-scan covers it)", m.evaluate_conf(c) == [])
 
-# --- pure evaluate_capability (ALLOW-list: only core/log/store) -------------------------------
-record("clean capability (core/log/store) -> no problems",
-       m.evaluate_capability({"permissions": ["core:default", "log:default", "store:allow-get"]}) == [])
+# --- pure evaluate_capability (EXACT tokens: core:default / log:default) ---
+# [Test-Change: P0.3.2 — old-obsolete+new-correct, §0.10 exact-token allow-list 2026-09-29] the former
+# 'core/log/store clean' leg passed store:allow-get; §0.10 now permits only the two exact tokens.
+record("clean capability (exact tokens core:default + log:default) -> no problems",
+       m.evaluate_capability({"permissions": ["core:default", "log:default"]}) == [])
+for perm in ("store:default", "store:allow-load", "core:window:allow-close", "log:allow-log"):
+    record(f"capability grant `{perm}` -> caught (exact-token allow-list)",
+           m.evaluate_capability({"permissions": [perm]}, "main.json") != [])
+record("object-form bare {identifier: log:default} -> no problems (a bare identifier is the string form)",
+       m.evaluate_capability({"permissions": [{"identifier": "log:default"}]}) == [])
+record("object-form SCOPED {identifier: log:default, allow: [...]} -> caught (no scoped entry)",
+       any("SCOPED" in p for p in m.evaluate_capability(
+           {"permissions": [{"identifier": "log:default", "allow": [{"x": 1}]}]})))
 for perm in ("fs:allow-read", "opener:allow-open-url", "dialog:allow-open", "http:default",
              "updater:allow-check", "shell:allow-execute", "shell:allow-spawn", "shell:default",
              "shell:allow-sidecar", "geo:default"):
@@ -179,6 +190,9 @@ with tempfile.TemporaryDirectory() as d:
 
     write_tree(td, valid_conf(), ["core:default", "fs:allow-read"], META)
     record("main(): an fs: capability grant -> exit 1", m.main(argv) == 1)
+
+    write_tree(td, valid_conf(), ["core:default", "store:default"], META)
+    record("main(): a store:default capability grant -> exit 1 (the retired prefs grant)", m.main(argv) == 1)
 
     # a custom-URL-scheme registration file under --src-tauri -> exit 1 (exercises the scheme path +
     # the out-of-ROOT relative_to fallback, since td is outside the repo root)

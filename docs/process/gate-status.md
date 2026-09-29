@@ -87,7 +87,7 @@ un-flip again.**)
 
 | Gate | Activated-in | Now-real target (P-box) | Negative self-test — a planted violation MUST fail | Flipped |
 |---|---|---|---|---|
-| **G47** — WebView CSP + Tauri capability lint | P1.62.1 | `tauri.conf.json` + `capabilities/main.json` (P1.18–P1.21) | `g24-csp-capabilities` — a mis-encoded CSP directive / an `fs:`/`http:`/`shell`/`opener:`/`dialog:` grant / a present updater block fails | 2026-06-23 |
+| **G47** — WebView CSP + Tauri capability lint | P1.62.1 | `tauri.conf.json` + `capabilities/main.json` (P1.18–P1.21) | `g24-csp-capabilities` — a mis-encoded CSP directive / any permission outside the exact `core:default`/`log:default` set (a `store:` grant, a non-default `core:` token, a scoped entry) / a present updater block fails | 2026-06-23 |
 | **G19** — generated-artifact drift | P1.62.2 | `src/lib/ipc/bindings.ts` (P1.26 / regen wired P1.53) | `g24-generated-drift` — a stale / hand-edited / un-regenerated artifact fails the regen + `git diff --exit-code` | 2026-06-23 |
 | **G27** — per-domain coverage floors | P1.62.3 | `cargo llvm-cov` + Vitest v8 reports (P1.54) | `g24-coverage` — a measured domain below its `[line]` floor fails (never averaged) | 2026-06-23 |
 | **G28** — diff-coverage gate | P1.62.4 | the per-line lcov reports (P1.54) | `g24-coverage` — changed executable product lines < 80 % covered fails (`_diff_verdict`) | 2026-06-23 |

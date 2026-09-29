@@ -53,8 +53,8 @@
   reliability runner and **no** deferred P4-harness edges, so it carries the
   cross-phase reconciliation obligation (P4.77; reciprocal of P3.70/P5.74/P6.92/
   P7.77/P9.46) **inline on each box** rather than in a dedicated reconciliation box:
-  P8.1.1→P2.39/P1.37 (the payload-less `app://intake` nudge + strings), P8.3/P8.16→P2.85 (`tauri-plugin-store`
-  prefs blob), P8.10/P8.12→P2.34 (C11 `get_app_info`), P8.15→P2.33 (C10
+  P8.1.1→P2.39/P1.37 (the payload-less `app://intake` nudge + strings), P8.3/P8.16→P2.85 (the core-owned `settings.json`
+  prefs blob, §7.4.2), P8.10/P8.12→P2.34 (C11 `get_app_info`), P8.15→P2.33 (C10
   `open_project_page`), P8.19→P3.68 (§2.8.2 catalog), P8.20→P1.31.2/P3.69 (§5.1 store +
   §2.9.1 catalog). No P8 box `>`-note defers a `needs:` with the P4.77-forbidden
   phrasing (`the fill pass adds those needs` / `the reconciliation pass wires those`).
@@ -74,10 +74,10 @@
   > scope (i) (ship-gating: the header is a ship surface; the *final mark* is scope-(ii) branding). A single `<BrandLogo>` primitive reading a bundled-local placeholder SVG (offline, no CDN, §2.11) so the owner can swap the final Ne-IA mark without touching layout; the logo + "ConvertIA"/"Ne-IA" names are NOT MIT-granted (SSOT Trademark) — placeholder stand-in only.
 - [ ] **P8.3** [UI] Build the ThemeToggle (Light/Dark/System) writing the `theme` prefs key · §5.5 §7.4.2
   needs: P8.1, P2.85
-  > scope (i). The Light/Dark/System selector in AppHeader (right side); three explicit states; default `system` (follow `prefers-color-scheme`); writes the `theme` key via `tauri-plugin-store` (§7.4.2) so the choice persists across launches; cycles `system → light → dark`. Tab-reachable only, no global accelerator (§5.10) — wired to the keymap in P8.18. (`needs: P2.85` — the `tauri-plugin-store` 3-key prefs blob this `theme` key writes into.)
+  > scope (i). The Light/Dark/System selector in AppHeader (right side); three explicit states; default `system` (follow `prefers-color-scheme`); sets the `theme` key through the core-owned prefs door (§7.4.2) so the choice persists across launches; cycles `system → light → dark`. Tab-reachable only, no global accelerator (§5.10) — wired to the keymap in P8.18. (`needs: P2.85` — the core-owned 3-key prefs blob this `theme` key writes into.)
 - [ ] **P8.4** [UI] Resolve the persisted `theme` into the design tokens at the root · §5.5 §7.4.2
   needs: P8.3
-  > scope (i). Read the persisted `theme` at startup / store-hydration; a `system` value follows the OS `prefers-color-scheme`; resolve the chosen mode into the `design/tokens.css` colour tokens at the root so light + dark both render from one semantic token set (`theme.ts` light/dark resolution).
+  > scope (i). Read the persisted `theme` at startup, read through the core-owned prefs door (§7.4.2); a `system` value follows the OS `prefers-color-scheme`; resolve the chosen mode into the `design/tokens.css` colour tokens at the root so light + dark both render from one semantic token set (`theme.ts` light/dark resolution).
 
 ### Design system completion (tokens / motion / a11y floors)
 
@@ -124,7 +124,7 @@
 
 - [ ] **P8.16** [UI] Build the verbose-logging toggle in About with the "applies after restart" hint · §5.9 §7.4.2 · G57
   needs: P8.9, P2.85
-  > scope (i), ship-gating settings chrome. About checklist item 9: the "Detailed diagnostic log" labelled toggle (§7.5.3 mandate) with its disclosure notice (turning it on makes the LOCAL log additionally record file paths + engine command lines, still purely local — nothing sent, §2.11); off by default. Persists as the 3rd key (`verboseLog`) in the §7.4 prefs blob; takes effect on next launch (the setup stage resolves the verbose level once at startup) so it shows the "applies after restart" hint (§7.5.3). The toggle is the §7.5.3 SURFACE; logging behaviour is owned by §7.5. Labels are `strings/ui.ts` (G57). (`needs: P2.85` — the `tauri-plugin-store` 3-key prefs blob this `verboseLog` key persists into.)
+  > scope (i), ship-gating settings chrome. About checklist item 9: the "Detailed diagnostic log" labelled toggle (§7.5.3 mandate) with its disclosure notice (turning it on makes the LOCAL log additionally record file paths + engine command lines, still purely local — nothing sent, §2.11); off by default. Persists as the 3rd key (`verboseLog`) in the §7.4 prefs blob; takes effect on next launch (the setup stage resolves the verbose level once at startup) so it shows the "applies after restart" hint (§7.5.3). The toggle is the §7.5.3 SURFACE; logging behaviour is owned by §7.5. Labels are `strings/ui.ts` (G57). (`needs: P2.85` — the core-owned 3-key prefs blob this `verboseLog` key persists into.)
 
 ### Cross-cutting error / edge-state copy refinement — scope (i)
 

@@ -14,8 +14,8 @@
 //!
 //! Scope of this box — the typed 3-key model, its defaults, the tolerant parse, and the config-dir-resolved
 //! `load`. The downstream READERS are separate boxes: `lastDestinationMode` use + re-validation (P2.88 /
-//! §2.7.2), the `verboseLog` startup read (P2.89 / P2.94), `theme` (§5.5, frontend). The store PLUGIN is
-//! already registered on the Builder (`main.rs`); the structural one-store-name gate is P2.86.
+//! §2.7.2), the `verboseLog` startup read (P2.89 / P2.94), `theme` (§5.5, served to the WebView by a typed
+//! core command, §7.4.2). The store plugin is used Rust-side only; the WebView holds no store grant (§0.10).
 
 // [Test-Change: P2.94 — old-obsolete+new-correct, §7.5.3] The former module-level
 // `#![cfg_attr(not(test), expect(dead_code, …))]` is REMOVED. P2.94's `resolve_log_verbosity` reads
@@ -33,7 +33,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
 
 /// The one store file — the single `settings.json` (§7.4.2). ConvertIA opens exactly this store, by
-/// convention (its only store name; the structural one-call-site gate is P2.86).
+/// convention (its only store name, opened only here, §7.4.2).
 const SETTINGS_FILE: &str = "settings.json";
 
 /// §7.4.1 blob key — the UI theme.
@@ -103,7 +103,8 @@ impl LastDestinationMode {
 ///
 /// [Build-Session-Entscheidung: P2.88 → P3.80] Consumer map — Rust reads all three keys into this complete typed
 /// model (best-effort, §7.4.2). `verbose_log` is **Rust-consumed** (§7.5.3 — the P2.94 `resolve_log_verbosity`
-/// startup read in `main`'s setup stage); `theme` (§5.5) is **frontend-consumed** (read JS-side from the store).
+/// startup read in `main`'s setup stage); `theme` (§5.5) is **served to the WebView** through a typed core
+/// command (§7.4.2).
 /// `last_destination_mode` is now **CORE-consumed** (P3.80 — the 2026-07-06 core-owned-paths ruling superseding
 /// the P2.88 "frontend-consumed, mapped JS-side, never via Rust" split, the plan P2.88 `[Superseded]` note points
 /// here): no FS path may cross the wire, so the WebView can NEVER hold the stored absolute path to map it.

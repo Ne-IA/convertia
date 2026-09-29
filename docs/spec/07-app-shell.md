@@ -820,22 +820,21 @@ always `beside-source`, verbose → always `false` — so this is a low-stakes d
 a load-bearing call.)
 **A `lastDestinationMode` path is always re-validated as writable at use time** (§2.7
 per-location fallback applies if it has since become read-only/gone) — it is a
-*hint*, never a guarantee. The blob's location/mechanism is §7.4.2; its capability
-(`store:default`) is on the §0.10 allowlist.
+*hint*, never a guarantee. The blob's location/mechanism is §7.4.2; it is
+**core-owned** — the WebView holds no `store:` grant (§0.10) and never reads or writes the file.
 
 ### 7.4.2 If shipped: where it lives & how `[REC]`
 
 - **Mechanism:** the official **`tauri-plugin-store`** (a single JSON file,
   `settings.json`), or a hand-rolled equivalent — either is fine; the store plugin
-  is the lower-effort default. Capability `store:default` (§0.10 owns the allowlist
-  entry). **Scope accuracy `[DECIDED]`:** `store:default` grants all store operations
-  (`load`/`get`/`set`/`delete`/`save`/…) with **no pre-configured per-file scope** — it
-  applies to **every store the plugin creates**, not one file (verified vs the v2 store
-  plugin permission reference; there is no Tauri-native per-file store scope). ConvertIA
-  achieves **effective single-file scoping only by convention**: it only ever opens/uses
-  the store API for `settings.json` (one `Store.load('settings.json')` call site, no other
-  store names). This is a code convention, **not** a permission restriction — do not
-  describe the capability as "scoped to the one file".
+  is the lower-effort default. Used **Rust-side only**, opened by the ABSOLUTE
+  `app_config_dir()` path (a relative name resolves against `BaseDirectory::AppData`, not
+  the config dir, on Linux).
+- **Core-owned `[DECIDED 2026-09-29]`:** the WebView holds no `store:` permission (§0.10);
+  `crate::prefs` alone reads and writes `settings.json`; the WebView reaches
+  `theme`/`verboseLog` only through typed core IPC commands that carry no path, store name
+  or free-form key (§0.4.1) — never `lastDestinationMode`. (SUPERSEDED: the
+  `store:default` grant, which let a compromised WebView write any path — §0.10.)
 - **Location (per-OS, via Tauri `app.path().app_config_dir()`):**
   - Windows: `%APPDATA%\dev.ne-ia.convertia\settings.json`
   - macOS: `~/Library/Application Support/dev.ne-ia.convertia/settings.json`

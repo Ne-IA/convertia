@@ -1511,7 +1511,7 @@ the frontend entry. Adding one is a Loop-editable spec edit.
 - `src-tauri/build.rs` — tauri-build; (optionally) tauri-specta gen hook
 - `src-tauri/engines.lock` — the §3.7.2 build manifest — per-(artifact, target-triple) rows; L(-1)/G71 owner-acked edits only; schema/validator = src/engines/lock.rs (P4.56.1)
 - `src-tauri/engine-configure.toml` — the §6.1.3 per-engine configure-flag manifest seam — `<cache_engine>.configure.flags/.system[/.source_dir]` keyed on the engines.lock row id; read by scripts/compile-engine-asset; filled by the named compile boxes — P4.34's pull-forward first, then P5.1.1 / P5.5.1 / P5.9.1 / P6.1.1 / P7.17.1 (P4.28.1)
-- `src-tauri/capabilities/main.json` — the §0.10 capability allowlist (core, log, store — NO dialog, NO opener, NO shell-execute, NO fs; dialog/opener are Rust-side-only, not WebView grants, §3.3.3)
+- `src-tauri/capabilities/main.json` — the §0.10 capability allowlist (core:default + log:default only — NO store, NO dialog, NO opener, NO shell-execute, NO fs; dialog/opener are Rust-side-only, not WebView grants, §3.3.3)
 - `src-tauri/src/lib.rs` — the CRATE ROOT (P3.87 bin+lib split — the P3.73 fuzz lib-target precondition): the §0.7 tier-module declarations + crate lint policy + the app entry body `run()` (Tauri builder, invoke_handler over the §0.4.1 command table, collect_commands!/collect_events!, §0.4.5) + `pub mod fuzz_api` (the G48 fuzz-entry wrappers; minimal-pub — only `run` + `fuzz_api` are public by default; the non-default `gate-api` cargo feature adds the read-only `gate_api` façade (types and pure lookup functions, never a `toml` parse) for the xtask gate guards; every tier module stays private)
 - `src-tauri/src/main.rs` — the thin bin shim — `fn main()` delegates to `convertia_core::run()` (the standard Tauri-v2 lib+bin shape)
 - `src-tauri/src/engines/registry.rs` — Engine trait + selection (the §3.2 seam — candidate own crate)
@@ -1784,7 +1784,7 @@ need:
     // — our own #[tauri::command]s C1..C14 need NO per-command permission entry: in
     //   Tauri v2, once a custom command is on the invoke_handler and this capability
     //   covers the "main" window, it is invokable. Per-command permission entries are
-    //   ONLY required for PLUGIN commands (dialog/log/store). So we add NO C1..C14
+    //   ONLY required for PLUGIN commands (log is the one plugin the WebView is granted). So we add NO C1..C14
     //   allow-entries here (adding them would be redundant, not load-bearing).
     // CAVEAT (load-bearing, verified vs Tauri v2 source `webview/mod.rs` +
     //   `acl/mod.rs::has_app_manifest`): a custom (app-own) command requires ACL/capability
@@ -1833,8 +1833,8 @@ need:
     //   recorded outputs / roots / residues — which works for arbitrary
     //   beside-source destinations. C10 is locked to the compiled-in project URL
     //   constant in Rust (no WebView-supplied URL). See §0.4.1 C9/C10, §7.7.2/§7.7.3.
-    "log:default",                        // §7.5.1 JS→Rust log bridge (frontend errors → same local file)
-    "store:default"                       // §7.4.2 the single settings.json prefs blob (theme + lastDestinationMode + verboseLog)
+    // NO store:* grant [DECIDED 2026-09-29] — the §7.4 prefs blob is core-owned (§7.4.2); see the notes below.
+    "log:default"                         // §7.5.1 JS→Rust log bridge (frontend errors → same local file) — the ONLY plugin grant
   ]
 }
 ```
@@ -1874,14 +1874,17 @@ Notes / deliberate exclusions:
   beside-source open gate, not secure it.)
 - **`log:default`** is on the allowlist because §7.5.1 ships a thin JS→Rust log
   bridge (frontend errors land in the same local-only file). It grants **no network**
-  — the log sink is a local file; CSP still forbids remote origins.
-- **`store:default`** is on the allowlist for the single `settings.json` prefs blob
-  (§7.4.2: theme + lastDestinationMode + verboseLog). **`store:default` grants all store
-  operations with no per-file scope** (it covers every store the plugin creates — there is
-  no Tauri-native per-file scope, §7.4.2); ConvertIA limits itself to the one
-  `settings.json` **by convention** (its only store call site), not by a permission scope.
-  Both `log:` and `store:` are local-only and consistent with *offline / no
-  system-pollution* (a single OS-config-dir file, no network).
+  — the log sink is a local file; CSP still forbids remote origins. It is local-only and
+  consistent with *offline / no system-pollution* (one OS log-dir file, no network).
+- **No `store:` grant `[DECIDED 2026-09-29]`.** The §7.4 prefs blob is **core-owned** (§7.4.2):
+  the core alone reads and writes `settings.json`; the WebView reaches `theme`/`verboseLog`
+  only through typed core commands that carry no path, file name or free-form key — never
+  `lastDestinationMode`. (SUPERSEDED: the `store:default` grant with single-file scoping by
+  convention. Per the pinned `tauri-plugin-store` 2.4.5 + tauri 2.11.6 sources, `load`
+  resolves a WebView-supplied path against `BaseDirectory::AppData` — an absolute path
+  replaces the base, `..` is kept — and `save` creates the parents and writes it, so the
+  grant let a compromised WebView overwrite any user-writable file with JSON, originals
+  included. §0.11 T2c.)
 
 **Content-Security-Policy (`tauri.conf.json → app.security.csp`)** — *recommended,
 no remote origins (reinforces "no network"):*
@@ -1980,19 +1983,18 @@ by **G47** in the same parse):
     `.reg` under `src-tauri/` (§7.8.2 "no URL scheme"); and **`app.windows[].url` resolves to a
     LOCAL/bundled URI** (any `http(s)` value fails — no startup dev-server origin).
 
-**Capability deny-by-default is an ALLOW-LIST `[DECIDED]`** — a WebView capability may grant ONLY
-`core:`/`log:`/`store:` permissions (the set above); `fs:`/`http:`/`opener:`/`dialog:`/`updater:` AND
-every `shell:` grant (execute/spawn/default/sidecar — §3.3.3) AND any unknown-dangerous future
-permission are denied by exclusion, not by an enumerated deny-list. A capability **`remote`/`urls`
-grant (the v2 remote-origin-IPC mechanism) is denied outright** (no capability carries it). G47
-evaluates capabilities both from `src-tauri/capabilities/*.json` **and** from any **inline**
-`app.security.capabilities[]` / `app.capabilities[]` object entry. The allow-list is checked at
-**PREFIX granularity** (any `core:`/`log:`/`store:` permission) `[DECIDED]`: every `core:` command is
-same-origin and CSP-bounded — a `core:webview:*`/`core:window:*` grant opens at most another
-same-origin, same-capability window with no FS/network/shell reach (a lateral nuisance, not a T2
-escalation). The locked manifest itself grants only `core:default`/`log:default`/`store:default`;
-**P1 MAY tighten the gate to that exact token set** once the real capability needs are fixed (an
-owner spec-decision — the Build-Loop does not self-narrow an L(-1) security posture).
+**Capability deny-by-default is an EXACT-TOKEN ALLOW-LIST `[DECIDED 2026-09-29]`** — every permission
+entry of a WebView capability must be **`core:default`** or **`log:default`** (membership per entry,
+not set equality; an object entry passes only as a bare `{ "identifier": … }`, a scoped
+`allow`/`deny` entry fails), so `store:`/`fs:`/`http:`/`opener:`/`dialog:`/`updater:` AND every
+`shell:` grant (execute/spawn/default/sidecar — §3.3.3) AND every non-default `core:`/`log:` token
+(e.g. `core:window:allow-close`) AND any unknown future permission are denied by exclusion, not by an
+enumerated deny-list. A capability **`remote`/`urls` grant (the v2 remote-origin-IPC mechanism) is
+denied outright** (no capability carries it). G47 evaluates capabilities both from
+`src-tauri/capabilities/*.json` **and** from any **inline** `app.security.capabilities[]` /
+`app.capabilities[]` object entry. (SUPERSEDED `[DECIDED 2026-09-29]`: the former PREFIX granularity and its
+open 'P1 MAY tighten to the exact token set' fork; the fork is taken — a widening needs a §0.10 edit
+plus an owner-acked G47 change.)
 
 **DNS-prefetch:** the `index.html` shell carries `<meta http-equiv="x-dns-prefetch-control"
 content="off">` (WKWebView/WebKitGTK honour this meta — unlike `webrtc 'block'`), removing a DNS
@@ -2022,12 +2024,12 @@ those WebView-held-path surfaces are eliminated by construction. The core-side
 freeze-time re-validation at the §1.1 freeze / §2.3.3 write-target check
 (canonicalise / resolve-identity / existence / detection) stays as defence-in-depth
 for core-side sources.)
-`log:default` + `store:default` for the §7.5 local log
-bridge and the §7.4 prefs blob. The image-core runs as a **separate image-worker
+`log:default` for the §7.5 local log bridge — the only plugin grant (the §7.4 prefs blob is
+core-owned, §7.4.2, with no `store:` grant). The image-core runs as a **separate image-worker
 process** `[DECIDED]` (§0.7/§2.12/§3.5.5) — a raw Rust spawn, so it adds **no**
 WebView capability regardless. The
 former `[OPEN]` (shell scope WebView-exposed vs Rust-only) is **closed: Rust-only,
-no shell grant** (§3.3.3). Cross-refs: §3.3.3 (spawn model), §7.4 (store), §7.5 (log),
+no shell grant** (§3.3.3). Cross-refs: §3.3.3 (spawn model), §7.4 (prefs, core-owned), §7.5 (log),
 §7.7 (opener scope it constrains).
 
 ---
@@ -2044,7 +2046,7 @@ The `SECURITY` policy (§6.8) references this map.
 | T2 | **Malicious / compromised WebView content** | XSS-style injection or a supply-chained frontend dep tries to read the disk or call out | **§0.10** capability allowlist (no WebView `fs`, no network) + CSP (no remote origins, `object-src 'none'`) | covered |
 | T2a | **WebView steers writes to an attacker-chosen path** | A compromised WebView supplies a `DestinationChoice` to C5/C6 to steer where outputs land | **Bounded FURTHER by the 2026-07-06 owner ruling:** the destination vocabulary is core-picked — `ChosenRoot` carries a **`DestinationId`** resolved core-side against the §0.4.4 picked-roots registry (only a root the user picked via the Rust-opened C2b dialog this session resolves; an unknown id is refused), so the WebView **cannot NAME an arbitrary filesystem path at all** — it can only *select among* user-picked roots. The no-harm machinery stays the backstop (defence-in-depth): **§2.1** writes are always **non-destructive creates** (never overwrite) + **§2.3.3** write-target link-safety (a chosen destination that resolves onto / inside a frozen source is rejected and diverted) + **§2.7** divert rules — a maliciously-*selected* picked root is still only a *write* location that **cannot harm an original** and **cannot read anything** (a converted copy lands in a user-picked folder). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the former posture — "C5/C6 accept a WebView-supplied `ChosenRoot(PathBuf)` string; the no-harm machinery, not path provenance, is the bound" — provenance is now ALSO enforced by construction, with no-harm as the backstop.) | covered |
 | T2b | **WebView re-submits an attacker-chosen SOURCE path** | The pre-ruling design echoed launch/Open-with source paths to the (untrusted) WebView via `app://intake { paths, origin }` for re-submission to C1 — a trust-boundary crossing in which a compromised WebView could substitute an arbitrary readable path before re-submission | **Eliminated by construction `[DECIDED 2026-07-06]`.** No FS path crosses the IPC wire or an `app://` event in either direction: `app://intake` is a payload-less nudge, paths live core-side in the §7.8.1 `PendingIntake` buffer, and C1 `drain_intake` consumes the buffer without taking a `paths` argument — the WebView cannot substitute a source path because it never holds one and has no wire field to supply one. **Residual: none.** The freeze-time §1.1 re-validation (canonicalise / resolve-identity / existence / detection at the §2.4 freeze) stays as **defence-in-depth for core-side sources** (drop / picker / launch-arg / second-instance — e.g. the T13 macOS socket leg). (The row is retained so the class stays named in the coverage map: named, closed, not orphaned.) | closed by construction (2026-07-06 ruling; row retained — no wire path in either direction) |
-| T2c | **WebView plugin-write surface (`store:default` + `log:default`)** | The WebView is granted `store:default` (the 3-key prefs blob, §7.4.2) and `log:default` (§7.5) — the ONE place it can cause a *write*, so the "no WebView fs" claim in T2 is not absolute and must be named or it is an orphan class | **Bounded to the OS config dir, no user-file contents, no exfil `[DECIDED]`.** The store writes only the 3 fixed prefs keys (`theme`/`lastDestinationMode`/`verboseLog`) and the log writes only diagnostic lines — **never user file CONTENTS**, never to an arbitrary path: both are confined to `app_config_dir()` (`~/.config/dev.ne-ia.convertia/…`). The store **name is a compiled-in constant** (the WebView supplies no store filename), so it **cannot traverse out of `config_dir`** via a `../`-style name in the pinned `tauri-plugin-store` version (a §6.1.3/§0.10 assertion confirms the plugin version cannot escape `config_dir`; if a future plugin version ever could, the prefs writes move Rust-side). The worst-case harm is corrupting the local prefs/log (a clean reset recovers), never reading or exfiltrating user data — so this write surface is bounded and named, not orphaned. | covered |
+| T2c | **WebView plugin-write surface (`log:default`)** | The WebView holds `log:default` (the §7.5.1 log bridge) — its ONE plugin-mediated write, named here so T2's "no WebView fs" claim has no orphan. (SUPERSEDED `[DECIDED 2026-09-29]`: it also held `store:default`, an arbitrary-file JSON write through the pinned plugin, §0.10.) | **Bounded to ConvertIA's own log file; no store surface `[DECIDED 2026-09-29]`.** The bridge appends WebView-supplied diagnostic text (level, message, record metadata) to the core-configured `app_log_dir()` file (§7.5.2); the WebView names no path, file or target. It holds **no `store:` permission** — prefs are core-owned (§7.4.2), so no `plugin:store` command is invocable — and **G47** asserts every capability permission is one of `{core:default, log:default}`. Worst case: noisy local log lines (rotation bounds size), never reading, exfiltrating or overwriting user data. | covered |
 | T3 | **Bundled-binary supply chain** | A tampered/backdoored engine binary ships in the build | **§3.8** engine pinning + **§6.2** integrity hashes + **§6.3** SBOM (every binary enumerated, verifiable). **Build-time** the pinned-checksum + SBOM gate catches a swapped engine; the trust anchor is the published **SHA256SUMS + minisign signature verified BEFORE first run (§6.2)**. **Runtime caveat:** the §7.2.3 startup check verifies engines against a hash manifest shipped **inside the same bundle**, so it detects **corruption/integrity** (truncation, AV-gutting, partial extract) but provides **no runtime tamper-resistance** — an attacker who can replace a binary can replace the in-bundle manifest too; runtime tamper detection is **out of scope** (unsigned portable build, SSOT). | covered (corruption/integrity only; runtime has no tamper-resistance — trust anchor is the §6.2 SHA256SUMS + minisign verified before first run) |
 | T3a | **DLL/dylib/`.so` side-loading of a bundled codec shared object** | ConvertIA stages dynamically-loaded codec shared objects beside its engine executables (`libmp3lame.dll`/`libvorbis`/`libopus`/`libvpx` beside FFmpeg on Windows — §3.6.1 carve-out i; the image-worker codec stack as resources). A portable zip extracted into an attacker-controlled directory, or a directory pre-seeded with a matching-named malicious `.dll`, exploits the OS DLL/dylib search order so the engine subprocess loads the attacker's library | **Every staged `.dll`/`.dylib`/`.so` is individually enumerated in `engines.lock` with its SHA-256 (§3.7.2) and verified before staging (§6.1.3, the T3 checksum gate extended per-shared-object — **G37**, and "before staging" is load-bearing: staging legitimately RE-EMITS bytes, the `lipo -create` universal merge and the §6.1.3 beside-the-exe load-path rewrite both rewriting load commands, so the hash covers the bytes ENTERING staging and the post-staging anchor is the §7.2.3 in-bundle manifest); the staging manifest-diff hard-fails on a staged shared object not matching its `engines.lock` row (**G35**, an ATTRIBUTION check — §6.3.3 item 1's "no shipped file without an SBOM entry" — never a post-staging byte re-verify); a staging-time dynamic-dependency-closure check (`ldd`/`readelf` Linux · `otool -L` macOS · `dumpbin /dependents` Windows) asserts every non-system dependency resolves INSIDE the bundle; on Windows engines are spawned with a minimal explicit `PATH` (the bundle dir only) so the search starts inside the bundle, composing with the §3.5 loader-injection-var strip (`LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*` cleared). | covered |
 | T4 | **Open-file launch of a fresh artifact** | C9 "open file" hands a just-written, possibly-still-untrusted output to an external app | **§7.7** open-file safety (reveal-in-folder, no auto-open, the artifact is *our* output not the untrusted source) + **§7.7.3** — **strengthened to an ID-resolution gate `[DECIDED 2026-07-06]`:** C9 takes an `OpenTarget` (`CommonRoot \| DivertRoot \| Item(ItemId) \| Residue(ItemId)`, §0.6), resolved Rust-side against the core-held `State<RunResultStore>` (§0.4.4); membership IS successful resolution (an absent/unresolvable target is the §7.7.3 refusal), and the **WebView cannot NAME a filesystem path at all** — only select among the current run's recorded outputs/roots/residues. (Note: §0.10/§7.7.2 deliberately grant **no** `opener:*` path scope — beside-source outputs legitimately write outside `$DOWNLOAD`/`$DOCUMENT` — so the gate is the ID-resolution check, not a capability path-scope.) | covered |
