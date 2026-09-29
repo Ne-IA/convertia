@@ -76,6 +76,67 @@ From the repo root, after `pnpm install`:
 The individual check commands (type-check, lint, tests) are listed in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Windows host notes
+
+- **Python.** `python3` is the python.org CPython 3.12 of the [Windows prerequisites](#windows), never
+  the Microsoft Store Python. Under a Store `python3`, a random vitest suite of `check-ts-gate` can
+  fail with `Failed to resolve import`; the prerequisite gives the cause and the `PATH` fix.
+  `setup-dev` refuses a Store `python3` only when it runs, so after a `PATH` change check that
+  `python3 -c "import sys; print(sys.executable)"` prints a path outside `WindowsApps`.
+- **Setup.** Run `python3 -P scripts/setup-dev` after cloning: it installs the pinned gate tools into
+  `.gate-tools/bin` and the lefthook hooks, and quotes the path lefthook writes unquoted into each hook,
+  which breaks the hooks on a path with spaces or parentheses. Re-run it after every `lefthook.yml`
+  change, your own or a pulled one: lefthook re-syncs its hooks on its next run and writes the unquoted
+  path back, so the next commit fails with a hook `sh` syntax error.
+- **Line endings.** Every text file in the repo is LF (`.gitattributes`, G52). A Python script that
+  writes a repo file opens it with `newline="\n"` or in binary mode; text mode writes CRLF on Windows.
+- **Signed commits.** Commit in the foreground: a commit that hangs with no output is waiting on the
+  signing step. `setup-dev` points `gpg.ssh.program` at the Windows OpenSSH `ssh-keygen`, which reaches
+  the SSH agent.
+- **Push status.** Read `git push`'s own exit status (`git push origin main; echo "exit $?"`), never
+  through a pipe or `tee`, which reports its last command's status. A pre-push red ends in
+  `failed to push some refs`, which reads like a remote rejection.
+- **Linux-only code.** Code under `cfg(unix)` or `cfg(target_os = "linux")` runs in the local
+  `convertia-linux` image (Git Bash; `<repo>` is the repo path):
+
+  ```sh
+  docker build -t convertia-linux - <<'EOF'
+  FROM rust:1.96-bookworm
+  RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends libwebkit2gtk-4.1-dev \
+      libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev libssl-dev libglib2.0-dev \
+      libsoup-3.0-dev libjavascriptcoregtk-4.1-dev pkg-config build-essential file \
+      && rm -rf /var/lib/apt/lists/*
+  EOF
+  MSYS_NO_PATHCONV=1 docker run --rm --security-opt seccomp=unconfined -v "<repo>:/work" -w /work \
+    -v convertia_rustup:/usr/local/rustup -v convertia_cargo_registry:/usr/local/cargo/registry \
+    -v convertia_target:/build-target -e CARGO_TARGET_DIR=/build-target convertia-linux \
+    sh -c 'cargo test -p convertia-core --lib --locked &&
+      cargo clippy -p convertia-core --all-targets --locked -- -D warnings'
+  ```
+
+  `seccomp=unconfined` lets the Landlock and user-namespace legs run instead of degrading. The image's
+  Rust is the newest 1.96.x, not the `rust-toolchain.toml` pin, so rustup installs the pinned toolchain
+  on the first run; the `convertia_rustup` volume keeps it for the next runs.
+- **G29 SAST.** Semgrep runs natively on Windows, but a `semgrep` on `PATH` is not the CI pin and
+  `check-sast` runs whichever it finds without a version check, so a native green is advisory.
+  `install-gate-tools` does not install Semgrep, and the pinned set in `requirements-ci.txt` does not
+  install on Windows (a Windows-only transitive dependency has no hash). The pinned run is the
+  `python:3.12` container over a git clone with the staged diff applied (`paths.include` resolves
+  against the git root):
+
+  ```sh
+  MSYS_NO_PATHCONV=1 docker run --rm -v "<repo>:/src:ro" python:3.12 bash -c 'set -e
+    git config --global --add safe.directory "*"; git clone -q /src /work
+    git -C /src diff --cached --binary | git -C /work apply --index --allow-empty; cd /work
+    python3 -P -m pip install -q --require-hashes -r requirements-ci.txt
+    python3 -P scripts/install-gate-tools --tool shellcheck; python3 -P scripts/check-sast --full'
+  ```
+- **Tauri lib tests.** A crate that links Tauri and has a lib test target needs `src-tauri/build.rs`'s
+  Common-Controls v6 manifest pattern; without it the test binary exits with `0xc0000139`
+  (`STATUS_ENTRYPOINT_NOT_FOUND`) before any test runs.
+- **git and gh.** A push to `main` also starts `scorecard`, so select CI runs with
+  `gh run list --workflow ci`. `git log -S` stops at a rename; use `git log --follow -S <text> -- <path>`.
+
 ## Bundled conversion engines
 
 ConvertIA's conversions are powered by **bundled third-party engine binaries** (FFmpeg,
