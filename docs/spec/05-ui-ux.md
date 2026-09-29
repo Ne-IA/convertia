@@ -76,7 +76,7 @@ src/
     keymap.ts                  # the §5.10 accelerator table, single source
   strings/
     ui.ts                      # UI-chrome English strings (§5.7 ownership split)
-design/                        # repo-root SIBLING of src/ (UI/design tokens + assets, §0.7/§1a) — NOT under src/
+design/                        # repo-root SIBLING of src/ (UI/design tokens + assets, §0.7) — NOT under src/
   tokens.css                   # CSS custom properties (§5.5); the single hardcoded-colour home G9 invariant (a) exempts
   theme.ts                     # token typings, light/dark resolution
 ```

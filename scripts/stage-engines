@@ -116,7 +116,7 @@ for _stream in (sys.stdout, sys.stderr):          # the console's codepage is no
 ROOT = Path(__file__).resolve().parents[1]
 
 # §3.3.2 step 2 / step 3: the two staging destinations, relative to the repo root. Both are
-# §0.7/CLAUDE-§1a-mapped, tracked-by-.gitkeep dirs; their staged CONTENT is build output and is
+# §0.7-mapped, tracked-by-.gitkeep dirs; their staged CONTENT is build output and is
 # gitignored (never committed - DEVELOPMENT.md "Bundled conversion engines").
 BINARIES_REL = "src-tauri/binaries"
 RESOURCES_REL = "src-tauri/resources"

@@ -716,8 +716,8 @@ def _doc_link_targets(line: str):
 
 # --- check-25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ------------
 # The "described-the-old-way" drift the resolution leg (b) and the name-matching leg (c1) cannot see:
-# an authoritative SOURCE whose CONTENT changes while its NAME/id persists (a Gnn row reworded, the
-# §0.7 physical tree edited, a version pin bumped) leaves every doc that DESCRIBES it silently stale.
+# an authoritative SOURCE whose CONTENT changes while its NAME/id persists (a Gnn row reworded, a cage
+# glob added, a version pin bumped) leaves every doc that DESCRIBES it silently stale.
 # The committed ledger scripts/doc-fingerprints.toml records, per source region, the sha256 the
 # describing docs were reasoned against; this leg recomputes it and FAILS on a mismatch — the same
 # content-fingerprint discipline the G29 suppression ledger uses (build-gates §6 check 25(c) / the
@@ -728,7 +728,7 @@ _FP_LEDGER = "scripts/doc-fingerprints.toml"
 # from which a required seed was silently dropped) would make the freshness axis no-op — a fail-OPEN
 # hole against the contract's "cannot silently no-op". Retiring a binding means editing BOTH the ledger
 # AND this set in one owner-acked L(-1) commit (the cage friction is deliberate, G71).
-_REQUIRED_FP_IDS = {"l-neg1-cage", "spec-0.7-physical-tree"}
+_REQUIRED_FP_IDS = {"l-neg1-cage"}
 _FP_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SECTION_HEADING_RE = re.compile(r"^(#{1,6})\s+(\d+(?:\.\d+)*)\b")
 
@@ -799,26 +799,12 @@ def _fp_region(entry: dict, root: Path, docs: dict[str, str]) -> tuple[str | Non
 
 def _freshness_fingerprints(entries: list[dict], root: Path, docs: dict[str, str]) -> list[Finding]:
     """Recompute each ledger entry's source-region sha256 and compare to the recorded fingerprint.
-    A dormant entry (its `dormant.file` still contains ANY string in `dormant.contains`, which is a
-    str or list) is skipped — the binding's describing doc is not yet authored (e.g. §0.7→§1a while
-    CLAUDE.md still carries 'PLACEHOLDER'/'P1.64', the EXACT OR-condition G69 check 26 keys on). Every
-    other defect (malformed/missing field, unresolved region, hash mismatch) FAILS closed. The
-    minimum-seed FLOOR (_REQUIRED_FP_IDS) is enforced upstream in _read_fp_ledger, not here, so this
-    pure function stays drivable with arbitrary synthetic entries by the self-test."""
+    Every entry is checked; every defect (malformed/missing field, unresolved region, hash mismatch)
+    FAILS closed. The minimum-seed FLOOR (_REQUIRED_FP_IDS) is enforced upstream in _read_fp_ledger, not
+    here, so this pure function stays drivable with arbitrary synthetic entries by the self-test."""
     out: list[Finding] = []
     for entry in entries:
         eid = entry.get("id", "<no-id>")
-        dormant = entry.get("dormant")
-        if isinstance(dormant, dict):
-            dfile, needle = dormant.get("file"), dormant.get("contains")
-            needles = needle if isinstance(needle, list) else ([needle] if needle else [])
-            if dfile and needles:                           # a malformed/empty dormant falls through = ACTIVE (fail-closed)
-                dtext = docs.get(dfile)
-                if dtext is None:
-                    dp = root / dfile
-                    dtext = dp.read_text(encoding="utf-8", errors="replace") if dp.is_file() else ""
-                if any(n in dtext for n in needles):        # ANY marker present => dormant (the exact G69 check-26 OR)
-                    continue                                # dormant: the describing doc is not yet authored
         recorded = entry.get("fingerprint", "")
         if not isinstance(recorded, str) or not _FP_RE.match(recorded):
             out.append(Finding("25:doc-graph", _FP_LEDGER, 0,
@@ -963,9 +949,9 @@ def doc21_taint_xor(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  TARGET-ABSENT doc checks (1,7,10,12,13,14,15,18,19,20,23,24,26) — real logic, each guarded to
+#  TARGET-ABSENT doc checks (1,7,10,12,13,14,15,18,19,20,23,24) — real logic, each guarded to
 #  skip while its source-of-truth target is unauthored (the product source / build-loop.md / the
-#  process docs / the P1.64 struct-map land later); fail-closed the moment the target exists.
+#  process docs); fail-closed the moment the target exists.
 # =============================================================================================
 def _bl(ctx: Ctx) -> str:
     return ctx.docs.get("docs/process/build-loop.md", "")
@@ -1515,16 +1501,18 @@ def doc24_p0_completion(ctx: Ctx) -> list[Finding]:
     return out
 
 
-# --- check 26 (G69): structural-map integrity — the §1a map <-> on-disk tree <-> §0.7 bind ---------
-# The map and the §0.7 physical tree are ASCII tree-art fenced blocks (├──/│/└── + → or # annotations,
-# variable connector width). _parse_tree_dirs reconstructs the repo-relative DIR set from one such block
-# using a width-agnostic indent STACK (the parent of a line is the nearest shallower-indented dir), and
-# additionally mines sibling dirs on one line (`a/  b/  c/`) and ancestor dirs implied by an embedded
-# path (`lib/ipc/x.ts` -> lib, lib/ipc). Files are ignored; only directories are asserted.
+# --- check 26 (G69): structural-map integrity — the tracked tree <-> spec §0.7 bind ------------------
+# Spec §0.7 "Physical tree" is the repository's directory map: an ASCII tree-art fenced block (├─/│/└─ +
+# `#` annotations, variable connector width) that lists directories only. _parse_tree_dirs reconstructs
+# the repo-relative DIR set from it using a width-agnostic indent STACK (the parent of a line is the
+# nearest shallower-indented dir), and additionally mines sibling dirs on one line (`a/  b/  c/`) and
+# ancestor dirs implied by an embedded path (`lib/ipc/x.ts` -> lib, lib/ipc). A file name is ignored;
+# only directories are asserted. The files the architecture depends on by path are §0.7's separate
+# *Load-bearing files* list, and each of them must be tracked.
 _STRUCT_IGNORE = {"target", "node_modules", "dist", ".git"}   # the committed out-of-scope-tree ignore set
 _TREE_CHARS = "│├└─ \t"
 _NAME_TOKEN = re.compile(r"^[A-Za-z0-9._\-/]+/?$")
-_ANNOT_DELIM = re.compile(r"[→#(]")   # §1a annotates with →, §0.7 with #, and '(' opens a parenthetical
+_ANNOT_DELIM = re.compile(r"[→#(]")   # an annotation opens at `#` (the tree's convention) or `→`; '(' opens a parenthetical
 
 
 def _name_tokens(stripped: str) -> list[str]:
@@ -1631,10 +1619,10 @@ def _dirs_from_files(files: list[str]) -> set[str]:
     return dirs
 
 
-def _git_tracked_dirs(root: Path) -> set[str] | None:
-    """The on-disk DIR set from `git ls-files` (tracked files only, so untracked scratch never
+def _git_ls_files(root: Path) -> list[str] | None:
+    """The tracked file paths from `git ls-files` (tracked files only, so untracked scratch never
     false-fails). Uses `-c core.quotepath=false -z` so non-ASCII / space-bearing paths arrive as raw
-    UTF-8 with no octal-escaping or quoting (no mangled dir names). None if git is unavailable / errors
+    UTF-8 with no octal-escaping or quoting (no mangled names). None if git is unavailable / errors
     (the caller fails closed)."""
     try:
         r = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"],
@@ -1643,64 +1631,73 @@ def _git_tracked_dirs(root: Path) -> set[str] | None:
         return None
     if r.returncode != 0:
         return None
-    return _dirs_from_files([f for f in r.stdout.split("\0") if f])
+    return [f for f in r.stdout.split("\0") if f]
 
 
-def _struct_map_relations(map_dirs: set[str], disk_dirs: set[str], spec07_dirs: set[str]) -> list[tuple[str, str]]:
-    """The three bidirectional/projection violations as (kind, dir) tuples — pure, set-only (testable
-    without git or the filesystem)."""
-    out = []
-    out += [("disk-not-in-map", d) for d in sorted(disk_dirs - map_dirs)]
-    out += [("map-not-on-disk", d) for d in sorted(map_dirs - disk_dirs)]
-    out += [("map-not-in-spec07", d) for d in sorted(map_dirs - spec07_dirs)]
+def _struct_map_relations(spec07_dirs: set[str], disk_dirs: set[str]) -> list[tuple[str, str]]:
+    """The two directions of the bind as (kind, dir) tuples — pure, set-only (testable without git or
+    the filesystem)."""
+    out = [("disk-not-in-spec07", d) for d in sorted(disk_dirs - spec07_dirs)]
+    out += [("spec07-not-on-disk", d) for d in sorted(spec07_dirs - disk_dirs)]
     return out
 
 
 _STRUCT_MSG = {
-    "disk-not-in-map": "on-disk tracked dir '{d}' is absent from the CLAUDE.md §1a Repo-layout map "
-                       "(a folder exists with no map row — add it to §1a, and to spec §0.7 if missing)",
-    "map-not-on-disk": "the §1a map names '{d}' which is not a tracked on-disk dir (stale map entry — "
-                       "remove it, or the dir is empty/untracked)",
-    "map-not-in-spec07": "the §1a map names '{d}' which the spec §0.7 physical tree does not home (§1a "
-                         "may not invent a dir §0.7 lacks — the projection bind; §0.7 is the higher "
-                         "source, so fix §0.7 + §1a together)",
+    "disk-not-in-spec07": "tracked dir '{d}' has no spec §0.7 Physical-tree row — add it in the commit "
+                          "that adds the directory's first file",
+    "spec07-not-on-disk": "spec §0.7 names dir '{d}' with no tracked file beneath it — remove the row or "
+                          "add the directory's first file",
 }
+_ARCH_DOC = "docs/spec/00-architecture.md"
+_PHYSICAL_TREE_HDR = re.compile(r"^#{1,6}.*Physical tree")
+_LOAD_BEARING_HDR = re.compile(r"^#{1,6}\s+Load-bearing files\b")
+_LOAD_BEARING_ITEM = re.compile(r"^\s*[-*]\s+`([^`\s]+)`")
+
+
+def _load_bearing_paths(arch: str) -> list[str] | None:
+    """The paths of spec §0.7's *Load-bearing files* list, in order: one per bullet that opens with a
+    code-span path. None when the section is missing; [] when it lists no such bullet."""
+    sec = _section_text(arch, _LOAD_BEARING_HDR)
+    if not sec:
+        return None
+    return [mt.group(1) for ln in sec.split("\n") if (mt := _LOAD_BEARING_ITEM.match(ln))]
 
 
 def doc26_struct_map(ctx: Ctx) -> list[Finding]:
-    """Check 26 (G69): the CLAUDE.md §1a Repo-layout map is BIDIRECTIONAL with the on-disk tree AND a
-    faithful projection of spec §0.7. **→ activated in P1:** the §1a map is the P1.64 PLACEHOLDER stub
-    until P1-end, so this SKIPS while the §1a section still carries 'PLACEHOLDER' (tolerant of the
-    interim docs/ + assets/ dirs) and fail-closes the moment the authoritative map lands. Once active:
-    (1) every git-tracked on-disk dir is in the map (a folder with no map row fails); (2) every mapped
-    dir is a tracked on-disk dir (a stale map entry fails); (3) every mapped dir is in the §0.7 physical
-    tree (the projection bind — §1a may not invent a dir §0.7 does not home). A missing/unparseable map
-    or §0.7 block, or an unavailable git, fails CLOSED (never a silent skip once active). The skip
-    signal is 'PLACEHOLDER' WITHIN the §1a section only (not a whole-file scan), so a provenance mention
-    of 'P1.64' elsewhere in CLAUDE.md cannot keep the gate permanently dormant after P1.64."""
-    claude = ctx.docs.get("CLAUDE.md", "")
-    sec1a = _section_text(claude, re.compile(r"^#{1,6}\s+1a\b"))
-    if not sec1a or "PLACEHOLDER" in sec1a:
-        return []                            # §1a is still the placeholder stub -> skip (→ activated in P1)
-    map_block = _fenced_block_after(claude, re.compile(r"^#{1,6}\s+1a\b"))
-    if map_block is None:
-        return [Finding("26:struct-map", "CLAUDE.md", 0,
-                        "the §1a Repo-layout map fenced block is absent/unparseable but the placeholder "
-                        "marker is gone — fail-closed")]
-    arch = ctx.docs.get("docs/spec/00-architecture.md", "")
-    spec_block = _fenced_block_after(arch, re.compile(r"^#{1,6}.*Physical tree"))
+    """Check 26 (G69): spec §0.7 "Physical tree" (directories only) is bound BOTH ways to the
+    `git ls-files`-derived directory set, minus the committed out-of-scope trees: (1) a tracked dir with
+    no §0.7 row fails; (2) a §0.7 dir with no tracked file beneath it fails. (3) Every path on §0.7's
+    *Load-bearing files* list is tracked. A missing, unparseable or empty tree block, a missing or empty
+    load-bearing list and an unavailable git each fail CLOSED; the check has no skip branch."""
+    arch = ctx.docs.get(_ARCH_DOC, "")
+    spec_block = _fenced_block_after(arch, _PHYSICAL_TREE_HDR)
     if spec_block is None:
-        return [Finding("26:struct-map", "docs/spec/00-architecture.md", 0,
-                        "the §0.7 Physical tree fenced block is absent/unparseable — cannot run the "
-                        "projection bind (fail-closed)")]
-    disk_dirs = _git_tracked_dirs(ctx.root)
-    if disk_dirs is None:
-        return [Finding("26:struct-map", ".", 0,
-                        "git ls-files failed — cannot derive the on-disk dir set (fail-closed)")]
-    map_dirs = _parse_tree_dirs(map_block)
+        return [Finding("26:struct-map", _ARCH_DOC, 0,
+                        "the §0.7 Physical tree fenced block is absent/unparseable — cannot bind the "
+                        "tracked tree (fail-closed)")]
     spec07_dirs = _parse_tree_dirs(spec_block)
-    return [Finding("26:struct-map", "CLAUDE.md", 0, _STRUCT_MSG[kind].format(d=d))
-            for kind, d in _struct_map_relations(map_dirs, disk_dirs, spec07_dirs)]
+    if not spec07_dirs:
+        return [Finding("26:struct-map", _ARCH_DOC, 0,
+                        "the §0.7 Physical tree block names no directory — cannot bind the tracked tree "
+                        "(fail-closed)")]
+    files = _git_ls_files(ctx.root)
+    if files is None:
+        return [Finding("26:struct-map", _ARCH_DOC, 0,
+                        "git ls-files failed — cannot derive the tracked directory set (fail-closed)")]
+    out = [Finding("26:struct-map", _ARCH_DOC, 0, _STRUCT_MSG[kind].format(d=d))
+           for kind, d in _struct_map_relations(spec07_dirs, _dirs_from_files(files))]
+    load_bearing = _load_bearing_paths(arch)
+    if load_bearing is None:
+        out.append(Finding("26:struct-map", _ARCH_DOC, 0,
+                           "the §0.7 'Load-bearing files' section is missing — fail-closed"))
+    elif not load_bearing:
+        out.append(Finding("26:struct-map", _ARCH_DOC, 0,
+                           "the §0.7 'Load-bearing files' section lists no `path` bullet — fail-closed"))
+    else:
+        tracked = set(files)
+        out += [Finding("26:struct-map", _ARCH_DOC, 0, f"load-bearing file '{p}' is not tracked")
+                for p in load_bearing if p not in tracked]
+    return out
 
 
 def _completed_phases(boxes: list[Box]) -> set[str]:
@@ -2302,6 +2299,7 @@ DOC_CHECKS = {
     "16:planted-positive-coverage": doc16_planted_positive,
     "22:gate-id-gap-freeness": doc22_gate_id_gap_free,
     "25:doc-graph": doc25_doc_graph,
+    "26:struct-map": doc26_struct_map,
     # target-absent (skip until their P0.6/P1 source lands; fail-closed once present)
     "1:matrix-parity": doc1_matrix_parity,
     "7:generated-file-sanity": doc7_generated_file_sanity,
@@ -2316,7 +2314,6 @@ DOC_CHECKS = {
     "20:reviewer-family": doc20_reviewer_family,
     "23:ratchet-log": doc23_ratchet_log,
     "24:p0-completion-record": doc24_p0_completion,
-    "26:struct-map": doc26_struct_map,
     "27:gate-posture-transition": doc27_gate_posture_transition,
     "29:stale-liveness": doc29_stale_liveness,
     "30:spec-restatement-fidelity": doc30_spec_restatement_fidelity,

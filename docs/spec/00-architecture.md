@@ -1397,39 +1397,25 @@ Tier 2 is now FINAL, not provisional. [Build-Session-Entscheidung: P2.10 — own
 
 ### Physical tree (mapping the logical modules onto disk)
 
+The tree lists **directories only**. G69 (build-gates §6 check 26) binds it both ways to the
+git-tracked directory set: a tracked directory without a row fails, and a row with no tracked file
+beneath it fails. A new directory gets its row in the commit that adds its first tracked file; a new
+file owes no row. The files the architecture depends on by path are listed under *Load-bearing
+files*, and G69 asserts each is tracked. No `bundle/` staging tree exists: engines stage into
+`src-tauri/binaries/` and `src-tauri/resources/` (§6.1.3).
+
 ```
 convertia/
-├─ Cargo.toml                      # the Rust WORKSPACE root — virtual manifest, resolver "2"; members: src-tauri + crates/imgworker + xtask (§0.8 pins) [P1.6]
-├─ Cargo.lock                      # the committed resolved Rust lockfile (§3.8 pin-everything; G18a)
 ├─ src-tauri/                      # the Rust core + Tauri host (the binary)
-│  ├─ Cargo.toml                   # workspace MEMBER — the MIT core crate `convertia-core`; pinned versions §0.8
-│  ├─ tauri.conf.json              # bundle, CSP, externalBin, minimum-OS (§0.10, §0.3.1, §3.3)
-│  ├─ build.rs                     # tauri-build; (optionally) tauri-specta gen hook
-│  ├─ engines.lock                 # the §3.7.2 build manifest — per-(artifact, target-triple) rows; L(-1)/G71 owner-acked edits only; schema/validator = src/engines/lock.rs (P4.56.1)
-│  ├─ engine-configure.toml        # the §6.1.3 per-engine configure-flag manifest seam — <cache_engine>.configure.flags/.system[/.source_dir] keyed on the engines.lock row id; read by scripts/compile-engine-asset; filled by the named compile boxes — P4.34's pull-forward first, then P5.1.1 / P5.5.1 / P5.9.1 / P6.1.1 / P7.17.1 (P4.28.1)
 │  ├─ icons/                       # bundled app-icon set: placeholder logo → per-platform PNG/ICO/ICNS + Windows Square* tiles; wired to bundle.icon (§3.3; §6.9.3 final art) [P1.19.2]
-│  ├─ capabilities/
-│  │  └─ main.json                 # the §0.10 capability allowlist (core, log, store — NO dialog, NO opener, NO shell-execute, NO fs; dialog/opener are Rust-side-only, not WebView grants, §3.3.3)
-│  ├─ binaries/                    # bundled engine sidecars per platform (§3.3), externalBin targets
-│  │  ├─ ffmpeg-x86_64-pc-windows-msvc.exe  (etc. — target-triple-suffixed)
-│  │  ├─ ffprobe…  soffice…  pdftotext…  pandoc…  (per-platform; §3.1/§3.3)
-│  │  ├─ convertia-imgworker-<triple>[.exe]  # the libvips IMAGE-WORKER process (§0.9/§3.5.5)
-│  │  │                                      #   — a packaged externalBin (NOT linked into the core),
-│  │  │                                      #   resolved Rust-side via current_exe().parent() (§3.3.3);
-│  │  │                                      #   links libvips/libheif/libde265/librsvg/ImageMagick (§3.6.1)
+│  ├─ capabilities/                # the §0.10 Tauri capability allowlist (G47)
+│  ├─ binaries/                    # bundled engine sidecars per platform: the target-triple-suffixed externalBin sidecars incl. `convertia-imgworker-<triple>` (§3.3, §3.5.5) — staged build output, gitignored beside a tracked `.gitkeep`
 │  ├─ resources/                   # bundled non-exe engine assets (LibreOffice profile seed, fonts §documents.md, image codec libs)
 │  └─ src/
-│     ├─ lib.rs                    # the CRATE ROOT (P3.87 bin+lib split — the P3.73 fuzz lib-target precondition): the §0.7 tier-module declarations + crate lint policy + the app entry body `run()` (Tauri builder, invoke_handler over the §0.4.1 command table, collect_commands!/collect_events!, §0.4.5) + `pub mod fuzz_api` (the G48 fuzz-entry wrappers; minimal-pub — only `run` + `fuzz_api` are public by default; the non-default `gate-api` cargo feature adds the read-only `gate_api` façade (types and pure lookup functions, never a `toml` parse) for the xtask gate guards; every tier module stays private)
-│     ├─ main.rs                   # the thin bin shim — `fn main()` delegates to `convertia_core::run()` (the standard Tauri-v2 lib+bin shape)
 │     ├─ ipc/                      # tier 0 — §0.4 handlers, one file per command group
 │     ├─ orchestrator/             # tier 1 — queue, lifecycle (§1.9), run registry, cancellation (§0.4.4); homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict/OutputPlanPreview/DestinationResolved + RunResult/ItemResult/ItemOutcome — above tier 3 to break the domain↔outcome cycle, §0.7 ‡)
 │     ├─ detection/                # tier 2 — §1.2
 │     ├─ engines/                  # tier 2 — registry/seam (§3.2), invocation (§1.7), args (§3.5), program resolution (§3.3.3), the engines.lock schema (§3.7.2), per-engine modules
-│     │  ├─ registry.rs            #   Engine trait + selection (the §3.2 seam — candidate own crate)
-│     │  ├─ program.rs             #   §3.3.3 program-path resolution + the EngineId→binary-name table (P4.32)
-│     │  ├─ invoke.rs              #   §1.7 generic lifecycle (spawn/progress/cancel/timeout/error-map)
-│     │  ├─ lock.rs                #   §3.7.2 engines.lock schema + validator — the (artifact, target-triple) row law (P4.56.1)
-│     │  ├─ ffmpeg.rs  libreoffice.rs  pandoc.rs  poppler.rs  image.rs  csv_native.rs
 │     ├─ fs_guard/                 # tier 2 — the reusable guarantees-fs layer; module path `crate::fs_guard` (§2.0); §2.1/2.3/2.14 atomic write/no-clobber/resolved-id/path-limit/cross-volume
 │     ├─ run/                      # tier 2 — `crate::run` (§2.0): per-run/instance scratch ownership + cleanup (§2.4/§2.6), keyed on RunId/InstanceId (§7.1)
 │     ├─ outcome/                  # tier 2 — `crate::outcome` (§2.0): the §2.8 error taxonomy + message catalog AND the §2.9 lossy catalog ↔ IpcError mirror (§0.4.3); the single source of every conversion-outcome string (was `error.rs` — RENAMED to match `crate::outcome` in §2.0; there is no `crate::error`). Tier 2 is FINAL (resolved P2.10: the outcome-referencing §0.6 lifecycle/result types are homed in `crate::orchestrator`, breaking the domain↔outcome cycle; see the §0.7 logical-modules ‡ note)
@@ -1453,12 +1439,11 @@ convertia/
 │
 ├─ src/                            # the React 19 / TS / Tailwind / Vite UI (§05)
 │  ├─ a11y/                        # §5.6 a11y helpers (announcer/keymap) + the G33a leg
-│  ├─ lib/ipc/bindings.ts          # GENERATED by tauri-specta (§0.4.5) — the only IPC door (+ commands/events wrappers)
+│  ├─ lib/                         # frontend library code
+│  │  └─ ipc/                      # GENERATED bindings.ts (§0.4.5) — the only IPC door — + the commands/events wrappers
 │  ├─ components/  hooks/  state/  styles/   # §5.x owns these
-│  ├─ strings/                     # §5.7 English-only ui.ts string catalog (G57)
-│  └─ main.tsx
+│  └─ strings/                     # §5.7 English-only ui.ts string catalog (G57)
 │
-├─ index.html  vite.config.ts  package.json  tsconfig.json   # frontend build + test config
 ├─ design/                         # UI / design assets (a sibling of src/)
 ├─ assets/                         # static brand assets
 │  └─ branding/                    # logo / brand source art
@@ -1512,6 +1497,32 @@ consumer (e.g. a headless test harness) appears. Flagged for §3.2/§0.7 sign-of
 > core (§3.6.1). The `EngineKind` field on the §0.6 `EngineDescriptor` records the
 > image core as `Subprocess` (the worker process); only the native CSV/TSV engine
 > (§3.5.6) is `InProcessNative`.
+
+### Load-bearing files
+
+The files the architecture depends on by path — workspace and crate manifests, the Tauri
+configuration and capability, the engine manifests and seams, the crate roots, the IPC binding and
+the frontend entry. Adding one is a Loop-editable spec edit.
+
+- `Cargo.toml` — the Rust WORKSPACE root — virtual manifest, resolver "2"; members: src-tauri + crates/imgworker + xtask (§0.8 pins) [P1.6]
+- `Cargo.lock` — the committed resolved Rust lockfile (§3.8 pin-everything; G18a)
+- `src-tauri/Cargo.toml` — workspace MEMBER — the MIT core crate `convertia-core`; pinned versions §0.8
+- `src-tauri/tauri.conf.json` — bundle, CSP, externalBin, minimum-OS (§0.10, §0.3.1, §3.3)
+- `src-tauri/build.rs` — tauri-build; (optionally) tauri-specta gen hook
+- `src-tauri/engines.lock` — the §3.7.2 build manifest — per-(artifact, target-triple) rows; L(-1)/G71 owner-acked edits only; schema/validator = src/engines/lock.rs (P4.56.1)
+- `src-tauri/engine-configure.toml` — the §6.1.3 per-engine configure-flag manifest seam — `<cache_engine>.configure.flags/.system[/.source_dir]` keyed on the engines.lock row id; read by scripts/compile-engine-asset; filled by the named compile boxes — P4.34's pull-forward first, then P5.1.1 / P5.5.1 / P5.9.1 / P6.1.1 / P7.17.1 (P4.28.1)
+- `src-tauri/capabilities/main.json` — the §0.10 capability allowlist (core, log, store — NO dialog, NO opener, NO shell-execute, NO fs; dialog/opener are Rust-side-only, not WebView grants, §3.3.3)
+- `src-tauri/src/lib.rs` — the CRATE ROOT (P3.87 bin+lib split — the P3.73 fuzz lib-target precondition): the §0.7 tier-module declarations + crate lint policy + the app entry body `run()` (Tauri builder, invoke_handler over the §0.4.1 command table, collect_commands!/collect_events!, §0.4.5) + `pub mod fuzz_api` (the G48 fuzz-entry wrappers; minimal-pub — only `run` + `fuzz_api` are public by default; the non-default `gate-api` cargo feature adds the read-only `gate_api` façade (types and pure lookup functions, never a `toml` parse) for the xtask gate guards; every tier module stays private)
+- `src-tauri/src/main.rs` — the thin bin shim — `fn main()` delegates to `convertia_core::run()` (the standard Tauri-v2 lib+bin shape)
+- `src-tauri/src/engines/registry.rs` — Engine trait + selection (the §3.2 seam — candidate own crate)
+- `src-tauri/src/engines/program.rs` — §3.3.3 program-path resolution + the EngineId→binary-name table (P4.32)
+- `src-tauri/src/engines/lock.rs` — §3.7.2 engines.lock schema + validator — the (artifact, target-triple) row law (P4.56.1)
+- `src/lib/ipc/bindings.ts` — GENERATED by tauri-specta (§0.4.5) — the only IPC door
+- `src/main.tsx` — the React 19 root mount (§5.1 / §0.4.0)
+- `index.html` — frontend build + test config
+- `vite.config.ts` — frontend build + test config
+- `package.json` — frontend build + test config
+- `tsconfig.json` — frontend build + test config
 
 ---
 

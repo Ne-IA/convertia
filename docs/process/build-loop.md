@@ -287,11 +287,10 @@ escalate** (the loop is downstream of the spec).
   reflected in **every** referencing doc in the **same commit**: no stale, no
   contradictory, no orphaned `.md`. **G68** (doc-graph integrity & freshness) enforces
   it graph-wide (the gates→`.md` case is one instance); a drift reddens the push.
-- **Structural-map update in the same commit.** Never create a structural element (a
-  folder) that is not in the **CLAUDE.md §1a "Repo layout" map** — if a new directory
-  is genuinely needed for clean logical separation, **update the map in the same
-  commit**. **G69** asserts the map ↔ on-disk tree bidirectionally; an unmapped folder
-  (or a stale map entry) reddens the push.
+- **Structural-map update in the same commit.** A new directory gets its row in the spec
+  §0.7 physical tree in the commit that adds its first tracked file (a Loop-editable spec
+  edit); a new file owes no row. **G69** asserts the tracked directory set equals §0.7's
+  both ways; an unhomed directory, or a §0.7 row with no tracked file, reddens the push.
 - **Inline decision tags** at every non-spec choice site:
   `[Build-Session-Entscheidung: <box-id>]` for a self-made pattern/naming/default
   choice, **directly at the code site**, not only in the commit body. (This tag

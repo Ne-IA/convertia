@@ -41,7 +41,7 @@
 #
 # Still no per-source-format subdirectory — the P3 corpus stays FLAT (the P3.30 precedent); the first
 # corpus-subdirectory box (P7.61, or P5 image staging if earlier) owns that re-organisation as a
-# structural act (the §0.7 + §1a rows + the `.editorconfig`/`.gitattributes` glob extension in one
+# structural act (the §0.7 row + the `.editorconfig`/`.gitattributes` glob extension in one
 # owner-acked L(-1) commit).
 
 [[file]]

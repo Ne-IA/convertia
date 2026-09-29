@@ -40,109 +40,13 @@ hard-stop + escalate** — the build is downstream of the spec and cannot pick a
   no minimal-viable tiering, no fixed deadline — completeness is the gate. Partial
   *public* release is not a thing; internal *sequencing* (the plan's phases) is.
 
-## 1a. Repo layout (the operational per-dir map)
+## 1a. Repo layout
 
-> **This is the operational map of where everything lives — the flat dir-set `G69`
-> mechanically checks bidirectionally against the on-disk tree** (every repo directory
-> appears here ∧ every mapped dir exists; [`build-gates.md`](docs/security/build-gates.md)
-> §6 check 26). **It is NOT the single source of truth — the higher source is spec
-> [§0.7](docs/spec/00-architecture.md) "Physical tree"** (the logical-module
-> decomposition + its rationale), which outranks this docs-layer map per the repo
-> conflict rule **SSOT > spec > docs**. This §1a map is a **faithful projection of the
-> §0.7 physical tree** onto the flat dir-set G69 asserts; a `G68/G69` sub-check binds
-> the two so they cannot drift (the §0.7-derived dir set ⊇ this map's dir set;
-> [`build-gates.md`](docs/security/build-gates.md) §6 checks 25/26). When the two
-> disagree, **§0.7 wins** — fix §1a to match, never the reverse.
-> **Standing rule (anti-pattern below):** never create a structural element (a folder)
-> that is not in **both** §0.7 and this map — if a new one is genuinely needed for
-> clean logical separation, **update §0.7 AND this map in the SAME commit**
-> (gate-enforced).
->
-> **Authored at P1.64** (the P1-end structure box, `needs:` the P1 scaffold boxes): every
-> directory the product needs across P1–P11 now exists with exactly one row below, so no
-> later phase invents an unmapped folder. This flipped `G69` from skip-with-warning to
-> **fail-closed** — the bidirectional map ↔ on-disk-tree bijection (every git-tracked dir
-> is mapped ∧ every mapped dir is tracked) + the §1a ⊆ §0.7 projection bind now enforce
-> ([`build-gates.md`](docs/security/build-gates.md) §6 check 26). A new directory therefore
-> requires a row here **and** in §0.7 in the same commit (the standing rule above).
-> **Deliberately absent** (each created by its owning phase, which adds its §0.7 + §1a rows
-> then): `bundle/` — engines stage into `src-tauri/binaries/` + `src-tauri/resources/` per
-> §6.1.3, not a separate staging tree. (`fuzz/` — the P3-owned `cargo-fuzz` tree — **landed
-> at P3.73** with its four buildable G48 targets + harness; `zip_slip`/`imgworker_ffi` stay
-> `check-fuzz-contract`-dormant until P7.50.1/P4.35.1, so their harnesses join at those boxes.)
-
-```
-convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
-├── CLAUDE.md  README.md  LICENSE   → repo rules + this map · download/trust page · MIT + collective copyright
-├── Cargo.toml  Cargo.lock          → the Rust workspace root (virtual manifest + committed lockfile, P1.6)
-├── index.html  package.json  tsconfig.json   → the frontend entry + npm manifest + TS config (+ vite/vitest/eslint config, .gitignore, .npmrc, …)
-├── .github/                        → CI + supply-chain automation (SHA-pinned actions; L(-1))
-│   ├── ISSUE_TEMPLATE/             → issue templates
-│   └── workflows/                  → Lane-A `ci.yml` + `release.yml` / `scorecard.yml` / `secrets-history.yml`
-├── assets/                         → static brand assets
-│   └── branding/                   → logo / brand source art
-├── crates/                         → non-core first-party Rust workspace members
-│   └── imgworker/                  → pkg `convertia-imgworker` — the isolated libvips/libheif/librsvg image-worker (§3.5.5, G53)
-│       └── src/                    → the worker crate source (its allow-listed FFI module: `ffi.rs`, G29)
-├── design/                         → UI / design assets (a sibling of `src/`, §0.7)
-├── docs/                           → all documentation (the doc graph G68 guards)
-│   ├── plan/                       → P0..P11 + README index + `_format.md`
-│   ├── process/                    → build-loop / test-strategy / roles-and-escalation / vuln-response / gate-status / p0-completion / minisign-key-custody / release-pipeline-trust
-│   ├── security/                   → `security-concept.md` + `build-gates.md` (G1..Gnn)
-│   └── spec/                       → the spec (how) — `00-architecture` … `07-app-shell`
-│       └── 04-formats/             → the per-category §04 format matrices
-├── scripts/                        → the stdlib gate scripts + pinned-tool installer + bundle/SBOM/checksum (§06, P0.2; the L(-1) cage is per-FILE via `l-neg1-files.toml`, never dir-wide)
-│   ├── gate-selftests/             → the G24 `g24-*`/`g54-*` planted-positive self-tests (the G10 canary)
-│   │   ├── gitleaks-fixtures/      → G2 gitleaks self-test fixtures
-│   │   └── typos-fixtures/         → G51 typos self-test fixtures
-│   └── semgrep-rules/              → the G29 SAST rule corpus (L(-1))
-│       ├── fixtures/               → planted-positive SAST fixtures
-│       │   └── engines/            → engine-arg SAST fixtures
-│       ├── project/                → first-party Semgrep rules
-│       └── vendor/                 → vendored Semgrep rule packs
-├── fuzz/                           → the `cargo-fuzz` (libFuzzer) crate — the §6.4.2/G48 in-core untrusted-byte targets (P3.73; standalone `[workspace]`, outside the MIT-core graph; drives only `convertia_core::fuzz_api`)
-│   ├── fuzz_targets/               → per-target `#![no_main]` harnesses (detect / fs_guard_resolve_identity / fs_guard_is_safe_output / csv_tsv); zip_slip (P7.50.1) + imgworker_ffi (P4.35.1) dormant until their boxes
-│   └── corpus/                     → the libFuzzer seed corpus — the committed G16 bound-firing fixtures per target
-│       ├── fs_guard_resolve_identity/  → `nul_path` · `path_max_plus_1` · the 5 Windows dangerous-path class seeds (device / reserved / drive-relative / UNC / trailing — re-homed here by the 2026-07-21 P3.73 P0 ruling: the hostile-PATH classes belong to the untrusted-path fn, §2.3.1)
-│       └── fs_guard_is_safe_output/    → `nul_output_path` — the §2.3.3 no-clobber verdict's OWN bound-firing seed (interior-NUL output path → its non-fallback `Err` arm; never the Windows classes — the P3.73 P0 ruling)
-├── src/                            → the React 19 / TS / Tailwind / Vite UI (§05)
-│   ├── a11y/                       → the §5.6 a11y helpers (announcer / keymap) + the G33a leg
-│   ├── components/                 → presentational components (§5.x)
-│   ├── hooks/                      → React hooks (§5.x)
-│   ├── lib/                        → frontend library code
-│   │   └── ipc/                    → the generated `bindings.ts` (the only IPC door, §0.4.5) + the commands/events wrappers
-│   ├── state/                      → the zustand store (§5.x)
-│   ├── strings/                    → the §5.7 English-only `ui.ts` string catalog (G57)
-│   └── styles/                     → Tailwind / app CSS
-├── src-tauri/                      → the MIT core crate `convertia-core` (the Tauri host, lib + thin bin since P3.87)
-│   ├── binaries/                   → bundled engine sidecars per platform (externalBin, §3.3)
-│   ├── capabilities/               → the §0.10 capability allowlist (`main.json`, G47; L(-1))
-│   ├── icons/                      → the bundled app-icon set (§3.3, P1.19.2)
-│   ├── resources/                  → bundled non-exe engine assets (LibreOffice profile, fonts, codec libs)
-│   └── src/                        → the core crate source (`lib.rs` crate root + the thin `main.rs` bin shim, P3.87 + the §0.7 tier modules):
-│       ├── detection/              → tier 2 — §1.2 content sniffing (first to touch untrusted bytes)
-│       ├── domain/                 → tier 3 — the PURE §0.6 types (identity / intake / detection / Target / destination/plan / JobStage), a true leaf; the outcome-referencing lifecycle/result types live in orchestrator (§0.7 ‡, P2.10)
-│       ├── engines/                → tier 2 — the §3.2 engine registry/seam + §1.7 invocation + §3.5 args + §3.3.3 program resolution + the §3.7.2 `engines.lock` schema
-│       ├── fs_guard/               → tier 2 — the §2.0 no-harm kernel (atomic write / no-clobber / resolved-id)
-│       ├── ipc/                    → tier 0 — the §0.4 command/event handlers (the WebView's only door)
-│       ├── isolation/              → tier 2 — the §2.12 decoder-isolation wrapper (the sole `Command::new`)
-│       ├── orchestrator/           → tier 1 — queue + job lifecycle (§1.9) + run registry + cancellation; homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict/OutputPlanPreview/DestinationResolved + RunResult/ItemResult/ItemOutcome) above tier 3 (§0.7 ‡, P2.10)
-│       ├── outcome/                → tier 2 — the §2.8 taxonomy + message catalog → §0.4.3 IpcError
-│       ├── platform/               → tier 3 — path / volume / OS shims (§2.14, §7.7)
-│       ├── pool/                   → tier 3 — the §0.9 subprocess pool + concurrency degree
-│       └── run/                    → tier 2 — per-run/instance scratch ownership + cleanup (§2.4/§2.6)
-├── third-party-licenses/           → the vendored per-component licence texts the generated `THIRD-PARTY-LICENSES.txt` reads (§3.7.2 item 2, P4.57)
-├── supply-chain/                   → the `cargo-vet` audit trust store (`config.toml` + `audits.toml`; `imports.lock` joins at the P10 live cargo-vet run (P10.59), G18b; L(-1))
-├── tests/                          → Rust integration + corpus harness (§6.4)
-│   ├── corpus/                     → the §6.5 reliability corpus (manifest + fixtures, fills P3–P7)
-│   └── g53-fixture/                → the G53 NEGATIVE fixture (a planted copyleft-into-core violation; own nested workspace, excluded from the real graph)
-│       ├── convertia-core/         → the fixture's fake core crate
-│       │   └── src/                → its source
-│       └── libvips-sys/            → the fixture's planted forbidden lib
-│           └── src/                → its source
-└── xtask/                          → the `cargo xtask` dev-bin (§0.4.5 codegen + §6.7.1 coverage, G19)
-    └── src/                        → the xtask source
-```
+The directory map is spec [§0.7 "Physical tree"](docs/spec/00-architecture.md) — directories only,
+plus its *Load-bearing files* list; §0.7 outranks this file (SSOT > spec > docs). **G69** binds it
+both ways to the git-tracked tree ([`build-gates.md`](docs/security/build-gates.md) §6 check 26). A
+new directory gets its §0.7 row in the commit that adds its first tracked file; a new file owes no
+row.
 
 ## 2. Working model — two sessions, one branch
 
@@ -303,14 +207,10 @@ list. The derivation is recorded in P0.6 of
   requires justification, it does **not** forbid.)
 - **Auto-generated `CLAUDE.md` / spec / security sections without review.**
 - **Backwards-compat hacks for not-yet-existing code.**
-- **A structural element (a folder) not in the §1a "Repo layout" map (a projection of
-  the higher spec §0.7 physical tree).** Never create a directory that is absent from
-  the map; if a new one is genuinely needed for clean logical separation, **update spec
-  §0.7 AND the §1a map in the SAME commit** (§0.7 is the higher source per SSOT > spec >
-  docs; §1a is its operational projection) — gate-enforced by `G69` (the bidirectional
-  CLAUDE.md-map ↔ on-disk-tree assertion + the §1a ⊆ §0.7 projection bind,
-  [`build-gates.md`](docs/security/build-gates.md) §6 check 26). Nothing structural
-  lives outside the map, and the map never invents a dir §0.7 does not home.
+- **A directory spec §0.7 does not home.** A new directory's §0.7 row lands in the commit
+  that adds its first tracked file — gate-enforced by `G69` (tracked directories == §0.7
+  directories, both ways; [`build-gates.md`](docs/security/build-gates.md) §6 check 26).
+  Nothing structural lives outside §0.7.
 - **A change to an authoritative source that leaves a referencing doc stale.** Any
   change to a source of truth — a **gate** (`Gnn`), a **control**, a **decision**, a
   **path**/directory, a **convention**, an **enum** variant, a **version pin** — is

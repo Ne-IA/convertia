@@ -322,6 +322,43 @@ record("(g) an upward path in a PLAIN `//` comment or in code NOT flagged (doc-c
        len(scan("g", "src-tauri/src/pool/mod.rs",
                 "// [`crate::engines::X`] in a plain comment\nlet x = 1; // [`crate::ipc::Y`]\n")) == 0)
 
+# === (g) the tier-map bind: SPEC07_TIERS == the §0.7 Logical-modules block == the src-tauri/src module dirs ===
+_ARCH = (m.ROOT / m.ARCH_DOC).read_text(encoding="utf-8", errors="replace")
+_DIRS = m._src_module_dirs(m._git_ls_files())
+record("(g-tiers) the real §0.7 Logical-modules block parses to SPEC07_TIERS (wrapped descriptions and │/▼ connector "
+       "lines are no module) and the real module dirs are its keys: no finding",
+       m.spec07_tier_map(_ARCH) == m.SPEC07_TIERS and _DIRS == set(m.SPEC07_TIERS)
+       and m.tier_map_findings(_ARCH, _DIRS) == [])
+_DRIFT = _ARCH.replace("  tier 1   orchestrator ", "  tier 2   orchestrator ", 1)
+record("(g-tiers) a §0.7 tier drift (orchestrator re-tiered 1 -> 2 in the block) is caught, naming the module and both tiers",
+       _DRIFT != _ARCH and m.tier_map_findings(_DRIFT, _DIRS)
+       == ["SPEC07_TIERS disagrees with the §0.7 Logical-modules tier block on `orchestrator` (§0.7: 2, SPEC07_TIERS: 1)"
+           " - a §0.7 re-home edits the map in the same commit"])
+record("(g-tiers) a missing Logical-modules heading, a heading with no fence, and an unterminated fence each fail closed",
+       m.tier_map_findings(_ARCH.replace("### Logical modules", "### Modules"), _DIRS)
+       == ["cannot parse the §0.7 Logical-modules tier block (fail-closed)"]
+       and m.spec07_tier_map("### Logical modules\n\nno fence here\n") is None
+       and m.spec07_tier_map("### Logical modules\n\n```\n  tier 0   ipc            x\n") is None)
+record("(g-tiers) a module named twice in the block fails closed (None, never a silent last-wins)",
+       m.spec07_tier_map("### Logical modules\n\n```\n  tier 2   engines        x\n"
+                         "           engines        y\n```\n") is None
+       and m.spec07_tier_map("### Logical modules\n\n```\n  tier 2   engines        x\n"
+                             "           run            y\n```\n") == {"engines": 2, "run": 2})
+record("(g-tiers) a src-tauri/src module dir with no tier is caught; a tier with no dir is caught",
+       m.tier_map_findings(_ARCH, _DIRS | {"newmod"}) == ["module directory src-tauri/src/newmod/ has no SPEC07_TIERS tier"]
+       and m.tier_map_findings(_ARCH, _DIRS - {"pool"}) == ["SPEC07_TIERS module `pool` has no src-tauri/src/pool/ directory"])
+record("(g-tiers) module dirs are the top-level dirs under src-tauri/src holding a tracked file (a crate-root file is none)",
+       m._src_module_dirs(["src-tauri/src/lib.rs", "src-tauri/src/ipc/mod.rs", "src-tauri/src/ipc/a/b.rs",
+                           "src-tauri/build.rs", "src/lib/ipc/x.ts"]) == {"ipc"})
+_saved_parse = m.spec07_tier_map
+try:
+    m.spec07_tier_map = lambda _t: None
+    _wired = m.main()
+finally:
+    m.spec07_tier_map = _saved_parse
+record("(g-tiers) main() reports the tier-map bind: an unparseable block reds the gate (exit 1), stub restored",
+       _wired == 1 and m.spec07_tier_map is _saved_parse)
+
 # === live: the real repo is clean today =======================================================
 record("main() exits 0 today (all invariants a-g live over the real repo source; clean)", m.main() == 0)
 

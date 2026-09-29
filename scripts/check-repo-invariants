@@ -76,8 +76,8 @@ when the real code lands in P1 - adjusting a carve-out is itself a reviewed L(-1
 
 Invariants (a)-(f) are all LIVE since P1: their target source landed in P1 - `design/` (a, CSS),
 `src/` + `src-tauri/` (b/c/d Rust, f TS test files) - and (e) is live over the workflows + `scripts/`;
-they scan the real files now and pass when clean. (The P10-staged `bundle/` engine tree is the only
-deliberately-absent dir, CLAUDE.md §1a - no invariant targets it.) Self-tested by g24-repo-invariants.
+they scan the real files now and pass when clean. (`bundle/` is the one deliberately-absent dir, spec
+§0.7 - no invariant targets it.) Self-tested by g24-repo-invariants.
 
 stdlib-only. L(-1) security-critical (matched by `scripts/check-*` in scripts/l-neg1-files.toml, G71).
 Exit: 0 = no invariant violated (or target-absent); 1 = a violation; 2 = bad invocation.
@@ -120,7 +120,8 @@ DOC_LINK_BACKTICK_RE = re.compile(r"\[`(?:crate|super(?:::super)*)::([A-Za-z_][A
 DOC_LINK_TARGET_RE = re.compile(r"\]\((?:crate|super(?:::super)*)::([A-Za-z_][A-Za-z0-9_]*)\b")
 # The §0.7 tier map (00-architecture §0.7 "logical modules"; lower number = higher tier - it may be
 # linked TO from below the dependency order, never FROM below): upward iff tier(target) < tier(source).
-# A §0.7 re-home edits this map in the same commit (the §0.7 fingerprint, plan-lint check 25, guards it).
+# A §0.7 re-home edits this map in the same commit; `tier_map_findings` binds it to the §0.7 Logical-modules
+# block and to the `src-tauri/src` module directories (fail-closed).
 SPEC07_TIERS = {
     "ipc": 0,
     "orchestrator": 1,
@@ -556,6 +557,73 @@ def _g_in_scope(p: str) -> bool:
     return mod is not None and mod in SPEC07_TIERS
 
 
+# The tier-map bind: SPEC07_TIERS is a hardcoded copy, so it is read against its source on every run.
+ARCH_DOC = "docs/spec/00-architecture.md"
+_LOGICAL_MODULES_HDR = re.compile(r"^#{1,6}\s+Logical modules")
+_TIER_LINE_RE = re.compile(r"^\s*tier\s+(\d+)\s+([a-z_][a-z0-9_]*)\s")
+_TIER_MODULE_RE = re.compile(r"([a-z_][a-z0-9_]*)\s{2,}")
+
+
+def spec07_tier_map(arch_text: str) -> dict[str, int] | None:
+    """(pure) The module -> tier map of the first fenced block after the §0.7 `Logical modules` heading. A
+    `tier N  <module>  …` line opens tier N and fixes the module column; a following line whose text before
+    that column is blank and whose text AT the column is `<module>` plus two or more spaces is another module
+    of the same tier (a wrapped description or a `│`/`▼` connector line is neither). None when the heading or
+    its fence is missing, no module parses, or a module is named twice (the caller fails closed)."""
+    lines = arch_text.replace("\r\n", "\n").split("\n")
+    hdr = next((i for i, ln in enumerate(lines) if _LOGICAL_MODULES_HDR.match(ln)), None)
+    if hdr is None:
+        return None
+    start = next((i for i in range(hdr + 1, len(lines)) if lines[i].lstrip().startswith("```")), None)
+    if start is None:
+        return None
+    tiers: dict[str, int] = {}
+    tier: int | None = None
+    col = 0
+    for ln in lines[start + 1:]:
+        if ln.lstrip().startswith("```"):
+            break
+        mt = _TIER_LINE_RE.match(ln)
+        if mt:
+            tier, col, mod = int(mt.group(1)), mt.start(2), mt.group(2)
+        elif tier is not None and len(ln) > col and not ln[:col].strip():
+            mm = _TIER_MODULE_RE.match(ln, col)
+            if not mm:
+                continue
+            mod = mm.group(1)
+        else:
+            continue
+        if mod in tiers:
+            return None
+        tiers[mod] = tier
+    else:
+        return None                                 # an unterminated fence is no block
+    return tiers or None
+
+
+def tier_map_findings(arch_text: str, src_dirs: set[str]) -> list[str]:
+    """(pure) SPEC07_TIERS against its two sources: the parsed §0.7 Logical-modules tier block (an
+    unparseable block fails closed) and the top-level module directories under `src-tauri/src`."""
+    spec = spec07_tier_map(arch_text)
+    if spec is None:
+        return ["cannot parse the §0.7 Logical-modules tier block (fail-closed)"]
+    out = [f"SPEC07_TIERS disagrees with the §0.7 Logical-modules tier block on `{mod}` "
+           f"(§0.7: {spec.get(mod, 'absent')}, SPEC07_TIERS: {SPEC07_TIERS.get(mod, 'absent')}) - "
+           f"a §0.7 re-home edits the map in the same commit"
+           for mod in sorted(set(spec) | set(SPEC07_TIERS)) if spec.get(mod) != SPEC07_TIERS.get(mod)]
+    out += [f"module directory src-tauri/src/{d}/ has no SPEC07_TIERS tier"
+            for d in sorted(src_dirs - set(SPEC07_TIERS))]
+    out += [f"SPEC07_TIERS module `{d}` has no src-tauri/src/{d}/ directory"
+            for d in sorted(set(SPEC07_TIERS) - src_dirs)]
+    return out
+
+
+def _src_module_dirs(files: list[str]) -> set[str]:
+    """(pure) The top-level directories under `src-tauri/src` that hold a tracked file."""
+    return {f.split("/")[2] for f in (_norm(x) for x in files)
+            if f.startswith("src-tauri/src/") and f.count("/") >= 3}
+
+
 def _g_scan(relpath: str, text: str) -> list[tuple[int, str]]:
     mod = _g_module_of(relpath)
     src_tier = SPEC07_TIERS[mod] if mod in SPEC07_TIERS else None
@@ -686,6 +754,12 @@ def _git_ls_files() -> list[str]:
 def main() -> int:
     files = _git_ls_files()
     violations: list[tuple[str, str, int, str]] = []
+    try:
+        arch_text = (ROOT / ARCH_DOC).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        arch_text = ""                              # an unreadable spec parses to no block -> fail-closed
+    for msg in tier_map_findings(arch_text, _src_module_dirs(files)):
+        violations.append(("g", ARCH_DOC, 0, msg))
     for inv in INVARIANTS:
         for f in files:
             if not inv.in_scope(f):

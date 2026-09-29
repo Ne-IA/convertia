@@ -26,7 +26,7 @@ coverage/
 # The restored engine-asset cache (§6.1.3, keyed `<cache_engine>-<cache_version>-<triple>`) that
 # scripts/stage-engines reads, and the engine bytes it stages out of it. Both are build-time
 # artifacts, never committed (DEVELOPMENT.md "Bundled conversion engines"); the tracked .gitkeep
-# keeps the two §0.7/CLAUDE-§1a-mapped destination dirs present for G69.
+# keeps the two §0.7-mapped destination dirs tracked for G69.
 .engine-cache/
 /src-tauri/binaries/*
 !/src-tauri/binaries/.gitkeep

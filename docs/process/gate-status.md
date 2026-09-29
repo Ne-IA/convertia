@@ -72,7 +72,7 @@ line. Unlike the owner-decidable ratchet ledger above, these are **deterministic
 activations (no `informational`↔`required` posture), so the table below deliberately carries **no
 `Status`/`Since` columns** (check 23 governs only the ratchet ledger). The reverse `→ activated in P<n>`
 edges live on the P0 gate rows in [build-gates.md](../security/build-gates.md); this is their closing
-side. **G69** (the §1a structural-map ↔ on-disk bijection) activated at **P1.64** — the P1-END
+side. **G69** (the structural-map bind of the tracked tree to spec §0.7) activated at **P1.64** — the P1-END
 structure-establishment box — and its row is below. Of the two remaining `→ activated in P1`-annotated
 gates, **G23** (the conversion-command→test completeness walk) activated at **P3.63** — re-keyed to the
 §0.4.1 `start_conversion` by the 2026-07-17 P3.63 ruling; its row is in the P3 flips table below.

@@ -389,11 +389,10 @@ load-bearing security guarantees with their own gates):
   described-the-old-way freshness fingerprint across the **repo-scoped** graph
   `CLAUDE.md` ↔ SSOT ↔ spec ↔ security ↔ process ↔ plan (the out-of-repo `~/.claude`
   memory channel is audited once, manually, in P0.1.7 — it is outside `git ls-files`
-  and not a continuous G68 node). The structural analogue is **G69** (every repo
-  directory ∈ the CLAUDE.md §1a "Repo layout" map ∧ every mapped dir exists, AND that
-  §1a map is a faithful projection of the higher spec §0.7 physical tree per SSOT >
-  spec > docs) — nothing structural lives outside the map, which never invents a dir
-  §0.7 does not home.
+  and not a continuous G68 node). The structural analogue is **G69**: every tracked
+  directory has a row in the spec §0.7 physical tree (directories only), every §0.7
+  directory is tracked, and every file on §0.7's load-bearing list is tracked — nothing
+  structural lives outside §0.7; `CLAUDE.md` §1a points to it.
 - **Context-routing — the autonomous loop runs LEAN; the Co-Pilot holds the full
   picture.** The [build-loop.md](../process/build-loop.md) prompt **references** this
   doc + [build-gates.md](build-gates.md) for a per-box / red-CI gate lookup but does

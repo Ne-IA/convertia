@@ -644,13 +644,13 @@ record("25-fp: a source file that does not exist fails closed",
        any("not found" in f.msg for f in _ff(
            [{"id": "mm", "kind": "file", "file": "scripts/__nope__.toml", "fingerprint": "sha256:" + "0" * 64}], {})))
 
-# dormancy works BOTH ways (skip while the describing doc is unauthored; activate once it is)
+# [Test-Change: P0.3.12 G68 seed floor — old-obsolete+new-correct, build-gates §6 check 25(c)] the ledger's
+# `dormant` skip is retired with its one user (the §0.7 -> CLAUDE.md §1a binding, replaced by G69's direct
+# tracked-tree == §0.7 bind): the two dormancy legs are gone, and a leftover `dormant` table skips nothing.
 _DORM = {"id": "d", "kind": "file", "file": _DOC, "fingerprint": "sha256:" + "0" * 64,  # deliberately WRONG
          "dormant": {"file": "CLAUDE.md", "contains": "P1.64"}}
-record("25-fp: a dormant entry (marker present) is skipped even with a wrong fingerprint",
-       _ff([_DORM], {_DOC: _CONTENT, "CLAUDE.md": "... finalized by the P1.64 box ..."}) == [])
-record("25-fp: the SAME entry is NOT skipped once the dormancy marker is gone (then caught)",
-       any("'d'" in f.msg for f in _ff([_DORM], {_DOC: _CONTENT, "CLAUDE.md": "no marker here\n"})))
+record("25-fp: an entry carrying a leftover `dormant` table is checked like any other (no skip path) -> caught",
+       any("'d'" in f.msg for f in _ff([_DORM], {_DOC: _CONTENT, "CLAUDE.md": "... finalized by the P1.64 box ..."})))
 
 # malformed entries fail closed (never silently pass)
 record("25-fp: a malformed fingerprint (not sha256:<64hex>) fails closed",
@@ -688,10 +688,10 @@ _E64 = "0" * 64
 _e1, _f1 = _read_ledger_body("# only a comment, no [[source]] tables\n")
 record("25-fp: an empty-but-present ledger fails the required-seed floor (no silent no-op)",
        _f1 is not None and "required seed" in _f1.msg)
-# P2: dropping a required seed (only l-neg1-cage present, spec-0.7 missing) FAILS closed
-_e2, _f2 = _read_ledger_body(f'[[source]]\nid = "l-neg1-cage"\nkind = "file"\nfile = "x"\nfingerprint = "sha256:{_E64}"\n')
+# P2: dropping the required seed (another entry present, l-neg1-cage missing) FAILS closed
+_e2, _f2 = _read_ledger_body(f'[[source]]\nid = "other"\nkind = "file"\nfile = "x"\nfingerprint = "sha256:{_E64}"\n')
 record("25-fp: a ledger missing a required seed id fails closed (names the missing id)",
-       _f2 is not None and "spec-0.7-physical-tree" in _f2.msg)
+       _f2 is not None and "l-neg1-cage" in _f2.msg)
 # P3: a plain string-array `source = [...]` fails closed CLEANLY (no AttributeError crash)
 try:
     _e3, _f3 = _read_ledger_body('source = ["a", "b"]\n')
@@ -699,18 +699,12 @@ try:
 except Exception:
     _ok3 = False
 record("25-fp: a plain-array (non-array-of-tables) ledger fails closed, does NOT crash", _ok3)
-# the floor is SATISFIED by a minimal ledger carrying both required ids (not green-by-over-strictness)
+# the floor is SATISFIED by a minimal ledger carrying the required id (not green-by-over-strictness)
 _e4, _f4 = _read_ledger_body(
-    f'[[source]]\nid = "l-neg1-cage"\nkind = "file"\nfile = "x"\nfingerprint = "sha256:{_E64}"\n'
-    f'[[source]]\nid = "spec-0.7-physical-tree"\nkind = "file"\nfile = "y"\nfingerprint = "sha256:{_E64}"\n')
+    f'[[source]]\nid = "l-neg1-cage"\nkind = "file"\nfile = "x"\nfingerprint = "sha256:{_E64}"\n')
 record("25-fp: a ledger carrying every required seed id passes the floor (no fatal)", _f4 is None)
-# P3: list `contains` is the exact G69 OR-dormancy — dormant if ANY marker present, active if NONE
-_DL = {"id": "spec-0.7-physical-tree", "kind": "file", "file": _DOC, "fingerprint": "sha256:" + _E64,
-       "dormant": {"file": "CLAUDE.md", "contains": ["PLACEHOLDER", "P1.64"]}}
-record("25-fp: list `contains` is dormant when ANY marker is present (PLACEHOLDER alone)",
-       _ff([_DL], {_DOC: _CONTENT, "CLAUDE.md": "this is a PLACEHOLDER stub\n"}) == [])
-record("25-fp: list `contains` is ACTIVE (caught) when NO marker is present",
-       any("'spec-0.7" in f.msg for f in _ff([_DL], {_DOC: _CONTENT, "CLAUDE.md": "real finalized map\n"})))
+record("25-fp: the floor is exactly the cage binding (the retired §0.7 seed is not required)",
+       m._REQUIRED_FP_IDS == {"l-neg1-cage"})
 record("8 threat-parity: a §5 row citing a non-catalogue gate -> caught",
        any("G9999" in f.msg for f in m.doc8_threat_parity(
            dctx({"docs/security/security-concept.md": "| **T1** d | c | G9999 |\n",
@@ -811,9 +805,11 @@ record("24 p0-completion: the REAL committed p0-completion.md stub passes (born-
 # principle (see check 23 above), now fully discharged across the P0.6 activations.
 
 # --- check 26 (G69) structural-map integrity — the real logic, driven by pure fns (P0.3.13) ------
-# P1.64 authored the §1a map (removed the PLACEHOLDER stub), so doc26 now ENFORCES on the real repo. The
-# logic is exercised via the pure parser/relations fns + ACTIVE doc26 runs against the real repo tree
-# (both directions); the synthetic-PLACEHOLDER legs still prove the skip BRANCH stays correct (defensive).
+# [Test-Change: P0.3.13 G69 re-key — old-obsolete+new-correct, build-gates §6 check 26] the bind moved from
+# the CLAUDE.md §1a map (now a pointer) to spec §0.7 itself: the §1a projection leg and the two
+# PLACEHOLDER-skip legs are gone with the skip branch, the relation / fence / active / fail-closed legs are
+# re-keyed onto the two-set tracked-tree == §0.7 bind, and the Load-bearing-files legs are new. The logic
+# is exercised via the pure parser/relations fns + doc26 runs against the real repo tree (both directions).
 _TREE = [
     "convertia/                  -> root",
     "├── docs/                   -> docs",
@@ -834,15 +830,13 @@ record("26 parse: embedded-path ancestor dirs captured (src/lib, src/lib/ipc) bu
 record("26 parse: the repo-root line (convertia/) is not itself a mapped dir",
        "convertia" not in _md and "" not in _md)
 
-# the 3 relations (pure, set-only)
-record("26 rel: map==disk==§0.7 projection is clean",
-       m._struct_map_relations({"docs", "src"}, {"docs", "src"}, {"docs", "src", "extra"}) == [])
-record("26 rel: an on-disk dir absent from the map is caught (folder without a map row)",
-       ("disk-not-in-map", "newdir") in m._struct_map_relations({"docs"}, {"docs", "newdir"}, {"docs", "newdir"}))
-record("26 rel: a mapped dir not on disk is caught (stale map entry)",
-       ("map-not-on-disk", "gone") in m._struct_map_relations({"docs", "gone"}, {"docs"}, {"docs", "gone"}))
-record("26 rel: a §1a dir the §0.7 tree does not home is caught (projection bind)",
-       ("map-not-in-spec07", "invented") in m._struct_map_relations({"docs", "invented"}, {"docs", "invented"}, {"docs"}))
+# the 2 relations (pure, set-only)
+record("26 rel: tracked dirs == §0.7 dirs is clean",
+       m._struct_map_relations({"docs", "src"}, {"docs", "src"}) == [])
+record("26 rel: a tracked dir with no §0.7 row is caught (a folder without a row)",
+       m._struct_map_relations({"docs"}, {"docs", "newdir"}) == [("disk-not-in-spec07", "newdir")])
+record("26 rel: a §0.7 dir with no tracked file beneath it is caught (a stale row)",
+       m._struct_map_relations({"docs", "gone"}, {"docs"}) == [("spec07-not-on-disk", "gone")])
 
 # _dirs_from_files: every ancestor of a tracked path, minus the out-of-scope trees
 record("26 disk: ancestor dirs derived from tracked-file paths (a, a/b, scripts)",
@@ -850,43 +844,77 @@ record("26 disk: ancestor dirs derived from tracked-file paths (a, a/b, scripts)
 record("26 disk: the out-of-scope trees (target/node_modules/dist/.git) are excluded",
        m._dirs_from_files(["target/x/y", "node_modules/p/i.js", "dist/a", ".git/z", "src/m.rs"]) == {"src"})
 
-# _fenced_block_after: pulls the block under the named header, None when no fence
-_DOCT = "## 1a Map\n\n```\nconvertia/\n├── docs/\n```\n\n## 2 Next\n"
-record("26 fence: extracts the fenced block under the §1a header",
-       m._fenced_block_after(_DOCT, __import__("re").compile(r"^#{1,6}\s+1a\b")) == ["convertia/", "├── docs/"])
+# _fenced_block_after: pulls the block under the §0.7 Physical tree header, None when no fence
+_DOCT = "### Physical tree (mapping)\n\n```\nconvertia/\n├── docs/\n```\n\n## 2 Next\n"
+record("26 fence: extracts the fenced block under the §0.7 Physical tree header",
+       m._fenced_block_after(_DOCT, m._PHYSICAL_TREE_HDR) == ["convertia/", "├── docs/"])
 record("26 fence: returns None when the header has no following fence",
-       m._fenced_block_after("## 1a\n\njust prose, no fence\n", __import__("re").compile(r"1a")) is None)
+       m._fenced_block_after("### Physical tree\n\njust prose, no fence\n", m._PHYSICAL_TREE_HDR) is None)
 
-# the skip signal is 'PLACEHOLDER' WITHIN the §1a section (not a whole-file scan) — G1 r1 hardening
-record("26 active: the real repo §1a is now placeholder-free (P1.64 authored the map) so doc26 ENFORCES - and the live bijection (§1a == on-disk tree, subset of §0.7) passes clean",
-       "PLACEHOLDER" not in m._section_text(_real.docs.get("CLAUDE.md", ""), __import__("re").compile(r"^#{1,6}\s+1a\b"))
-       and m.doc26_struct_map(_real) == [])
-record("26 skip: a synthetic §1a section carrying 'PLACEHOLDER' skips even with a broken map",
-       m.doc26_struct_map(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[],
-                                docs={"CLAUDE.md": "## 1a Map\n\n> PLACEHOLDER stub\n\n```\nbogus/\n```\n"})) == [])
-record("26 skip: a bare 'P1.64' provenance mention with NO 'PLACEHOLDER' does NOT keep it dormant",
-       m.doc26_struct_map(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[],
-                                docs={"CLAUDE.md": "## 1a Map\n\nsee [P1.64](x)\n\n```\nconvertia/\n└── zzz/\n```\n",
-                                      "docs/spec/00-architecture.md": "### Physical tree\n```\nconvertia/\n└── zzz/\n```\n"})) != [])
-# doc26 ACTIVE end-to-end against the real tree: BOTH directions exercised through real git ls-files
-_active_claude = ("## 1a Repo layout\n\n```\nconvertia/\n├── docs/\n├── zzz-bogus/\n```\n\n## 2 x\n")
-_active = m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[],
-                docs={"CLAUDE.md": _active_claude,
-                      "docs/spec/00-architecture.md": m.load_docs(ROOT).get("docs/spec/00-architecture.md", "")})
-_af = m.doc26_struct_map(_active)
-record("26 active: a map-only bogus dir is flagged (map->disk + map->§0.7 via find+parse+git+rel)",
-       any("zzz-bogus" in f.msg for f in _af))
-record("26 active: a real on-disk dir absent from the map IS flagged disk-not-in-map (disk->map via real git)",
-       any("scripts/gate-selftests" in f.msg and "absent from" in f.msg for f in _af))
+# _load_bearing_paths: one path per bullet that opens with a code span, section-scoped
+_LBT = ("### Load-bearing files\n\nintro naming `not/a/bullet.rs`\n\n- `a.toml` — role\n* `b/c.rs` — role\n"
+        "- plain bullet without a code span\n\n## 0.8 Next\n\n- `after/next-heading.rs` — out of the section\n")
+record("26 load-bearing: `-` and `*` code-span bullets are listed in order; prose, a plain bullet and a bullet "
+       "under the next heading are not",
+       m._load_bearing_paths(_LBT) == ["a.toml", "b/c.rs"])
+record("26 load-bearing: a missing section is None, a section without a code-span bullet is []",
+       m._load_bearing_paths("## 0.7 x\n\nno such section\n") is None
+       and m._load_bearing_paths("### Load-bearing files\n\n- plain\n") == [])
 
-# active fail-CLOSED branches once the §1a section is placeholder-free (never a silent [])
-def _doc26(claude_text, arch_text=""):
+# doc26 over the REAL repo: tracked dirs == §0.7 dirs both ways, every load-bearing file tracked
+_REAL_ARCH = m.load_docs(ROOT).get("docs/spec/00-architecture.md", "")
+_REAL_LB = m._load_bearing_paths(_REAL_ARCH) or []
+record("26 active: the real repo passes (tracked dirs == spec §0.7 dirs both ways; every load-bearing file tracked)",
+       m.doc26_struct_map(_real) == [])
+record("26 active: the real §0.7 load-bearing list is parsed (the workspace root, the Tauri config and the IPC door "
+       "among its entries)",
+       {"Cargo.toml", "src-tauri/tauri.conf.json", "src/lib/ipc/bindings.ts"} <= set(_REAL_LB))
+
+
+def _doc26(arch_text):
     return m.doc26_struct_map(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[],
-                                    docs={"CLAUDE.md": claude_text, "docs/spec/00-architecture.md": arch_text}))
-record("26 fail-closed: an active §1a with NO map fence -> Finding (not silent [])",
-       any("fenced block is absent" in f.msg for f in _doc26("## 1a Map\n\njust prose, no fence\n\n## 2 x\n")))
-record("26 fail-closed: an active map but a missing §0.7 Physical tree block -> Finding",
-       any("Physical tree" in f.msg for f in _doc26("## 1a\n```\nconvertia/\n└── docs/\n```\n", "no physical tree here\n")))
+                                    docs={"docs/spec/00-architecture.md": arch_text}))
+
+
+# both directions end to end through find + parse + real git ls-files + relations
+_af = _doc26("### Physical tree\n\n```\nconvertia/\n├── docs/\n├── zzz-bogus/\n```\n\n"
+             "### Load-bearing files\n\n- `Cargo.toml` — root\n")
+record("26 active: a §0.7-only bogus dir is flagged (no tracked file beneath it)",
+       any("'zzz-bogus'" in f.msg and "no tracked file beneath it" in f.msg for f in _af))
+record("26 active: a real tracked dir absent from §0.7 IS flagged (disk -> §0.7 via real git)",
+       any("'scripts/gate-selftests'" in f.msg and "no spec §0.7 Physical-tree row" in f.msg for f in _af))
+_ARCH_MINUS = "\n".join(ln for ln in _REAL_ARCH.split("\n")
+                        if not ln.lstrip("│├└─ ").startswith("typos-fixtures/"))
+record("26 active: the real §0.7 tree with its typos-fixtures/ row deleted flags exactly that tracked dir",
+       _ARCH_MINUS != _REAL_ARCH
+       and [f.msg for f in _doc26(_ARCH_MINUS)]
+       == [m._STRUCT_MSG["disk-not-in-spec07"].format(d="scripts/gate-selftests/typos-fixtures")])
+_ARCH_PLANT = _REAL_ARCH.replace("- `tsconfig.json` —", "- `zzz/untracked.json` — planted\n- `tsconfig.json` —", 1)
+record("26 load-bearing: an untracked path on the real list is caught, and only it",
+       _ARCH_PLANT != _REAL_ARCH
+       and [f.msg for f in _doc26(_ARCH_PLANT)] == ["load-bearing file 'zzz/untracked.json' is not tracked"])
+record("26 load-bearing: every entry of the real list is a tracked file (clean)",
+       len(_REAL_LB) > 0 and _doc26(_REAL_ARCH) == [])
+
+# fail-CLOSED branches (never a silent [])
+record("26 fail-closed: no §0.7 Physical tree block -> Finding",
+       any("Physical tree" in f.msg for f in _doc26("no physical tree here\n")))
+record("26 fail-closed: a Physical tree block naming no directory -> Finding",
+       any("names no directory" in f.msg for f in _doc26("### Physical tree\n\n```\nconvertia/\n```\n")))
+record("26 fail-closed: the real tree with no Load-bearing files section -> Finding",
+       [f.msg for f in _doc26(_REAL_ARCH.replace("### Load-bearing files", "### Other files"))]
+       == ["the §0.7 'Load-bearing files' section is missing — fail-closed"])
+record("26 fail-closed: the real tree with an empty Load-bearing files section -> Finding",
+       [f.msg for f in _doc26(_REAL_ARCH.replace("### Load-bearing files", "### Load-bearing files\n\n### Moved list"))]
+       == ["the §0.7 'Load-bearing files' section lists no `path` bullet — fail-closed"])
+_saved_ls = m._git_ls_files
+try:
+    m._git_ls_files = lambda root: None
+    _git_down = _doc26(_REAL_ARCH)
+finally:
+    m._git_ls_files = _saved_ls
+record("26 fail-closed: an unavailable git -> Finding (and the stub is restored)",
+       any("git ls-files failed" in f.msg for f in _git_down) and m._git_ls_files is _saved_ls)
 
 # G1 r1 parser hardening: annotation prose / sibling embedded-paths cannot inject phantom dirs
 record("26 parse: a slash-word in an arrow/hash annotation is NOT mined as a dir (false-negative closed)",
