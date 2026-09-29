@@ -560,40 +560,48 @@ record("14 dod-parity: the G1 `Definition-of-Done.` bullet absent -> caught",
 record("14 dod-parity: the REAL committed docs (build-loop.md §5 / G1 bullet / P0.6.5 box) pass",
        m.doc14_dod_parity(m.build_ctx(ROOT)) == [])
 
-# --- check 15: the operator-anchored hard-stop / Notbremse thresholds in build-loop.md §6 (P0.6.7) ------
-# Each canonical string is an EXACT integer + EXPLICIT operator; reverting any one to a fuzzy prose form
-# (~8 / ~12 / ~5 / "3 consecutive gate-red pushes") drops the verbatim match and is CAUGHT — so the loop
-# cannot silently run on a threshold it could misread.
+# --- check 15: the operator-anchored cadence strings in build-loop.md (§7 iteration unit, §6 stop) -----
+# Each canonical string is an EXACT integer + EXPLICIT operator; rewording one to a fuzzy prose form ("one
+# box per iteration", a "~5 boxes" batch, "3 consecutive gate-red pushes") drops the verbatim match and is
+# CAUGHT — so the loop cannot silently run on a cadence it could misread.
+# [Test-Change: G7 cadence re-pin — old-obsolete+new-correct, build-loop §6/§7] the session counters
+# (soft-stop >= 8, hard-stop == 12, cluster >= 5) are retired by the owner's unattended-loop decision; the
+# legs pin the two live strings instead, and the absent-target / push-failure / REAL legs are unchanged.
 _HS_OK = ("# Build-Loop\n\n## 6. Hard-stops\n\n"
-          "- soft-stop fires when committed-box-count >= 8 in one session.\n"
-          "- hard-stop at == 12 committed boxes in one session.\n"
-          "- cluster soft-stop at >= 5 committed boxes since the last soft-stop.\n"
-          "- >= 3 consecutive push failures = hard-stop + escalate.\n")
-record("15 hard-stop: a build-loop.md with all four operator-anchored thresholds -> no finding",
+          "- a hard-stop class: >= 3 consecutive push failures.\n\n"
+          "## 7. Vocabulary\n\n"
+          "Cadence: == 1 box per iteration.\n")
+record("15 hard-stop: a build-loop.md with both operator-anchored cadence strings -> no finding",
        m.doc15_hard_stop_parity(dctx({_BL: _HS_OK})) == [])
 # [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] see check 19 above.
 record("15 hard-stop: absent build-loop.md -> caught (a missing target is a finding)",
        [f.msg for f in m.doc15_hard_stop_parity(dctx({}))] == _BL_MISSING)
-record("15 hard-stop: the soft-stop >= 8 string reverted to the '~8' prose form -> caught",
-       any(">= 8" in f.msg for f in m.doc15_hard_stop_parity(
-           dctx({_BL: _HS_OK.replace("soft-stop fires when committed-box-count >= 8", "soft-stop ~8 boxes")}))))
-record("15 hard-stop: the hard-stop == 12 string reverted to '~12' -> caught",
-       any("== 12" in f.msg for f in m.doc15_hard_stop_parity(
-           dctx({_BL: _HS_OK.replace("hard-stop at == 12", "hard-stop ~12 boxes")}))))
-record("15 hard-stop: the cluster >= 5 string reverted to '~5' -> caught",
-       any(">= 5" in f.msg for f in m.doc15_hard_stop_parity(
-           dctx({_BL: _HS_OK.replace("cluster soft-stop at >= 5 committed boxes", "cluster soft-stop at ~5 boxes")}))))
+record("15 hard-stop: the == 1 box string reverted to the 'one box per iteration' prose form -> caught",
+       any("== 1 box per iteration" in f.msg for f in m.doc15_hard_stop_parity(
+           dctx({_BL: _HS_OK.replace("== 1 box per iteration", "one box per iteration")}))))
+record("15 hard-stop: the == 1 box string widened to a '~5 boxes' batch -> caught",
+       any("== 1 box per iteration" in f.msg for f in m.doc15_hard_stop_parity(
+           dctx({_BL: _HS_OK.replace("== 1 box per iteration", "a batch of ~5 boxes per iteration")}))))
 record("15 hard-stop: the >= 3 push-failures string reverted to 'gate-red pushes' -> caught",
        any(">= 3 consecutive push failures" in f.msg for f in m.doc15_hard_stop_parity(
            dctx({_BL: _HS_OK.replace(">= 3 consecutive push failures", "3 consecutive gate-red pushes")}))))
-record("15 hard-stop: the REAL committed build-loop.md §6 thresholds pass (no finding)",
+record("15 hard-stop: the REAL committed build-loop.md cadence strings pass (no finding)",
        m.doc15_hard_stop_parity(m.build_ctx(ROOT)) == [])
+# Pin-uniqueness (the check-19 pattern): a substring pin is ARMED only while its string occurs EXACTLY ONCE
+# in build-loop.md - a second copy would keep check 15 green after the canonical line is reworded.
+def _hs_pins_unique(bl: str) -> bool:
+    return bool(bl) and all(bl.lower().count(ph.lower()) == 1 for ph in m._HARDSTOP_PHRASES)
+_REAL_BL = (ROOT / "docs" / "process" / "build-loop.md").read_text(encoding="utf-8")
+record("15 pin-uniqueness: every _HARDSTOP_PHRASES entry occurs EXACTLY ONCE in the real build-loop.md",
+       _hs_pins_unique(_REAL_BL))
+record("15 pin-uniqueness: the leg ARMS - a planted second copy of each pinned string is caught",
+       all(not _hs_pins_unique(_REAL_BL + f"a stray {ph} twin\n") for ph in m._HARDSTOP_PHRASES))
 
 # --- check 18: the two named build-loop procedures present verbatim in build-loop.md (P0.6.8) ----------
 # Each procedure (crash-recovery §9, divergence-resolution §3 Step 5) is pinned by its header + its
 # load-bearing sub-rules; dropping ANY canonical phrase (gutting a procedure to a bare header, or removing
 # its core rule) is CAUGHT — so "currently absent" cannot silently survive into the docs (build-gates §6
-# check 18). gate-quarantine + suppression-ledger are authored in §6 but lie outside check 18's named set.
+# check 18). The gate quarantine is authored in §6 but lies outside check 18's named set.
 _NP_OK = ("# Build-Loop\n\n## 3. The loop\n\n"
           "Divergence-resolution rule (canonical): a P0/P1 GO-vs-NOGO is NOGO — the stricter reviewer wins.\n\n"
           "## 9. Crash-recovery\n\n"
@@ -622,6 +630,36 @@ record("18 named-proc: the divergence 'stricter reviewer wins' core dropped -> c
            dctx({_BL: _NP_OK.replace("the stricter reviewer wins", "the stricter one wins")}))))
 record("18 named-proc: the REAL committed build-loop.md procedures pass (no finding)",
        m.doc18_named_procedure(m.build_ctx(ROOT)) == [])
+# Pin-uniqueness for checks 18 and 20 (the check-15/19 pattern): a pin is ARMED only while no second copy
+# of its phrase sits outside the element it guards - the file header naming these canonical homes carried
+# case-insensitive twins of three pins, so deleting the guarded element kept the check green.
+def _np_pins_unique(bl: str) -> bool:
+    return bool(bl) and all(bl.lower().count(ph.lower()) == 1 for ph in m._NAMED_PROCEDURE_PHRASES)
+record("18 pin-uniqueness: every _NAMED_PROCEDURE_PHRASES entry occurs EXACTLY ONCE in the real build-loop.md",
+       _np_pins_unique(_REAL_BL))
+record("18 pin-uniqueness: the leg ARMS - a planted second copy of each pinned phrase is caught",
+       all(not _np_pins_unique(_REAL_BL + f"a stray {ph} twin\n") for ph in m._NAMED_PROCEDURE_PHRASES))
+# Check 20's decision block holds "spot-audit" twice (plan-lint's check-20 comment), so its rule is the
+# out-of-block one: every pinned phrase occurs inside the recorded-decision blockquote and nowhere else.
+def _fam_block(bl: str) -> str:
+    lines = m._lf(bl).split("\n")
+    start = next((i for i, ln in enumerate(lines) if ln.lstrip().startswith(">")
+                  and "recorded reviewer-family decision" in ln.lower()), None)
+    if start is None:
+        return ""
+    end = start
+    while end < len(lines) and lines[end].lstrip().startswith(">"):
+        end += 1
+    return "\n".join(lines[start:end])
+def _fam_pins_in_block(bl: str) -> bool:
+    blk = _fam_block(bl).lower()
+    return bool(blk) and all(
+        blk.count(ph.lower()) >= 1 and m._lf(bl).lower().count(ph.lower()) == blk.count(ph.lower())
+        for ph in m._REVIEWER_FAMILY_PHRASES)
+record("20 pin-uniqueness: every _REVIEWER_FAMILY_PHRASES entry occurs only inside the real decision block",
+       _fam_pins_in_block(_REAL_BL))
+record("20 pin-uniqueness: the leg ARMS - a planted out-of-block copy of each pinned phrase is caught",
+       all(not _fam_pins_in_block(_REAL_BL + f"\na stray {ph} twin\n") for ph in m._REVIEWER_FAMILY_PHRASES))
 
 # --- check 25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ---------
 # Each leg drives the PURE m._freshness_fingerprints(entries, root, docs) so a synthetic source can be

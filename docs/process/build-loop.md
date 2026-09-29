@@ -1,13 +1,12 @@
 # ConvertIA — Build-Loop (the master prompt / runbook)
 
-> **The runbook for the autonomous Build-Loop session.** It is written to be read
-> *as a prompt*: a fresh session reads it top to bottom, then starts. It is the
-> single canonical home of the **8-point Definition-of-Done**, the **hard-stop /
-> token-Notbremse numbers**, the **reviewer rubric**, the **recorded
-> reviewer-family decision**, the **crash-recovery procedure**, and the
-> **dual-review divergence-resolution rule** — several `plan-lint` checks assert
-> these live *here* verbatim (checks 14, 15, 18, 19, 20). If a copy of any of them
-> drifts elsewhere, **this file wins**.
+> **The runbook for the autonomous Build-Loop session**, written to be read *as a prompt*: at
+> session start and after every compaction (§2), then the loop runs (§7). It is the single
+> canonical home of the **8-point Definition-of-Done** (§5), the **stop list and its cadence
+> numbers** (§6, §7), the **reviewer rubric**, the **reviewer-family decision** and the
+> **dual-review divergence rule** (§3 Step 5), and the **crash recovery** (§9) — `plan-lint`
+> checks 14, 15, 18, 19 and 20 assert them here. If a copy of any of them drifts elsewhere,
+> **this file wins**.
 >
 > **Conflict order (unchanged, every layer):**
 > **SSOT > spec > security/process docs > plan > code > conversation.**
@@ -23,33 +22,14 @@
 
 | Session | Role |
 |---|---|
-| **Build-Loop** (this file) | Autonomous. Builds the plan box by box (**P1 onward**), writes tests, runs every gate + the dual review, commits **directly to `main`** + pushes. The gates are the protection — **no second branch, no merge step**. |
-| **Co-Pilot** | Escalation & clarification target; strategic / cross-phase decisions; high-level review. Works with the owner. Executes the standing **phase-end hardening sweep** box that closes every phase `P2`..`P11` ([test-strategy §11](test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). The Build-Loop escalates *to* Co-Pilot; it never merges or rewrites history on its own. |
+| **Build-Loop** (this file) | Autonomous. Builds `P1`..`P11`, one box per commit — code, tests, every gate, the dual review — and pushes **directly to `main`**. It never authors a caged line (§3 Step 7). |
+| **Co-Pilot** | Works with the owner: escalations and rulings, the caged part of a parked box, owner acts, the phase-end sweep boxes ([test-strategy §11](test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)), and incoming PRs and Dependabot bumps ([roles-and-escalation.md §5a](roles-and-escalation.md#5a-incoming-pull-requests--dependabot-bumps--owned-by-co-pilot-never-the-loop)). |
 
-This is a **single-branch (`main`), GitHub + GitHub-Actions** model. There are **no
-worktrees, no parallel branches, no push-lock coordination, no separate
-feedback/sniping sessions, no `safe-push` wrapper, no merge step, no auto-merge.**
-Because only one session builds and commits, there is **no push contention** —
-ordinary `git push` is used; the safety comes from the gates (L1–L5), not from
-branch isolation. The only surviving `PR` concept is the **external fork
-pull-request** (this is a *public* OSS repo); "per-PR" anywhere else means
-"per-push". **Incoming PRs (external fork PRs + Dependabot bumps) are reviewed and
-re-landed by the Co-Pilot/owner session as commits on `main`, NEVER by this loop and never
-as a merge of the incoming commit** — the loop has no merge step; ownership, the re-land
-shape + the `engines.lock`-bump re-validation rule are in
-[roles-and-escalation.md §5a](roles-and-escalation.md#5a-incoming-pull-requests--dependabot-bumps--owned-by-co-pilot-never-the-loop).
-
-> **Bootstrap note (DECISION B — read this before assuming any range).** **P0 is
-> NOT built by this loop.** P0 (`docs/plan/P0-build-and-security.md`) is the
-> *bootstrap* phase, built **manually by the Co-Pilot session + the owner**,
-> because P0 *creates* the loop, the gate system, and the dual review that every
-> later phase runs under — the loop cannot build the thing it runs inside.
-> **This loop's range is `P1`..`P11`.** The dual review (G1) still applies to P0,
-> but it is driven manually there. By the time the loop starts at P1, the seven P0
-> docs — `security-concept.md`, `build-gates.md`, **this file**, `test-strategy.md`,
-> `roles-and-escalation.md`, `_format.md`, `vuln-response.md` — are live and the
-> two enforcement planes are green. If you find yourself reaching into P0, **stop**:
-> you are out of range.
+Single branch `main`, no merge step, no worktrees. **Two sessions commit to `main`, each from its
+own clone**: the Co-Pilot pushes only while no loop `ci` run is queued or in progress; the loop
+fast-forwards every iteration (Step 0) and rebases before its push (Step 6). P0 was bootstrapped
+manually (roles-and-escalation §5). The one surviving PR concept is the external fork pull
+request; "per-PR" elsewhere means "per-push".
 
 **The dual review is a quality amplifier, NOT a security control.** G1 is
 self-attested through an unverifiable commit trailer; a gamed `GO/GO` cannot, by
@@ -62,9 +42,8 @@ cannot encode.
 
 ## 1. Mission
 
-Work `docs/plan/` **strictly**. **One `[ ]` box per iteration**, **lowest phase
-first**, **top to bottom** within a phase. A phase is "done" when every `[ ]` step
-under it is `[x]`.
+Work `docs/plan/` **strictly**: **one box per iteration** (§7), lowest phase first, top to bottom
+(`_format.md` §6). A phase is done when every box under it is `[x]`.
 
 **Never build on a hunch.** The acceptance criteria for a box do not live in the
 box — they live in the **spec `§§`** and the **gate IDs** the box references, and
@@ -87,44 +66,21 @@ whole protection layer.
 
 ## 2. Read these at session start (mandatory)
 
-Before the first box of a session, read — in this order:
+At session start and after every compaction — the summary is not a rule source — read:
 
-1. [`CLAUDE.md`](../../CLAUDE.md) (repo root) — the project rules, the conflict
-   rule, the 8-point DoD summary, the anti-patterns, the owner's core rule. (The
-   org-wide Ne-IA platform rules — one directory *above the repo root*, i.e.
-   `../../../CLAUDE.md` from this file, or `../CLAUDE.md` from the repo root — are
-   inherited; the repo-root `CLAUDE.md` carries only ConvertIA-specific rules.)
-2. [`docs/plan/_format.md`](../plan/_format.md) — the **box format**: `[ ]/[x]/[!]/
-   [!extern]`, the tag set, sub-boxes, the `needs:` and `unlocked-by:` dependency
-   annotations, the per-phase-file + index convention.
-3. **This file** in full (the loop, the DoD, the hard-stops, the reviewer rubric).
-4. [`docs/process/roles-and-escalation.md`](roles-and-escalation.md) — when to
-   escalate, to whom, and what decide-it-yourself looks like.
-5. [`docs/process/test-strategy.md`](test-strategy.md) — the testing doctrine (test
-   levels: unit / property / per-pair integration / corpus / E2E, and the
-   output-validity bar) applied at step 4 of **every** box; read it before the
-   first box so the very first test-level decision is correct.
+1. [`CLAUDE.md`](../../CLAUDE.md) — the project rules (the harness loads it; re-read it here).
+2. **This file**, in full.
+3. [`_format.md`](../plan/_format.md) §2–§6 — markers, box anatomy, tags, `needs:` /
+   `unlocked-by:`, the selection algorithm.
+4. [`test-strategy.md`](test-strategy.md) §0, the §1 table, §4, §7, §8 and §10.
+5. [`roles-and-escalation.md`](roles-and-escalation.md) §3–§4 — the tags and the escalation
+   triggers.
+6. [CONTRIBUTING.md](../../CONTRIBUTING.md) "Known gate traps" and
+   [DEVELOPMENT.md](../../DEVELOPMENT.md) "Windows host notes".
 
-Then, **per box** (step 3 of the loop), read the box's referenced **spec `§§` in
-full** and the referenced **gate IDs** in
-[`build-gates.md`](../security/build-gates.md). Never skim a referenced section —
-acceptance criteria, column lists, enums, error kinds, and IPC schemas live there,
-not in the box.
-
-> **Context-routing — the loop runs LEAN (references, not inlines).** This prompt
-> **points** at [security-concept.md](../security/security-concept.md) /
-> [build-gates.md](../security/build-gates.md) for a per-box gate lookup and a red-CI
-> fix — it deliberately does **NOT inline the whole gate/security corpus** into the
-> loop session (no context ballast). The loop reads only the `Gnn` rows a box
-> references, on demand. The **full picture** — the complete gate catalogue, the
-> threat model, the cross-phase security view — is the **Co-Pilot's** to hold
-> ([roles-and-escalation.md](roles-and-escalation.md): Co-Pilot owns/holds the full
-> security+gate picture; the loop looks up on red-CI). A fill-pass must never paste
-> the corpus into this prompt — the lean-loop / full-Co-Pilot split is asserted by the
-> P0.1.7 documentation-wiring & context-routing audit.
-
-At the end of session-start, emit exactly one line and **wait for a start word**
-(see §7) — do not proactively build:
+Per box (Step 3): the cited spec §§ in full and the cited `Gnn` rows of
+[`build-gates.md`](../security/build-gates.md), never the whole catalogue. Then print one line and
+go on — at session start with Step 0, after a compaction with the step in progress (§7):
 
 ```
 Bereit. Letzte abgehakte Box: <id>, naechste baubare Box: <id>.
@@ -134,174 +90,115 @@ Bereit. Letzte abgehakte Box: <id>, naechste baubare Box: <id>.
 
 ## 3. The loop (step 0 → step 7), one box per iteration
 
-### Step 0 — Start sanity (once per session, the very first action)
+### Step 0 — Start sanity (every iteration, the first action)
 
-These are unconditional STOP conditions on mismatch — the autonomous-direct-to-`main`
-model depends on every one of them:
+It runs when an iteration starts, never when a compaction resumes a step (§7). A mismatch in any
+check is §6 stop (4):
 
-- **Repo root:** `git rev-parse --show-toplevel` MUST be the ConvertIA repo root.
-  Mismatch → **STOP**, report, do not build.
-- **Branch:** `git symbolic-ref --short HEAD` MUST be `main`.
-- **Clean tree:** no half-staged / half-committed state; `git status` clean before
-  any box starts.
-- **Remote:** `origin` points at `github.com/Ne-IA/convertia`.
-- **No hooks bypass:** `git config --get core.hooksPath` MUST be **unset OR equal
-  the lefthook-managed path**. A `core.hooksPath` redirect silently disables ALL
-  local L1–L3 hooks **without** `--no-verify` — it is in the forbidden-bypass set
-  (CLAUDE.md §5, security-concept §3). Its verifying pre-push enforcement is **G54**
-  (which resolves the *effective* hooks dir, not a hardcoded `.git/hooks/`).
-- **No out-of-band gate tamper:** `git diff --exit-code HEAD -- scripts/
-  lefthook.yml .github/` clean (the two-plane principle does not cover a local
-  out-of-band edit to a gate script).
-- **Gate-currency:** `git fetch origin main && git diff --name-only HEAD origin/main`
-  — if any gate file (`lefthook.yml`, `scripts/**`, `.github/**`, `deny.toml`,
-  `.gitleaks.toml`, `.npmrc`, lockfiles) drifted on `origin` (a Co-Pilot/owner gate
-  bugfix mid-session), **STOP + escalate** rather than continue on stale gate
-  scripts. Its verifying pre-push enforcement is the **G54 push-from-stale-base
-  guard** (`git merge-base HEAD origin/main == origin/main`).
-- **Startup `[!]` dep-unlock scan (before first-box selection):** run the full
-  `[!]` dep-unlock scan (§3 step-1) at startup, not only after each check-off, so a
-  box another (P0-bootstrap) session already unblocked is selectable on this
-  session's first box.
-- **CI health:** query the last Lane-A run on `main`, filtered to the Lane-A
-  workflow + `push` event + `main` branch (without the filter a scheduled
-  Scorecard / G56a run or a tag/release run false-passes or false-stops the loop):
-  `gh run list --workflow <lane-A> --event push --branch main --limit 1 --json
-  status,conclusion,headSha`. **STOP + escalate** on `failure`/`cancelled`;
-  proceed on `success`/`pending`/`queued`; **fail-open** (warn + continue) if the
-  API is unreachable. **First-push-to-empty-remote fail-open:** on session 1
-  against a fresh repo there is no prior run — treat the absent run as fail-open
-  (warn + continue), do NOT misread it as a red push and do NOT count it toward the
-  3-push-failures escalation.
-
-> Fire the **CI-health check at EVERY box start**, not only session start (one
-> cheap `gh` call), to close the mid-session red-`main` gap between a push (step 6)
-> and the next box.
+- **Repo and branch:** `git rev-parse --show-toplevel` is this repo's clone,
+  `git symbolic-ref --short HEAD` is `main`, `origin` is `github.com/Ne-IA/convertia`.
+- **Hooks:** `git config --get core.hooksPath` is unset or the lefthook-managed path — a redirect
+  silently disables L1–L3 without `--no-verify` (CLAUDE.md §5); G54 checks the effective hooks
+  dir at pre-push.
+- **No out-of-band gate edit:** `git diff --name-only HEAD -- scripts/ lefthook.yml .github/` lists
+  no path but an uncaged one of the loop's own unfinished box (§9); a caged path is never the
+  loop's (Step 7).
+- **Clean tree:** `git status` shows nothing but the loop's own unfinished box (§9), its Step 1
+  flips included (Step 7).
+- **Sync:** `git fetch origin main`; on a clean tree `git merge --ff-only origin/main`; re-read
+  any §2 file or selected box it changed. If it changed `lefthook.yml`, run
+  `python3 -P scripts/setup-dev` before the next commit (DEVELOPMENT.md "Windows host notes").
+- **CI health:** the last `gh run list --workflow ci --branch main --event push` run: success →
+  go; in progress → Steps 1–3 only until it concludes (Step 6); red → attribute it (Step 6);
+  unreachable → warn and go.
+- **Parks:** list `$(git rev-parse --git-common-dir)/parked/` (§6 park procedure): a `.released`
+  park is re-selected (Step 1); the patch of a box that is `[x]` on `main` is deleted.
 
 ### Step 1 — Find the next buildable box
 
-Scan **all** `docs/plan/P*.md`, **lowest phase first, top to bottom**; the **target**
-is the first `[ ]` box that is not `[!extern]`/`[!]` — the document-order-next open
-box, picked by position **before** its `needs:` are checked (`_format.md` §6 step 2).
-Concretely: the lowest-phase / lowest-position open `[ ]` box; if its `needs:` are
-not all `[x]`, Step 2's DECISION C builds the prerequisites first and returns — a
-target is not skipped over merely because its `needs:` are unmet (the `[!extern]`
-closure below is the one exception).
+The selection algorithm is `_format.md` §6; the range is `P1`..`P11`. The loop adds:
 
-- **`[!extern]`** (nothing for the loop to build — an owner/external action) → **skip +
-  collect** into the consolidated `[!extern]` list = the **per-phase owner-act batch**:
-  the phase's owner-act box and any precondition box, with the caged tails that red
-  nothing closing at the phase-end sweep box (§9; test-strategy §11.4); the loop
-  continues. **A real block — STOP for that closure, not for the loop (owner refinement,
-  2026-09-09):** a non-extern box that names an `[!extern]` box anywhere in its `needs:`
-  closure (the transitive `needs:` set) cannot be built → report it ONCE as the Co-Pilot
-  line (§8), collect the `[!extern]` box into the batch, and **continue with the next
-  open box OUTSIDE the blocked closure** — one whose own `needs:` closure does not touch
-  the blocked box and whose Step-2/3 reading reveals no undeclared dependency on it (an
-  undeclared one is a roles-and-escalation §4(d) escalation, never a build against an
-  absent prerequisite). A sub-box is inside its parent's closure: a blocked parent
-  blocks every sub-box under it (`_format.md` §3.2). The blocked target is re-selected
-  the moment the `[!extern]` box flips `[x]`; the closure is never a hole, because
-  nothing inside it is built out of order. **The one closure that blocks the WHOLE
-  successor phase** is the phase-end sweep box (test-strategy §11.3): the loop never
-  enters `P(n+1)` while `P(n)`'s sweep is open — the phase-boundary stop is unchanged.
-- **`[!]`** (blocked) → read the note under it, skip, mention at the phase end.
+- **An `[!extern]` box in the target's `needs:` closure** → one Co-Pilot line (§8), collect the
+  `[!extern]` box into its phase's owner-act batch, and continue with the next open box outside
+  that closure (roles-and-escalation §4(d)). An undeclared dependency on it found at Step 2 or 3
+  is a §4(d) escalation, never a build against an absent prerequisite. The phase-end sweep box
+  blocks the whole successor phase (test-strategy §11.3).
+- **`[!]`** → read its note, skip, report it at the phase end.
 - **Parked** (a `parked/<box-id>.patch` file under the git dir, §6 park procedure) →
   skip it and its `needs:` closure like an `[!extern]` block; it is re-selected once
   the Co-Pilot releases the park.
-- **Auto-unlock scan:** after each check-off (and at startup), scan for `[!]` boxes
-  carrying an `unlocked-by: <box-id>` marker whose dep is now `[x]`, and flip them
-  `[!]`→`[ ]` (`_format.md`'s reverse-unlock direction).
-- **Zero open boxes** → emit the convergence report (§9) and **stop**; never loop
-  forever. A genuine all-blocked deadlock → escalate.
+- **Auto-unlock scan**, every iteration: flip each `[!]` box whose `unlocked-by:` box is `[x]` to
+  `[ ]` (`_format.md` §5.2); the flips ride in the next box commit (Step 7).
+- **Nothing buildable** → §6 stop (2).
 
 ### Step 2 — Unpack the box anatomy
 
-Read the box header (`[ ] **<box-id>** [Tag] Title · §spec-refs · gate-ids`), its
-prose, **and every indented `  - [ ]` sub-box** and `>`-note, in full, **before**
-deciding anything. Sub-boxes are built strictly top to bottom; the **top box is
-checked off only after every sub-box is done**. The dual review (step 5) fires
-**once per top box** over the combined sub-box diff, **not** per sub-box.
+Read the header line, prose, every sub-box and every note in full before deciding anything.
+Sub-boxes are built top to bottom; one that meets the DoD on its own may be its own iteration
+and commit, and the top box flips `[x]` in the commit that completes its last sub-box.
 
-> **DECISION C — dependency-following, NOT box-skipping (read this carefully).**
-> If the chosen box has a **`needs: P<x>.<y>`** annotation pointing at a box that
-> is not yet `[x]`, **do not skip and do not leave a hole**: **build that
-> prerequisite box first** (recursively — follow its `needs:` too), then **RETURN**
-> to the original box and build it. The plan is dependency-following, not
-> dependency-stepping-over.
->
-> This **replaces a `[!]`-block-and-skip model**, which we do **not** use: that model
-> would mark a box `[!]` and move on, leaving a hole to be filled later out of
-> order. ConvertIA instead resolves the dependency *in place* — the `needs:`
-> annotation makes the prerequisite *detectable*, and the loop satisfies it before
-> returning. (`needs:` = "this box requires that one"; the inverse `unlocked-by:` =
-> "this box, when done, releases that one" — one coherent dependency vocabulary,
-> two directions, both defined in `_format.md`.)
->
-> The `[!]` marker still exists for a box that is blocked on something the loop
-> genuinely **cannot** build (an owner action, an external dependency) — that is a
-> skip-and-report, not a dependency to follow. The distinction: a `needs:` on a
-> *buildable* box ⇒ **build the prerequisite, then return**; a `[!]` / `[!extern]`
-> ⇒ **skip + report** (and STOP — scoped to that box's `needs:` closure, Step 1 — if a
-> non-extern box hard-requires it).
+> **DECISION C — dependency-following, NOT box-skipping.** A `needs:` box that is not yet `[x]`
+> and is buildable is built first (recursively, following its own `needs:`), then the loop
+> **returns** to the target. Never skip, never leave a hole; a prerequisite the loop cannot build
+> is Step 1's `[!extern]` / `[!]` case.
 
 ### Step 3 — Read ALL referenced spec `§§` and gate IDs, fully
 
 Read every referenced spec `§` **in full** (not the box's paraphrase) and every
 referenced gate ID in `build-gates.md`. The acceptance bar, the column/enum lists,
-the error kinds, the IPC schemas, and the fail-mode of each gate are there. **If
-the spec is incomplete or ambiguous for what the box needs → escalate (§7), do not
-improvise.** If two spec `§§` contradict each other → run the pre-check
-(roles-and-escalation §4(a)) first: build a compatible pair, reconcile a rank-ordered
-pair in the same commit with a `Spec-Reconcile:` body line, and park the box (the §6
-park procedure) + escalate a same-rank fork (a scoped stop).
+the error kinds, the IPC schemas, and the fail-mode of each gate are there. The cited `§`
+body, parentheticals included, is the binding field list; a gap → derive it from a higher
+layer and tag `[Derived-Assumption]` (Step 4), and escalate (roles-and-escalation §4(b)) only
+when no higher layer anchors it — never improvise. If two spec `§§` contradict each other → run
+the pre-check (roles-and-escalation §4(a)) first: build a compatible pair, reconcile a
+rank-ordered pair in the same commit with a `Spec-Reconcile:` body line, and park the box (the
+§6 park procedure) + escalate a same-rank fork (a scoped stop).
 
 ### Step 4 — Build per spec + write tests at the highest sensible level
 
-- Build the code / config / engine-staging / doc exactly per the spec `§`. Honor
-  the architecture guardrails (CLAUDE.md §3): zero egress; never harm the original
-  (atomic, exclusive, no-clobber publish on the resolved real file); untrusted
-  bytes decoded only in isolated subprocesses (the §2.12 boundary is absolute; the
-  one in-core exception is the pure-Rust CSV/TSV engine); MIT core clean / copyleft
-  isolated; least-privilege Tauri + the locked §0.10 CSP.
-- **Tests at the highest technically sensible level** for the layer (unit /
-  property / per-pair integration / corpus / E2E — see
-  [`test-strategy.md`](test-strategy.md)). For a **conversion**, this includes the
-  **output-validity** bar: the produced file is read back by a **real structural
-  reader** (G31/G32), not "the engine returned no error", with a representative
-  real-world corpus behind the §6.5 reliability ledger.
-- **No green-by-rewrite (the mindset for a test that the change turns red).** If the
-  box's change makes a **previously-passing** test go red, the **default assumption is
-  the CODE is wrong, not the test**. Rewriting/relaxing/skipping/deleting the test to
-  get green is allowed (and is usually right), but **only** after proving **both** (1)
-  the old expectation is genuinely obsolete (cite the spec-`§`/decision that changed
-  the behaviour) **and** (2) the new expectation is correct (verified against the spec
-  or by reading back the real result — never "it's green now"). If (1)+(2) can't be
-  proven, fix the code. This does **not** forbid changing a test — it requires a
-  one-line `[Test-Change: <box-id> — old-obsolete+new-correct, §ref]` justification;
-  the mechanical signal is **G70**, the doctrine is [test-strategy.md](test-strategy.md)
-  §8.
-- **Spec-sync in the same commit:** a deliberate or forced deviation from the spec
-  is reflected in the spec/security docs **in the same commit** — code never
-  outlives the spec that covers it (living-doc rule). Run `plan-lint`/`spec-lint`
-  `--quiet` locally before staging if a doc was edited.
-- **Doc-graph freshness in the same commit (the general form of spec-sync — DoD item
-  (b)).** A change to **any** authoritative source — a gate (`Gnn`), a control, a
-  decision, a path/directory, a convention, an enum variant, a version pin — is
-  reflected in **every** referencing doc in the **same commit**: no stale, no
-  contradictory, no orphaned `.md`. **G68** (doc-graph integrity & freshness) enforces
-  it graph-wide (the gates→`.md` case is one instance); a drift reddens the push.
-- **Structural-map update in the same commit.** A new directory gets its row in the spec
-  §0.7 physical tree in the commit that adds its first tracked file (a Loop-editable spec
-  edit); a new file owes no row. **G69** asserts the tracked directory set equals §0.7's
-  both ways; an unhomed directory, or a §0.7 row with no tracked file, reddens the push.
-- **Inline decision tags** at every non-spec choice site:
-  `[Build-Session-Entscheidung: <box-id>]` for a self-made pattern/naming/default
-  choice, **directly at the code site**, not only in the commit body. (This tag
-  also suppresses G8 at a documented choice site; a bare `[!extern]` does **not**
-  suppress in production code.)
-- **`engines.lock` + SBOM row** if a new engine was staged; **§0.11 threat-map +
-  security-concept §5 row** if a new threat class was introduced.
+- **Build** exactly per the cited `§§` and the CLAUDE.md §3 guardrails (zero egress, never harm
+  the original, untrusted bytes decoded only in isolated subprocesses, MIT core clean,
+  least-privilege Tauri and the locked §0.10 CSP).
+- **Tests at the highest technically sensible level** for the layer
+  ([test-strategy.md](test-strategy.md) §10). For a conversion this includes the
+  **output-validity** bar: the produced file read back by a **real structural reader**
+  (G31/G32), behind the §6.5 reliability ledger.
+- **No green-by-rewrite.** A previously green test the change turns red is, by default,
+  catching a regression in the new code: fix the code. A test edit is allowed only after proving
+  **both** (1) the old expectation is obsolete (a spec-`§` or decision cite) **and** (2) the new
+  one is correct (read back against the spec or the real result, never "it's green now"). The
+  (1) cite sits in the G70 `[Test-Change: <box-id> — old-obsolete+new-correct, §ref]` tag at the
+  changed test (a marker in a brand-new test: `[Test-Change: <box-id> — new-test:<reason>,
+  §ref]`), the (2) read-back evidence on the brief's `Tests:` line; doctrine: test-strategy §8.
+- **Same-commit sync (DoD (b)).** A deviation from the spec lands in the spec or security docs
+  in the same commit; a change to any authoritative source — a gate, control, decision, path,
+  convention, enum variant or version pin — reaches every doc that references it (G68); a new
+  directory gets its spec §0.7 row in the commit that adds its first tracked file (G69).
+- **Tags and records** (defined in roles-and-escalation §3): `[Build-Session-Entscheidung:
+  <box-id>]` and `[Derived-Assumption: <box-id> — …]` at the code site, the `Spec-Reconcile:`
+  body line; `[Test-Change]` → test-strategy §8.
+- **`engines.lock` + SBOM row** for a newly staged engine; **§0.11 threat-map +
+  security-concept §5 row** for a new threat class (§5).
+- **Scope guard.** If a named gate already enforces the invariant, deliver the wiring plus one
+  test that proves it fires; mutation evidence only for `scripts/` code; tooling for an absent
+  input is hardened by the box that lands the first real input, named as a `needs:` edge or in
+  its note. A caged path → Step 7.
+
+### Step 4a — Pre-review sweep on the final staged tree
+
+After the box's last `git add`, before R1 and after every fix round:
+
+1. `lefthook run pre-commit --force` and `lefthook run pre-push --force`
+   (`.gate-tools/bin/lefthook`; without `--force` a clean tree skips every command —
+   CONTRIBUTING.md "Known gate traps").
+2. A staged gate-plane path (the `run-gate-selftests` `CHANGED_PREFIXES`) →
+   `python3 -P scripts/run-gate-selftests` in full.
+3. The CI-only legs the diff touches: `src/**` → `pnpm test:a11y` and `pnpm test:coverage`;
+   Rust, TypeScript or shell source → the containerized `check-sast --full`; `cfg(unix)` / Linux
+   code or `scripts/**` → a run in the `convertia-linux` image (DEVELOPMENT.md "Windows host
+   notes" carries both recipes); `.github/**` → `python3 -P scripts/check-ci-supply-chain`;
+   macOS-only code: CI only.
+4. The brief (Step 5) gets one `<gate>: exit <n>` line per gate run.
 
 ### Step 5 — Pre-commit Opus + Sonnet dual review (G1)
 
@@ -478,9 +375,7 @@ is NEVER a working-tree fix.
 > model family (e.g. a non-Anthropic model) to make "independent" literally true is a
 > future owner decision that can be taken at any time.
 
-**Skip the dual review only** for: **(a)** a check-off commit with no code/config
-diff (a markdown-only `chore(todo): … abgehakt`/`done` commit); **(b)** an
-`[!extern]` box (nothing was built).
+There is no review-free commit: every commit carries `Dual-Review:` (G12).
 
 ### Step 6 — Commit + push (gates run; never bypass)
 
@@ -527,112 +422,47 @@ Dual-Review: opus=GO sonnet=GO
   as its observable effect, never as an unmeasured "because". Aim for ≤ 40 lines.
   G11 rejects a body over 120 counted lines (the non-blank lines git stores after
   the subject; a final trailer block of at most 5 lines is not counted).
-- **Push exit code MUST be observed reliably.** The agent tool environment does not
-  propagate a subprocess exit code the way a plain shell does: `| tee` masks the
-  hook's non-zero exit, and a naive `$?` can capture the tool-call's own success
-  rather than `git push`'s. **The mechanism:** a **background push + marker-file +
-  a synchronous foreground until-loop polling the marker file** —
-
-  ```bash
-  LOG=/tmp/convertia-push.log; DONE=/tmp/convertia-push.done
-  rm -f "$LOG" "$DONE"
-  git commit -m "..."            # commit fires L1 (pre-commit) + L3 (commit-msg)
-  { git push origin main; echo "EXIT=$?" >> "$DONE"; } > "$LOG" 2>&1   # push fires L2 (pre-push)
-  # then a FOREGROUND until-loop polling $DONE for the EXIT= line; read the code FROM it (not a bare $?)
-  ```
-
-  `run_in_background` is **FORBIDDEN for the wait-loop** (it must block
-  synchronously on the marker), as are `| tee` and `pgrep`-polling the push
-  process. **The same marker-file capture applies to the check-off (hak) push — it
-  is NOT exempt.** On a non-zero `EXIT`, the push did **not** go through (a hook
-  blocked it): report `Push gescheitert (exit N), Lefthook-Hook X rot` — **never**
-  report a generic "push done (exit 0)". Do not start a new box, and do not push
-  the check-off commit, while a push is unresolved.
-- **A red gate is fixed, not bypassed.** Lefthook pre-push red → fix the cause →
-  re-stage → re-review (step 5) → new commit. **Never `--no-verify`, never
-  force-push, never `core.hooksPath` redirection, never disable a required CI
-  check.** **3 consecutive gate-red pushes → hard-stop + escalate.**
-- **When the red is a TEST the box's change made fail — apply the code-first
-  default, do NOT green-by-rewrite.** A test that the change turned red is, by
-  default, **catching a regression in the new code** — so the first move is **fix the
-  code**, not the test. A test edit to get green is permitted **only** after proving
-  **both** (1) the old expectation is genuinely obsolete (cite the spec-`§`/decision)
-  **and** (2) the new expectation is correct (verified vs the spec / by reading the
-  real result back, never "it's green now"); the (1) cite sits in the G70
-  `[Test-Change]` tag at the changed test and the (2) read-back evidence on the brief's
-  `Tests:` line, and the edit is a **high-scrutiny item for the step-5 dual review**
-  (rubric point 5). The mechanical signal that an unjustified test-suppression marker
-  (`#[ignore]`/`it.skip`/a `should_panic` on a real assertion/a removed assertion)
-  slipped in is **G70** — it FLAGS + REQUIRES the `[Test-Change: <box-id> —
-  old-obsolete+new-correct, §ref]` justification (or, for a marker in a brand-new
-  test with no prior expectation, the net-new variant `[Test-Change: <box-id> —
-  new-test:<reason>, §ref]`), it does **not** forbid the change. Doctrine:
-  [test-strategy.md](test-strategy.md) §8.
-- **Watch your own CI run (your push to `main` IS `main`).** Capture the run
-  **SHA-anchored** — `git rev-parse HEAD`, then `gh run list --branch main --json
-  databaseId,headSha,status` filtering `headSha == <commit-sha>` (NOT `--limit 1`
-  "most recent run", which the fast second push — the check-off — can steal), then
-  **`gh run watch --exit-status <run-id>`** (`--exit-status` is **MANDATORY** —
-  without it `gh run watch` exits 0 even on a failed run, a no-op guard). A
-  non-zero exit ⇒ the same STOP + escalate as session-start. A `cancelled`
-  conclusion from the G56 concurrency cancel is reconciled by the
-  **successor-exists check** (a higher-`databaseId` run for a *later* SHA): if a
-  successor exists the cancel was expected and the loop waits on it; if **no
-  successor exists, the cancel is anomalous → STOP + escalate**. **Transient GitHub-API
-  failure during the wait (r15):** `gh run list` / `gh run watch` (and the push-wait above)
-  are wrapped in a **bounded retry-with-backoff** for a transient API error / rate-limit /
-  5xx / timeout — the same posture as the step-5 reviewer-availability retry; if the API
-  stays unreachable **beyond the bounded retry**, the loop **hard-stops + escalates** (it
-  never silently proceeds past an unobserved CI run, and never treats an unreachable API as
-  a green run). This is a **mid-session** rule — distinct from the step-0 startup CI-health
-  check, which fail-OPENS if unreachable; once a box is in flight, an unobservable CI run is
-  a STOP, not a fail-open. The loop emits a periodic **liveness/heartbeat** status line while
-  blocked on CI (§8) so the operator can tell "building" from "silently wedged".
-- **Egress-window protection — the one mandatory rule:** **the loop MUST NOT push
-  the check-off commit until the box-commit run completes green**
-  (`gh run watch --exit-status <box-run-id>` returns 0). (`cancel-in-progress:
-  false` on the G42/G42b job group is a belt-and-suspenders G56 assertion, **not**
-  an alternative.)
+- **Commit** in the foreground; a hook red → fix → Step 4a → Step 5 → commit again. **A red gate
+  is fixed, never bypassed:** no `--no-verify`, no force-push, no `core.hooksPath` redirection,
+  no disabled required CI check.
+- **Rebase before the push:** `git fetch origin main`; if `origin/main` moved,
+  `git rebase origin/main`, re-run Step 4a (1)–(2), then push. A rebase never counts as a push
+  failure; a conflict → `git rebase --abort` → §6 stop (4).
+- **Push status** is `git push`'s own exit status, never read through a pipe (DEVELOPMENT.md
+  "Windows host notes"). A non-zero exit reports `Push gescheitert (exit N), Lefthook-Hook X rot`;
+  the loop fixes the cause and pushes again (§6 stop (4) counts the failures).
+- **Egress-window rule (G42/G42b):** never push while the previous push's `ci` run is
+  unresolved, and never start Step 4 of the next box before that run concluded green. The run is
+  found by `headSha` (`gh run list --workflow ci --branch main --json
+  databaseId,headSha,status,conclusion`) and observed without blocking; a run a newer push
+  cancelled (the `ci` concurrency cancel G56 asserts) is superseded by the successor run, and a
+  cancel with no successor is §6 stop (4); a GitHub API error is retried with backoff.
+- **A red `ci` run is attributed by SHA.** The loop's own last push, failing inside its diff →
+  one uncaged fix-forward commit through Steps 4a–6 (a new commit, never an amend); a Co-Pilot
+  commit is never fixed forward by the loop; anything else → §6 stop (3).
 
 ### Step 7 — Check off the box
 
-Edit the box `[ ] **<box-id>**` → `[x] **<box-id>**` (and each sub-box marker).
-Commit with the **canonical check-off shape** — a double predicate: subject matches
-`chore(todo): .* (abgehakt|done)` **AND** the diff is **markdown-only**. Push with
-the same marker-file wait pattern as step 6 (the check-off push is **not** exempt);
-the docs-only fastpath skips the heavy hooks because the diff is provably
-markdown-only (G54 recognises exactly this shape). Then run the **auto-unlock scan**
-(step 1) and emit the status line (§8).
+The check-off rides in the box commit: `[x]` for the box and its completed sub-boxes plus the
+Step 1 auto-unlock flips, staged before Step 4a — markers only.
+
+**A caged part** — a `scripts/l-neg1-files.toml` path (G71) that must change in the same push: build
+the uncaged part, run Step 4a (not Step 5), and run the §6 park procedure with reason `caged` (the
+Co-Pilot line names `caged part: <paths> (roles-and-escalation §4(g))`). The owner-acked Co-Pilot
+applies the patch in its clone, adds the caged part, runs Steps 4a and 5 on the whole diff and
+makes the box commit with `Dual-Review:` and `L-neg1-ack: owner`; its landed commit is the park's
+answer. The loop never writes that trailer, and deletes the patch once the box is `[x]` (Step 0).
+The preference for a caged part: a precondition box (`needs:` on an `[!extern]` box), then a
+`caged` park, then a pre-declared sweep tail (§5 (b)).
 
 ---
 
 ## 4. Decide it yourself vs escalate
 
-**Default: decide it yourself.** Routine implementation / pattern / naming / default
-choices are the loop's to make — **grep the codebase + the process docs for an
-established pattern first** (escalate a P0 only if none exists, so a routine choice
-with a precedent is never escalated), then decide, and tag the choice site with
-`[Build-Session-Entscheidung: <box-id>]`.
-
-**Escalate to the Co-Pilot session** only when one of these is genuinely true:
-
-- **Spec / SSOT contradiction the pre-check cannot rank** — run roles-and-escalation
-  §4(a) first: a compatible pair is built, a rank-ordered pair is reconciled in the same
-  commit with a `Spec-Reconcile:` body line; a same-rank fork, or a pair the pre-check
-  excludes, is a scoped stop + escalate (never a working-tree fix).
-- **A decision observable outside the crate that binds later phases, with no spec/SSOT
-  source** (roles-and-escalation §4(b)); an internal seam is tagged, not escalated.
-- **Scope / legal conflict** — the box implies work outside the
-  *Explicitly Out of Scope* line (store/marketing/legal advice/binary code-signing),
-  or a license/copyleft conflict.
-- **A dependency that genuinely cannot be followed** — a `needs:` box that the loop
-  cannot build (it requires an owner action / external input), or an all-blocked
-  deadlock with nothing open.
-- **A provably-misfiring required gate** — see the gate-quarantine procedure (§6).
-- **Reviewer unavailability** — two live reviews cannot be obtained after bounded
-  retry (§3 step 5).
-- **G1 non-convergence** — a P0/P1 still open after review round 4 (§3 step 5). A
-  scoped stop: park the box (§6) and continue outside its `needs:` closure.
+Decide by default, tagged; grep the codebase and the process docs for an established pattern
+first. Escalate only on roles-and-escalation §4 (a)–(h). The §8 line goes to the running Co-Pilot
+session when reachable and is always printed; a message is a notification — rulings and acks
+reach the loop only as landed commits (Step 0).
 
 Everything else: **decide and proceed, tagged.** When two genuinely professional
 options exist, decide strictly at the owner's core-rule anchor (CLAUDE.md §6 — the
@@ -643,13 +473,7 @@ not quality, bounds it), **not** reflexively by the cheaper one.
 
 ## 5. Definition of Done (the canonical 8-point list — this file is canonical)
 
-> `plan-lint` check 14 holds the **G1, P0.6, and this** copy of the list
-> item-count- and item-identifier-identical; if they ever disagree, **this file
-> wins**. This 8-point list derives from a prior-project nine-point DoD with the
-> **RLS/tenant, immutable-audit-log-row, and migrations rows dropped** (no
-> multi-tenant DB in an offline desktop app) and the **`engines.lock`/SBOM row and
-> the §0.11+§5 threat-class row added** (9 − 3 + 2 = 8). Output-validity is **not**
-> a ninth item — it lives inside item (c)'s highest-sensible-test bar.
+> `plan-lint` check 14 keeps the G1 bullet and P0.6.5 letter-identical; this file wins.
 
 A change is **done** only when:
 
@@ -657,7 +481,8 @@ A change is **done** only when:
   tooling-only.
 - **(b)** **Spec/docs synced in the same commit** — a deliberate or forced deviation
   is reflected in the spec/security docs in the *same* commit; code never outlives
-  the spec that covers it.
+  the spec that covers it; where the doc is L(-1) and the box pre-declares it, gate-row or
+  security-concept text that reds nothing may land as the phase-end sweep tail.
 - **(c)** **Tests at the highest technically sensible level are green** (unit /
   property / per-pair integration / corpus / E2E per the layer; for a conversion,
   the output-validity bar — the produced file read back by a real structural reader,
@@ -673,19 +498,33 @@ A change is **done** only when:
 - **(f)** **Inline decision tags set** at every non-spec choice site —
   `[Build-Session-Entscheidung: <box-id>]`, directly at the code site, not only in
   the commit body.
-- **(g)** **`engines.lock` + SBOM row** added if a new engine was staged.
+- **(g)** **`engines.lock` + SBOM row** added if a new engine was staged; the row lands
+  before the staging box (a precondition box, roles-and-escalation §4(g)) or in the box's
+  own commit (§3 Step 7), never after it.
 - **(h)** **§0.11 threat-map + security-concept §5 row** added if a new threat class
-  was introduced. (Items (g) and (h) fire **independently** — either alone requires
-  its action.)
+  was introduced; the §0.11 row in the same commit, the security-concept §5 row in it or
+  as a pre-declared sweep tail. (Items (g) and (h) fire **independently** — either alone
+  requires its action.)
 
 ---
 
 ## 6. Hard-stops, token-Notbremse, and the gate-quarantine escape
 
-**Stop the loop (hard-stop + escalate) on any of:**
+**The loop stops itself** only on:
 
-- The owner writes a stop word (`stop` / `halt` / `pause`).
-- **3 consecutive gate-red pushes** despite fix attempts.
+1. **the owner's stop word** — it parks an unfinished box (reason `stop`); the owner's next start
+   re-selects it;
+2. **nothing buildable** — zero open boxes (§9), or every open box inside a parked, escalated or
+   `[!extern]` closure;
+3. **a red `main` not attributable to its own last push** (Step 6);
+4. **a hard-stop class** — `>= 3 consecutive push failures`, a second red after the
+   fix-forward, a rebase conflict, reviewer unavailability (Step 5), an anomalous cancel, the
+   GitHub API unreachable while a run is unobserved, a Step 0 mismatch.
+
+On a stop it leaves a clean tree, posts the §8 line and schedules no next iteration.
+
+**Scoped stops** (park the box, continue outside its `needs:` closure):
+
 - **G1 non-convergence** — `open P0/P1 after round == 4` (§3 step 5), and only after the
   pattern lookup (§4): a P0/P1 with an established pattern is fixed, not parked. A
   scoped stop: run the park procedure below and continue outside the box's `needs:`
@@ -693,29 +532,14 @@ A change is **done** only when:
 - A **spec contradiction the pre-check cannot rank** (roles-and-escalation §4(a)) —
   regardless of severity, never silently reconciled; the loop runs the park procedure
   below and keeps building outside the box's `needs:` closure.
-- **Reviewer unavailability** — two live reviews unobtainable after bounded retry.
-- An **anomalous CI cancel** (a `cancelled` run with no successor — §3 step 6).
-- A needed **L(-1) security-critical-file edit** — the loop NEVER edits a
-  security-critical file (the gates' own cage) autonomously; hard-stop + escalate so the
-  owner makes/acks it (`L-neg1-ack: owner`, G71; security-concept §2,
-  roles-and-escalation §4(g)). The stop is for the caged EDIT, never a reason to idle:
-  a caged **tail** that reds nothing until it lands (a build-gates row describing the
-  new leg) is pre-declared in the box and closes with the phase-end sweep box
-  (test-strategy §11.4); a caged tail that reds the same push (a fixture pin) stays a same-push
-  owner tail — the tool canaries' tallies no longer red on an addition (the monotone
-  leg-name pin, G24); a caged **precondition** is expressed as a
-  `needs:` on an `[!extern]` precondition box (the P4.89 pattern), and the loop continues
-  outside that `needs:` closure (§3 step 1).
-- **GitHub API unreachable mid-session beyond the bounded retry** — during the push-wait
-  or `gh run watch` (§3 step 6), a transient API error / rate-limit / 5xx / timeout is
-  retried with backoff; if it cannot be resolved the loop hard-stops + escalates rather than
-  proceed past an unobserved CI run (distinct from the step-0 startup health check, which
-  fail-opens if the API is unreachable).
+- **A caged part** (§3 Step 7).
 
-**Park procedure (a scoped stop for one box).** (1) `git add -N` the box's new files, then
+**Park procedure (a scoped stop for one box).** (1)
+`mkdir -p "$(git rev-parse --git-common-dir)/parked"`, `git add -N` the box's new files, then
 write `git diff --binary HEAD -- <the box's paths>` to
-`$(git rev-parse --git-common-dir)/parked/<box-id>.patch`, first line `# base <HEAD sha>`; the git
-dir survives the session and never shows in `git status`. (2) Restore only the box's paths:
+`$(git rev-parse --git-common-dir)/parked/<box-id>.patch`, first line
+`# base <HEAD sha> reason <caged|ruling|stop>`; the git dir survives the session and never shows
+in `git status`. (2) Restore only the box's paths:
 `git apply --check -R` the patch, then `git restore --staged --worktree -- <the box's paths>`; it
 also drops step (1)'s intent-to-add entries and deletes the new files, so `git status` lists no
 box path — never a blanket `reset --hard`, `clean` or `stash`. (3) Post one
@@ -725,81 +549,50 @@ buildable remains, stop. The Co-Pilot answers with a landed commit — a split o
 on the disputed point, or a `>` note naming the points narrowed rounds may examine — then renames
 the file to `<box-id>.patch.released`. The loop re-selects the box, may `git apply` the released
 patch as its starting point, restarts at R1, and deletes the released file when the box commits.
+The reason field: `ruling` (G1 non-convergence, a spec contradiction, a gate quarantine) is
+answered as above; `caged` is answered by the Co-Pilot's box commit (§3 Step 7); `stop` runs
+steps (1)–(3), then the loop ends, and the next start re-selects the box with no release.
 
-**Token-Notbremse / cadence numbers (the ConvertIA v1 baselines — `plan-lint` check
-15 asserts these appear verbatim here):**
+**Token-Notbremse, per box:** no session box limit; the Step 5 round cap and stop (4) bound a
+box; a phase boundary is no stop of its own (the sweep box blocks its successor phase, Step 1).
 
-- **Soft-stop** — `soft-stop fires when committed-box-count >= 8` in one session;
-  pause and summarize for the owner.
-- **Hard-stop** — `hard-stop at == 12` committed boxes in one session; a new session
-  is required.
-- **Phase-change hard-stop** after ≥1 committed box of a new **top-level** phase
-  (re-orient at a phase boundary) — this applies to any **top-level phase boundary
-  (Pn→Pn+1)**, **NOT** the P0.1–P0.7 clusters; for this autonomous loop that always
-  means a P1→P2…→P11 transition (the loop never reaches a P0.x boundary, §0
-  bootstrap note). It does **NOT** fire if the box counter is **0** (all of the new
-  phase's boxes so far were `[!extern]`/`[!]`-skipped).
-- **P0 cluster soft-stop** (bootstrap phase only, driven manually):
-  `cluster soft-stop at >= 5 committed boxes` — fires at a P0.x cluster boundary once
-  that many boxes have been committed since the last soft-stop (a running counter that
-  **resets at each soft-stop**; it pauses at the *next* cluster boundary after the
-  counter crosses 5). This number governs the **manual P0
-  bootstrap** run; this autonomous loop never reaches a P0.x boundary (§0 bootstrap
-  note) — it lives here only because `build-loop.md` is the single canonical home of
-  every cadence number (`plan-lint` check 15).
-- **`>= 3 consecutive push failures` = hard-stop + escalate.**
-
-The box counter **increments only on a COMMITTED box** — `[!extern]`/`[!]`-skipped
-boxes do **not** count (so a soft-stop cannot fire spuriously after 5 skips,
-consistent with the phase-change hard-stop's count-0 exemption). The digits are the
-v1 baseline, tunable by the owner.
-
-**Opt-in box-batching:** at most **3 sister-boxes** in the same cluster, **no
-sub-boxes / no cross-deps**, trivial repetition only (e.g. structurally-identical
-per-engine rows) ⇒ **1 build-commit + 1 dual-review over the combined diff + 1
-check-off**, counter `+= N`. In doubt, build singly. The dual review fires **once
-per top box**, never per sub-box.
-
-**Gate-quarantine procedure (a provably-misfiring *required* gate, no-bypass model).**
-A required gate that fails **CLOSED on a false positive** (a tool regression on a
-version bump, a Semgrep/zizmor/actionlint misfire) would wedge the loop with no
-sanctioned escape that is not a forbidden `--no-verify`. The **only** sanctioned
-unblock is a **committed, dual-reviewed change** that fixes — or **narrowly scopes /
-temporarily suppresses** — the specific gate check, with a tracked **restore
-box-id**, so the fix goes through the same gates and the gate is never silently
-skipped. A misfiring gate that cannot be scoped this way is a hard-stop + escalate.
-**Bootstrap exception for a self-referential deadlock** (a gate that fails closed on
-its *own* fix commit — e.g. a plan-lint parser bug that blocks the plan-lint fix):
-the sanctioned escape is a **committed, narrowly-scoped edit to `lefthook.yml`** that
-comments out **only that one gate command** (a `lefthook.yml` edit matches a
-*different* glob than the misfiring gate, so it is not blocked by it) — **never
-`--no-verify`** — paired with a `[Build-Session-Entscheidung]` tag and a restore
-box-id; the gate is re-enabled in the immediately following box. For a single
-legitimate Semgrep/advisory false-positive, prefer the **per-finding suppression
-ledger** (a committed entry with a content-derived fingerprint + box-id +
-Dual-Review note, the fingerprint **rotating** when the surrounding code changes) —
-the gate-quarantine sledgehammer is for a tool-level misfire with no per-finding
-fingerprint.
+**Gate quarantine.** A required gate that fails closed on a false positive is unblocked only by
+an owner-acked Co-Pilot act (gate code and `lefthook.yml` are caged): a fix, or a narrow scope
+with a restore box id — never `--no-verify`. The loop parks the box and escalates
+(roles-and-escalation §4(e)). A single Semgrep false positive in loop code gets
+`// nosemgrep: <rule-id>` at the site (CONTRIBUTING.md "Known gate traps").
 
 ---
 
 ## 7. Escalation, conversation, and the start/stop vocabulary
 
-Escalation goes **Build-Loop → Co-Pilot → owner** (see
-[`roles-and-escalation.md`](roles-and-escalation.md)). Escalate as a **single, own
-line** right after the status line (§8) — never inlined into a box summary — naming
-the count, the severity, and the source `§`/file.
+The owner starts the loop once with the Claude Code `/loop` skill, self-paced, and this prompt:
 
-**Start / stop vocabulary (the owner drives the loop with these):**
+```text
+Build-Loop: follow docs/process/build-loop.md; one iteration = §3 Step 0 to Step 7 for one box; stop only on a §6 stop.
+```
+
+**Cadence: `== 1 box per iteration`.** Each iteration runs Step 0 to Step 7 for one box, pushes,
+and schedules its next wake-up. A wake-up whose Step 0 finds the previous push's `ci` run still
+in progress runs Steps 1–3 only, prints the §8 waiting line and schedules the next wake-up at the
+run's expected end. Compaction carries the loop across boxes; after one it re-reads §2 and resumes
+the step in progress, since Step 0 runs only when an iteration starts. An iteration that schedules
+no wake-up ends the loop, so the loop schedules none only on a §6 stop.
+There is no batching and no session box limit.
+
+Escalation goes **Build-Loop → Co-Pilot → owner** ([roles-and-escalation.md](roles-and-escalation.md)),
+as a single own line right after the status line (§8), never inlined into a box summary, naming
+the count, the severity and the source `§`/file.
+
+**Vocabulary** — the owner's own messages in the loop session only, never an agent message:
 
 | Word | Effect |
 |---|---|
-| `los` / `start` | Begin the loop from the next buildable box. |
-| `weiter` / `continue` | Resume after a soft-stop / a clarification. |
-| `eine` / `one` | Build exactly one box, then pause. |
+| `los` / `start` / `weiter` | Start the loop (the `/loop` start above) from the next buildable box (a `stop` park is re-selected). |
+| `eine` / `one` | Build exactly one box, then stop. |
 | `bis ende phase PN` | Build until phase `PN` is complete, then stop. |
-| `stop` / `halt` / `pause` | Save state and wait. |
-| `status` | Emit the current state (last `[x]`, next `[ ]`, open `[!]`/`[!extern]`). |
+| `stop` / `halt` / `pause` | §6 stop (1). |
+| `status` | Emit the current state (last `[x]`, next `[ ]`, open `[!]`/`[!extern]`, parks). |
 | `skip <reason>` | Skip the current box with a recorded reason (owner-directed only). |
 | `revert` | Roll back the last box (`chore(scope): roll back — <reason>`, no `revert` type). |
 
@@ -813,46 +606,35 @@ the count, the severity, and the source `§`/file.
 P3.4 done — CSV→TSV atomic publish wired drop→detect→convert→publish, tests green, SHA <short>, Review: P0=0 P1=0 P2=1 P3=0
 ```
 
-A P1-or-worse finding, a clarification, or a spec inner contradiction goes on its
+A P1-or-worse finding, a clarification, a park or a spec inner contradiction goes on its
 **own** line immediately after, never inlined:
 
 ```
 Co-Pilot: 1 item — SPEC-CONTRADICTION §2.7.2 vs §2.14.2 on cross-volume publish (scoped stop, escalated)
 ```
 
-Batched boxes: **one status line per box** (each with the shared SHA + shared review
-result). At each **phase boundary**: a mini-report — boxes built, commits, and the
+While a `ci` run is unresolved the loop prints `waiting on ci <run-id>` with the elapsed time at
+each wake-up. At each **phase boundary**: a mini-report — boxes built, commits, parks, and the
 consolidated `[!extern]` list for that phase.
-
-**Liveness while blocked.** While the loop is blocked waiting on a CI run
-(`gh run watch`, §3 step 6) or a long-running box, it emits a **periodic
-liveness/heartbeat line** (the run-id + elapsed wait) so the operator can distinguish
-"building / waiting on CI" from "silently wedged". A wait that exceeds the bounded retry
-on an unreachable GitHub API is the §6 **mid-session hard-stop**, not a silent hang.
 
 ---
 
 ## 9. Convergence & crash-recovery
 
-**Convergence report (zero open boxes / end of session):** boxes completed + their
-commit SHAs + the **consolidated `[!extern]` list = the owner/Co-Pilot action list**, so
-the owner has one scannable hand-off. The Co-Pilot works that list per phase — the
-owner-act box and each precondition box as its own owner-acked act, the caged tails at
-the sweep box (test-strategy §11.4); the loop never idles on it (§3 step 1) — except the
-phase-end sweep box, which blocks its whole successor phase (test-strategy §11.3). The
-owner rules the genuine forks on the list; the standing test-strategy §11 phase-end
-sweep boxes on it are Co-Pilot-executed. Never loop forever; on zero open boxes, report
-and stop.
+**Convergence report** (§6 stop (2)): the boxes completed with their commit SHAs, the parked
+boxes with their patch paths, and the **consolidated `[!extern]` list = the owner/Co-Pilot action
+list**. The Co-Pilot works it per phase — the owner-act box and each precondition box as its own
+owner-acked act, the caged tails at the sweep box (test-strategy §11.4); the phase-end sweep box
+blocks its whole successor phase (test-strategy §11.3). Never loop forever.
 
 **Crash-recovery procedure (a session crash mid-box is recoverable without manual
 surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here):**
 
 - **(a)** A **partial staged state** → `git reset HEAD` + re-read the box (no
   half-staged commit); a box re-entered after a crash restarts its G1 review at R1.
-- **(b)** **Committed-but-CI-red** → a **NEW** commit fixing it; **never amend a
-  pushed commit**.
-- **(c)** **Pushed-but-not-checked-off** → the normal open-box scan (§3 step 1)
-  catches it; the check-off is idempotent on retry.
+- **(b)** **Committed-but-CI-red** → a **NEW** commit fixing it (the Step 6 fix-forward);
+  **never amend a pushed commit**.
+- **(c)** **Committed-but-not-pushed** → push first (Step 6, with its rebase).
 - **(d)** **Push is idempotent on retry** — a re-push of an already-pushed commit is
   a no-op, safe to repeat.
 
@@ -860,12 +642,10 @@ surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here
 
 ## 10. The non-negotiables (never break)
 
-1. **On `main`, clean tree, hooks not redirected** before any box; the
-   session-start sanity (§3 step 0) is unconditional.
+1. **On `main`, clean tree, hooks not redirected** — the Step 0 sanity runs every iteration.
 2. **Never** `--no-verify`, **never** force-push, **never** `core.hooksPath`
    redirection, **never** disable a required CI check, **never** edit a gate to pass
-   it (the gate-quarantine escape in §6 is the only sanctioned exception, and it is
-   itself a committed, dual-reviewed, gated change).
+   it (the §6 gate quarantine is an owner-acked Co-Pilot act).
 3. **Two live reviews or no `GO`** — never auto-emit a trailer with fewer than two
    live reviewers.
 4. **A spec contradiction is never silently reconciled** — the loop reconciles only a
@@ -877,19 +657,16 @@ surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here
    professional solution for the work at hand wins over token cost, session speed and
    pragmatism; scope, not quality, bounds it, and an improvement outside the scope is a
    residual-ledger line, never mid-box work (CLAUDE.md §6).
+7. **The loop never authors a caged line** (§3 Step 7).
 
 ---
 
 ## 11. References
 
-- Project rules / DoD summary / anti-patterns: [`CLAUDE.md`](../../CLAUDE.md)
-- Box format + dependency vocabulary: [`docs/plan/_format.md`](../plan/_format.md)
-- The plan (executable TODO): [`docs/plan/README.md`](../plan/README.md) ·
-  [`docs/plan/P0-build-and-security.md`](../plan/P0-build-and-security.md)
-- Gate catalogue (G1..Gnn): [`docs/security/build-gates.md`](../security/build-gates.md)
-- Security concept (threat model + defense-in-depth): [`docs/security/security-concept.md`](../security/security-concept.md)
-- Roles & escalation: [`roles-and-escalation.md`](roles-and-escalation.md)
-- Test strategy: [`test-strategy.md`](test-strategy.md)
-- Vulnerability response (CVE → user, no auto-update): [`vuln-response.md`](vuln-response.md)
-  *(authored in P0.6.9)*
+- Project rules: [`CLAUDE.md`](../../CLAUDE.md) · box format and selection:
+  [`docs/plan/_format.md`](../plan/_format.md) · the plan: [`docs/plan/README.md`](../plan/README.md)
+- Gates and threat model: [`build-gates.md`](../security/build-gates.md) ·
+  [`security-concept.md`](../security/security-concept.md)
+- Process: [`roles-and-escalation.md`](roles-and-escalation.md) · [`test-strategy.md`](test-strategy.md) ·
+  [`vuln-response.md`](vuln-response.md)
 - SSOT (what & why): [`docs/SINGLE-SOURCE-OF-TRUTH.md`](../SINGLE-SOURCE-OF-TRUTH.md)

@@ -230,7 +230,8 @@ list. The derivation is recorded in P0.6 of
   the reviewer rubric, the security/process docs, and `scripts/l-neg1-files.toml` itself)
   are the **L(-1) set** (non-exhaustive; the authoritative list is
   `scripts/l-neg1-files.toml`, enumerated in security-concept §2) — the loop NEVER edits
-  one (hard-stop + escalate so the **owner** makes/acks it); enforced by the pre-push gate
+  one (it parks the box; the owner-acked Co-Pilot makes the caged edit, build-loop Step 7);
+  enforced by the pre-push gate
   **G71** (owner decision D1,
   [security-concept §2](docs/security/security-concept.md#2-working-model--two-sessions-one-branch),
   [`build-gates.md`](docs/security/build-gates.md) G71).

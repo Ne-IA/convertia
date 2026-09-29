@@ -22,7 +22,7 @@ default_posture = "fail-closed"
 id = "L(-1)"
 name = "change-control"
 trigger = "any commit whose diff touches an L(-1) security-critical file"
-enforcement = "owner-ack `L-neg1-ack: owner` commit-body trailer (G71, pre-push + L4 mirror); the autonomous Build-Loop NEVER edits an L(-1) file (hard-stop + escalate)"
+enforcement = "owner-ack `L-neg1-ack: owner` commit-body trailer (G71, pre-push + L4 mirror); the autonomous Build-Loop NEVER edits an L(-1) file (it parks the box; the owner-acked Co-Pilot makes the caged edit, build-loop Step 7)"
 mirror = "L2 + L4"
 
 [[plane]]

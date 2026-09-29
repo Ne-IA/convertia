@@ -4,7 +4,7 @@
 > the decide-it-yourself default, the small set of triggers that send a decision
 > *up*, and the hard-stops. This is the **operational companion** to
 > [build-loop.md](build-loop.md): build-loop.md owns the *mechanics* (the loop, the
-> 8-point DoD, the hard-stop / token-Notbremse **numbers**, the reviewer rubric,
+> 8-point DoD, the stop list and its cadence **numbers**, the reviewer rubric,
 > crash-recovery); this file owns the *org chart* — the boundary between "decide it
 > yourself, tagged" and "stop and escalate", and the path an escalation travels.
 > Where a number or a procedure lives in build-loop.md, it is **referenced**, never
@@ -24,8 +24,8 @@
 
 | Role | What it is | What it decides | What it never does |
 |---|---|---|---|
-| **Build-Loop session** | The autonomous builder. Reads [build-loop.md](build-loop.md) top to bottom, then works the plan box by box (**P1 onward**), writes tests, runs every gate + the [dual review](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1) (G1), and commits **directly to `main`** + pushes. The gates are the protection — no second branch, no merge step. | Routine implementation, pattern, naming, path, and default-value choices — **itself**, after a codebase/process-doc pattern lookup (§3), each tagged `[Build-Session-Entscheidung: <box-id>]` at the code site. Phase-cut / "which phase owns this" questions answered from the plan. | Merge, rewrite history, force-push, `--no-verify`, `core.hooksPath` redirection, pick a side in a spec contradiction the §4(a) pre-check cannot rank, or build **P0** (DECISION B, §5). It escalates *to* Co-Pilot — it never resolves a genuine fork on its own. |
-| **Co-Pilot session** | The owner's partner. The Build-Loop's **escalation & clarification target**; the home of strategic / cross-phase / architecture decisions and high-level review. Drives the **manual P0 bootstrap** with the owner (§5). Executes the standing **phase-end hardening sweep** box that closes every phase `P2`..`P11` ([test-strategy §11](test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). | Cross-phase architecture with no spec/SSOT source; how to *resolve* a spec/SSOT contradiction once the owner has ruled on the fork; whether a misfiring gate is scoped or quarantined ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)); P0 content alongside the owner. | Override the conflict order, or change scope / SSOT intent. A genuine fork (§4) goes to the **owner**; Co-Pilot frames it, the owner calls it. |
+| **Build-Loop session** | The autonomous builder. Reads [build-loop.md](build-loop.md) top to bottom, then works the plan box by box (**P1 onward**), writes tests, runs every gate + the [dual review](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1) (G1), and commits **directly to `main`** + pushes. The gates are the protection — no second branch, no merge step. | Routine implementation, pattern, naming, path, and default-value choices — **itself**, after a codebase/process-doc pattern lookup (§3), each tagged `[Build-Session-Entscheidung: <box-id>]` at the code site. Phase-cut / "which phase owns this" questions answered from the plan. | Merge, rewrite history, force-push, `--no-verify`, `core.hooksPath` redirection, pick a side in a spec contradiction the §4(a) pre-check cannot rank, author a caged line (§4(g)), or build **P0** (DECISION B, §5). It escalates *to* Co-Pilot — it never resolves a genuine fork on its own. |
+| **Co-Pilot session** | The owner's partner. The Build-Loop's **escalation & clarification target**; the home of strategic / cross-phase / architecture decisions and high-level review. Completes the caged part of a parked box under the owner's ack (§4(g)). Executes the standing **phase-end hardening sweep** box that closes every phase `P2`..`P11` ([test-strategy §11](test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). | Cross-phase architecture with no spec/SSOT source; how to *resolve* a spec/SSOT contradiction once the owner has ruled on the fork; whether a misfiring gate is scoped or quarantined ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)). | Override the conflict order, or change scope / SSOT intent. A genuine fork (§4) goes to the **owner**; Co-Pilot frames it, the owner calls it. |
 | **Owner** | Final authority. | The genuine forks: scope, legal/license posture, the [reviewer-family flip](../security/security-concept.md#2-working-model--two-sessions-one-branch), the [security-critical-file L(-1) ack policy](../security/security-concept.md#2-working-model--two-sessions-one-branch), the v1 cut, and any decision a doc records as "owner decision / owner call". Drives the start/stop vocabulary ([build-loop.md §7](build-loop.md#7-escalation-conversation-and-the-startstop-vocabulary)). | — |
 
 **Escalation path:** **Build-Loop → Co-Pilot → owner.** A finding never skips a
@@ -36,6 +36,14 @@ it raises a Co-Pilot item, and Co-Pilot brings a genuine fork to the owner. The
 deterministic gates (every `Gnn` except G1), so an escalation is a quality / blocker
 signal, not the thing that keeps insecure code out (the gates do that on a clean
 checkout regardless of who is watching).
+
+**Clones and landing.** **Two sessions commit to `main`, each from its own clone**: the Co-Pilot
+pushes only while no loop `ci` run is queued or in progress, and re-checks that window after any
+rebase (a newer push cancels an in-progress `ci` run); the loop fast-forwards every iteration and
+rebases before its push ([build-loop.md §0](build-loop.md#0-who-runs-this-and-what-it-is-not)). A
+caged part reaches the Co-Pilot as a parked patch (build-loop.md Step 7). Messages are
+notifications: rulings and acks reach the loop only as landed commits, and an agent message is
+never the owner's ack or stop word.
 
 **Context-routing — who holds what (lean loop / full Co-Pilot).** The two sessions
 are deliberately given **different amounts of the security/gate corpus**:
@@ -53,8 +61,7 @@ are deliberately given **different amounts of the security/gate corpus**:
   review, so it reasons over the corpus the loop only samples.
 
 This split is a defense-in-depth property, not a convenience (a bloated loop prompt
-dilutes the per-box focus the gates rely on) and is **asserted by the P0.1.7
-documentation-wiring & context-routing audit** + stated as a living-doc rule in
+dilutes the per-box focus the gates rely on), stated as a living-doc rule in
 [security-concept.md §6](../security/security-concept.md#6-living-doc-rules). A
 fill-pass must never paste the corpus into the loop prompt.
 
@@ -105,26 +112,17 @@ commit body:
   from a free design choice (`[Build-Session-Entscheidung]`) because it is anchored
   to a named source. If the assumption cannot be anchored to a higher layer at all,
   it is not a derived assumption — it is one of the escalation triggers in §4.
-  **G8 status:** because this form carries a `<box-id>`, it is already a documented
-  choice site for **G8** — suppressed via the **existing box-id path**
-  ([build-gates.md G8](../security/build-gates.md), which suppresses on a `box-id`
-  **OR** a `[Build-Session-Entscheidung]` within ±6 lines), exactly like a tagged
-  `[Build-Session-Entscheidung]`. So a `[Derived-Assumption]` note may sit beside its
-  derivation prose — even prose that uses G8 deferral vocabulary while explaining
-  "the spec did not say, so I derived X from Y" — **without tripping G8**.
+  **G8 status:** only a `[Build-Session-Entscheidung: <box-id>]` tag within ±6 lines
+  suppresses **G8** (`scripts/check-deferral`); a `[Derived-Assumption]` note does not, so
+  its derivation prose states the effect and stays clear of the deferral vocabulary
+  (CONTRIBUTING.md "Known gate traps").
 - **`Spec-Reconcile: <lower §> → <higher §> wins (<rule>)`** — a commit-body line, not a code-site
   tag, placed right after the `Decisions:` line so the review brief carries it: the record of a
   rank-ordered spec difference the loop reconciled under §4(a). The rewritten spec text carries no
   tag; the phase-end sweep lists these lines for the owner (test-strategy §11.2).
 
-> **Where this tag is emitted from the loop's runbook.** The canonical inline-tag
-> emission home is [build-loop.md step 4](build-loop.md#step-4--build-per-spec--write-tests-at-the-highest-sensible-level)
-> / [DoD item (f)](build-loop.md#5-definition-of-done-the-canonical-8-point-list--this-file-is-canonical),
-> which today name only `[Build-Session-Entscheidung: <box-id>]`. A Build-Loop
-> session discovers `[Derived-Assumption]` because [build-loop.md §2](build-loop.md#2-read-these-at-session-start-mandatory)
-> mandates reading **this file** at session start; if build-loop.md step 4 ever gains
-> a sibling mention of `[Derived-Assumption]`, that is the place for it. (Co-Pilot
-> note flagged at the bottom of §7.)
+[build-loop.md Step 4](build-loop.md#step-4--build-per-spec--write-tests-at-the-highest-sensible-level)
+names all three and places them; this section defines them.
 
 A tagged choice is the loop **owning** a decision in the open. An escalation is the
 loop **declining** to own one because it genuinely cannot. §4 is the exhaustive line
@@ -181,34 +179,35 @@ proceed, tagged** (§3).
   tails at the sweep box)
   ([build-loop.md §3 step 1](build-loop.md#step-1--find-the-next-buildable-box), §9) —
   except the phase-end sweep box, which blocks its WHOLE successor phase
-  (test-strategy §11.3).
+  (test-strategy §11.3). A parked box's `needs:` closure is skipped likewise
+  ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)
+  park procedure).
 
 Further blockers route the same way (their mechanics live in build-loop.md, the
 *who* is here):
 
 - **(e) A provably-misfiring required gate** — a required gate failing **closed on a
-  false positive**. The only sanctioned unblock is the committed, dual-reviewed,
-  narrowly-scoped **gate-quarantine** procedure
-  ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape));
-  a misfire that cannot be scoped that way is a hard-stop + escalate. **Never**
-  `--no-verify`.
+  false positive**. The only sanctioned unblock is an owner-acked Co-Pilot act (gate code
+  and `lefthook.yml` are caged): a fix, or a narrow scope with a restore box id — the
+  **gate quarantine** of
+  [build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape).
+  The loop parks the box and escalates. **Never** `--no-verify`.
 - **(f) Reviewer unavailability** — two **live** reviews cannot be obtained after the
   bounded retry. **NEVER** auto-emit a `GO` trailer with fewer than two live reviews;
   hard-stop + escalate
   ([build-loop.md §3 step 5](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1)).
-- **(g) A needed L(-1) security-critical-file edit** — the loop **NEVER** edits a
-  security-critical file (the gates' own cage) autonomously; a box that requires editing
-  one is a **hard-stop + escalate** so the **owner** makes/approves it and adds the
-  `L-neg1-ack: owner` trailer ([security-concept §2](../security/security-concept.md#2-working-model--two-sessions-one-branch),
-  gate **G71**). The explicit, load-bearing case of (c)'s "any decision a doc reserves as
-  an owner decision". Pre-declare it: a caged **tail** that reds nothing until it lands (a
-  build-gates row) is named in the box and closes with the phase-end sweep box (test-strategy
-  §11.4); a caged tail that reds the same push (a fixture pin) stays a same-push owner
-  tail — the tool canaries' tallies no longer red on an addition (the monotone leg-name
-  pin, G24); a caged **precondition** is a `needs:` on an
-  `[!extern]` precondition box (the P4.89 pattern) — the trigger stops the caged edit, not
-  the loop, which continues outside that closure (except the phase-end sweep box, which
-  blocks its WHOLE successor phase, test-strategy §11.3).
+- **(g) A needed L(-1) security-critical-file edit** — the loop never authors a caged line
+  (the gates' own cage, [security-concept §2](../security/security-concept.md#2-working-model--two-sessions-one-branch),
+  gate **G71**); the explicit, load-bearing case of (c)'s "any decision a doc reserves as an
+  owner decision". A caged **precondition** → a `needs:` on an `[!extern]` precondition box
+  (the P4.89 pattern); a **same-push caged part** → the loop parks the box, and the owner-acked
+  Co-Pilot completes it in one commit
+  ([build-loop.md Step 7](build-loop.md#step-7--check-off-the-box)); caged text that **reds
+  nothing** until it lands (a build-gates row) → pre-declared in the box, closed by the
+  phase-end sweep box (test-strategy §11.4). `L-neg1-ack: owner` is written only in the session
+  where the owner gave the ack. The trigger stops the caged edit, not the loop, which continues
+  outside the blocked closure (except the phase-end sweep box, which blocks its WHOLE successor
+  phase, test-strategy §11.3).
 - **(h) G1 non-convergence** — a P0/P1 is still open when review round 4 ends
   ([build-loop.md §3 step 5](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1)). The loop
   parks the box (the
@@ -234,35 +233,10 @@ derive and tag.
 
 ## 5. DECISION B — P0 is bootstrapped manually
 
-**P0 is built by the Co-Pilot session + the owner, manually — not by the
-Build-Loop.** P0 (`docs/plan/P0-build-and-security.md`) is the **bootstrap** phase:
-it *creates* the loop, the gate system, the dual review, and the test methodology
-that **every later phase runs under**. The loop cannot build the thing it runs
-inside. Concretely:
-
-- **The Build-Loop's range is `P1`..`P11`** (the plan is exactly `P0`..`P11`;
-  the concrete upper bound is single-homed in the
-  [build-loop.md §0 bootstrap note](build-loop.md#0-who-runs-this-and-what-it-is-not)).
-  If the loop finds itself reaching into a `P0.x` box, that is **out of range** —
-  **stop**, do not build (the session-start sanity in
-  [build-loop.md §3 step 0](build-loop.md#step-0--start-sanity-once-per-session-the-very-first-action)
-  is the mechanical guard).
-- **The dual review (G1) still applies to P0** — it is simply **driven manually** by
-  the Co-Pilot session during the bootstrap, not auto-run by the loop.
-- **The hand-off is the seven P0 docs.** By the time the loop starts at P1, the seven
-  P0 process/security artifacts are live and the two enforcement planes are green:
-  [security-concept.md](../security/security-concept.md),
-  [build-gates.md](../security/build-gates.md), [build-loop.md](build-loop.md),
-  [test-strategy.md](test-strategy.md), **this file**,
-  [`docs/plan/_format.md`](../plan/_format.md), and
-  [vuln-response.md](vuln-response.md) *(authored in P0.6.9)*.
-  Until they exist, the canonical process rules
-  + the DoD live in **P0.6 of**
-  [`docs/plan/P0-build-and-security.md`](../plan/P0-build-and-security.md) (CLAUDE.md §2/§4).
-- **The P0 cadence is a manual one.** P0's cluster-boundary soft-stop is a
-  **manual-bootstrap** number; the autonomous loop never reaches a `P0.x` boundary.
-  Both numbers are single-homed in
-  [build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape).
+P0 was bootstrapped manually by the Co-Pilot session and the owner (DECISION B): it created the
+loop, the gate system, the dual review and the test methodology every later phase runs under.
+The Build-Loop's range is `P1`..`P11` (`_format.md` §6 step 1); the exit record is
+[p0-completion.md](p0-completion.md).
 
 ---
 
@@ -311,78 +285,44 @@ failed every run from 2026-06-23 — the committed `.npmrc` `frozen-lockfile` ke
 resolve — until it paused; `check-js-supply-chain` now refuses that key. npm minor and patch updates arrive
 as one grouped PR.
 
-**Bootstrap hold for `engines.lock` bumps (P1–P3, DECIDED — r15):** the §6.5 re-validation
-machinery (the §6.4.3 runner + the P4.61 pair-status ledger) does not exist until P4 — so
-during **P1–P3** a Dependabot/CVE `engines.lock` bump is **HELD as a Co-Pilot review item
-(surfaced, never auto-merged)**, not landed unvalidated. From **P4 onward** the bump runs the
-§6.5 re-validation and the **G72** gate enforces a regenerated-green pair-status-ledger proof
-before it lands — closing the forward-history gap where an untested engine version could pin
-on `main` before the validation machinery exists.
+**Maintenance policy (DECIDED).** A bump commit is the pin, lock or hash change plus the recipe
+that produced it, targeting one G1 round; a code change the bump forces is its own box; gate
+hardening the bump reveals goes to the [residual ledger](../plan/residual-ledger.md). Non-security
+bumps re-land at the phase-end sweep under one owner word naming each PR; a G17 advisory or a
+security update re-lands at once under its own owner word. A Rust toolchain refresh counts as
+landed once its macOS lane is green.
+
+**Hold for `engines.lock` bumps (DECIDED — r15):** until **G72** is wired on `main` (the caged
+wiring of P4.61) a Dependabot/CVE `engines.lock` bump is **HELD as a Co-Pilot review item
+(surfaced, never auto-merged)**, not landed unvalidated. Once it is wired, the bump runs the
+§6.5 re-validation and G72 requires a regenerated-green pair-status-ledger proof before it
+lands — closing the gap where an untested engine version could pin on `main` before the
+validation machinery exists.
 
 ---
 
 ## 6. Hard-stops
 
-The loop **stops and escalates** (it does not push past these). The
-**numbers** for the count-based stops are canonical in
-[build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)
-(`plan-lint` check 15) and are **not** duplicated here — this list is the *who-acts*
-view:
-
-- The owner writes a **stop word** (`stop` / `halt` / `pause`) → save state, wait.
-- A **spec contradiction the (a) pre-check cannot rank** → a scoped stop regardless of
-  severity, never silently reconciled: the loop parks the box (the build-loop.md §6 park
-  procedure) and continues outside its `needs:` closure (§4(d)).
-- **G1 non-convergence** (trigger (h)) — an open P0/P1 after review round 4 → park
-  the box; the stop is scoped and the loop continues outside the parked box's
-  `needs:` closure (§4(d)).
-- **Reviewer unavailability** (trigger (f)) — two live reviews unobtainable after
-  bounded retry.
-- **Consecutive gate-red pushes** beyond the build-loop.md threshold, despite fix
-  attempts.
-- An **anomalous CI cancel** (a `cancelled` run with no successor —
-  [build-loop.md §3 step 6](build-loop.md#step-6--commit--push-gates-run-never-bypass)).
-- A needed **L(-1) security-critical-file edit** (trigger (g)) — the loop never edits the
-  gates' own cage; the **owner** makes/acks it (`L-neg1-ack: owner`, G71) — the stop is
-  scoped to the caged edit; the loop continues outside the blocked `needs:` closure (§4(d)).
-- **GitHub API unreachable mid-session** (during the push-wait / `gh run watch`) beyond the
-  bounded retry — the loop cannot confirm its own CI run is green, so it hard-stops rather
-  than proceed past an unobserved run ([build-loop.md §3 step 6](build-loop.md#step-6--commit--push-gates-run-never-bypass)).
-- A **soft-stop / hard-stop / phase-change** cadence boundary
-  ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)) —
-  pause and summarize for the owner.
-
-On every hard-stop the loop reports the blocker as a **single Co-Pilot line** right
-after the status line (never inlined into a box summary), naming the **count**, the
-**severity**, and the source **`§`/file**
-([build-loop.md §8](build-loop.md#8-output-discipline)) — so the owner has a
-scannable hand-off and Co-Pilot has an actionable item.
+The stop list is
+[build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape):
+the loop stops itself only on the owner's stop word, nothing buildable, a red `main` it did not
+cause, or a hard-stop class, and parks a box for a scoped stop (§4(a), (e), (g), (h)). Each stop
+or park reaches the Co-Pilot as one line
+([build-loop.md §8](build-loop.md#8-output-discipline)); the Co-Pilot takes the line, frames a
+genuine fork for the owner, and the owner restarts the loop.
 
 ---
 
 ## 7. References
 
-- The loop these roles drive (mechanics, DoD, hard-stop numbers, reviewer rubric,
-  crash-recovery): [build-loop.md](build-loop.md) — §0 (roles), §3 step 0
-  (session-start sanity / out-of-range guard), §4 (decide-vs-escalate), §6
-  (hard-stops / gate-quarantine), §7 (start/stop vocabulary), §8 (output discipline).
-- Project rules / DoD summary / anti-patterns / owner's core rule:
-  [CLAUDE.md](../../CLAUDE.md) §2 (working model), §5 (anti-patterns), §6 (core rule).
-- Box format + the `needs:` / `unlocked-by:` dependency vocabulary (DECISION C):
-  [`docs/plan/_format.md`](../plan/_format.md).
-- Working-model + dual-review-as-quality-amplifier + the recorded reviewer-family
-  decision: [security-concept.md](../security/security-concept.md) §2.
-- The CVE → user escalation runbook (engine vuln → Build-Loop escalates → Co-Pilot →
-  release): [vuln-response.md](vuln-response.md) *(a P0 deliverable, authored in
-  P0.6.9)*.
-- Plan home (P0 bootstrap clusters; P1..P11 range — the plan is exactly P0..P11):
-  [`docs/plan/README.md`](../plan/README.md) ·
-  [`docs/plan/P0-build-and-security.md`](../plan/P0-build-and-security.md) §P0.6.
-- SSOT (what & why; scope line): [SINGLE-SOURCE-OF-TRUTH.md](../SINGLE-SOURCE-OF-TRUTH.md).
-
-> **Co-Pilot note (non-blocking, doc-consistency).** The `[Derived-Assumption: <box-id>
-> — …]` tag is currently introduced **only here** (§3); build-loop.md step 4 / DoD
-> item (f) name only `[Build-Session-Entscheidung]`. The tag is discoverable because
-> build-loop.md §2 mandates reading this file at session start, but build-loop.md step
-> 4 gaining a sibling mention of `[Derived-Assumption]` would make the inline-tag
-> emission home self-contained. Tracked for a future build-loop.md edit; not a blocker.
+- The loop these roles drive: [build-loop.md](build-loop.md) — §0 (sessions and clones), §3
+  (the steps; Step 7 the caged part), §4 (decide-vs-escalate), §6 (stops, parks, gate
+  quarantine), §7 (the `/loop` start and the vocabulary), §8 (output discipline).
+- Project rules: [CLAUDE.md](../../CLAUDE.md) §2 (working model), §5 (anti-patterns), §6 (core
+  rule).
+- Box format and the `needs:` / `unlocked-by:` vocabulary: [`docs/plan/_format.md`](../plan/_format.md).
+- Working model, the L(-1) cage and the reviewer-family decision:
+  [security-concept.md](../security/security-concept.md) §2.
+- The CVE → user runbook: [vuln-response.md](vuln-response.md).
+- The plan: [`docs/plan/README.md`](../plan/README.md) · SSOT (what & why; scope line):
+  [SINGLE-SOURCE-OF-TRUTH.md](../SINGLE-SOURCE-OF-TRUTH.md).

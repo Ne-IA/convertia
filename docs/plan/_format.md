@@ -79,8 +79,8 @@ other bracketed token at a box position — a stray `[X]`, `[-]`, `[~]`, `[wip]`
 
 **Sub-box rule for `[x]`.** A box with sub-boxes (§3) is marked `[x]` **only after
 every sub-box is `[x]`** — the top marker is the AND of its children. The loop
-checks the top box off in the same check-off commit that flips the last sub-box
-(`build-loop.md` §3 step 7). `plan-lint` (check: sub-box consistency) fails a `[x]`
+checks the top box off in the box commit that completes the last sub-box
+(`build-loop.md` Step 7). `plan-lint` (check: sub-box consistency) fails a `[x]`
 top box that still has an open `[ ]`/`[!]` sub-box under it.
 
 ---
@@ -139,9 +139,8 @@ A box that decomposes into ordered steps lists them as **indented** child boxes:
 - The sub-box-id **extends the parent** with a third dotted segment:
   `P<phase>.<n>.<m>`, `<m>` 1-based and gap-free under that parent (§7).
 - Sub-boxes are worked **strictly top to bottom**; the top box is checked off only
-  when **all** sub-boxes are `[x]` (§2). The **dual review fires once per top box**
-  over the combined sub-box diff, **never per sub-box** (`build-loop.md` §3 step 2 /
-  §6 box-batching).
+  when **all** sub-boxes are `[x]` (§2). One review per commit: a box, or a sub-box
+  that meets the DoD on its own (`build-loop.md` Step 2).
 - A sub-box carries its own tag + refs and may itself carry a `needs:` (§5). Nesting
   is **at most one level deep** (`P<phase>.<n>.<m>`) — a box that wants three levels
   is two boxes, not a grandchild; `plan-lint` rejects a fourth dotted segment.
@@ -270,9 +269,9 @@ ConvertIA resolves the dependency **in place**.
 ```
 
 `unlocked-by: <box-id>` sits under a **`[!]`** box and names the box whose
-completion **releases** it. After every check-off (and at session start) the loop
+completion **releases** it. At every iteration start (`build-loop.md` Step 1) the loop
 runs the **auto-unlock scan**: for each `[!]` box carrying an `unlocked-by:` whose
-dep is now `[x]`, it flips `[!]` → `[ ]` (`build-loop.md` §3 step 1 / step 7). This
+dep is now `[x]`, it flips `[!]` → `[ ]`; its flips ride in the next box commit. This
 makes a box that an earlier (e.g. P0-bootstrap) session left `[!]`-blocked
 selectable again automatically, without a manual edit.
 
@@ -307,8 +306,9 @@ selectable again automatically, without a manual edit.
 
 ## 6. How the loop selects the next box
 
-The Build-Loop's selection algorithm (`build-loop.md` §3 step 1), stated against
-this format so a box author knows exactly how their box will be picked:
+The single home of the Build-Loop's selection algorithm (`build-loop.md` Step 1 adds
+the loop's actions), stated against this format so a box author knows exactly how their
+box will be picked:
 
 1. **Scan all `docs/plan/P*.md`, lowest phase first, top to bottom.** Phase order is
    numeric (`P1` before `P2` … before `P11`); within a file, document order. The

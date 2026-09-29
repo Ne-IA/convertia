@@ -1261,33 +1261,33 @@ def doc14_dod_parity(ctx: Ctx) -> list[Finding]:
     return out
 
 
-# The canonical operator-anchored hard-stop / token-Notbremse strings (build-gates §6 check 15). The loop
-# reads its OWN cadence from build-loop.md §6, so each threshold MUST appear as an EXACT integer with an
-# EXPLICIT comparison operator (r7 — NOT the "~8"/"≥5" prose forms the loop could misread as 5 or 15). Each
-# string is a specific operator-anchored form, verified UNIQUE in build-loop.md (the P0.6.3 unique-in-doc
-# lesson) — so a silent reword back to a fuzzy prose form trips the drift-guard. P0.6.7 tightened §6 to these.
+# The canonical operator-anchored cadence strings (build-gates §6 check 15). The loop reads its OWN cadence
+# from build-loop.md (the §7 iteration unit, the §6 push-failure stop), so each threshold MUST appear as an
+# EXACT integer with an EXPLICIT comparison operator (r7 — NOT a "~5"/"one or a few" prose form the loop could
+# misread). The session box counters are retired (build-loop §7: the loop runs unattended, one box per
+# iteration, and stops only on the §6 list). The g24 check-15 pin-uniqueness leg holds each string to exactly
+# one occurrence in the real build-loop.md, so a silent reword back to a fuzzy form trips the drift-guard.
 _HARDSTOP_PHRASES = (
-    "soft-stop fires when committed-box-count >= 8",
-    "hard-stop at == 12",
-    "cluster soft-stop at >= 5 committed boxes",
+    "== 1 box per iteration",
     ">= 3 consecutive push failures",
 )
 
 
 def doc15_hard_stop_parity(ctx: Ctx) -> list[Finding]:
-    """Check 15: the canonical hard-stop / token-Notbremse thresholds appear VERBATIM in build-loop.md §6
-    as exact operator-anchored strings (build-gates §6 check 15) — so the autonomous loop cannot silently
-    run on stale/fuzzy thresholds (read "~8" as 5 or 15). A missing build-loop.md is a finding."""
+    """Check 15: the canonical cadence thresholds appear VERBATIM in build-loop.md (the §7 iteration unit,
+    the §6 push-failure stop) as exact operator-anchored strings (build-gates §6 check 15) — so the
+    autonomous loop cannot silently run on a stale or fuzzy threshold. The session counters are retired
+    (build-loop §7). A missing build-loop.md is a finding."""
     return _bl_phrase(ctx, "15:hard-stop-parity", _HARDSTOP_PHRASES)
 
 
 # The canonical verbatim phrases for the two build-loop procedures check 18 pins present (build-gates §6
 # check 18: the crash-recovery procedure AND the dual-review divergence-resolution rule must exist in
 # build-loop.md, else a "currently absent" annotation could silently survive into the final docs). Each
-# procedure pins its HEADER + its load-bearing SUB-RULES, every phrase verified UNIQUE in build-loop.md
-# (the P0.6.3 lesson) — so a procedure cannot be gutted to a bare header while staying green. The
-# gate-quarantine procedure + the per-finding suppression ledger are authored in §6 (a P0.6.8 reconcile)
-# but lie OUTSIDE check 18's named set — the box and build-gates §6 both scope check 18 to these two.
+# procedure pins its HEADER + its load-bearing SUB-RULES, and the g24 check-18 pin-uniqueness leg holds
+# every phrase to one occurrence in build-loop.md (the P0.6.3 lesson) — so a procedure cannot be gutted to
+# a bare header while staying green. The gate-quarantine procedure is authored in §6 (a P0.6.8 reconcile)
+# but lies OUTSIDE check 18's named set — the box and build-gates §6 both scope check 18 to these two.
 _NAMED_PROCEDURE_PHRASES = (
     "Crash-recovery procedure",       # the §9 procedure header
     "Committed-but-CI-red",           # case (b): a NEW fixing commit, never amend a pushed commit
@@ -1375,11 +1375,13 @@ def doc19_reviewer_rubric(ctx: Ctx) -> list[Finding]:
 # deterministic gates carry the real security weight) WITH a concrete spot-audit cadence, and the flip to a
 # different reviewer family stays open. RULE (the P0.6.3-G1-P1 lesson, refining P0.6.2's): each phrase must
 # be UNIQUE in build-loop.md (not merely multi-word) — a multi-word phrase that ALSO occurs out-of-block
-# (e.g. bare "phase boundary" at L571/L657, bare "reviewer-family decision" in the §0 list at L7) lets that
-# decision element be silently removed while a stray occurrence keeps the check green. So pin each to a
-# form unique to the decision block; a legitimate reword then trips a SAFE drift-guard, never a false-green.
+# (e.g. a bare "phase boundary", or the bare "reviewer-family decision" in the file header's list of
+# canonical homes) lets that decision element be silently removed while a stray occurrence keeps the check
+# green. So pin each to a form unique to the decision block; a legitimate reword then trips a SAFE
+# drift-guard, never a false-green. The g24 check-20 pin-uniqueness leg asserts that no pinned phrase
+# occurs outside the decision blockquote.
 _REVIEWER_FAMILY_PHRASES = (
-    "Recorded reviewer-family decision",  # the recorded owner call (the block header — unique; the bare form collides with the §0 procedure list)
+    "Recorded reviewer-family decision",  # the recorded owner call (the block header — unique; the bare form collides with the file header's list)
     "correlated-lineage residual",   # the shared-model-lineage correlated-signal rationale (the WHY)
     "ACCEPTED for v1",               # the explicit acceptance of the correlated residual
     "spot-audit",                    # the audit mechanism (both occurrences are in-block, no external collision)

@@ -2,9 +2,9 @@
 """check-l-neg1-ack - G71 L(-1) security-critical-file change-control (P0.2.14).
 
 Owner decision D1 (security-concept §2): the files that can silently weaken an enforcement plane are
-the **L(-1) set**. The autonomous Build-Loop NEVER edits one - a needed L(-1) edit is a hard-stop +
-escalation where the **owner** makes/approves it and records an `L-neg1-ack: owner` commit-body
-trailer. This pre-push gate (L2, + the L4 CI mirror) audits the TRAILER's presence on every commit
+the **L(-1) set**. The autonomous Build-Loop NEVER edits one - a box that needs one is parked, and
+the owner-acked Co-Pilot makes the caged edit and records an `L-neg1-ack: owner` commit-body trailer
+(build-loop Step 7). This pre-push gate (L2, + the L4 CI mirror) audits the TRAILER's presence on every commit
 in the push range whose diff touches an L(-1) file (per the authoritative glob list
 scripts/l-neg1-files.toml - itself L(-1), so the cage cannot be silently narrowed). It checks the
 EVIDENCE, not the intent: a leaked token or a unilateral cage edit cannot pass unseen.

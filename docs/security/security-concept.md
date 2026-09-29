@@ -41,8 +41,10 @@ manifest, license compliance).
   *public* OSS repo, so an outside contributor can still open one) — the G56 fork-PR
   secret guard is retained for that reason, **not** for our own direct-to-`main` flow;
   "per-PR" vocabulary elsewhere means "per-push" unless it is explicitly that guard.
-- Because only one session builds and commits, there is **no push contention** —
-  ordinary `git push` is used; the safety comes from the gates, not from branch
+- **Two sessions commit to `main`, each from its own clone**: the Co-Pilot pushes only
+  while no loop `ci` run is queued or in progress; the loop fast-forwards every iteration
+  and rebases before its push ([build-loop.md §0](../process/build-loop.md#0-who-runs-this-and-what-it-is-not));
+  G54 refuses a stale-base push. The safety comes from the gates, not from branch
   isolation.
 - **Escalation path:** Build-Loop → Co-Pilot session → owner. The Build-Loop
   session escalates on genuine blocks (see [roles-and-escalation.md](../process/roles-and-escalation.md),
@@ -70,11 +72,12 @@ manifest, license compliance).
   `capabilities`, `engines.lock`, the reviewer-rubric block, the security/process docs,
   and the authoritative glob list `scripts/l-neg1-files.toml` itself — are the **L(-1)
   security-critical-file set** (the cage the gates live in). **The autonomous Build-Loop
-  NEVER edits an L(-1) file:** a needed L(-1) edit is an **unconditional hard-stop +
-  escalation to Co-Pilot** ([roles-and-escalation §4(g)](../process/roles-and-escalation.md#4-when-to-escalate-to-co-pilot-the-exhaustive-trigger-set),
-  [build-loop.md §6](../process/build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)),
-  where the **owner** makes or approves the edit and records it as a `L-neg1-ack: owner`
-  commit-body trailer. The pre-push gate **G71** mechanically audits the trailer's
+  NEVER edits an L(-1) file:** a box that needs one is **parked and escalated**
+  ([roles-and-escalation §4(g)](../process/roles-and-escalation.md#4-when-to-escalate-to-co-pilot-the-exhaustive-trigger-set),
+  [build-loop.md Step 7](../process/build-loop.md#step-7--check-off-the-box)); the
+  owner-acked Co-Pilot makes the caged edit and the commit, and only that session writes the
+  `L-neg1-ack: owner` commit-body trailer — an agent message is never the owner's ack. The
+  pre-push gate **G71** mechanically audits the trailer's
   presence on any L(-1)-touching commit (the trailer is the **only** sanctioned escape —
   there is **no** check-off / `[!extern]` exemption for an L(-1) edit; a commit touching no
   L(-1) file needs no trailer) and, since P4.56.1, the cage's own liveness (a glob matching

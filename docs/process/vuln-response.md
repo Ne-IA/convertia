@@ -59,19 +59,18 @@ An advisory lands against a bundled engine. The path:
    code path ConvertIA never exercises (a decoder excluded from the G38 allow-list, a
    muxer never invoked) is recorded as not-exercised, not a release blocker.
 3. **Escalate.** The loop never decides a release-blocking security call itself — it
-   raises a **Co-Pilot item** (roles-and-escalation §4/§6); a genuine ship-vs-hold
+   raises a **Co-Pilot item** (roles-and-escalation §4); a genuine ship-vs-hold
    fork goes to the **owner**.
 4. **Bump.** Co-Pilot bumps the `engines.lock` pin to the fixed upstream version
    (the version/SHA edit is itself an L(-1)/`engines.lock` change with the usual
    provenance checks, G36/G37).
 5. **Re-validate.** The bumped engine is re-run against the **§6.5 reliability corpus**
    before it lands — a new version can pass its hash yet regress a conversion or break
-   a pair. From **P4 onward** this is enforced by **G72**, which requires a
+   a pair. Once **G72** is wired on `main` (the caged wiring of P4.61) it requires a
    `Reliability-Gate: <ledger-ref>` proof that the §6.5.2 pair-status ledger was
    regenerated **green** for the bumped engine's pairs (spec §6.5.4 — re-validation on
-   engine bump). During the P1–P3 window the §6.5 machinery (the §6.4.3 runner + the
-   P4.61 ledger) does not exist (it is built in P4), so an `engines.lock` bump is
-   **held as a Co-Pilot review item, surfaced not auto-merged** (roles-and-escalation §5a).
+   engine bump); until then an `engines.lock` bump is **held as a Co-Pilot review item,
+   surfaced not auto-merged** (roles-and-escalation §5a).
 6. **Release.** A new full release is cut (the P10 pipeline), signed and published; the
    dated open-CVE report and the embedded SBOM let a user audit "no known CVEs" against
    a known DB age.
