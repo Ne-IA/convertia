@@ -2,6 +2,7 @@
 """setup-dev - one-step developer bootstrap (run after clone).
 
 Does the whole local setup the gate plane needs:
+  0. on Windows, refuse a `python3` that resolves to the Microsoft Store Python (or to nothing),
   1. install + checksum-verify the pinned gate tools  -> .gate-tools/bin
      (python3 -P scripts/install-gate-tools)
   2. install the lefthook git-hook plane (pre-commit/pre-push)
@@ -15,6 +16,15 @@ generated hook. On a repo path containing spaces or parentheses (e.g.
 breaks the whole hook, silently disabling local enforcement. This script quotes
 that path after `lefthook install`. On a clean path the quoting is a harmless
 no-op, so setup-dev is safe + identical everywhere.
+
+WHY step 0: every lefthook command runs `python3 -P scripts/...`. On Windows `python3` can resolve
+to the Microsoft Store Python's App Execution Alias (%LOCALAPPDATA%\\Microsoft\\WindowsApps). A process
+started through it carries the RedirectionGuard audit mitigation (ProcessRedirectionTrustPolicy
+flags 0x2) and every process below it inherits it; under it the Vite resolver (rolldown's
+oxc_resolver) can miss the first bare-package resolution through pnpm's node_modules junctions, and
+a vitest suite of the TypeScript gate then fails to resolve an import - an intermittent red hook
+with no code cause. The preflight refuses that interpreter before anything is installed and names
+the fix. Non-Windows: a harmless no-op.
 
 WHY step 5: with `gpg.format = ssh` + `commit.gpgsign`, git signs each commit by
 running `ssh-keygen -Y sign`. On Windows, Git-for-Windows may resolve its BUNDLED
@@ -30,9 +40,10 @@ Exit: 0 = ready; non-zero = a step failed (with a clear message).
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -54,6 +65,45 @@ def step(msg: str) -> None:
 def die(msg: str) -> None:
     print(f"[setup-dev] FAILED: {msg}", file=sys.stderr)
     raise SystemExit(1)
+
+
+# [Build-Session-Entscheidung: P0.2.3] the Store Python is recognised by a `WindowsApps` path COMPONENT: its App
+# Execution Aliases (%LOCALAPPDATA%\Microsoft\WindowsApps\python3.exe and the per-package alias directory in that
+# folder) and its package install (%ProgramFiles%\WindowsApps\PythonSoftwareFoundation.Python.3.N_...) all sit under
+# one. A component match, not a substring: a directory merely named like it (`MyWindowsApps`) is not the Store.
+_STORE_DIR = "windowsapps"
+_PYTHON3_INSTALL = ("install CPython from python.org matching the CI pin (3.12), give it a python3.exe (for example a "
+                    "copy of its python.exe in its install directory) and put that directory")
+
+
+def python3_refusal(resolved: str | None) -> str | None:
+    """(pure) Why the `python3` the hooks resolve (a `shutil.which` hit, or None) cannot run the gate plane on
+    Windows - or None when it can. Parsed as a Windows path on every OS, so the self-test runs anywhere."""
+    if resolved is None:
+        return ("no python3 on PATH - every lefthook command runs `python3 -P scripts/...`. "
+                f"Fix: {_PYTHON3_INSTALL} on PATH")
+    if any(part.lower() == _STORE_DIR for part in PureWindowsPath(resolved).parts):
+        return (f"python3 resolves to the Microsoft Store Python ({resolved}). A process started through it carries "
+                "the RedirectionGuard audit mitigation and every process below it inherits it; under it the Vite "
+                "resolver can miss the first bare-package resolution through pnpm's node_modules junctions, and a "
+                "vitest suite of the TypeScript gate then fails to resolve an import (an intermittent red hook). "
+                f"Fix: {_PYTHON3_INSTALL} "
+                r"ahead of %LOCALAPPDATA%\Microsoft\WindowsApps on PATH, or turn off the python.exe and python3.exe "
+                "App Execution Aliases (Settings > Apps > Advanced app settings > App execution aliases) so that "
+                "python3.exe is found")
+    return None
+
+
+def python3_preflight() -> None:
+    step("0/5  preflight: python3 is not the Microsoft Store Python (Windows)")
+    if not IS_WIN:
+        print("  non-Windows - no Store App Execution Alias; nothing to check")
+        return
+    resolved = shutil.which("python3")
+    reason = python3_refusal(resolved)
+    if reason is not None:
+        die(reason)
+    print(f"  python3 -> {resolved}")
 
 
 def install_gate_tools() -> None:
@@ -146,6 +196,7 @@ def configure_ssh_signing() -> None:
 
 def main() -> int:
     print("setup-dev - ConvertIA developer bootstrap")
+    python3_preflight()
     install_gate_tools()
     lefthook_install()
     hd = effective_hooks_dir()

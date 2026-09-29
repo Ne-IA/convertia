@@ -6,18 +6,30 @@ in throwaway temp git repos. No real lefthook is needed: the check keys on the
 'lefthook' marker string + file presence, so fixture hook files suffice. Temp repos
 are auto-removed (tempfile.TemporaryDirectory).
 
+Also proves scripts/setup-dev's Windows python3 preflight (hermetic, every OS): a `python3`
+that resolves under a `WindowsApps` directory (the Microsoft Store Python - the incident
+path first) or to nothing is refused with the fix named, a python.org install and a
+look-alike directory are accepted, and main() stops at the refusal before install-gate-tools
+runs on Windows while the preflight is a no-op elsewhere.
+
 Run:  python3 scripts/gate-selftests/g54-gate-plane.py
 Exit: 0 = every assertion held; 1 = a self-test assertion FAILED (the gate is broken).
 """
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 CHECK = Path(__file__).resolve().parents[2] / "scripts" / "check-gate-plane"
+SETUP_DEV = Path(__file__).resolve().parents[2] / "scripts" / "setup-dev"
 results: list[tuple[str, bool]] = []
 
 
@@ -110,6 +122,79 @@ with tempfile.TemporaryDirectory() as td:
     git(repo, "update-ref", "refs/remotes/origin/main", other)  # origin/main diverged ahead
     rc, out = run_check(repo, "--pre-push")
     record("pre-push stale base fails", rc == 1 and "stale-base" in out.lower(), f"exit={rc}")
+
+
+# --- scripts/setup-dev: the Windows python3 preflight (hermetic: pure verdicts + a stubbed main, every OS) ---
+def load_setup_dev() -> types.ModuleType:
+    loader = importlib.machinery.SourceFileLoader("setup_dev", str(SETUP_DEV))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("setup_dev", loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def setup_dev_main(is_win: bool, hit: str | None) -> tuple[object, list[str], str]:
+    """(exit code, the commands `run` was handed, stderr) of setup-dev's main() on a forced OS with `python3`
+    resolving to `hit`. `run` is stubbed to fail, so a main() past the preflight stops at step 1; nothing runs."""
+    sd = load_setup_dev()
+    sd.IS_WIN = is_win
+    sd.shutil = types.SimpleNamespace(which=lambda name: hit if name == "python3" else None)
+    calls: list[str] = []
+    sd.run = lambda cmd, **kw: calls.append(" ".join(str(c) for c in cmd)) or subprocess.CompletedProcess(cmd, 1)
+    err = io.StringIO()
+    code: object = None
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+        try:
+            code = sd.main()
+        except SystemExit as e:
+            code = e.code
+    return code, calls, err.getvalue()
+
+
+INCIDENT = r"C:\Users\dev\AppData\Local\Microsoft\WindowsApps\python3.exe"   # what lefthook's python3 resolved to
+STORE_HITS = (INCIDENT,
+              r"C:\Users\dev\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0"
+              r"\python3.exe",
+              r"C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0"
+              r"\python3.13.exe",
+              "/c/Users/dev/AppData/Local/Microsoft/windowsapps/python3")   # a Git-Bash spelling, lower case
+ORG_HITS = (r"C:\Users\dev\AppData\Local\Programs\Python\Python312\python3.EXE",
+            r"C:\Program Files\Python312\python3.exe",
+            r"C:\tools\MyWindowsApps\python3.exe")   # a look-alike directory is not the Store
+try:
+    sd = load_setup_dev()
+    store_reasons = [sd.python3_refusal(h) for h in STORE_HITS]
+    org_reasons = [sd.python3_refusal(h) for h in ORG_HITS]
+    none_reason = sd.python3_refusal(None)
+    win_store = setup_dev_main(True, INCIDENT)
+    win_org = setup_dev_main(True, ORG_HITS[0])
+    other_store = setup_dev_main(False, INCIDENT)
+    setup_dev_error = ""
+except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+    store_reasons, org_reasons, none_reason = [], [None], None
+    win_store = win_org = other_store = (None, [], "")
+    setup_dev_error = f"{type(e).__name__}: {e}"
+    print(f"[g54-gate-plane] setup-dev preflight legs raised: {setup_dev_error}")
+
+record("setup-dev preflight: a python3 under a WindowsApps directory is refused with the fix named (the incident "
+       "alias, the package alias, the package install, a lower-case Git-Bash spelling)",
+       len(store_reasons) == len(STORE_HITS)
+       and all(r is not None and "Microsoft Store Python" in r and "python.org" in r and "App Execution Aliases" in r
+               for r in store_reasons),
+       setup_dev_error or f"refused {sum(r is not None for r in store_reasons)}/{len(STORE_HITS)}")
+record("setup-dev preflight: a python.org python3 and a look-alike directory are accepted",
+       len(org_reasons) == len(ORG_HITS) and all(r is None for r in org_reasons), setup_dev_error or f"{org_reasons}")
+record("setup-dev preflight: no python3 on PATH is refused with the fix named",
+       none_reason is not None and "no python3 on PATH" in none_reason and "python.org" in none_reason,
+       setup_dev_error or f"{(none_reason or '')[:40]!r}")
+record("setup-dev main(): on Windows a Store python3 stops it at the preflight (exit 1, the reason on stderr) "
+       "before install-gate-tools runs",
+       win_store[0] == 1 and win_store[1] == []
+       and "FAILED: python3 resolves to the Microsoft Store Python" in win_store[2],
+       setup_dev_error or f"exit={win_store[0]}, run calls={len(win_store[1])}")
+record("setup-dev main(): on Windows a python.org python3 passes the preflight to step 1; elsewhere the preflight "
+       "is a no-op",
+       all(len(c[1]) == 1 and c[1][0].endswith("install-gate-tools") for c in (win_org, other_store)),
+       setup_dev_error or f"run calls: Windows {len(win_org[1])}, elsewhere {len(other_store[1])}")
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g54-gate-plane] {len(results) - len(failed)}/{len(results)} assertions passed.")

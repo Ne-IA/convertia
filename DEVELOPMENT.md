@@ -28,6 +28,15 @@ libraries, so each OS needs a few system packages.
   is missing, install the Evergreen WebView2 Runtime from Microsoft.
 - The **MSVC build tools** (the "Desktop development with C++" workload, including the
   Windows SDK), which rustup's `x86_64-pc-windows-msvc` toolchain links against.
+- **CPython from python.org as `python3`** — the git hooks (installed by
+  `python3 -P scripts/setup-dev`) run every repo gate as `python3 -P scripts/…`, and CI uses
+  Python 3.12. Give the python.org install a `python3.exe` (a copy of its `python.exe`) and keep
+  its directory ahead of `%LOCALAPPDATA%\Microsoft\WindowsApps` on `PATH`, or turn off the
+  `python.exe` / `python3.exe` App Execution Aliases. A `python3` that resolves to the Microsoft
+  Store Python can make a vitest suite of the TypeScript gate fail intermittently to resolve an
+  import: every process it starts carries Windows' RedirectionGuard mitigation, under which Vite
+  can miss a package import through pnpm's `node_modules` junctions. `scripts/setup-dev` refuses
+  it.
 
 ### macOS
 
