@@ -19,24 +19,65 @@ so a commit range rides `--log-opts` and every `git` mode names the repository e
 The P0.3.1 range leg passed `<base>..HEAD` as that positional: gitleaks tried to chdir into it,
 scanned 0 commits and exited 0, so the pre-push leg read nothing on every push until this fix.
 
-All modes use the committed .gitleaks.toml + (if present) the .gitleaks-baseline.json and run --redact
-(never print a secret). gitleaks LOGS a failure of its own `git` call at level ERR and still exits 0,
-so its exit code alone cannot tell a clean scan from one that read nothing: run_scan() relays the log
-and fails closed (exit 2) on any error-level line. The G24 self-test (g24-run-gitleaks.py) drives
-resolve_base(), the error-line classifier, run_scan()'s verdict over a stand-in scanner and every
-mode end-to-end against a planted secret.
+All modes use the committed .gitleaks.toml + (if present) the .gitleaks-baseline.json and run --redact,
+without -v and without a report file, so no finding's detail is printed (a custom rule reports a fixed
+capture, not the value, so --redact alone would not mask the value). gitleaks LOGS a failure of its own
+`git` call at level ERR and still exits 0, so its exit code alone cannot tell a clean scan from one that
+read nothing: run_scan() relays the log and fails closed (exit 2) on any error-level line.
+
+The committed allowlist + the capped baseline, both frozen by check-gitleaks-allowlist, are the only
+suppression this repository controls. gitleaks' in-repo suppression channels are closed in every mode
+(measured on the pinned 8.30.1):
+  * an inline `gitleaks:allow` comment on the secret's line: `--ignore-gitleaks-allow`;
+  * a `.gitleaksignore` fingerprint list: `--gitleaks-ignore-path` names a path that cannot exist
+    (NO_IGNORE_PATH, so the working directory's file is not read), and the driver refuses to scan
+    beside `<scan source>/.gitleaksignore`, which gitleaks reads whatever that flag says;
+  * git's binary verdict: git writes "Binary files differ" in place of the diff, and gitleaks skips
+    the file unread, for a `.gitattributes` `binary`/`-diff` mark (any depth) and for a file git's
+    content check calls binary (one NUL byte). The `git` modes run with GIT_ATTR_SOURCE naming the
+    empty tree (no in-tree attributes file is read) and a core.attributesFile holding `* diff` (every
+    path is text), so git writes every file's diff. That needs git >= 2.41; an older git fails the
+    scan closed.
+One suppression stays, named: the global allowlist of gitleaks' bundled rule set, which
+`[extend].useDefault` appends to the config. 8.30.1 has no switch that keeps the bundled rules and leaves
+it out (its config.extend() appends it; no `[extend]` key and no flag drops it). It drops a finding of
+every rule, a custom rule's too, by path - images, fonts, documents and binaries, Go module files,
+vendored and dependency trees (vendor/, node_modules/, bower_components/, Python and Ruby package
+trees), the Gradle and Maven wrappers, JS and Python lock files (pnpm-lock.yaml among them), minified
+vendor libraries and any path containing `gitleaks.toml`. It also drops a finding by its secret: one
+containing `false` in any case or either of two stopwords (the lowercase alphabet, one UUID), one
+starting with `true` or ending in `null` (its first value regex, `(?i)^true|false|null$`, is an
+unanchored alternation), or a whole placeholder shape (`$VAR`, `${VAR}`, `${{ secrets.X }}`, `{{ x }}`,
+`%VAR%`, `@VAR@`, `%s`, `{0}`, one repeated letter, a /Users/... or /usr/...-style path). That value side
+reaches the bundled rules only: each custom rule reports a fixed capture (.gitleaks.toml says why),
+which none of those matches, so a MINISIGN_PASSWORD holding `False` reds. Accepted: G2 guards against
+a careless leak of a text secret, those paths hold generated, binary or vendored artefacts, a bundled
+rule's secret is a random token that holds such a word only by chance (a random 36-character GitHub
+token holds `false` or ends in `null` with p ~ 2e-6), and a secret placed on purpose inside the
+owner-acked tree is the G1 review's and the owner's surface. The pinned binary fixes both lists, and
+the self-test pins their reach from both sides (the planted key reds in plain text paths and passes in
+paths the list names; every planted secret with `False`, `null` or a stopword in its value reds; a
+GitHub token the bundled rule reports passes with `false` spliced in), so a gitleaks bump that moves
+either reds a leg.
+The G24 self-test (g24-run-gitleaks.py) drives resolve_base(), the error-line classifier, run_scan()'s
+verdict over a stand-in scanner, every mode end-to-end against a planted secret, every channel above per
+mode beside the argv or environment that honoured it, and the reach of the bundled allowlist by path
+and by value.
 stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
 Usage: run-gitleaks {--staged | --range | --dir | --history}
 Exit:  0 = clean; 1 = leak found / gitleaks error exit; 2 = bad invocation / gitleaks binary missing /
-       gitleaks logged an error (a scan that errored is never reported clean).
+       gitleaks logged an error (a scan that errored is never reported clean) / a `.gitleaksignore`
+       beside the scan source / a git older than 2.41.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
@@ -45,6 +86,19 @@ for _stream in (sys.stdout, sys.stderr):          # the console's codepage is no
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / ".gitleaks.toml"
 BASELINE = ROOT / ".gitleaks-baseline.json"
+IGNORE_FILE = ".gitleaksignore"
+# [Build-Session-Entscheidung: P0.3.1] the --gitleaks-ignore-path value is a child of the config FILE, which main()
+# requires to be a regular file, so no OS can hold anything there and gitleaks reads no ignore file through the
+# flag; the null device would be read as an empty file instead (same verdict, through a per-OS Go special case).
+NO_IGNORE_PATH = CONFIG / "no-gitleaksignore"
+# [Build-Session-Entscheidung: P0.3.1] the `git` modes diff every file as text rather than refusing a `binary`/`-diff`
+# mark or a NUL byte: a mark is legitimate on a real binary (the root .gitattributes marks the icons and the fuzz
+# seeds), and git's content check calls any file with one NUL byte binary, so no tracked file and no byte decides what
+# the scan reads - no in-tree attributes file (GIT_ATTR_SOURCE = the empty tree) and a core.attributesFile holding
+# `* diff`, through the environment (no write to the object database). A git that ignores GIT_ATTR_SOURCE fails the
+# scan closed - absent from git v2.40.0's environment.h and git(1), present in v2.41.0.
+GIT_ATTR_SOURCE_MIN = (2, 41)
+TEXT_ATTRIBUTES = "* diff\n"
 
 
 def out(msg: str) -> None:
@@ -82,11 +136,66 @@ def resolve_base() -> str | None:
     return next((c for c in cands if _resolves(c)), None)
 
 
+# [Build-Session-Entscheidung: P0.3.1] one scan with the committed config, the bundled allowlist kept as the named
+# residual: 8.30.1 cannot keep the bundled rules without it, and a second custom-rules-only pass would be a second
+# scanner mode for paths that hold generated, binary or vendored artefacts; its value side reaches no custom rule (each
+# reports a fixed capture) (the docstring names the reach, G24 legs pin it)
 def common_args() -> list[str]:
-    args = ["--config", str(CONFIG), "--redact", "--no-banner", "--exit-code", "1"]
+    """The flags of every mode: the committed config, redaction, the leak exit code, no inline `gitleaks:allow`
+    and no ignore file through --gitleaks-ignore-path; the baseline (capped by check-gitleaks-allowlist) when present."""
+    args = ["--config", str(CONFIG), "--redact", "--no-banner", "--exit-code", "1",
+            "--ignore-gitleaks-allow", "--gitleaks-ignore-path", str(NO_IGNORE_PATH)]
     if BASELINE.is_file():
         args += ["--baseline-path", str(BASELINE)]
     return args
+
+
+def ignore_file_beside(source: Path) -> Path | None:
+    """The `.gitleaksignore` gitleaks would read beside the scan source, or None. gitleaks 8.30.1 reads the flag's
+    path, `<flag path>/.gitleaksignore` AND `<source>/.gitleaksignore` (three independent reads), so no flag keeps
+    it from the last one: a fingerprint listed there drops the finding, and the driver never scans beside one.
+    Any entry by that name counts (lexists: a file, a directory, a dangling link)."""
+    path = source / IGNORE_FILE
+    return path if os.path.lexists(path) else None
+
+
+def attr_source_supported(version_text: str) -> bool:
+    """(pure) Whether a `git version` line names a git that reads GIT_ATTR_SOURCE; an unparseable one does not."""
+    mt = re.match(r"git version (\d+)\.(\d+)", version_text.strip())
+    return mt is not None and (int(mt.group(1)), int(mt.group(2))) >= GIT_ATTR_SOURCE_MIN
+
+
+def with_config_entry(env: dict[str, str], key: str, value: str) -> tuple[dict[str, str] | None, str]:
+    """(pure) `env` with one GIT_CONFIG_* entry appended after the entries it already carries (git applies them in
+    order, so the last value of a key wins), or (None, reason) when its GIT_CONFIG_COUNT is not a count."""
+    raw = env.get("GIT_CONFIG_COUNT", "")
+    if not re.fullmatch(r"[0-9]*", raw):
+        return None, f"GIT_CONFIG_COUNT={raw!r} in the environment is not a count - the scan cannot add its git setting"
+    n = int(raw or "0")
+    return {**env, f"GIT_CONFIG_KEY_{n}": key, f"GIT_CONFIG_VALUE_{n}": value, "GIT_CONFIG_COUNT": str(n + 1)}, ""
+
+
+def attribute_blind_env(scratch: Path) -> tuple[dict[str, str] | None, str]:
+    """(env, "") for a `gitleaks git` scan - this environment with GIT_ATTR_SOURCE naming the empty tree and one more
+    GIT_CONFIG_* entry naming `<scratch>/attributes` (`* diff`) as core.attributesFile, so the git that gitleaks
+    spawns reads no in-tree .gitattributes and diffs every file as text: neither a `binary`/`-diff` mark nor a NUL
+    byte hides a file's content - or (None, reason) when this git cannot do that."""
+    rc, version = git("version")
+    if rc != 0 or not attr_source_supported(version):
+        return None, (f"`{version or 'git version'}` does not read GIT_ATTR_SOURCE (git >= "
+                      f"{GIT_ATTR_SOURCE_MIN[0]}.{GIT_ATTR_SOURCE_MIN[1]}): a .gitattributes `binary`/`-diff` mark "
+                      "would hide a file's content from the scan - upgrade git")
+    p = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], input="", capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    tree = p.stdout.strip()
+    if p.returncode != 0 or not tree:
+        return None, f"could not name the empty tree for GIT_ATTR_SOURCE: {p.stderr.strip()}"
+    attributes = scratch / "attributes"
+    attributes.write_bytes(TEXT_ATTRIBUTES.encode("ascii"))
+    env, why = with_config_entry(dict(os.environ), "core.attributesFile", attributes.as_posix())
+    if env is None:
+        return None, why
+    return {**env, "GIT_ATTR_SOURCE": tree}, ""
 
 
 def git_scan(gl: str, *flags: str) -> list[str]:
@@ -114,10 +223,10 @@ def error_lines(log: str) -> list[str]:
     return hits
 
 
-def run_scan(cmd: list[str]) -> int:
-    """Run gitleaks, relay its output, and return the gate verdict: gitleaks' own exit code, except that
-    an exit 0 beside an error-level log line is a failed scan (2), never a clean one."""
-    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+def run_scan(cmd: list[str], env: dict[str, str] | None = None) -> int:
+    """Run gitleaks (in `env`, else this environment), relay its output, and return the gate verdict: gitleaks'
+    own exit code, except that an exit 0 beside an error-level log line is a failed scan (2), never a clean one."""
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     sys.stdout.write(p.stdout)
     sys.stdout.flush()
     sys.stderr.write(p.stderr)
@@ -158,9 +267,19 @@ def main(argv: list[str] | None = None) -> int:
         fail(f"{CONFIG} missing")
         return 2
 
-    if args.dir:
-        cmd = [gl, "dir", str(ROOT), *common_args()]
-    elif args.history:
+    # the scan source gitleaks reads a `.gitleaksignore` beside: the tree for `dir`, the working directory for `git .`
+    # [Build-Session-Entscheidung: P0.3.1] a refusal (exit 2, the scan-did-not-run code), never a scan beside it: no
+    # gitleaks flag stops that read, and deleting a file the developer placed is not this driver's call
+    beside = ignore_file_beside(ROOT if args.dir else Path.cwd())
+    if beside is not None:
+        fail(f"{beside} exists - gitleaks reads a `.gitleaksignore` beside the scan source whatever "
+             "--gitleaks-ignore-path says, and a fingerprint listed there drops the finding outside the .gitleaks.toml "
+             "allowlist check-gitleaks-allowlist freezes; remove it (an accepted finding goes through that allowlist "
+             "or the baseline)")
+        return 2
+
+    flags: list[str] = []
+    if args.history:
         # a SHALLOW checkout would silently scan only the tip - assert the full history is present
         # at RUNTIME (stronger than a static fetch-depth: 0 YAML lint: it catches the real state).
         rc, shallow = git("rev-parse", "--is-shallow-repository")
@@ -169,19 +288,24 @@ def main(argv: list[str] | None = None) -> int:
                  "check out with fetch-depth: 0")
             return 2
         out("scanning the ENTIRE commit history")
-        cmd = git_scan(gl)
     elif args.staged:
-        cmd = git_scan(gl, "--staged")
-    else:  # --range
+        flags = ["--staged"]
+    elif args.range:
         base = resolve_base()
         if base is None:
             out("no range base resolved (first push / empty remote) - FULL-scanning every commit")
-            cmd = git_scan(gl)
         else:
             out(f"scanning the unpushed range {base}..HEAD")
-            cmd = git_scan(gl, f"--log-opts={base}..HEAD")
+            flags = [f"--log-opts={base}..HEAD"]
 
-    return run_scan(cmd)
+    if args.dir:                                       # only the `git` modes spawn git; `dir` reads the files
+        return run_scan([gl, "dir", str(ROOT), *common_args()])
+    with tempfile.TemporaryDirectory(prefix="run-gitleaks-") as scratch:
+        env, why = attribute_blind_env(Path(scratch))
+        if env is None:
+            fail(why)
+            return 2
+        return run_scan(git_scan(gl, *flags), env)
 
 
 if __name__ == "__main__":

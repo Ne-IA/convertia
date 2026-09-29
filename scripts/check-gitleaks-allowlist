@@ -1,24 +1,41 @@
 #!/usr/bin/env python3
 """check-gitleaks-allowlist - G2 allowlist / baseline growth-guard (P0.3.1).
 
-The gitleaks allowlist + baseline are the one place a real secret could be silently SWALLOWED (an
-over-broad allowlist path, or a baseline that "accepts" a genuine finding). So they are FROZEN here:
+The committed gitleaks allowlist + baseline are the one place this repository drops a real secret on
+purpose (the committed fixtures), and so the place a config edit could silently SWALLOW a real secret (an
+over-broad allowlist path, or a baseline that "accepts" a genuine finding). So they are FROZEN here, and
+every other config key that can drop a finding is refused - the config is checked against a SHAPE (the
+permitted keys), never a list of forbidden ones, so a key a newer gitleaks adds is refused until it is
+reviewed here:
 
   * `.gitleaks.toml` `[allowlist].paths` must equal EXACTLY the expected set below (no add / remove
-    / change) — only the committed fixtures + the config itself;
-  * `.gitleaks.toml` declares NO allowlist `regexes`/`commits`/`stopwords` (value-level blanket
-    exemptions are forbidden — exempt by the narrow fixture PATH only);
-  * `.gitleaks-baseline.json` holds <= EXPECTED_BASELINE_COUNT accepted findings.
+    / change) — only the committed fixtures + the config itself; the table holds nothing else (no
+    value-level `regexes`/`commits`/`stopwords` blanket, no `condition`/`targetRules`);
+  * the top level holds only the permitted tables (an `[[allowlists]]` table, gitleaks' other allowlist
+    spelling, is refused);
+  * `[extend]` is exactly `useDefault = true` (the bundled rules on; no `disabledRules`, no `path`/`url`
+    config with its own allowlists). The bundled set brings gitleaks' own global allowlist (paths such
+    as images, lock files and dependency trees, for every rule; values such as one holding `false`, for
+    the bundled rules - each custom rule reports a fixed capture): the named G2 residual, fixed by the
+    pinned binary - run-gitleaks names its reach and g24-run-gitleaks.py pins it;
+  * the custom rules are exactly the frozen id set (a custom rule carrying a bundled rule's id replaces
+    that rule), and each is a pure pattern: no per-rule `allowlist`/`allowlists`, no `skipReport`, no
+    `path`/`required` condition on where it fires;
+  * `.gitleaks-baseline.json` holds <= EXPECTED_BASELINE_COUNT accepted findings;
+  * no `.gitleaksignore` is tracked, at any depth: gitleaks drops every fingerprint listed in one beside
+    the scan source (run-gitleaks refuses to scan beside one; this is the second catcher, at commit time).
 
 Growing any of these means editing the frozen expectation in THIS file — itself L(-1)
 (scripts/l-neg1-files.toml, G71), so the change carries the owner-ack + a Dual-Review note and is a
-visible Co-Pilot review item, not a quiet widening. stdlib-only (tomllib, json).
+visible Co-Pilot review item, not a quiet widening. stdlib-only (tomllib, json) + `git ls-files`.
 
-Exit: 0 = the allowlist/baseline match the frozen expectation; 1 = drift; 2 = a file is missing/unparseable.
+Exit: 0 = the config/baseline match the frozen expectation; 1 = drift; 2 = a file is missing/unparseable or
+      the tracked-file list cannot be read.
 """
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -35,10 +52,21 @@ EXPECTED_ALLOWLIST_PATHS = {
     r"(^|/)\.gitleaks\.toml$",
     r"(^|/)scripts/gate-selftests/gitleaks-fixtures/",
 }
-# the custom rules that MUST stay present (a deletion/rename would silently drop a named-secret guard)
+# the custom rules, EXACTLY (a deletion/rename would silently drop a named-secret guard; an extra id could
+# replace the bundled rule of that id - measured on 8.30.1: a `github-pat` redefinition drops the bundled regex)
 EXPECTED_CUSTOM_RULE_IDS = {"minisign-secret-key", "minisign-password-literal", "anthropic-api-key-custom"}
 EXPECTED_BASELINE_COUNT = 0   # the repo accepts ZERO pre-existing findings; a bump is reviewed here
-FORBIDDEN_ALLOWLIST_KEYS = ("regexes", "regexTarget", "commits", "stopwords")  # value-level blanket exemptions
+# [Build-Session-Entscheidung: P0.3.1] the frozen config SHAPE - the permitted keys per table, never a list of
+# forbidden ones. Every other key 8.30.1 reads drops a finding (measured on the planted minisign key: a rule
+# `allowlists` table, `skipReport`, `path` or `required`, an `[[allowlists]]` table in place of `[allowlist]`, an
+# `[extend].path` config allowlisting it; `[extend].disabledRules` drops a bundled rule), save `[extend].url`, parsed
+# but unimplemented in 8.30.1; a key a newer gitleaks adds is refused until it is reviewed here
+PERMITTED_TOP_LEVEL_KEYS = {"title", "description", "minVersion", "extend", "rules", "allowlist"}
+PERMITTED_EXTEND_KEYS = {"useDefault"}
+PERMITTED_RULE_KEYS = {"id", "description", "regex", "secretGroup", "entropy", "keywords", "tags"}
+PERMITTED_ALLOWLIST_KEYS = {"description", "paths"}
+RULE_ALLOWLIST_KEYS = ("allowlist", "allowlists")   # the rule-level spellings (8.30.1 reads both)
+IGNORE_FILE_NAME = ".gitleaksignore"
 
 
 def fail(msg: str) -> None:
@@ -48,30 +76,55 @@ def fail(msg: str) -> None:
 def evaluate(cfg: object, baseline: object) -> list[str]:
     """(pure) Return the list of growth/drift problems for the parsed .gitleaks.toml `cfg` (+ the
     parsed baseline JSON). Guards EVERY way the config could silently SWALLOW a secret: a widened/
-    changed top-level allowlist, a value-level blanket, gitleaks' bundled defenses turned off
-    (useDefault=false), a deleted/renamed custom rule, a per-rule allowlist neutralising a rule, or
-    a baseline accepting a finding."""
+    changed top-level allowlist, a key outside the frozen shape (a value-level blanket, a second
+    allowlist table, a rule-dropping or config-loading `[extend]` key, a per-rule allowlist,
+    `skipReport` or fire condition), gitleaks' bundled defenses turned off (useDefault=false), a
+    deleted/renamed or an extra custom rule, or a baseline accepting a finding."""
     problems: list[str] = []
     cfg = cfg if isinstance(cfg, dict) else {}
     al = cfg.get("allowlist") if isinstance(cfg.get("allowlist"), dict) else {}
     rules = cfg.get("rules") if isinstance(cfg.get("rules"), list) else []
     extend = cfg.get("extend") if isinstance(cfg.get("extend"), dict) else {}
 
+    # the top level holds only the permitted tables; `[[allowlists]]` is gitleaks' second allowlist spelling
+    for key in sorted(set(cfg) - PERMITTED_TOP_LEVEL_KEYS):
+        if key == "allowlists":
+            problems.append("a top-level `[[allowlists]]` table is declared - the one allowlist is the frozen "
+                            "`[allowlist]` paths table (an `[[allowlists]]` entry, with or without `targetRules`, "
+                            "is a second suppression table)")
+        else:
+            problems.append(f"top-level key `{key}` is outside the frozen config shape "
+                            f"({', '.join(sorted(PERMITTED_TOP_LEVEL_KEYS))})")
+
     # gitleaks' bundled defense-in-depth must stay ON (useDefault=false silently drops every builtin rule)
     if extend.get("useDefault") is not True:
         problems.append("`[extend].useDefault` is not true - the bundled gitleaks ruleset (its own "
                         "secret rules + high-entropy catch) would be silently dropped")
+    for key in sorted(set(extend) - PERMITTED_EXTEND_KEYS):
+        problems.append(f"`[extend].{key}` is set - `[extend]` is exactly `useDefault = true` (`disabledRules` "
+                        "drops a bundled rule; `path` loads another config with its own rules and allowlists, `url` "
+                        "is its remote form)")
 
-    # the named-secret custom rules must all still be present (a deletion/rename drops a guard)
+    # the named-secret custom rules, exactly: a deletion/rename drops a guard, an extra id may replace a bundled rule
     rule_ids = {r.get("id") for r in rules if isinstance(r, dict)}
     for missing in sorted(EXPECTED_CUSTOM_RULE_IDS - rule_ids):
         problems.append(f"custom rule `{missing}` is missing (deleted or renamed) - a named-secret guard "
                         "cannot be silently dropped")
-    # no PER-RULE allowlist may neutralise a rule (value-level blanket, same risk as the top-level one)
+    for extra in sorted(str(i) for i in rule_ids - EXPECTED_CUSTOM_RULE_IDS):
+        problems.append(f"custom rule `{extra}` is outside the frozen id set - a custom rule carrying a bundled "
+                        "rule's id replaces that rule; add a rule by extending EXPECTED_CUSTOM_RULE_IDS here "
+                        "(L(-1)) with a note")
+    # each custom rule is a pure pattern: no PER-RULE allowlist, no hidden report, no condition on where it fires
     for r in rules:
-        if isinstance(r, dict) and r.get("allowlist"):
-            problems.append(f"rule `{r.get('id', '?')}` has a per-rule allowlist - forbidden (it could "
-                            "neutralise the rule); exempt by the narrow top-level fixture PATH only")
+        if not isinstance(r, dict):
+            continue
+        for key in sorted(set(r) - PERMITTED_RULE_KEYS):
+            if key in RULE_ALLOWLIST_KEYS:
+                problems.append(f"rule `{r.get('id', '?')}` has a per-rule allowlist (`{key}`) - forbidden (it "
+                                "could neutralise the rule); exempt by the narrow top-level fixture PATH only")
+            else:
+                problems.append(f"rule `{r.get('id', '?')}` declares `{key}` - a custom rule is a pure pattern "
+                                "(`skipReport` hides its findings; `path`/`required` restrict where it fires)")
 
     paths = set(al.get("paths") or [])
     if paths != EXPECTED_ALLOWLIST_PATHS:
@@ -79,10 +132,10 @@ def evaluate(cfg: object, baseline: object) -> list[str]:
         removed = EXPECTED_ALLOWLIST_PATHS - paths
         problems.append(f"allowlist paths drifted from the frozen set (added {sorted(added)}, "
                         f"removed {sorted(removed)}) - update EXPECTED_ALLOWLIST_PATHS here (L(-1)) with a note")
-    for key in FORBIDDEN_ALLOWLIST_KEYS:
-        if al.get(key):
-            problems.append(f"allowlist declares `{key}` - value-level blanket exemptions are forbidden "
-                            "(a secret could hide behind one); exempt by the narrow fixture PATH only")
+    for key in sorted(set(al) - PERMITTED_ALLOWLIST_KEYS):
+        problems.append(f"allowlist declares `{key}` - only `description` and the frozen `paths` are permitted "
+                        "(a value-level blanket or a match condition could let a secret through); exempt by the "
+                        "narrow fixture PATH only")
     if baseline is None:
         pass                                  # no baseline file -> zero accepted findings, fine
     elif not isinstance(baseline, list):
@@ -92,6 +145,19 @@ def evaluate(cfg: object, baseline: object) -> list[str]:
                         f"{EXPECTED_BASELINE_COUNT} - a baseline bump must raise EXPECTED_BASELINE_COUNT "
                         "here with a Dual-Review note")
     return problems
+
+
+def tracked_ignore_files(tracked: list[str]) -> list[str]:
+    """(pure) The tracked paths named `.gitleaksignore`, at any depth; the name compares case-insensitively (a
+    case-insensitive checkout opens `.GitleaksIgnore` when gitleaks asks for `.gitleaksignore`)."""
+    return [p for p in tracked if p.rsplit("/", 1)[-1].casefold() == IGNORE_FILE_NAME]
+
+
+def ignore_file_problems(tracked: list[str]) -> list[str]:
+    """(pure) One problem per tracked `.gitleaksignore`."""
+    return [f"`{p}` is tracked - gitleaks drops every fingerprint listed in a `.gitleaksignore` beside the scan "
+            "source, outside the frozen allowlist; run-gitleaks refuses to scan beside one - delete it (an accepted "
+            "finding goes through the allowlist/baseline here)" for p in tracked_ignore_files(tracked)]
 
 
 def main() -> int:
@@ -111,13 +177,21 @@ def main() -> int:
             print(f"[G2] {BASELINE} is not valid JSON: {e}", file=sys.stderr)
             return 2
 
-    problems = evaluate(cfg, baseline)
+    listed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True)
+    if listed.returncode != 0:
+        print(f"[G2] `git ls-files` failed in {ROOT} - the tracked `.gitleaksignore` check cannot run: "
+              f"{listed.stderr.decode('utf-8', 'replace').strip()}", file=sys.stderr)
+        return 2
+    tracked = [p for p in listed.stdout.decode("utf-8", "surrogateescape").split("\0") if p]
+
+    problems = evaluate(cfg, baseline) + ignore_file_problems(tracked)
     if problems:
         for p in problems:
             fail(p)
         return 1
-    print(f"[G2] gitleaks config OK (useDefault on; {len(EXPECTED_CUSTOM_RULE_IDS)} custom rules present; "
-          f"{len(EXPECTED_ALLOWLIST_PATHS)} frozen allowlist paths; <= {EXPECTED_BASELINE_COUNT} baseline finding(s))")
+    print(f"[G2] gitleaks config OK (the frozen shape; useDefault on; {len(EXPECTED_CUSTOM_RULE_IDS)} custom rules; "
+          f"{len(EXPECTED_ALLOWLIST_PATHS)} frozen allowlist paths; <= {EXPECTED_BASELINE_COUNT} baseline finding(s); "
+          "no tracked .gitleaksignore)")
     return 0
 
 

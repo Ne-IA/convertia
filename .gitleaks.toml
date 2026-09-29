@@ -9,7 +9,23 @@
 # which needs a commercial licence for org-owned repos). Planes: `git --staged` at L1, `git
 # --log-opts=<base>..HEAD` range at L2 (excluded from the docs-only fastpath — a secret can be in a .md), `dir`
 # full-tree at L4, full-HISTORY `git` nightly at L5. This file + the baseline are L(-1)
-# (scripts/l-neg1-files.toml, G71); the allowlist is growth-guarded by check-gitleaks-allowlist (G2).
+# (scripts/l-neg1-files.toml, G71); check-gitleaks-allowlist (G2) freezes this file's shape, the
+# allowlist below and the baseline cap - the only suppression this repository controls:
+# scripts/run-gitleaks honours no inline `gitleaks:allow` comment, no `.gitleaksignore`, no
+# `.gitattributes` binary mark and no NUL-byte binary verdict. The named residual: `useDefault` also
+# brings gitleaks' own global allowlist, which skips paths such as images, lock files and dependency
+# trees for every rule, the custom ones too, and drops a bundled rule's finding whose value holds
+# `false` or a stopword, starts with `true`, ends in `null` or has a placeholder shape;
+# scripts/run-gitleaks names its reach and G24 legs pin it.
+#
+# [Build-Session-Entscheidung: P0.3.1] each custom rule reports a FIXED capture as its secret
+# (`secretGroup = 1`: the key's `RW` prefix, the variable name, `sk-ant-`), never the value it
+# matched. That global allowlist also drops a finding by its secret: one containing `false` in any
+# case or either of two stopwords, or ending in `null` (its first value regex, `(?i)^true|false|null$`,
+# is an unanchored alternation), so a MINISIGN_PASSWORD holding one of them passed every mode while the
+# rule reported its value. gitleaks prints a finding's detail only under -v or into a report file,
+# and scripts/run-gitleaks asks for neither, so --redact masking the capture instead of the value
+# prints no value.
 
 title = "ConvertIA secrets scan"
 
@@ -23,14 +39,16 @@ useDefault = true   # gitleaks' bundled rule set (incl. its Anthropic rule) + th
 [[rules]]
 id          = "minisign-secret-key"
 description = "minisign secret key blob (Ed algo, ~212-char base64; no -----BEGIN----- envelope)"
-regex       = '''\bRW[A-Za-z0-9+/]{180,}={0,2}'''
+regex       = '''\b(RW)[A-Za-z0-9+/]{180,}={0,2}'''
+secretGroup = 1
 
 # --- MINISIGN_PASSWORD — a banned LITERAL assignment. Excludes the legitimate `${{ secrets.… }}`
 # / `$VAR` reference forms (the value char class starts with neither `$` nor `{`). ---
 [[rules]]
 id          = "minisign-password-literal"
 description = "a literal MINISIGN_PASSWORD value (not a ${{ secrets.* }} / $env reference)"
-regex       = '''(?i)MINISIGN_PASSWORD['"]?\s*[:=]\s*['"]?[A-Za-z0-9!@#%^&*_.+=/-]{8,}'''
+regex       = '''(?i)(MINISIGN_PASSWORD)['"]?\s*[:=]\s*['"]?[A-Za-z0-9!@#%^&*_.+=/-]{8,}'''
+secretGroup = 1
 keywords    = ["minisign_password"]
 
 # --- ANTHROPIC API key — the reviewer-API secret. DISTINCT id from gitleaks' bundled anthropic rule
@@ -38,7 +56,8 @@ keywords    = ["minisign_password"]
 [[rules]]
 id          = "anthropic-api-key-custom"
 description = "Anthropic API key (sk-ant-…)"
-regex       = '''\bsk-ant-[A-Za-z0-9_-]{24,}'''
+regex       = '''\b(sk-ant-)[A-Za-z0-9_-]{24,}'''
+secretGroup = 1
 keywords    = ["sk-ant-"]
 
 [allowlist]
