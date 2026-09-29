@@ -5,6 +5,10 @@
 # (P1) and asserts the gate exits 1; the pure walk is unit-tested against synthetic metadata in P0.
 # This fixture is NOT the real workspace (check-core-deps only inspects the repo-root / src-tauri
 # manifest), so it can never accidentally taint the real core closure.
+# Its Cargo.lock is COMMITTED beside this manifest: crate::untrusted_byte_boundary reads it on every
+# `cargo test`, so every clone must carry it. `g24-core-deps.py` resolves it `--locked` (never rewriting
+# it) and pins it tracked, unignored and path-only; after a manifest edit, re-lock with
+# `cargo metadata --manifest-path tests/g53-fixture/Cargo.toml` and commit the lock.
 [workspace]
 members = ["convertia-core", "libvips-sys"]
 resolver = "2"

@@ -84,6 +84,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DRIFT_SET = ("Cargo.lock", "pnpm-lock.yaml", "imports.lock")
 # On-disk candidate LOCATIONS the live drift-guard diffs (spec §0.7 leaves Cargo.lock root-OR-member
 # until P1; pnpm-lock.yaml at the workspace root; the cargo-vet trust DB under supply-chain/).
+# [Build-Session-Entscheidung: P0.4.9] tests/g53-fixture/Cargo.lock is committed but deliberately NOT a
+# drift path: it is a planted fixture, never a dependency lock (nothing is built, audited or SBOM'd from
+# it); its one resolver, g24-core-deps.py, runs `cargo metadata --locked` (it can neither create nor
+# rewrite the lock) and pins its path-only content, and the L(-1) cage holds tests/g53-fixture/**.
 DRIFT_PATHS = (
     "Cargo.lock", "src-tauri/Cargo.lock",
     "fuzz/Cargo.lock",
