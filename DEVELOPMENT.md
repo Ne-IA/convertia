@@ -88,8 +88,10 @@ The individual check commands (type-check, lint, tests) are listed in
   which breaks the hooks on a path with spaces or parentheses. Re-run it after every `lefthook.yml`
   change, your own or a pulled one: lefthook re-syncs its hooks on its next run and writes the unquoted
   path back, so the next commit fails with a hook `sh` syntax error.
-- **Line endings.** Every text file in the repo is LF (`.gitattributes`, G52). A Python script that
-  writes a repo file opens it with `newline="\n"` or in binary mode; text mode writes CRLF on Windows.
+- **Line endings.** Every first-party text file in the repo is LF (`.gitattributes`, G52); a fixture
+  in a corpus tree (`tests/corpus/`, `fuzz/corpus/`, ...) keeps its exact bytes, CRLF included. A Python
+  script that writes a repo file opens it with `newline="\n"` or in binary mode; text mode writes
+  CRLF on Windows.
 - **Signed commits.** Commit in the foreground: a commit that hangs with no output is waiting on the
   signing step. `setup-dev` points `gpg.ssh.program` at the Windows OpenSSH `ssh-keygen`, which reaches
   the SSH agent.

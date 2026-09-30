@@ -30,12 +30,14 @@ tests/corpus-large/** filter=lfs diff=lfs merge=lfs -text
 
 # §6.4.5 small-tier corpus fixtures are byte-exact by contract (their SHA-256 lives in
 # tests/corpus/manifest.toml, G24a): never EOL-normalise them — the global `* text=auto eol=lf`
-# would rewrite a future CRLF fixture at add/checkout and break its manifest hash. `-text` only
-# (text diffs stay useful, unlike the `binary` assets above); `manifest.toml` itself stays under
-# the global text rule. [Owner decision 2026-07-17 — the P3.61 escalation's class sweep; paired
-# with the `.editorconfig [tests/corpus/*.{csv,tsv}]` unset block.]
-tests/corpus/*.csv -text
-tests/corpus/*.tsv -text
+# would rewrite a CRLF fixture at add/checkout and break its manifest hash. `-text` only (text
+# diffs stay useful, unlike the `binary` assets above), one rule for every depth and every format,
+# so a new category directory or fixture format needs no edit here; the first-party
+# `manifest.toml` is put back under the text rule by the line after it (a later line wins).
+# [Owner decision 2026-07-17 — the P3.61 escalation's class sweep, widened from the root CSV/TSV
+# globs; paired with the `.editorconfig [tests/corpus/**]` unset block.]
+tests/corpus/** -text
+tests/corpus/manifest.toml text eol=lf
 
 # §6.4.2/G48 fuzz seed corpus + minimized crashes are RAW BYTES by contract (a NUL byte, a
 # PATH_MAX+1 run, a trailing-space path): the global `* text=auto eol=lf` would append/normalise

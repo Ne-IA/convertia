@@ -9,21 +9,21 @@
 # (both directions, on every convertible row below); every OTHER pair's coupling arrives with its P4+
 # conversion box. `ambiguous.csv` carries none — it declines to Uncertain and backs no conversion pair.
 #
-# Layout: these first P3.30 detection-KAT fixtures live FLAT at the corpus root (§6.4.5: "the
-# per-source-format directory organisation is just file layout"); a per-source-format directory tier
-# (spreadsheets/, images/, …) becomes genuinely needed — and is added with its §0.7 physical-tree update
-# — when the P4+ conversion corpus fills it with many files. [Build-Session-Entscheidung: P3.30]
+# Layout: fixtures live under the §6.4.5 per-category directories (`images/`, `audio/`, …); the P3
+# CSV/TSV fixtures sit at the corpus root until P7.61 moves them into `spreadsheets/`. A new category
+# directory gets its spec §0.7 row in the commit that adds its first fixture.
+# [Build-Session-Entscheidung: P3.30]
 #
 # First live entries: P3.30 (the §1.2 detection walking-skeleton — canonical CSV/TSV, a .csv that is
 # really TSV (content over name), and a no-consistent-delimiter file that declines to Uncertain). Each is
 # also pinned in tests/detect-kat.toml, read by the G15 detection KAT test.
 #
 # P3.61 adds the CSV↔TSV CONVERSION-pair fixtures (the §6.4.5 CSV/TSV edge set the slice's two pairs need)
-# + the §0.9 timeout-sentinel. Their bytes are text-hygiene-EXEMPT by the 2026-07-17 owner ruling
-# (`.editorconfig [tests/corpus/*.{csv,tsv}]` unsets all four axes; `.gitattributes … -text` pins
-# byte-exactness) — fixture bytes are the test subject, so no hygiene axis asserts anything about them.
-# The exemption globs are FLAT + extension-pinned, which is a second reason the P3.30 flat layout above
-# stands. This manifest file itself is first-party and deliberately stays under the global rules.
+# + the §0.9 timeout-sentinel. Their bytes are text-hygiene-EXEMPT by the 2026-07-17 owner ruling, since
+# widened to every depth and format (`.editorconfig [tests/corpus/**]` unsets all four axes;
+# `.gitattributes tests/corpus/** -text` pins byte-exactness) — fixture bytes are the test subject, so no
+# hygiene axis asserts anything about them. This manifest file itself is first-party and deliberately
+# stays under the global rules (its own `.editorconfig` section and `.gitattributes` line re-apply them).
 #
 # P3.62 registers the CSV↔TSV coupling: every convertible row below carries `covers` (the §6.4.3a array
 # form the P4.60 bijection guard parses) + a `[file.expect]` per-target outcome. **Disposition of the
@@ -38,11 +38,6 @@
 # byte-identical output (`sha256(out1)==sha256(out2)`), asserted by the P3.62
 # `engines::csv_tsv_corpus_binding` test for both output-format categories. The per-category determinism
 # floor + a machine-readable enumeration land with the G32 gate that reads them (the P5.64+ pattern).
-#
-# Still no per-source-format subdirectory — the P3 corpus stays FLAT (the P3.30 precedent); the first
-# corpus-subdirectory box (P7.61, or P5 image staging if earlier) owns that re-organisation as a
-# structural act (the §0.7 row + the `.editorconfig`/`.gitattributes` glob extension in one
-# owner-acked L(-1) commit).
 
 [[file]]
 path = "canonical.csv"

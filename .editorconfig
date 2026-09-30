@@ -25,15 +25,30 @@ end_of_line = unset
 insert_final_newline = unset
 trim_trailing_whitespace = unset
 
-[tests/corpus/*.{csv,tsv}]
-# §6.4.5 corpus fixtures are REPRESENTATIVE INPUT BYTES — the test subject itself (P3.61 mandates a
-# Windows-1252-encoded CSV, which `[*]`'s charset=utf-8 would red via G52): no text-hygiene axis may
-# assert anything about fixture bytes, exactly like the binary block above (all four unset, not
-# charset alone — a no-final-newline / trailing-space / CRLF fixture is the same fixture-sovereignty
-# class). Path-scoped flat per the §6.4.5 layout so the tree-wide guarantee is untouched;
-# `tests/corpus/manifest.toml` (a first-party file) deliberately stays under `[*]`. Future corpus
-# text formats (P5-P7) extend this block consciously — an L(-1) act per format phase.
-# [Owner decision 2026-07-17 — the P3.61 escalation; paired with the `.gitattributes -text` rows.]
+[tests/corpus/**]
+# §6.4.5 corpus fixtures are REPRESENTATIVE INPUT BYTES — the test subject itself, pinned byte-exact by
+# their SHA-256 in tests/corpus/manifest.toml (G24a): no text-hygiene axis may assert anything about
+# fixture bytes, exactly like the binary block above (all four unset, not charset alone — a
+# Windows-1252 CSV, a no-final-newline / trailing-space / CRLF fixture is one fixture-sovereignty
+# class). One rule for every depth and every format, so a new category directory or fixture format
+# needs no edit here; the first-party manifest is put back under the global rules by the next
+# section, which matches it after this one and so wins. [Owner decision 2026-07-17 — the P3.61
+# escalation, widened from the root CSV/TSV glob; paired with the `.gitattributes` corpus rows.]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+
+[tests/corpus/manifest.toml]
+# the first-party manifest stays under the global `[*]` rules
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[tests/corpus-large/**]
+# the LFS-backed real-world tier of the same §6.4.5 corpus (`.gitattributes` gives it `-text`): every
+# file in it is fixture bytes, so the same four axes are unset. It holds no first-party file.
 charset = unset
 end_of_line = unset
 insert_final_newline = unset
