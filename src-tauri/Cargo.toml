@@ -193,7 +193,7 @@ csv = "1.4.0"
 # paired `check-supply-chain` PINNED_FLOORS §0.8 drift-floor row is L(-1) (G71) — the Co-Pilot box P4.84,
 # mirroring the chardetng P3.27 / csv P3.41 splits (a new direct dep ABSENT from PINNED_FLOORS does not red
 # G18: the floor is a present-crate check, P3.82).
-process-wrap = { version = "9.1.0", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
+process-wrap = { version = "10.0.1", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
 
 # [P3.12] §2.1.1/§2.1.2 Unix single-call no-replace publish primitive for `fs_guard::publish_noreplace` — the
 # SAFE `rustix::fs::renameat_with(olddirfd, tmp, dirfd, leaf, RenameFlags::NOREPLACE)` maps to Linux
