@@ -17,8 +17,8 @@
 # executor, needed first by P0.2.2). Each additional gate tool is pinned here BY THE
 # BOX THAT INTRODUCES IT, through the same mechanism — gitleaks (P0.3.1),
 # actionlint (P0.2.4 - CI workflow validator), zizmor (P0.2.6), typos/editorconfig-checker (P0.3.11),
-# cargo-deny + cargo-audit (P1.59), cargo-mutants (P3.72), Syft/cargo-vet/minisign/cyclonedx (their
-# boxes). cargo-fuzz (P3.73) is version-pinned via `cargo install cargo-fuzz --version 0.13.2 --locked`
+# cargo-deny + cargo-audit (P1.59), cargo-mutants (P3.72), osv-scanner (P4.96), Syft/cargo-vet/minisign/
+# cyclonedx (their boxes). cargo-fuzz (P3.73) is version-pinned via `cargo install cargo-fuzz --version 0.13.2 --locked`
 # IN .github/workflows/fuzz.yml, deliberately NOT a binary row here: upstream rust-fuzz/cargo-fuzz
 # publishes NO prebuilt binaries, and a crates.io install is content-addressed (cargo verifies the
 # crate archive sha256 against the registry index), so the version pin + --locked IS the checksum leg
@@ -198,6 +198,24 @@ linux-aarch64  = { url = "https://github.com/rustsec/rustsec/releases/download/c
 macos-x86_64   = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-apple-darwin-v0.22.2.tgz",        sha256 = "847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2" }
 macos-aarch64  = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-aarch64-apple-darwin-v0.22.2.tgz",       sha256 = "ec7ca4263769593df4d909be85b94a6b79efa2897be5d2bb8ebd516e823175af" }
 windows-x86_64 = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-pc-windows-msvc-v0.22.2.zip",      sha256 = "0a7316540862c13d954f648917ceacca593747baed6eec180fafa590be2710ab", asset_kind = "zip" }
+
+# --- osv-scanner - the OSV advisory scanner over pnpm-lock.yaml (G17's JS half, P4.96). Run by
+# scripts/check-js-advisories as `osv-scanner scan source --offline` against the local OSV npm database
+# under .gate-tools/osv-db; only that script's `--refresh` mode downloads the database. Ships RAW
+# per-platform binaries (the downloaded asset IS the executable; no archive to extract). ---
+[tools.osv-scanner]
+version       = "2.6.0"
+origin        = "https://github.com/google/osv-scanner/releases/download/v2.6.0/"
+bin_name      = "osv-scanner"
+asset_kind    = "raw"
+corroboration = "official osv-scanner_SHA256SUMS (GitHub release v2.6.0, the latest release) - each of the 5 pinned platform binaries downloaded + `sha256sum -c`-verified against it (all OK; each also equals the asset's GitHub API digest). Build provenance: the release's SLSA provenance v0.2 bundle `multiple.intoto.jsonl` verifies every pinned binary offline via `gh attestation verify <asset> --bundle multiple.intoto.jsonl --repo google/osv-scanner --predicate-type https://slsa.dev/provenance/v0.2 --signer-workflow slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml` (exit 0 for all 5; the attested source digest e840a6e8adb14b7777c78e26cfbf6e2abc1d1fc6 is the v2.6.0 tag commit). Both flags are required: without --predicate-type the verify looks for a SLSA v1 predicate and finds none, and without --signer-workflow it expects the repo's own workflow as the signer (both exit 1). GitHub hosts no attestation for this repository (`gh attestation verify --repo google/osv-scanner` without --bundle -> HTTP 404), so the release bundle is the attestation arm. Established 2026-09-30 by Co-Pilot, owner-acked."
+
+[tools.osv-scanner.platforms]
+linux-x86_64   = { url = "https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_amd64",       sha256 = "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108" }
+linux-aarch64  = { url = "https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_arm64",       sha256 = "2c71403eb443d05891c4f268c3ad771cf4f16e5443463fd7851ef8f454d3c7e4" }
+macos-x86_64   = { url = "https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_darwin_amd64",      sha256 = "60c5296637e977b28eeda5c7f13573e447659a632922737f94d11fa7e30ad6ca" }
+macos-aarch64  = { url = "https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_darwin_arm64",      sha256 = "98c460dcd37de25819babd757d04542045b6243113e209edcd4d89fedb0256b4" }
+windows-x86_64 = { url = "https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_windows_amd64.exe", sha256 = "e0ed7644118b717b028c249ee9d3515024e55e8510747ca08906eb96765354d6" }
 
 # --- cargo-llvm-cov - the LLVM source-based coverage runner over the workspace (G27/G28, P1.54). Invoked
 # as `cargo llvm-cov` (needs the llvm-tools-preview rustup component, in rust-toolchain.toml since P1.3).

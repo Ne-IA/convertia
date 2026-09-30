@@ -748,7 +748,9 @@ change-reviewed in-repo `engines.lock`** before staging AND **re-verified on
 cache-restore** (an Actions cache is not integrity-protected — on mismatch, delete +
 refetch from the pinned upstream URL); `cargo audit` / `cargo deny` run in CI over
 the Rust graph (advisory + licence-policy enforcement, non-release-blocking
-advisory-wise but licence-policy-blocking). Engine **currency** (keeping decoders
+advisory-wise but licence-policy-blocking), and `osv-scanner` runs offline over
+`pnpm-lock.yaml` against the Lane-A-refreshed OSV database (the JS advisory half).
+Engine **currency** (keeping decoders
 patched) is a **best-effort posture, not a gate** (SSOT) — owned by §3.8; this file
 only ensures a bumped engine is re-validated against the corpus (§6.4/§6.5) before it
 can ship.
@@ -1616,7 +1618,8 @@ for the OS-agnostic checks, fanning to the matrix only for compile-sanity:
    fast — runs every push; any jsdom-leg violation fails the lane.
 5. **Compile-sanity on the matrix:** `cargo check` / a debug `tauri build` on all
    three legs to catch platform-specific breakage early (no full corpus run here).
-6. **`cargo audit` / `cargo deny`** (advisory + licence policy, §6.3.4).
+6. **`cargo audit` / `cargo deny`** (Rust) and **`osv-scanner`** over `pnpm-lock.yaml` (JS)
+   (advisory + licence policy, §6.3.4).
 The enforcement is **CI green on `main` via required status checks on every push to
 `main`** (single-branch model, security-concept §2) — a red Lane A **fails the push /
 reddens `main`** and is **fixed immediately**, never bypassed; there is **no merge step

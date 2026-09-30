@@ -82,7 +82,10 @@ mirror = "CI only (assembled in P10)"
 #       once its phase lands. Such a transition is NO LONGER a prose-only promise: it is bound
 #       to the [[posture_flag]] registry below + plan-lint check 27, which fails CLOSED if a due
 #       flip was not actually wired (the G71/P1 lesson — see the [[posture_flag]] note). G56a's
-#       fork-PR row is pattern (a); G56b's signed-tag leg is the live pattern-(c) case (flips at P10).
+#       fork-PR row is pattern (a); G56b's signed-tag leg is the live pattern-(c) case (flips at P10);
+#   (d) an OFFLINE gate whose input data only a download step provides (an advisory database) skips
+#       with a notice in a local plane, which never downloads (a gate opens no socket); the L4 job
+#       downloads the data first and runs the gate fail-closed on it. G17's row is pattern (d).
 # Rows are added by each gate's box as it is built (P0.3/P0.4+); the set below seeds the
 # already-built fail-open legs. Every row MUST name `covered_by` + `reason`.
 
@@ -92,6 +95,13 @@ leg = "push-from-stale-base"
 fail_open_at = "L2"
 covered_by = "L4"
 reason = "the stale-base check skips when origin/main is unknown (fresh clone / offline); the L4 clean-checkout always fetches origin/main so the parity is re-established there (pattern a)"
+
+[[fail_open]]
+gate = "G17"
+leg = "offline advisory scans without a local database (check-js-advisories; check-rust-lint-contract's cargo audit --no-fetch)"
+fail_open_at = "L1/L2"
+covered_by = "L4"
+reason = "a local plane never downloads an advisory database, so without one each scan skips with a notice naming the fix (a partial OSV database still reds); Lane A's gate-tooling job on Linux warms the RustSec database and refreshes the OSV npm database, then runs both scans fail-closed over the OS-agnostic Cargo.lock and pnpm-lock.yaml (check-js-advisories --require-db reds an absent or partial database; the macOS/Windows legs of the matrix skip the Rust audit the same way and leave the JS scan to the Linux leg) (pattern d)"
 
 [[fail_open]]
 gate = "G56"

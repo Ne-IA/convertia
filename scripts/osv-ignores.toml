@@ -1,0 +1,18 @@
+# scripts/osv-ignores.toml - the accepted JS advisories of G17's JS half (scripts/check-js-advisories, P4.96).
+#
+# An entry accepts ONE advisory that the osv-scanner scan of pnpm-lock.yaml reports:
+#
+#   [[ignore]]
+#   id = "<the OSV id, e.g. a GHSA id, or any of its aliases, e.g. the CVE id>"
+#   reason = "<why the advisory does not apply to ConvertIA, or why no fixed version can be taken>"
+#
+# Exactly these two keys; the reason is required. An entry whose advisory the scan no longer reports is stale
+# and fails the check, so the list only ever holds live acceptances.
+#
+# Growth guard: the check fails when this file holds more entries than EXPECTED_IGNORE_COUNT in
+# scripts/check-js-advisories, so accepting an advisory takes two reviewed edits (the entry here, the count
+# there). Both files are caged (scripts/**), so the commit carries the G71 `L-neg1-ack: owner` trailer - the
+# owner ack, with no per-entry ack field (the audit.toml discipline). This file is the only ignore list: the
+# check hands the scanner an empty `--config`, so a committed osv-scanner.toml is never read.
+
+schema_version = 1

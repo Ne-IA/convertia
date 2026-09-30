@@ -1242,7 +1242,7 @@ of the next phase** against seven surfaces ((e) added 2026-08-27, (f) 2026-09-09
   boxes", "its own acquisition box", "the Lane-B staging box") names the owning box
   beside the phrase: G17 promised its `osv-scanner`-over-`pnpm-lock.yaml` leg that
   way from P0.4.1 on, no box owned it, and the JS graph ran unscanned until a
-  Co-Pilot pre-flight found 27 advisories by hand (P4.96 owns it now; the same sweep
+  Co-Pilot pre-flight found 27 advisories by hand (P4.96 delivered it; the same sweep
   found the G56 transitive-action-pin half → P4.97, the G37 verify step → P10.62 and
   the G19 manifest promise, retired as per-build output per P4.41 (5)). Surface (e)
   reads spec sentences and code comments, not the catalogue; plan-lint check 33

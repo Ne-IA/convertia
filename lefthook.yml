@@ -125,6 +125,8 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 -P scripts/check-rs-test-refs
     rust-lint-contract: # G14/G17 - whole-tree clippy --all-targets + cargo test + cargo audit (live since P1)
       run: python3 -P scripts/fastpath-docs-only || python3 -P scripts/check-rust-lint-contract --full
+    js-advisories:   # G17 (JS half) - osv-scanner --offline over pnpm-lock.yaml; skips with a notice without a local OSV database (L4 refreshes it and runs --require-db)
+      run: python3 -P scripts/check-js-advisories
     unsafe-policy:   # G29 - whole-tree #![deny(unsafe_code)] + exactly-one-FFI-module scan (live since P1)
       run: python3 -P scripts/check-unsafe-policy --full
     fuzz-contract:   # G48/G16 - whole-harness fuzz-target + fixture + bounds assertion (target-absent until P3)

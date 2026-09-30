@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""check-js-advisories - G17's JS half: osv-scanner offline over pnpm-lock.yaml (P4.96).
+
+The Rust half of G17 is `cargo audit --no-fetch` in check-rust-lint-contract; this script is its JS mirror. It
+runs the PINNED osv-scanner (scripts/gate-tools.toml, installed into .gate-tools/bin by install-gate-tools; a
+binary on PATH is unpinned and never used) over the committed pnpm-lock.yaml against a local OSV npm database,
+and fails closed on every advisory that scripts/osv-ignores.toml does not accept.
+
+Contract (each value measured against osv-scanner 2.6.0):
+  * The database is `<DB_DIR>/osv-scalibr/npm/all.zip`, DB_DIR = .gate-tools/osv-db (gitignored), handed to the
+    scanner as OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY. This script tests the zip itself before any scan: `ok` = a
+    readable zip with at least one file member whose CRCs all verify. The test is load-bearing: the scanner
+    scans a zero-member zip and reports it clean (exit 0).
+  * The check argv is `scan source --offline --format json --config <empty file> --lockfile <lock>`. The explicit
+    empty config stops the scanner's config discovery, so a committed osv-scanner.toml can never ignore an
+    advisory silently; the one ignore list is scripts/osv-ignores.toml, matched here by advisory id or alias.
+    The child runs in an empty temp dir with the HTTP(S) proxy variables pointed at a closed local port, so a
+    connection attempt `--offline` should never make fails instead of leaving the machine.
+  * The exit code is decided before the JSON is trusted: 0 = clean, 1 = findings, anything else fails closed.
+    127 (no usable database, or an absent lockfile) still prints a clean-looking `{"results": []}`, and 128 (a
+    lockfile without packages) prints nothing.
+  * osv-ignores.toml holds `schema_version = 1` and `[[ignore]]` tables with exactly `id` (the OSV id or any of
+    its aliases) and a non-empty `reason`. A duplicate id, an unknown key, bad TOML, an entry whose advisory the
+    scan no longer reports (stale) and a count above EXPECTED_IGNORE_COUNT all fail. Growth is two reviewed
+    edits, the entry there and EXPECTED_IGNORE_COUNT here, both in caged files (the G71 owner-ack).
+
+Planes and modes:
+  (default)     L2 lefthook pre-push. No pinned binary, or no local database -> a notice naming the fix, exit 0
+                (the G17 [[fail_open]] row in gate-planes.toml: a local plane never downloads a database).
+                A PARTIAL database (present, not `ok`) fails in every mode: the scanner would pass a zero-member
+                zip, so it can be neither scanned nor excused as absent.
+  --require-db  L4 (Lane A gate-tooling, Linux): an absent binary and an absent or partial database fail.
+  --refresh     the L4 download step, fail-OPEN: runs `scan source --offline-vulnerabilities
+                --download-offline-databases` (findings discarded), reports the database state and exits 0
+                whatever happened; a failed download leaves a present zip byte-identical, so the check after it
+                scans the restored database. The only mode that opens a socket.
+
+stdlib-only. L(-1) security-critical (scripts/**, scripts/l-neg1-files.toml, G71).
+
+Usage: check-js-advisories [--require-db | --refresh]
+Exit:  0 = no advisory outside the ignore file, a skip with a notice, or any --refresh outcome;
+       1 = an advisory, a stale or malformed ignore entry, a grown ignore file, a scanner failure, a partial
+           database, a missing pnpm-lock.yaml, or (--require-db) an absent binary or database;
+       2 = usage error.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import subprocess
+import sys
+import tempfile
+import zipfile
+import zlib
+from pathlib import Path
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
+if sys.version_info < (3, 11):
+    sys.exit(f"check-js-advisories requires Python >= 3.11 (tomllib); found {platform.python_version()}.")
+import tomllib  # noqa: E402  - stdlib since 3.11, imported after the version guard
+
+ROOT = Path(__file__).resolve().parents[1]
+LOCK = ROOT / "pnpm-lock.yaml"
+IGNORES = ROOT / "scripts" / "osv-ignores.toml"
+BIN_DIR = ROOT / ".gate-tools" / "bin"
+DB_DIR = ROOT / ".gate-tools" / "osv-db"
+EXPECTED_IGNORE_COUNT = 0   # accepted advisories in osv-ignores.toml; growth raises it in the same reviewed edit
+SCHEMA_VERSION = 1
+CLEAN, FINDINGS = 0, 1      # the scanner's two verdict exit codes; every other code fails closed
+SCAN_TIMEOUT = 120          # seconds; a scan of the full npm database takes about 6 s
+REFRESH_TIMEOUT = 900       # seconds; a full database download takes about 95 s
+# [Build-Session-Entscheidung: P4.96] the check's child gets every HTTP(S) proxy variable pointed at a closed
+# local port (and no NO_PROXY), so the "a gate opens no socket" rule is enforced, not only trusted to --offline.
+_CLOSED_PROXY = "http://127.0.0.1:9"
+_PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+_NO_PROXY_VARS = ("NO_PROXY", "no_proxy")
+_REFRESH_HINT = "python3 -P scripts/check-js-advisories --refresh"
+_INSTALL_HINT = "python3 -P scripts/install-gate-tools --tool osv-scanner"
+
+Finding = tuple[str, tuple[str, ...], str, str]     # (advisory id, aliases, package name, package version)
+
+
+def osv_binary(bin_dir: Path = BIN_DIR) -> Path | None:
+    """The pinned scanner install-gate-tools placed in `bin_dir`, else None.
+    [Build-Session-Entscheidung: P4.96] never a binary found on PATH: its version and bytes are unpinned."""
+    for name in ("osv-scanner.exe", "osv-scanner"):
+        cand = bin_dir / name
+        if cand.is_file():
+            return cand
+    return None
+
+
+def db_zip(db_dir: Path) -> Path:
+    """The npm database file osv-scanner 2.6.0 reads under its cache directory (measured: `osv-scalibr/`)."""
+    return db_dir / "osv-scalibr" / "npm" / "all.zip"
+
+
+def db_state(db_dir: Path) -> str:
+    """'absent' (no zip file), 'partial' (not a readable zip, no file member, or a member failing its CRC) or 'ok'."""
+    path = db_zip(db_dir)
+    if not path.is_file():
+        return "absent"
+    try:
+        with zipfile.ZipFile(path) as zf:
+            if not any(not info.is_dir() for info in zf.infolist()):
+                return "partial"
+            if zf.testzip() is not None:
+                return "partial"
+    except (zipfile.BadZipFile, zlib.error, OSError, EOFError, RuntimeError, NotImplementedError, ValueError):
+        return "partial"
+    return "ok"
+
+
+def load_ignores(text: str, limit: int | None = None) -> tuple[dict[str, str], list[str]]:
+    """(pure) osv-ignores.toml -> ({advisory id: reason}, problems); `limit` defaults to EXPECTED_IGNORE_COUNT.
+    There is no per-entry ack field: the owner ack is G71's trailer on the caged file (the audit.toml discipline)."""
+    cap = EXPECTED_IGNORE_COUNT if limit is None else limit
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        return {}, [f"scripts/osv-ignores.toml is not valid TOML: {e}"]
+    problems: list[str] = []
+    extra = sorted(set(data) - {"schema_version", "ignore"})
+    if extra:
+        problems.append(f"scripts/osv-ignores.toml: unknown top-level key(s) {extra} "
+                        "(only `schema_version` and the [[ignore]] tables)")
+    if data.get("schema_version") != SCHEMA_VERSION:
+        problems.append(f"scripts/osv-ignores.toml: schema_version must be {SCHEMA_VERSION}, "
+                        f"found {data.get('schema_version')!r}")
+    entries = data.get("ignore", [])
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        problems.append("scripts/osv-ignores.toml: `ignore` must be an array of tables ([[ignore]])")
+        return {}, problems
+    ignores: dict[str, str] = {}
+    for n, entry in enumerate(entries, 1):
+        unknown = sorted(set(entry) - {"id", "reason"})
+        if unknown:
+            problems.append(f"[[ignore]] #{n}: unknown key(s) {unknown} - an entry holds exactly `id` and `reason`")
+        adv = entry.get("id")
+        if not isinstance(adv, str) or not adv or any(c.isspace() for c in adv):
+            problems.append(f"[[ignore]] #{n}: `id` must be one advisory id (the OSV id or an alias), no white space")
+            continue
+        reason = entry.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            problems.append(f"[[ignore]] {adv}: `reason` is required - why the advisory does not apply, "
+                            "or why no fixed version can be taken")
+            continue
+        if adv in ignores:
+            problems.append(f"[[ignore]] {adv}: duplicate id")
+            continue
+        ignores[adv] = reason.strip()
+    if len(entries) > cap:
+        problems.append(f"scripts/osv-ignores.toml holds {len(entries)} entr(ies), above EXPECTED_IGNORE_COUNT = {cap} "
+                        "- raise EXPECTED_IGNORE_COUNT in scripts/check-js-advisories in the same reviewed edit "
+                        "(the growth guard; both files are caged)")
+    return ignores, problems
+
+
+def scan_argv(binary: Path, lock: Path, config: Path) -> list[str]:
+    """(pure) The check invocation, the single home of its CLI spelling (measured on 2.6.0).
+    [Build-Session-Entscheidung: P4.96] `--config` names an empty file, so no osv-scanner.toml is ever read."""
+    return [str(binary), "scan", "source", "--offline", "--format", "json", "--config", str(config),
+            "--lockfile", str(lock)]
+
+
+def refresh_argv(binary: Path, lock: Path, config: Path) -> list[str]:
+    """(pure) The download invocation (--refresh only): it fetches the database the lockfile's ecosystem needs into
+    the cache directory; the scan it also runs is discarded. The empty `--config` keeps a committed
+    osv-scanner.toml out of this step too."""
+    return [str(binary), "scan", "source", "--offline-vulnerabilities", "--download-offline-databases",
+            "--format", "json", "--config", str(config), "--lockfile", str(lock)]
+
+
+def child_env(base: dict[str, str], db_dir: Path, *, offline: bool) -> dict[str, str]:
+    """(pure) The scanner's environment: the database directory, plus, for the offline check, the closed proxy."""
+    env = dict(base)
+    env["OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY"] = str(db_dir)
+    if offline:
+        for var in _NO_PROXY_VARS:
+            env.pop(var, None)
+        for var in _PROXY_VARS:
+            env[var] = _CLOSED_PROXY
+    return env
+
+
+def findings(stdout: str) -> list[Finding]:
+    """(pure) Every reported vulnerability as (id, aliases, package, version); ValueError on any other JSON shape."""
+    data = json.loads(stdout)                        # json.JSONDecodeError is a ValueError
+    results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(results, list):
+        raise ValueError("no `results` list")
+    out: list[Finding] = []
+    for result in results:
+        packages = result.get("packages", []) if isinstance(result, dict) else None
+        if not isinstance(packages, list):
+            raise ValueError("a result without a `packages` list")
+        for pkg in packages:
+            meta = pkg.get("package") if isinstance(pkg, dict) else None
+            vulns = pkg.get("vulnerabilities", []) if isinstance(pkg, dict) else None
+            if not isinstance(meta, dict) or not isinstance(vulns, list):
+                raise ValueError("a package entry without its `package` object or `vulnerabilities` list")
+            for vuln in vulns:
+                vid = vuln.get("id") if isinstance(vuln, dict) else None
+                aliases = vuln.get("aliases", []) if isinstance(vuln, dict) else None
+                if not isinstance(vid, str) or not vid or not isinstance(aliases, list):
+                    raise ValueError("a vulnerability without an id or with a malformed `aliases` list")
+                out.append((vid, tuple(str(a) for a in aliases),
+                            str(meta.get("name", "?")), str(meta.get("version", "?"))))
+    return out
+
+
+def interpret(rc: int, stdout: str) -> tuple[list[Finding], list[str]]:
+    """(pure) The scanner's verdict: the exit code first, the JSON only after it (127 prints a clean-looking result)."""
+    if rc not in (CLEAN, FINDINGS):
+        return [], [f"osv-scanner exited {rc}, outside its verdict codes 0 (clean) and 1 (findings) - fail-closed "
+                    "(127: no usable database or an absent lockfile; 128: no package found in the lockfile)"]
+    try:
+        found = findings(stdout)
+    except ValueError as e:
+        return [], [f"osv-scanner printed no readable JSON verdict ({e}) - fail-closed"]
+    if rc == FINDINGS and not found:
+        return [], ["osv-scanner exited 1 (findings) but its JSON lists none - fail-closed"]
+    return found, []
+
+
+def evaluate(found: list[Finding], ignores: dict[str, str]) -> list[str]:
+    """(pure) A finding whose id and aliases all miss the ignore ids is a problem; an ignore id matching no finding
+    is stale. [Build-Session-Entscheidung: P4.96] the alias match lets an entry name the CVE a reviewer knows
+    while the scanner reports the GHSA (or the reverse)."""
+    problems: list[str] = []
+    used: set[str] = set()
+    for vid, aliases, name, version in dict.fromkeys(found):
+        hits = [i for i in (vid, *aliases) if i in ignores]
+        if hits:
+            used.update(hits)
+            continue
+        also = f" (aliases: {', '.join(aliases)})" if aliases else ""
+        problems.append(f"{name}@{version}: advisory {vid}{also} - bump the dependency to a fixed version, or accept "
+                        "the advisory with an [[ignore]] entry and its reason in scripts/osv-ignores.toml")
+    for stale in sorted(set(ignores) - used):
+        problems.append(f"stale ignore {stale}: the scan reports no advisory with this id or alias - remove the entry")
+    return problems
+
+
+def _stderr_tail(err: str) -> list[str]:
+    return [f"  osv-scanner: {ln}" for ln in err.splitlines()[-5:] if ln.strip()]
+
+
+def run_scan(binary: Path, lock: Path, db_dir: Path) -> tuple[int, str, str]:
+    """One offline scan from an empty temp dir with an empty config file: (exit code, stdout, stderr)."""
+    with tempfile.TemporaryDirectory(prefix="osv-check-") as td:
+        config = Path(td) / "empty-config.toml"
+        config.write_bytes(b"")
+        proc = subprocess.run(scan_argv(binary, lock, config), cwd=td,
+                              env=child_env(dict(os.environ), db_dir, offline=True),
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=SCAN_TIMEOUT)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def check(*, binary: Path | None, lock: Path, ignores_file: Path, db_dir: Path,
+          require_db: bool) -> tuple[int, list[str]]:
+    """The gate: (exit code, report lines). The ignore file is validated in every mode, with or without a database."""
+    try:
+        text = ignores_file.read_text(encoding="utf-8")
+    except OSError as e:
+        return 1, [f"FAIL: cannot read {ignores_file}: {e}"]
+    ignores, problems = load_ignores(text)
+    if problems:
+        return 1, [f"FAIL: {p}" for p in problems]
+    if not lock.is_file():
+        return 1, [f"FAIL: {lock} is missing - the JS graph cannot be scanned (fail-closed)"]
+    if binary is None:
+        if require_db:
+            return 1, [f"FAIL: the pinned osv-scanner is not installed in .gate-tools/bin (run `{_INSTALL_HINT}`)"]
+        return 0, [f"NOTICE: the pinned osv-scanner is not installed in .gate-tools/bin (run `{_INSTALL_HINT}`) - "
+                   "the JS advisory scan is skipped here; CI (L4) runs it fail-closed"]
+    state = db_state(db_dir)
+    if state == "absent":
+        if require_db:
+            return 1, [f"FAIL: no OSV npm database at {db_zip(db_dir)} after the refresh step - fail-closed"]
+        return 0, [f"NOTICE: no local OSV npm database at {db_zip(db_dir)} - the JS advisory scan is skipped (a gate "
+                   f"never downloads; `{_REFRESH_HINT}` fetches it); CI (L4) refreshes it and runs the scan fail-closed"]
+    if state == "partial":
+        return 1, [f"FAIL: the OSV npm database at {db_zip(db_dir)} is partial (not a readable zip, no file member, "
+                   f"or a member failing its CRC) and the scanner would pass it silently - run `{_REFRESH_HINT}`"]
+    try:
+        rc, out, err = run_scan(binary, lock, db_dir)
+    except subprocess.TimeoutExpired:
+        return 1, [f"FAIL: osv-scanner did not finish within {SCAN_TIMEOUT} s - fail-closed"]
+    except OSError as e:
+        return 1, [f"FAIL: cannot run {binary}: {e}"]
+    found, problems = interpret(rc, out)
+    if problems:
+        return 1, [f"FAIL: {p}" for p in problems] + _stderr_tail(err)
+    problems = evaluate(found, ignores)
+    if problems:
+        return 1, [f"FAIL: {p}" for p in problems]
+    accepted = len({f[0] for f in found})
+    return 0, [f"OK: no advisory over {lock.name} outside scripts/osv-ignores.toml "
+               f"({accepted} advisory(ies) accepted by an entry)"]
+
+
+def refresh(*, binary: Path | None, lock: Path, db_dir: Path) -> tuple[int, list[str]]:
+    """The fail-OPEN download step: always exit 0; the report names the database the check after it will scan."""
+    if binary is None:
+        return 0, ["NOTICE: the pinned osv-scanner is not installed - nothing refreshed (the check after this step "
+                   "fails closed under --require-db)"]
+    db_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="osv-refresh-") as td:
+        config = Path(td) / "empty-config.toml"
+        config.write_bytes(b"")
+        try:
+            proc = subprocess.run(refresh_argv(binary, lock, config), cwd=td,
+                                  env=child_env(dict(os.environ), db_dir, offline=False),
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=REFRESH_TIMEOUT)
+            rc, err = proc.returncode, proc.stderr
+        except subprocess.TimeoutExpired:
+            rc, err = None, f"no result within {REFRESH_TIMEOUT} s"
+        except OSError as e:
+            rc, err = None, str(e)
+    lines = [f"refresh: osv-scanner exit {rc}; database {db_state(db_dir)} at {db_zip(db_dir)}"]
+    if rc not in (CLEAN, FINDINGS):
+        lines.append("NOTICE: the download failed (fail-open) - the check after this step scans the database already "
+                     "present (a restored cache) and fails closed if none is usable")
+        lines += _stderr_tail(err or "")
+    return 0, lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G17 JS half - osv-scanner offline over pnpm-lock.yaml (P4.96)")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--require-db", action="store_true",
+                      help="L4: an absent binary or an absent or partial database fails")
+    mode.add_argument("--refresh", action="store_true",
+                      help="L4 download step (fail-open; the only mode that opens a socket)")
+    args = ap.parse_args(argv)
+    binary = osv_binary()
+    if args.refresh:
+        rc, lines = refresh(binary=binary, lock=LOCK, db_dir=DB_DIR)
+    else:
+        rc, lines = check(binary=binary, lock=LOCK, ignores_file=IGNORES, db_dir=DB_DIR,
+                          require_db=args.require_db)
+    for line in lines:
+        print(f"[G17 JS] {line}", file=sys.stderr if rc else sys.stdout)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

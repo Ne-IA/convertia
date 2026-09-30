@@ -156,8 +156,39 @@ jobs:
             echo "advisory-db clone failed; retry $i"; sleep 5
           done
           echo "advisory-db clone failed after 3 attempts" >&2; exit 1
+      # P4.96 G17 (JS half): the OSV npm database for scripts/check-js-advisories. Linux-only - the scan
+      # reads the OS-agnostic pnpm-lock.yaml, so it runs once, like the RustSec leg (the macOS/Windows legs
+      # run the one-record fixture-database legs in the canary). The actions/cache entry is keyed on the
+      # UTC day and falls back to the newest earlier entry. The refresh is fail-OPEN: a failed download
+      # leaves a restored zip byte-identical, so the run scans an earlier day's database (the named
+      # residual). The check is fail-CLOSED: an absent or partial database reds. The day's entry is saved
+      # only after that check passed, so no cache entry ever holds a database the check refused.
+      - name: 'P4.96 G17: the UTC day that keys the OSV npm database cache (Linux)'
+        id: osv-day
+        if: runner.os == 'Linux'
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: 'P4.96 G17: restore the OSV npm database (the day entry, else the newest earlier one; Linux)'
+        id: osv-restore
+        if: runner.os == 'Linux'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .gate-tools/osv-db
+          key: osv-npm-${{ steps.osv-day.outputs.day }}
+          restore-keys: osv-npm-
+      - name: 'P4.96 G17: refresh the OSV npm database (the download step, fail-open; the check itself opens no socket)'
+        if: runner.os == 'Linux'
+        run: python3 -P scripts/check-js-advisories --refresh
       - name: 'G3/G4/G14/G17: Rust lint/format/test/audit contract (rustfmt/clippy policy frozen; live fmt/clippy/test/audit in P1)'
         run: python3 -P scripts/check-rust-lint-contract --full
+      - name: 'G17 (JS): osv-scanner offline over pnpm-lock.yaml (fail-closed on an absent or partial database; Linux)'
+        if: runner.os == 'Linux'
+        run: python3 -P scripts/check-js-advisories --require-db
+      - name: 'P4.96 G17: save the day entry of the OSV npm database (only after the check above passed; Linux)'
+        if: runner.os == 'Linux' && steps.osv-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .gate-tools/osv-db
+          key: osv-npm-${{ steps.osv-day.outputs.day }}
       - name: 'G74: .rs comment-attachment integrity over the push range (the splice-hijack class; an empty/zero before-SHA - pull_request/schedule/first push - skips with notice)'
         run: python3 -P scripts/check-doc-splice --range --base "${{ github.event.before }}"
       - name: 'G74: rustdoc intra-doc-link integrity (deny broken + private links, private items documented - a rename that strands a doc link fails here; per-OS builds catch the cfg-gated dangles)'

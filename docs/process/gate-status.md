@@ -148,6 +148,16 @@ FP-safe (a `-s`-glued prose substring like `dbus -sys stack` resolves to `ys`, n
 value). 21 new g24 legs, 50 total. Not an `informational`↔`required` flip — G48 stays a required scheduled plane; this entry
 records the macOS-oracle SCOPE decision + its re-arm mechanism.
 
+## P4 gate-activation flips (new deterministic legs, live fail-closed at landing)
+
+A leg that is live and fail-closed from its landing commit has no bootstrap skip to flip; its row records the
+landing and the planted violation that proves it enforces, so the log stays the one place a leg's activation
+is dated.
+
+| Gate | Activated-in | Now-real target (P-box) | Negative self-test — a planted violation MUST fail | Flipped |
+|------|--------------|-------------------------|-----------------------------------------------------|---------|
+| **G17 (JS half)** — `osv-scanner` over `pnpm-lock.yaml` | P4.96 | `pnpm-lock.yaml` + the Lane-A OSV npm database (`scripts/check-js-advisories`) | `g24-js-advisories` — a lock pinning undici 7.28.0 against the one-record GHSA-4cwx-7wf7-3272 database MUST fail | 2026-09-30 |
+
 ## Over-assurance behavioural backstops (P0.4.5 · §1.2 · G29 G48)
 
 Each contract is `→ activated in P1` (the dependency graph, the crate roots, and the
