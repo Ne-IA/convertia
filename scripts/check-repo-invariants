@@ -79,7 +79,7 @@ Invariants (a)-(f) are all LIVE since P1: their target source landed in P1 - `de
 they scan the real files now and pass when clean. (`bundle/` is the one deliberately-absent dir, spec
 §0.7 - no invariant targets it.) Self-tested by g24-repo-invariants.
 
-stdlib-only. L(-1) security-critical (matched by `scripts/check-*` in scripts/l-neg1-files.toml, G71).
+stdlib-only. L(-1) security-critical (matched by `scripts/**` in scripts/l-neg1-files.toml, G71).
 Exit: 0 = no invariant violated (or target-absent); 1 = a violation; 2 = bad invocation.
 """
 from __future__ import annotations

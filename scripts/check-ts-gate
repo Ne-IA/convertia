@@ -34,7 +34,7 @@ mirrors P0.4.2 (which froze the unsafe/SAST contract but authored no crate roots
 The JS supply-chain config the P1 `pnpm install` honours (the `.npmrc` registry pin + lifecycle
 lockdown) is P0.3.8's check-js-supply-chain — this gate consumes that posture (it does not re-assert it).
 
-stdlib-only. L(-1) security-critical (matched by scripts/check-*).
+stdlib-only. L(-1) security-critical (matched by scripts/**).
 
 Usage: check-ts-gate [--full]   (--full = the G13 whole-project tsc + the whole-tree lint leg, L2/push)
 Exit:  0 = contract intact (or target-absent); 1 = a violation; 2 = a required config is missing/malformed.

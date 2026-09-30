@@ -51,28 +51,15 @@ manifest, license compliance).
   authored in P0); it decides routine implementation/pattern/naming/default
   choices itself.
 - **L(-1) security-critical-file change-control (owner decision D1).** The files that
-  carry the power to silently weaken an enforcement plane — gate scripts + their
-  self-tests (incl. the G24a corpus-manifest **generator** `scripts/stage-corpus`,
-  P0.5.11 — it writes the SHA-256 trust root G24a verifies, so a poisoned generator
-  could auto-vouch a swapped fixture), the G29 SAST rule corpus `scripts/semgrep-rules/**` (project rules +
-  vendored packs + the net-allow-list + the planted-positive fixtures),
-  `lefthook.yml`, the CI workflows (`.github/**`), `deny.toml`,
-  the cargo-audit advisory-ignore set `audit.toml` (G17; reconciled with `deny.toml`'s `[advisories].ignore` — the G18 two-scanner check),
-  `.gitleaks.toml` + allowlist/baseline, the pip gate-toolchain pin `requirements-ci.txt`
-  (it reads CI secrets and emits findings, so a version bump is a trust-boundary event — r7) +
-  the §6.7.1 Lane-A yamllint pin `requirements-yamllint.txt` (P1.52.3),
-  the JS supply-chain pin `.npmrc` (G18c/G18d registry pin + install-lifecycle lockdown),
-  the EOL/charset policy `.editorconfig` (G52) + the prose-typo allowlist `.typos.toml` (G51)
-  + the YAML-hygiene ruleset `.yamllint` (§6.7.1),
-  the `cargo-vet` exemption set + `imports.lock`,
-  `.gitattributes`/`.lfsconfig`, the G56b SSH allowed-signers file, the
-  `rust-toolchain.toml` channel pin, the `rustfmt.toml`/`clippy.toml` lint/format policy (G3/G4), the
-  `coverage-floors.toml` per-domain coverage-floor ratchet (G27, increase-only), the
-  `max_survived_mutants.toml` mutation-testing ratchet (G15/P3.72, decrease-only), the Tauri
-  `capabilities`, `engines.lock`, the reviewer-rubric block, the security/process docs,
-  and the authoritative glob list `scripts/l-neg1-files.toml` itself — are the **L(-1)
-  security-critical-file set** (the cage the gates live in). **The autonomous Build-Loop
-  NEVER edits an L(-1) file:** a box that needs one is **parked and escalated**
+  carry the power to silently weaken an enforcement plane are the **L(-1)
+  security-critical-file set** (the cage the gates live in): every file under `scripts/`
+  except the declared Loop build tools, the hook and CI planes (`lefthook.yml`,
+  `.github/**`), the supply-chain, secret-scan and toolchain trust configs, the
+  text-hygiene and lint policies, the caged ratchets, the Tauri capabilities, the pinned
+  engine manifest, the G53 negative fixture and the security/process docs. The
+  authoritative list is `scripts/l-neg1-files.toml`; this paragraph names its categories
+  and never enumerates it. **The autonomous Build-Loop NEVER edits an L(-1) file:** a box
+  that needs one is **parked and escalated**
   ([roles-and-escalation §4(g)](../process/roles-and-escalation.md#4-when-to-escalate-to-co-pilot-the-exhaustive-trigger-set),
   [build-loop.md Step 7](../process/build-loop.md#step-7--check-off-the-box)); the
   owner-acked Co-Pilot makes the caged edit and the commit, and only that session writes the
@@ -81,9 +68,9 @@ manifest, license compliance).
   presence on any L(-1)-touching commit (the trailer is the **only** sanctioned escape —
   there is **no** check-off / `[!extern]` exemption for an L(-1) edit; a commit touching no
   L(-1) file needs no trailer) and, since P4.56.1, the cage's own liveness (a glob matching
-  no tracked path, or a stale/orphan targetless declaration, fails the gate — the
-  build-gates G71 row carries the mechanics) (fail-soft during the P0 bootstrap,
-  fail-closed from P1). This is the one **ownership control above the deterministic gates** — the
+  no tracked path, a stale/orphan targetless declaration, or a refused, dead or orphan
+  Loop-tool escape fails the gate — the build-gates G71 row carries the mechanics)
+  (fail-soft during the P0 bootstrap, fail-closed from P1). This is the one **ownership control above the deterministic gates** — the
   trailer records an owner decision; G71 checks the evidence, not the intent (so a leaked
   key or a unilateral cage edit cannot pass unseen). It is independent of the G1
   `Dual-Review:` trailer; both may co-occur on one commit.

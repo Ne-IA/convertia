@@ -1,40 +1,27 @@
-# scripts/l-neg1-files.toml - the authoritative L(-1) security-critical-file cage (P0.2.14, G71).
+# scripts/l-neg1-files.toml - the L(-1) security-critical-file cage (G71).
 #
 # Owner decision D1 (security-concept §2): the files that carry the power to silently weaken an
 # enforcement plane are the **L(-1) set**. The autonomous Build-Loop NEVER edits one; an owner-
 # driven L(-1) edit records an `L-neg1-ack: owner` commit-body trailer, which the G71 pre-push gate
-# (scripts/check-l-neg1-ack) mechanically audits. This file is the MACHINE-READABLE projection of
-# the security-concept §2 enumeration - the two are kept in sync (a §2 change without a matching
-# pattern here, or vice-versa, is the drift G68 + a Co-Pilot review catch).
+# (scripts/check-l-neg1-ack) mechanically audits.
 #
-# This file is ITSELF L(-1) (matched by `scripts/*.toml` below), so the cage cannot be silently
-# narrowed: removing a pattern is itself an L(-1) edit that needs the owner-ack trailer.
+# This file IS the authoritative L(-1) set. security-concept §2, the build-gates G71 row and
+# `CLAUDE.md` §5 name its categories and point here; they never enumerate it. It is itself caged
+# (`scripts/**`), so the cage cannot be silently narrowed: removing a pattern or adding an escape
+# is itself an L(-1) edit that needs the owner-ack trailer.
 #
 # Patterns are gitignore-style POSIX paths (forward slashes), matched ROOT-ANCHORED against each
 # commit's diff file paths (check-l-neg1-ack compiles `^...$`): `*` matches within one path segment,
-# `**` matches any depth, `?` one non-`/` char. Several targets did not exist at authoring time
-# (deny.toml, .gitleaks.toml, supply-chain/, requirements-ci.txt, src-tauri/capabilities/,
-# docs/process/) - their globs were authored ahead so the cage is ready the moment each file lands
-# (a not-yet-existing glob matches nothing). engines.lock was ALSO authored ahead but in a spelling
-# root-anchoring could never match, and had to be re-spelled `src-tauri/engines.lock` the day the
-# file landed (P4.56.1): a root-anchored pattern must name the FULL repo-relative path or it
-# silently protects nothing - the dead-glob class that check-l-neg1-ack's cage-liveness audit now
-# fails on. Since that audit, a glob authored ahead of its target must be DECLARED in the gate's
-# AUDIT_DECLARED_TARGETLESS set with its reason, or the audit fails it the moment it is added.
+# `**` matches any depth, `?` one non-`/` char. A root-anchored pattern must name the FULL
+# repo-relative path or it silently protects nothing, so check-l-neg1-ack's cage-liveness audit
+# fails a pattern that matches no tracked path. A pattern whose target is legitimately absent is
+# DECLARED in the gate's AUDIT_DECLARED_TARGETLESS set with its reason; a declaration whose target
+# lands, or whose pattern leaves this list, fails the audit too.
 
 patterns = [
-  # --- gate scripts + their self-tests (the enforcement logic itself) ---
-  "scripts/check-*",              # check-branch-protection / check-ci-supply-chain / check-gate-plane(s) / ...
-  "scripts/fastpath-*",           # the L2 fastpath skip detectors (G10)
-  "scripts/run-*",                # gate drivers: run-gate-selftests (canary), run-gitleaks (G2)
-  "scripts/plan-lint",            # the plan-lint / spec-lint doc-consistency gate (G7/G20)
-  "scripts/install-gate-tools",   # the pinned-tool fetch-and-verify installer
-  "scripts/setup-dev",            # patches the generated git hooks (a poisoned one silently no-ops the plane)
-  "scripts/stage-corpus",         # the G24a corpus SHA-256+licence manifest GENERATOR (P0.5.11) — it writes the trust root G24a verifies; a poisoned generator could auto-vouch a swapped fixture (its sha would then "match")
-  "scripts/gate-selftests/**",    # every gate self-test (the planted-positive canaries)
+  # --- the gate plane: every file under scripts/ ---
+  "scripts/**",                   # every present and future file under scripts/ (gates, self-tests, SAST corpus, gate data, this file); the Loop build tools are the [[loop_tool]] escapes
   "tests/g53-fixture/**",         # the G53 negative fixture (a neutered planted-violation = false-green)
-  "scripts/semgrep-rules/**",     # G29 SAST corpus: project rules (enforcement logic) + vendored packs (trust) + net-allow-list.txt (socket escape hatch) + planted-positive fixtures (a neutered canary = false-green)
-  "scripts/*.toml",               # gate-planes.toml + l-neg1-files.toml itself (cage cannot be silently narrowed)
 
   # --- the enforcement-plane config ---
   "lefthook.yml",                 # the L1/L2/L3 git-hook executor
@@ -68,3 +55,23 @@ patterns = [
   "docs/security/**",             # security-concept.md + build-gates.md (the Gnn catalogue)
   "docs/process/**",              # build-loop.md / test-strategy.md / roles-and-escalation.md / vuln-response.md / the reviewer rubric
 ]
+
+# --- Loop-tool escapes: the only uncaged files under scripts/ ---
+# Each [[loop_tool]] names one exact path and the reason the Loop builds it. check-l-neg1-ack
+# refuses an escape that is nested, carries an extension or has a gate shape (a check-/run-/
+# fastpath- name, plan-lint, install-gate-tools, setup-dev, stage-corpus); a refused escape stays
+# caged. An escape that is not tracked (dead) or that no pattern cages (orphan) fails the audit
+# like a dead glob. Each tool's `--selftest` runs under a caged canary
+# (scripts/gate-selftests/g24-<tool>.py) that pins its blessed leg names and drives planted
+# positives against the tool from outside, so an edit that neuters a guard reds a caged file.
+[[loop_tool]]
+path = "scripts/stage-engines"
+reason = "§3.3.2 engine staging, Loop-built; its assertion arms carry caged outside planted positives"
+
+[[loop_tool]]
+path = "scripts/fetch-engine-assets"
+reason = "§6.1.3 engine-asset fetch, Loop-built"
+
+[[loop_tool]]
+path = "scripts/compile-engine-asset"
+reason = "§6.1.3 from-source compile, Loop-built"

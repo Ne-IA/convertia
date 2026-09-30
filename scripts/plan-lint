@@ -730,7 +730,7 @@ def _doc_link_targets(line: str):
 # The committed ledger scripts/doc-fingerprints.toml records, per source region, the sha256 the
 # describing docs were reasoned against; this leg recomputes it and FAILS on a mismatch — the same
 # content-fingerprint discipline the G29 suppression ledger uses (build-gates §6 check 25(c) / the
-# G68 "load-bearing" freshness leg). The ledger is L(-1) (matched by scripts/*.toml, G71): a silent
+# G68 "load-bearing" freshness leg). The ledger is L(-1) (matched by scripts/**, G71): a silent
 # re-bless would waive freshness on exactly the source it guards, so a re-bless is owner-acked.
 _FP_LEDGER = "scripts/doc-fingerprints.toml"
 # The minimum binding FLOOR: these ids MUST be present in the ledger. An empty/seedless ledger (or one

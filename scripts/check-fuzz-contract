@@ -18,7 +18,7 @@ Two tiers, the P0.3.6 / P0.4.1 pattern:
   (serde-boundary, numeric-overflow) land in P2 (tests/, NOT under fuzz/) so their LIVE assertion is
   P2-scoped, not fuzz/-gated; their CONTRACT is frozen here.
 
-stdlib-only. L(-1) security-critical (matched by scripts/check-*).
+stdlib-only. L(-1) security-critical (matched by scripts/**).
 
 Usage: check-fuzz-contract [--full]   (--full accepted for wiring parity; the contract scan is identical)
 Exit:  0 = contract intact (or target-absent); 1 = a violation; 2 = a pinned config is missing/malformed.

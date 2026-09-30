@@ -26,7 +26,7 @@ Two tiers, the P0.4.1/P0.4.7 pattern:
   Skips-with-notice while none of the P1 targets exist (package.json / src/ / the eslint config /
   src/strings/ui.ts), fail-closes the moment each lands.
 
-stdlib-only. L(-1) security-critical (matched by scripts/check-*). "Red main" (Lane-A; §6.7.1).
+stdlib-only. L(-1) security-critical (matched by scripts/**). "Red main" (Lane-A; §6.7.1).
 
 Usage: check-english-only [--full]   (--full is accepted for plane parity; the scan is whole-tree either way)
 Exit:  0 = clean (or target-absent); 1 = a violation; 2 = a required target is malformed/unreadable.

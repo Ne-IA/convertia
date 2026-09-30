@@ -8,13 +8,19 @@ exemption, so a check-off / `[!extern]` commit that touches an L(-1) file still 
 end-to-end verdict in a REAL temp git repo - an L(-1)-touching commit WITHOUT the trailer fails under
 --enforce (fail-soft without), WITH the trailer passes; a check-off / `[!extern]` commit OVER an
 L(-1) file FAILS (no exemption), while a non-L(-1) commit (incl. a plan-only check-off) passes the
-TRAILER audit (the P1.66 base-resolution hardening legs live here too) - and (5) the P4.56.1
+TRAILER audit (the P1.66 base-resolution hardening legs live here too) - (5) the P4.56.1
 cage-liveness audit: dead / stale-declared / orphan-declared globs each red the gate (unit + E2E,
-incl. the CWD-independence and non-ASCII-path legs), so a clean tip can still exit 1 on a sick cage.
+incl. the CWD-independence and non-ASCII-path legs), so a clean tip can still exit 1 on a sick cage
+- and (6) the `scripts/**` cage with its `[[loop_tool]]` escapes: every scripts/ path but a declared
+escape is caged, a gate-shaped / nested / extension-bearing escape is refused and stays caged, a
+dead or orphan escape reds the gate, a malformed escape table makes the cage unreadable, and in a
+real temp repo an escape edit needs no ack while a new scripts/ file does.
 stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import os
 import subprocess
 import sys
@@ -32,6 +38,8 @@ _loader.exec_module(m)
 
 # the REAL committed cage (the gate's DEFAULT_CAGE) - so the glob matcher is tested against production
 REGEXES = m.load_patterns(m.DEFAULT_CAGE)
+CAGE = m._read_cage(m.DEFAULT_CAGE)
+ESCAPES = m.honoured_escapes(CAGE.loop_tools) if CAGE is not None else frozenset()
 results: list[tuple[str, bool]] = []
 
 
@@ -42,6 +50,10 @@ def record(name: str, ok: bool) -> None:
 
 # --- glob matcher / is_l_neg1: POSITIVES (caged) ----------------------------------------------
 record("cage loaded (non-empty)", isinstance(REGEXES, list) and len(REGEXES) > 0)
+record("cage loaded with its [[loop_tool]] escapes (non-empty)", CAGE is not None and len(ESCAPES) > 0)
+# [Test-Change: G71 scripts/** shape — old-obsolete+new-correct, security-concept §2] scripts/helper.py
+# and scripts/gen.sh moved from the NEGATIVES: the old cage caged only gate-shaped scripts/ names, the
+# `scripts/**` cage cages every scripts/ path but a declared [[loop_tool]] escape.
 for p in ("lefthook.yml", "scripts/check-l-neg1-ack", "scripts/check-branch-protection",
           "scripts/fastpath-docs-only", "scripts/run-gate-selftests", "scripts/install-gate-tools",
           "scripts/setup-dev", "scripts/gate-selftests/g24-l-neg1-ack.py", "scripts/gate-planes.toml",
@@ -49,17 +61,24 @@ for p in ("lefthook.yml", "scripts/check-l-neg1-ack", "scripts/check-branch-prot
           "deny.toml", ".gitleaks.toml", "supply-chain/config.toml", "supply-chain/imports.lock",
           ".gitattributes", ".lfsconfig", "requirements-ci.txt", "src-tauri/capabilities/default.json",
           "rust-toolchain.toml", "src-tauri/engines.lock", "docs/security/build-gates.md",
-          "docs/security/security-concept.md", "docs/process/build-loop.md"):
-    record(f"L(-1) POSITIVE: {p}", m.is_l_neg1(p, REGEXES))
+          "docs/security/security-concept.md", "docs/process/build-loop.md",
+          "scripts/helper.py", "scripts/gen.sh",       # any scripts/ file, not only a gate-shaped name
+          "scripts/newtool",                           # a future top-level tool is caged until declared
+          "scripts/stage-corpus", "scripts/plan-lint", "scripts/doc-fingerprints.toml",
+          "scripts/semgrep-rules/project/x.yaml", "scripts/deep/nested/file",
+          "scripts/stage-engines.py",                  # an escape is an EXACT path: a sibling spelling stays caged
+          "scripts/Stage-Engines"):                    # ...and so does a case variant (git paths are case-sensitive)
+    record(f"L(-1) POSITIVE: {p}", m.is_l_neg1(p, REGEXES, ESCAPES))
 
 # --- is_l_neg1: NEGATIVES (NOT caged) ---------------------------------------------------------
 for p in ("README.md", "src/main.rs", "src/ui.ts", "Cargo.toml", "Cargo.lock", "package.json",
           "docs/plan/P0-build-and-security.md",        # the plan is NOT L(-1) (only security/process docs are)
           "docs/SINGLE-SOURCE-OF-TRUTH.md",            # the SSOT is NOT under security/process
-          "scripts/helper.py", "scripts/gen.sh",       # a non-gate script is not caged
+          "scripts/stage-engines", "scripts/fetch-engine-assets",
+          "scripts/compile-engine-asset",              # the declared [[loop_tool]] escapes (the Loop's build tools)
           "engines.lock",                              # patterns match ROOT-ANCHORED: the cage names the §3.7.2 home `src-tauri/engines.lock` (P4.56.1); a repo-root spelling matches no spec-sanctioned path
-          ".githubfoo/x", "docs/securityfoo/x", ""):   # prefix-confusion / empty
-    record(f"NOT-caged NEGATIVE: {p!r}", not m.is_l_neg1(p, REGEXES))
+          ".githubfoo/x", "docs/securityfoo/x", "scriptsfoo/x", "tests/scripts/x", ""):   # prefix-confusion / anchoring / empty
+    record(f"NOT-caged NEGATIVE: {p!r}", not m.is_l_neg1(p, REGEXES, ESCAPES))
 
 # --- cage-liveness audit (P4.56.1 - the dead-glob class) --------------------------------------
 # dead_globs is pure (patterns x tracked-paths in, dead patterns out), so the shapes are driven
@@ -86,13 +105,83 @@ record("audit: a declaration whose glob is present is NOT an orphan",
        m.orphan_declarations(["lefthook.yml", ".lfsconfig"]) == [])
 _ls = subprocess.run(["git", "ls-files"], capture_output=True, text=True, encoding="utf-8",
                      cwd=SCRIPT.parents[1])
-_real_pats = m._read_pattern_list(m.DEFAULT_CAGE) or []
+_real_pats = CAGE.patterns if CAGE is not None else []
 record("audit: the REAL committed cage is fully live over the REAL tracked tree",
        _ls.returncode == 0 and m.dead_globs(_real_pats, _ls.stdout.splitlines()) == [])
 record("audit: the REAL cage carries no stale and no orphan declarations",
        _ls.returncode == 0
        and m.stale_declarations(_real_pats, _ls.stdout.splitlines()) == []
        and m.orphan_declarations(_real_pats) == [])
+
+# --- the [[loop_tool]] escape audit (the scripts/** cage) -------------------------------------
+# The real cage first: every declared escape is honoured, tracked and caged by a pattern, and the
+# escapes are exactly the tracked scripts/ files the cage leaves uncaged (the escape list and the
+# real uncaged set cannot drift apart unnoticed).
+_real_tools = CAGE.loop_tools if CAGE is not None else {}
+record("escape: the REAL cage refuses none of its escapes (all honoured)",
+       CAGE is not None and m.escape_refusals(_real_tools) == [] and ESCAPES == frozenset(_real_tools))
+record("escape: the REAL cage has no dead and no orphan escape over the REAL tracked tree",
+       _ls.returncode == 0 and m.dead_escapes(_real_tools, _ls.stdout.splitlines()) == []
+       and m.orphan_escapes(_real_tools, _real_pats) == [])
+record("escape: the REAL uncaged scripts/ files are exactly the declared escapes",
+       _ls.returncode == 0 and REGEXES is not None
+       and sorted(p for p in _ls.stdout.splitlines()
+                  if p.startswith("scripts/") and not m.is_l_neg1(p, REGEXES, ESCAPES)) == sorted(_real_tools))
+record("escape: every escape carries its reason",
+       all(isinstance(r, str) and r.strip() for r in _real_tools.values()))
+# The refusal shapes: nested, extension-bearing, non-slug, outside scripts/, a trailing newline (the
+# `$`-matches-before-`\n` trap a fullmatch closes), and every gate-shaped name.
+for p in ("scripts/sub/tool", "scripts/tool.py", "scripts/Tool", "scripts/-tool", "tools/x",
+          "scripts/tool\n", "scripts/", "scripts/check-foo", "scripts/run-foo", "scripts/fastpath-foo",
+          "scripts/plan-lint", "scripts/install-gate-tools", "scripts/setup-dev", "scripts/stage-corpus"):
+    record(f"escape: {p!r} is REFUSED", [q for q, _ in m.escape_refusals({p: "r"})] == [p])
+record("escape: a top-level, extension-less, non-gate name is NOT refused",
+       m.escape_refusals({"scripts/stage-engines": "r", "scripts/build-tool2": "r"}) == [])
+record("escape: a refused escape is not honoured, so its path stays caged",
+       m.honoured_escapes({"scripts/check-x": "r", "scripts/tool": "r"}) == frozenset({"scripts/tool"})
+       and m.is_l_neg1("scripts/check-x", [m.glob_to_regex("scripts/**")],
+                       m.honoured_escapes({"scripts/check-x": "r"})))
+record("escape: an honoured escape is uncaged, its caged neighbour is not",
+       not m.is_l_neg1("scripts/tool", [m.glob_to_regex("scripts/**")], frozenset({"scripts/tool"}))
+       and m.is_l_neg1("scripts/tool2", [m.glob_to_regex("scripts/**")], frozenset({"scripts/tool"})))
+record("escape: an untracked escape is DEAD",
+       m.dead_escapes({"scripts/gone": "r", "scripts/tool": "r"}, ["scripts/tool", "lefthook.yml"])
+       == ["scripts/gone"])
+record("escape: a tracked escape is not dead (a backslash-spelled listing normalizes)",
+       m.dead_escapes({"scripts/tool": "r"}, ["scripts\\tool"]) == [])
+record("escape: an escape no pattern matches is an ORPHAN",
+       m.orphan_escapes({"scripts/tool": "r"}, ["lefthook.yml", "docs/security/**"]) == ["scripts/tool"])
+record("escape: an escape a pattern matches is not an orphan",
+       m.orphan_escapes({"scripts/tool": "r"}, ["lefthook.yml", "scripts/**"]) == [])
+
+
+def _cage_from(text: str) -> "m.Cage | None":
+    with tempfile.TemporaryDirectory() as ctd:
+        p = Path(ctd) / "cage.toml"
+        p.write_bytes(text.encode("utf-8"))
+        return m._read_cage(p)
+
+
+_PATS = 'patterns = ["scripts/**"]\n'
+_LT = '\n[[loop_tool]]\npath = "{p}"\nreason = "{r}"\n'
+_ok = _cage_from(_PATS + _LT.format(p="scripts/a", r="ra") + _LT.format(p="scripts/b", r="rb"))
+record("cage: two well-formed [[loop_tool]] tables parse to {path: reason}",
+       _ok is not None and _ok.loop_tools == {"scripts/a": "ra", "scripts/b": "rb"}
+       and _ok.patterns == ["scripts/**"])
+_none = _cage_from(_PATS)
+record("cage: no [[loop_tool]] table parses to no escapes", _none is not None and _none.loop_tools == {})
+for label, body in (
+        ("a missing reason", '\n[[loop_tool]]\npath = "scripts/a"\n'),
+        ("a missing path", '\n[[loop_tool]]\nreason = "r"\n'),
+        ("an empty path", _LT.format(p="", r="r")),
+        ("a whitespace-only reason", _LT.format(p="scripts/a", r="  ")),
+        ("a non-string path", '\n[[loop_tool]]\npath = 7\nreason = "r"\n'),
+        ("a non-string reason", '\n[[loop_tool]]\npath = "scripts/a"\nreason = 7\n'),
+        ("an unknown key (a misspelled reason)", '\n[[loop_tool]]\npath = "scripts/a"\nreasons = "r"\n'),
+        ("an extra key beside path and reason", _LT.format(p="scripts/a", r="r") + 'note = "x"\n'),
+        ("a duplicate path", _LT.format(p="scripts/a", r="r1") + _LT.format(p="scripts/a", r="r2")),
+        ("a single [loop_tool] table, not an array", '\n[loop_tool]\npath = "scripts/a"\nreason = "r"\n')):
+    record(f"cage: {label} in [[loop_tool]] -> malformed (None)", _cage_from(_PATS + body) is None)
 
 # --- ACK trailer regex ------------------------------------------------------------------------
 record("ack regex: 'L-neg1-ack: owner' line -> match",
@@ -157,12 +246,18 @@ with tempfile.TemporaryDirectory() as td:
     # identical - is_l_neg1 is add-vs-modify agnostic). Every fixture cage ALSO carries the
     # `.lfsconfig` glob: AUDIT_DECLARED_TARGETLESS is a module constant that applies to whichever
     # cage the gate runs, so a fixture cage WITHOUT the declared glob would trip the orphan leg.
+    # The mini cage mirrors the production shape: `scripts/**` plus one [[loop_tool]] escape
+    # (scripts/buildtool), with a gate-shaped scripts/check-x tracked beside it.
     (repo / "cage.toml").write_text(
-        'patterns = ["lefthook.yml", "docs/security/**", "rust-toolchain.toml", ".lfsconfig"]\n', encoding="utf-8")
+        'patterns = ["lefthook.yml", "docs/security/**", "rust-toolchain.toml", ".lfsconfig", "scripts/**"]\n'
+        '\n[[loop_tool]]\npath = "scripts/buildtool"\nreason = "the fixture build tool"\n', encoding="utf-8")
     (repo / "docs" / "security").mkdir(parents=True)
     (repo / "docs" / "security" / "build-gates.md").write_text("g\n", encoding="utf-8")
     (repo / "lefthook.yml").write_text("x: 0\n", encoding="utf-8")
     (repo / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "pinned"\n', encoding="utf-8")
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "buildtool").write_text("#!/bin/sh\necho 1\n", encoding="utf-8")
+    (repo / "scripts" / "check-x").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     base = _commit(repo, "README.md", "# base\n", "chore: base")
 
     # L(-1) edit (lefthook.yml) WITHOUT the trailer
@@ -195,10 +290,22 @@ with tempfile.TemporaryDirectory() as td:
     non = _commit(repo, "README.md", "# more\n", "docs: readme tweak")
     record("E2E: non-L(-1) edit, NO trailer, --enforce -> exit 0", run_gate(repo, plan, non, enforce=True) == 0)
 
+    # the scripts/** cage: an edit to a declared escape needs no ack, a NEW scripts/ file does,
+    # and so does an edit to a gate-shaped script beside the escape
+    tool_edit = _commit(repo, "scripts/buildtool", "#!/bin/sh\necho 2\n", "build: tune the build tool")
+    record("E2E: an edit to a declared [[loop_tool]] escape, NO trailer, --enforce -> exit 0 (uncaged)",
+           run_gate(repo, non, tool_edit, enforce=True) == 0)
+    new_tool = _commit(repo, "scripts/newtool", "#!/bin/sh\n", "build: add a new tool")
+    record("E2E: a NEW scripts/ file, NO trailer, --enforce -> exit 1 (scripts/** cages it until declared)",
+           run_gate(repo, tool_edit, new_tool, enforce=True) == 1)
+    gate_edit = _commit(repo, "scripts/check-x", "#!/bin/sh\nexit 1\n", "build: tweak a gate")
+    record("E2E: an edit to a gate script beside the escape, NO trailer, --enforce -> exit 1",
+           run_gate(repo, new_tool, gate_edit, enforce=True) == 1)
+
     # the NEW cage entry: a rust-toolchain.toml channel bump WITHOUT the trailer -> exit 1
     rt = _commit(repo, "rust-toolchain.toml", "[toolchain]\nchannel = \"evil\"\n", "build: bump the toolchain")
     record("E2E: rust-toolchain.toml channel bump, NO trailer, --enforce -> exit 1 (the new cage entry)",
-           run_gate(repo, non, rt, enforce=True) == 1)
+           run_gate(repo, gate_edit, rt, enforce=True) == 1)
 
     # a chore(todo) subject touching lefthook.yml -> exit 1 (no check-off escape for an L(-1) edit)
     fake = _commit(repo, "lefthook.yml", "x: 4\n", "chore(todo): sneaky abgehakt")
@@ -228,6 +335,33 @@ with tempfile.TemporaryDirectory() as td:
     # exit-1 source could not fake this pair, since it would red this soft leg too)
     record("E2E: the same dead cage glob, no --enforce -> exit 0 (fail-soft warns only)",
            run_gate(repo, "0" * 40, clean_tip, enforce=False, cage=repo / "cage-dead.toml") == 0)
+    # the escape audit end-to-end, each shape isolated on the clean tip: the escaped path is tracked
+    # and caged by scripts/** unless the leg is about exactly that
+    _esc_pats = 'patterns = ["lefthook.yml", ".lfsconfig", "scripts/**"]\n'
+    for leg, body in (("a dead escape (untracked path)", _esc_pats + _LT.format(p="scripts/gone", r="r")),
+                      ("a refused escape (gate-shaped, tracked)", _esc_pats + _LT.format(p="scripts/check-x", r="r")),
+                      ("an orphan escape (no pattern cages it)",
+                       'patterns = ["lefthook.yml", ".lfsconfig"]\n' + _LT.format(p="scripts/buildtool", r="r"))):
+        _c = repo / "cage-esc.toml"
+        _c.write_text(body, encoding="utf-8")
+        record(f"E2E: {leg} -> exit 1 under --enforce (clean tip)",
+               run_gate(repo, "0" * 40, clean_tip, enforce=True, cage=_c) == 1)
+        record(f"E2E: {leg}, no --enforce -> exit 0 (fail-soft warns only)",
+               run_gate(repo, "0" * 40, clean_tip, enforce=False, cage=_c) == 0)
+    # a refused escape never un-cages its path in the trailer audit: the fail-soft run over the
+    # gate_edit commit (scripts/check-x, no trailer) under a cage that declares scripts/check-x an
+    # escape still names that commit (the exit code alone cannot show it - the liveness block
+    # returns 1 first under --enforce, and a fail-soft run exits 0 either way)
+    (repo / "cage-esc.toml").write_text(_esc_pats + _LT.format(p="scripts/check-x", r="r"), encoding="utf-8")
+    _err = io.StringIO()
+    with contextlib.redirect_stderr(_err):
+        _rc = run_gate(repo, new_tool, gate_edit, enforce=False, cage=repo / "cage-esc.toml")
+    record("E2E: a refused escape stays caged in the trailer audit (the unacked edit to it is still named)",
+           _rc == 0 and "[scripts/check-x] without an `L-neg1-ack: owner` trailer" in _err.getvalue())
+    (repo / "cage-esc.toml").write_text(_esc_pats + '\n[[loop_tool]]\npath = "scripts/buildtool"\n',
+                                        encoding="utf-8")
+    record("E2E: a malformed [[loop_tool]] table (no reason) -> exit 2 under --enforce (cage unreadable)",
+           run_gate(repo, "0" * 40, clean_tip, enforce=True, cage=repo / "cage-esc.toml") == 2)
     # the CWD-independence catcher: the audit's `--full-name -- :/` pathspec is load-bearing - a
     # bare `git ls-files` is subtree-scoped, so from a subdirectory every glob would read dead and
     # a correct cage would false-red; this leg reds exactly on that regression. (Runs BEFORE the

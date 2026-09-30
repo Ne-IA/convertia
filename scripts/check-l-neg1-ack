@@ -31,13 +31,24 @@ target LANDS is itself flagged (a stale declaration), so removing the entry is m
 prose-only removal obligation is the shape that silently never happens (the [[fail_open]]-row
 lesson, gate-planes.toml).
 
-stdlib-only (tomllib, Python 3.11+). L(-1) security-critical (matched by `scripts/check-*`).
+LOOP-TOOL ESCAPE AUDIT: the `scripts/**` pattern cages every present and future file under
+scripts/, and the cage's `[[loop_tool]]` tables (exact `path` + `reason`) are the only uncaged
+scripts/ files - the Loop's build tools. A path is caged iff a pattern matches it and it is not an
+honoured escape. The audit refuses an escape that is not one top-level, extension-less file
+directly under scripts/, or that has a gate shape (a check-/run-/fastpath- name, plan-lint,
+install-gate-tools, setup-dev, stage-corpus) - a refused escape is not honoured, so its path stays
+caged - and fails an escape that is not tracked (dead) or that no pattern matches (orphan), like a
+dead glob. A malformed `[[loop_tool]]` table (a key other than `path` and `reason`, an empty or
+non-string value, a duplicate path) makes the whole cage unreadable (exit 2 under --enforce).
+
+stdlib-only (tomllib, Python 3.11+). L(-1) security-critical (matched by `scripts/**`).
 
 Usage: check-l-neg1-ack [--base <ref>] [--head <ref>] [--enforce] [--cage <l-neg1-files.toml>]
        (--base default: the @{u}->origin/<branch>->origin/main->origin/HEAD chain; in CI pass
         --base "$GITHUB_EVENT_BEFORE" for the exact push range)
-Exit:  0 = clean or fail-soft (P0); 1 = a missing trailer OR a dead/stale-declared cage glob, under
-       --enforce; 2 = bad invocation / cage missing / `git ls-files` failed under --enforce.
+Exit:  0 = clean or fail-soft (P0); 1 = a missing trailer, a dead/stale-declared cage glob or a
+       refused/dead/orphan loop-tool escape, under --enforce; 2 = bad invocation / cage missing or
+       malformed / `git ls-files` failed under --enforce.
 """
 from __future__ import annotations
 
@@ -46,7 +57,9 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Collection, Mapping
 from pathlib import Path
+from typing import NamedTuple
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -83,24 +96,102 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(parts) + "$")
 
 
-def _read_pattern_list(cage: Path) -> list[str] | None:
-    """The raw cage glob strings, or None if the file is missing / unparseable / malformed."""
+class Cage(NamedTuple):
+    """The parsed cage: the raw glob strings and the `[[loop_tool]]` escapes (exact path -> reason).
+    A NamedTuple, not a dataclass: the g24 canary loads this file with SourceFileLoader and no
+    sys.modules entry, under which a dataclass cannot be built."""
+    patterns: list[str]
+    loop_tools: dict[str, str]
+
+
+def _read_loop_tools(raw: object) -> dict[str, str] | None:
+    """The `[[loop_tool]]` array -> {path: reason}, or None when it is malformed: not an array of
+    tables, a table with a key other than `path` and `reason`, an empty or non-string value, or a
+    duplicate path. A misspelled key fails closed rather than dropping an escape's reason."""
+    if not isinstance(raw, list):
+        return None
+    tools: dict[str, str] = {}
+    for entry in raw:
+        if not isinstance(entry, dict) or set(entry) != {"path", "reason"}:
+            return None
+        path, reason = entry["path"], entry["reason"]
+        if not (isinstance(path, str) and path.strip() and isinstance(reason, str) and reason.strip()):
+            return None
+        if path in tools:
+            return None
+        tools[path] = reason
+    return tools
+
+
+def _read_cage(cage: Path) -> Cage | None:
+    """The parsed cage, or None if the file is missing / unparseable / malformed (an empty or
+    non-string pattern list, or a malformed `[[loop_tool]]` table)."""
     if not cage.is_file():
         return None
     try:
         data = tomllib.loads(cage.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
         return None
     pats = data.get("patterns")
     if not isinstance(pats, list) or not pats or not all(isinstance(p, str) and p for p in pats):
         return None
-    return pats
+    tools = _read_loop_tools(data.get("loop_tool", []))
+    if tools is None:
+        return None
+    return Cage(pats, tools)
 
 
 def load_patterns(cage: Path) -> list[re.Pattern[str]] | None:
     """Compile the cage globs, or None if the file is missing / unparseable / malformed."""
-    pats = _read_pattern_list(cage)
-    return None if pats is None else [glob_to_regex(p) for p in pats]
+    parsed = _read_cage(cage)
+    return None if parsed is None else [glob_to_regex(p) for p in parsed.patterns]
+
+
+# The Loop-tool escape shape: one top-level, extension-less file directly under scripts/. A nested
+# path would open a subtree beside the self-tests and the SAST corpus, and an extension would let a
+# data file (a `.toml` trust root) or a module a gate imports slip out of the cage.
+_ESCAPE_NAME_RE = re.compile(r"scripts/[a-z0-9][a-z0-9-]*")
+# Gate-shaped names are never an escape: the check-/run-/fastpath- prefixes are the gate and
+# gate-driver naming the planes invoke, and the four named tools are gate-plane machinery -
+# plan-lint (G7/G20), the pinned-tool installer, the hook patcher, and the G24a corpus-manifest
+# generator (it writes the SHA-256 trust root G24a verifies, so a poisoned one could vouch for a
+# swapped fixture).
+_GATE_PREFIXES = ("check-", "run-", "fastpath-")
+_GATE_TOOLS = frozenset({"plan-lint", "install-gate-tools", "setup-dev", "stage-corpus"})
+
+
+def escape_refusals(loop_tools: Mapping[str, str]) -> list[tuple[str, str]]:
+    """(pure) Every escape the audit refuses, as (path, why), sorted by path."""
+    refused: list[tuple[str, str]] = []
+    for path in sorted(loop_tools):
+        if not _ESCAPE_NAME_RE.fullmatch(path):
+            refused.append((path, "an escape is one top-level, extension-less file directly under "
+                                  "scripts/ ([a-z0-9-], no dot, no subdirectory)"))
+            continue
+        name = path.removeprefix("scripts/")
+        if name.startswith(_GATE_PREFIXES) or name in _GATE_TOOLS:
+            refused.append((path, "a gate-shaped name (check-/run-/fastpath-, plan-lint, "
+                                  "install-gate-tools, setup-dev, stage-corpus) is never an escape"))
+    return refused
+
+
+def honoured_escapes(loop_tools: Mapping[str, str]) -> frozenset[str]:
+    """(pure) The escapes that un-cage their path: every declared escape the audit does not refuse."""
+    refused = {p for p, _ in escape_refusals(loop_tools)}
+    return frozenset(p for p in loop_tools if p not in refused)
+
+
+def dead_escapes(loop_tools: Mapping[str, str], tracked_paths: list[str]) -> list[str]:
+    """(pure) Escapes whose path is not tracked: an escape outliving its tool, or a mis-spelled one."""
+    tracked = {t.strip().replace("\\", "/") for t in tracked_paths if t.strip()}
+    return sorted(p for p in loop_tools if p not in tracked)
+
+
+def orphan_escapes(loop_tools: Mapping[str, str], pattern_strs: list[str]) -> list[str]:
+    """(pure) Escapes no cage pattern matches: an escape from nothing, left behind when a pattern
+    narrowed or mis-spelled, and a standing un-cage the moment a pattern widens over it again."""
+    regexes = [glob_to_regex(p) for p in pattern_strs]
+    return sorted(p for p in loop_tools if not any(rx.match(p) for rx in regexes))
 
 
 # Globs whose target is DECLARED absent - not yet landed, or legitimately optional forever - with
@@ -157,9 +248,10 @@ def orphan_declarations(pattern_strs: list[str]) -> list[str]:
     return sorted(p for p in AUDIT_DECLARED_TARGETLESS if p not in pats)
 
 
-def is_l_neg1(path: str, regexes: list[re.Pattern[str]]) -> bool:
+def is_l_neg1(path: str, regexes: list[re.Pattern[str]], escapes: Collection[str]) -> bool:
+    """Caged iff a cage pattern matches the path and the path is not an honoured escape."""
     p = path.strip().replace("\\", "/")
-    return bool(p) and any(rx.match(p) for rx in regexes)
+    return bool(p) and any(rx.match(p) for rx in regexes) and p not in escapes
 
 
 def git(*args: str) -> tuple[int, str]:
@@ -211,21 +303,37 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cage", type=Path, default=DEFAULT_CAGE, help="the L(-1) glob list (l-neg1-files.toml)")
     args = ap.parse_args(argv)
 
-    pats = _read_pattern_list(args.cage)
-    if pats is None:
-        msg = f"cage list {args.cage} missing / unparseable / malformed - cannot audit L(-1) acks"
+    cage = _read_cage(args.cage)
+    if cage is None:
+        msg = (f"cage list {args.cage} missing / unparseable / malformed (patterns or [[loop_tool]]) - "
+               "cannot audit L(-1) acks")
         if args.enforce:
             fail(msg)
             return 2
         out(f"{msg}; skipping (fail-soft, P0)")
         return 0
+    pats = cage.patterns
     regexes = [glob_to_regex(p) for p in pats]
+    escapes = honoured_escapes(cage.loop_tools)
+
+    # the escape audit's pure half - the cage file alone decides a refused or an orphan escape
+    refused = escape_refusals(cage.loop_tools)
+    orphan_esc = orphan_escapes(cage.loop_tools, pats)
+    for p, why in refused:
+        fail(f"[[loop_tool]] escape {p!r} is refused - {why}; the path stays caged")
+    for p in orphan_esc:
+        fail(f"[[loop_tool]] escape {p!r} matches NO cage pattern - an escape from nothing; remove it "
+             "in the act that narrows the pattern")
 
     # cage-liveness audit (the dead-glob class, P4.56.1) - independent of the push range.
     # `--full-name -- :/` pins BOTH the output format and the pathspec scope to the repo root:
     # a bare `git ls-files` is CWD-scoped (subtree-only, CWD-relative names) and would false-red
     # a correct cage from any subdirectory - unlike the gate's other git calls, which are all
     # CWD-agnostic within the repo.
+    dead: list[str] = []
+    stale: list[str] = []
+    orphans: list[str] = []
+    dead_esc: list[str] = []
     rc_ls, ls_out = git("ls-files", "--full-name", "--", ":/")
     if rc_ls != 0:
         (fail if args.enforce else out)("git ls-files failed - cannot audit cage-glob liveness"
@@ -237,6 +345,7 @@ def main(argv: list[str] | None = None) -> int:
         dead = dead_globs(pats, tracked)
         stale = stale_declarations(pats, tracked)
         orphans = orphan_declarations(pats)
+        dead_esc = dead_escapes(cage.loop_tools, tracked)
         for p in dead:
             fail(f"cage glob {p!r} matches NO tracked path (patterns are root-anchored `^...$`) - "
                  "it protects nothing; re-spell it to the full repo-relative path, or declare the "
@@ -247,13 +356,17 @@ def main(argv: list[str] | None = None) -> int:
         for p in orphans:
             fail(f"AUDIT_DECLARED_TARGETLESS entry {p!r} has NO matching cage glob - the glob left "
                  "the cage; remove the orphan declaration in the act that removes the glob")
-        if dead or stale or orphans:
-            if args.enforce:
-                fail(f"G71: {len(dead)} dead + {len(stale)} stale-declared + {len(orphans)} orphan-declared "
-                     "cage glob(s) - FAILED (enforced)")
-                return 1
-            out(f"G71: {len(dead)} dead + {len(stale)} stale-declared + {len(orphans)} orphan-declared "
-                "cage glob(s); fail-SOFT without --enforce")
+        for p in dead_esc:
+            fail(f"[[loop_tool]] escape {p!r} is NOT a tracked path - the tool is gone or the path is "
+                 "mis-spelled; remove or re-spell the escape")
+    if dead or stale or orphans or refused or dead_esc or orphan_esc:
+        summary = (f"G71: {len(dead)} dead + {len(stale)} stale-declared + {len(orphans)} orphan-declared "
+                   f"cage glob(s), {len(refused)} refused + {len(dead_esc)} dead + {len(orphan_esc)} "
+                   "orphan loop-tool escape(s)")
+        if args.enforce:
+            fail(f"{summary} - FAILED (enforced)")
+            return 1
+        out(f"{summary}; fail-SOFT without --enforce")
 
     base = resolve_base(args.base)
     commits = commits_in_range(base, args.head)
@@ -269,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
         subject = git("log", "-1", "--format=%s", sha)[1].strip()
         message = git("log", "-1", "--format=%B", sha)[1]
         files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", sha)[1].splitlines() if f.strip()]
-        touched = [f for f in files if is_l_neg1(f, regexes)]
+        touched = [f for f in files if is_l_neg1(f, regexes, escapes)]
         if not touched:
             continue   # touches no caged file - no ack needed (an ordinary commit / a docs/plan check-off
                        # passes here); there is NO check-off/[!extern] escape for an L(-1)-touching commit

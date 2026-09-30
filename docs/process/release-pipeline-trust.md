@@ -97,8 +97,8 @@ gpg.ssh.allowedSignersFile` points at it. Two assertions ride on this one key:
 coexist.
 
 **L(-1).** The committed `.github/allowed_signers` file is in the L(-1)
-security-critical-file set (security-concept §2 names "the G56b SSH allowed-signers
-file"; the cage `scripts/l-neg1-files.toml` matches it via `.github/**`) — an edit is
+security-critical-file set (security-concept §2 counts it among the CI planes; the cage
+`scripts/l-neg1-files.toml` matches it via `.github/**`) — an edit is
 a Co-Pilot escalation carrying the `L-neg1-ack: owner` trailer (G71).
 
 ## 4. Plane 3 — the one irreversible action is human-approved + minimally scoped (G56)
@@ -211,7 +211,7 @@ pre-push gate **G71** audits.
 - The lane definitions + the signing-runner host-isolation: spec **§6.7.1** (Lane A /
   the DCO posture) + **§6.7.2** (Lane B / the signing job)
   ([`../spec/06-build-test-release.md`](../spec/06-build-test-release.md)).
-- The L(-1) set (naming the allowed-signers file) + principle 11 (host isolation):
+- The L(-1) set (the CI planes that hold the allowed-signers file) + principle 11 (host isolation):
   security-concept **§2** ([`../security/security-concept.md`](../security/security-concept.md)).
 - The key the signing job injects (genesis / backup / loss-recovery):
   [`minisign-key-custody.md`](minisign-key-custody.md); the CVE → user + key-revocation

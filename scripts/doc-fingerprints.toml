@@ -12,7 +12,7 @@
 # DESCRIBE it were last reasoned against it. plan-lint recomputes the region's hash on every run; a
 # MISMATCH fails check 25. The fix is never to silently re-hash: you re-VERIFY each `describes` doc
 # against the new source content, update them where stale, THEN re-bless the fingerprint here — all in
-# the SAME commit (DoD item 2). Because this file is L(-1) (matched by `scripts/*.toml`, G71), a
+# the SAME commit (DoD item 2). Because this file is L(-1) (matched by `scripts/**`, G71), a
 # re-bless is an owner-acked edit — the freshness check cannot be silently waived on the source it guards.
 #
 # COMPUTING a fingerprint: `sha256:` + sha256 of the LF-normalized region. For kind="file" the region
@@ -32,34 +32,20 @@
 # SCOPE: the ledger holds the bindings whose describing prose no name-check can verify; plan-lint's
 # `_REQUIRED_FP_IDS` is its floor.
 
-# LIVE — the authoritative L(-1) cage glob-list. Its prose copies (security-concept §2, the
-# build-gates G71 row, CLAUDE.md §5, the docs-only-fastpath list) are its human descriptions; the
-# G71 row itself states this sync is "held in sync by G68". A cage edit (a glob added/removed) must
-# re-verify those four prose copies — this fingerprint forces it. Both the cage and this ledger are
-# L(-1), so a cage change + this re-bless ride the one owner-acked commit.
+# The authoritative L(-1) cage (patterns + the [[loop_tool]] escapes). security-concept §2, the
+# build-gates G71 row and CLAUDE.md §5 name its categories and point to it; none enumerates it.
+# A cage edit (a pattern or an escape added or removed) re-verifies those three descriptions and
+# re-greps every doc that cites a pattern by name ("matched by", "via") — this fingerprint forces
+# it. Both the cage and this ledger are L(-1), so a cage change and this re-bless ride the one
+# owner-acked commit.
 [[source]]
 id = "l-neg1-cage"
 kind = "file"
 file = "scripts/l-neg1-files.toml"
 describes = [
-  "security-concept.md §2 (the L(-1) enumeration)",
-  "build-gates.md G71 row (the cage description)",
+  "security-concept.md §2 (the L(-1) categories)",
+  "build-gates.md G71 row (the cage categories and the escape rule)",
   "CLAUDE.md §5 (the L(-1) anti-pattern bullet)",
-  "the docs-only-fastpath L(-1) list (G10)",
 ]
-fingerprint = "sha256:59cf428eea6d3c0ae12b6b2a02e153826f7d7002d174d2d2c5ac16717867fc60"
-# ^ re-blessed 2026-07-21 (P3.72): the cage gained `max_survived_mutants.toml` (the G15 mutation
-#   ratchet, the coverage-floors class); the §2 + G71-row enumerations were synced in the same
-#   commit; CLAUDE §5 is deliberately non-exhaustive, and the docs-only fastpath's skip
-#   eligibility is a hardcoded .md/LICENSE/NOTICE allow-list (it never parses the cage), so a
-#   non-.md file like the ratchet is structurally ineligible — both re-verified, no edit needed.
-# ^ re-blessed 2026-08-31 (the P4.56.1 pre-planned tail (b)): the bare `engines.lock` pattern was
-#   re-spelled `src-tauri/engines.lock` — check-l-neg1-ack matches root-anchored (`^...$`), so the
-#   bare spelling never matched the §3.7.2-homed manifest this act commits; the pattern rename is a
-#   WIDENING onto the real path, not a narrowing (the old pattern matched no spec-sanctioned path —
-#   §3.7.2 fixes the home in src-tauri/; a stray repo-root engines.lock would be an untracked
-#   alien). All four describes copies re-verified: security-concept §2 and the G71
-#   row name `engines.lock` path-free (still true of the file), CLAUDE §5 likewise (and is
-#   deliberately non-exhaustive), and the docs-only fastpath's hardcoded .md allow-list makes a
-#   .lock file structurally ineligible — no prose edit needed FOR THE RENAME (the G71 row and the
-#   §2 sentence ARE edited in this same act, for the separate cage-liveness-audit passage).
+fingerprint = "sha256:12909c675b1b1f9c9c03aa780dbc5f6477d5dc9995a40ce5da60b73987797f1b"
+# ^ Re-blessed at every cage edit; the commit body records what was re-verified.

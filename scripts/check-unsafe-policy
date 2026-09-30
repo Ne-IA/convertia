@@ -22,7 +22,7 @@ Two tiers, the P0.3.6 / P0.4.1 pattern:
        comment.
   Skips-with-notice while no first-party crate root exists, fail-closes the moment one lands.
 
-stdlib-only. L(-1) security-critical (matched by scripts/check-*).
+stdlib-only. L(-1) security-critical (matched by scripts/**).
 
 Usage: check-unsafe-policy [--full]   (--full accepted for wiring parity; the scan is the same)
 Exit:  0 = policy intact (or target-absent); 1 = a violation; 2 = the allow-list contract is gutted.

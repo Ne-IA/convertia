@@ -18,7 +18,7 @@ Two tiers, the same pattern as the supply-chain skeleton (P0.3.6):
   workspace manifest exists, fail-closes the moment one lands (the G47/G22/G23 bootstrap posture).
   cargo-audit's binary pin + the live audit leg activate in P1 with the lockfile.
 
-stdlib-only. L(-1) security-critical (matched by scripts/check-*). The configs it freezes
+stdlib-only. L(-1) security-critical (matched by scripts/**). The configs it freezes
 (rustfmt.toml / clippy.toml) are themselves L(-1).
 
 Usage: check-rust-lint-contract [--full]   (--full = the G14 whole-tree clippy leg, P1)

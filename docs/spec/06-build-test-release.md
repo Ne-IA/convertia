@@ -1959,7 +1959,7 @@ record stays present and current per release line.
 
 If clearance returns `conflict→rename`, the rename is applied **before** release,
 **never after** (SSOT). A single scripted, reviewable rename pass
-(`scripts/rename-brand.*`) propagates the new name across **every** surface so no
+(`cargo xtask rename-brand`) propagates the new name across **every** surface so no
 stale "ConvertIA" leaks into a published build:
 - repo/package identity: `Cargo.toml` (crate + `productName`), `package.json`,
   `tauri.conf.json` (`productName`, `identifier`, window title, bundle name),

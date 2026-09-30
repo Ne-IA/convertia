@@ -37,7 +37,7 @@ CI job, immediately before the real scan):
   6. cargo-geiger - INFORMATIONAL only (a census, never a required green check); skipped until crates.
 
 `--config p/rust` (live registry fetch) is NEVER used - only the vendored `scripts/semgrep-rules/`.
-stdlib-only. L(-1) security-critical (matched by scripts/check-*).
+stdlib-only. L(-1) security-critical (matched by scripts/**).
 
 Usage: check-sast [--full]
 Exit:  0 = clean (or target-absent / semgrep-absent); 1 = a finding / canary miss; 2 = a tool error.

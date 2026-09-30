@@ -50,7 +50,7 @@ Three tiers:
   LOGGED every run (no silent exemption). This is a G28 SCOPE refinement, not a floor relaxation: diff_floor
   stays 80 (freeze_floors).
 
-stdlib-only. L(-1) security-critical (matched by scripts/check-*; coverage-floors.toml is L(-1) too).
+stdlib-only. L(-1) security-critical (matched by scripts/**; coverage-floors.toml is L(-1) too).
 
 Usage: check-coverage [--full] [--base <git-ref>]
 Exit:  0 = clean (or target-absent); 1 = a violation; 2 = coverage-floors.toml missing/malformed.
