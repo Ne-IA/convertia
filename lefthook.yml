@@ -90,6 +90,12 @@ commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-pu
     conventional:    # G11 - conventional-commit subject + subject/body length caps; lefthook passes the msg-file path as {1}
       run: python3 -P scripts/check-commit-msg {1}
 
+# DOCS-ONLY FASTPATH (G10): the six legs marked `fastpath-docs-only ||` skip only when every path in the
+# unpushed range is documentation and the index / working tree change no code (scripts/fastpath-docs-only;
+# default must-run).
+# Of the six, only rust-lint-contract reads a .md input (its cargo legs compile the spec include_str! binds);
+# L1 runs the same `cargo test --all-targets` on every commit, and L4 re-runs all six.
+# Every other command runs whatever the detector says; test-docs-only-fastpath-pattern.py pins the six.
 pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
   parallel: true
   commands:
@@ -112,29 +118,29 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
     js-supply-chain: # G18c/G18d - JS registry pin + lifecycle lockdown (pnpm-lock URL guard live P1)
       run: python3 -P scripts/check-js-supply-chain
     generated-drift: # G19 - regenerate codegen artifacts + git diff --exit-code (live since P1)
-      run: python3 -P scripts/check-generated-drift
+      run: python3 -P scripts/fastpath-docs-only || python3 -P scripts/check-generated-drift
     test-suppression: # G70 - full-tree test-suppression-marker scan (fail-closed; no diff-base excuse)
       run: python3 -P scripts/check-test-suppression --full
     rs-test-refs:    # G73 - ipc/** contract-test-fn reference resolution (.rs analogue of G68; whole-tree, fail-closed)
       run: python3 -P scripts/check-rs-test-refs
     rust-lint-contract: # G14/G17 - whole-tree clippy --all-targets + cargo test + cargo audit (live since P1)
-      run: python3 -P scripts/check-rust-lint-contract --full
+      run: python3 -P scripts/fastpath-docs-only || python3 -P scripts/check-rust-lint-contract --full
     unsafe-policy:   # G29 - whole-tree #![deny(unsafe_code)] + exactly-one-FFI-module scan (live since P1)
       run: python3 -P scripts/check-unsafe-policy --full
     fuzz-contract:   # G48/G16 - whole-harness fuzz-target + fixture + bounds assertion (target-absent until P3)
       run: python3 -P scripts/check-fuzz-contract --full
     ts-gate:         # G5/G6/G13 - whole-project tsc --noEmit + eslint/stylelint/prettier --check + vitest (live since P1)
-      run: python3 -P scripts/check-ts-gate --full
+      run: python3 -P scripts/fastpath-docs-only || python3 -P scripts/check-ts-gate --full
     english-only:    # G57 - whole-tree Principle-11 English-only / string-ownership scan (live since P1)
       run: python3 -P scripts/check-english-only --full
     coverage:        # G27/G28 - coverage-floor freeze + decrease-guard; per-domain/diff live in P1 (authoritative ratchet leg is the L4 workflow-security check)
-      run: python3 -P scripts/check-coverage --full
+      run: python3 -P scripts/fastpath-docs-only || python3 -P scripts/check-coverage --full
     lockfile-integrity: # G18a - whole-tree lockfile-integrity contract: drift-set freeze + CI --locked/--frozen-lockfile flag-scan + git-diff drift-guard + (E) sub-workspace --locked resolve (--deep; cargo already required at L2 for rust-lint-contract) (live since P1)
-      run: python3 -P scripts/check-lockfile-integrity --deep
+      run: python3 -P scripts/fastpath-docs-only || python3 -P scripts/check-lockfile-integrity --deep
     doc-splice:      # G74 - .rs doc-comment attachment integrity over the unpushed range (the L2 mirror of the L1 staged-diff leg)
       run: python3 -P scripts/check-doc-splice --range
     doc-links:       # G74 - rustdoc intra-doc-link integrity (leg (b), the ONE driver CI also runs; host-OS leg - the per-OS L4 matrix stays the 3-OS proof)
-      run: python3 -P scripts/check-doc-links
+      run: python3 -P scripts/fastpath-docs-only || python3 -P scripts/check-doc-links
     gate-selftests:  # G24/G10 - the full self-test canary, --changed-gated: runs only when the unpushed range touches the gate plane (scripts/**, lefthook.yml, .github/workflows/, requirements-ci.txt, docs/security/build-gates.md - whose leg counts the run cross-checks; skip-with-notice otherwise; fail-safe RUN without a base)
       run: python3 -P scripts/run-gate-selftests --changed
     build-matrix:    # G30 - build-matrix contract: native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (target-absent until a universal sidecar is staged)

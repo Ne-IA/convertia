@@ -18,7 +18,9 @@ TWO CALL SITES (2026-08-30 - the L2 slot the G24 row declared from P0 but never 
                      FAIL-SAFE toward RUN: an unresolvable base (first push) or an unreadable
                      range diff runs the full canary - a canary may over-run, never under-run;
                      paths are read with core.quotepath=false + a quote-strip so a non-ASCII path
-                     cannot dodge the scope (the under-run direction is closed).
+                     cannot dodge the scope, and with --no-renames so a rename that moves a plane
+                     file out of the scope still lists its source path (the under-run direction is
+                     closed).
 
 Discovery: every `scripts/gate-selftests/*.py` (the `g24-*`/`g54-*` planted-positive self-tests +
 the `test-*-fastpath-pattern` G10 fastpath smoke tests). `--require-network` is forwarded ONLY to
@@ -241,7 +243,9 @@ def main(argv: list[str] | None = None) -> int:
         base = _resolve_base()
         changed: list[str] | None = None
         if base is not None:
-            rc, out = _git("diff", "--name-only", f"{base}..HEAD")
+            # --no-renames: under git's rename detection a rename lists only its destination, so a plane file
+            # moved out of CHANGED_PREFIXES would drop out of the range and the canary would under-run.
+            rc, out = _git("diff", "--name-only", "--no-renames", f"{base}..HEAD")
             changed = out.splitlines() if rc == 0 else None
         verdict, reason = fastpath_decision(base is not None, changed)
         if verdict == "skip":

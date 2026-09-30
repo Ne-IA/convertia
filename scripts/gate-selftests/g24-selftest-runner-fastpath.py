@@ -8,9 +8,11 @@ every one carries --changed; ci.yml: every one carries --require-network and NON
 --changed - flag-order- and second-call-site-robust, mutation-tested against the appended
 `--require-network --changed` form (the R1 opus P1: a literal-adjacency substring pin passed that
 mutation green). The fail-safe direction is pinned both ways: a canary may over-run, never
-under-run. Since P4.29.1's owner tail these legs also pin the runner's BYTECODE-CACHE posture:
-the purge of every `__pycache__` under scripts/ on entry (the ORDERING observed at spawn time,
-never narrated), the PYTHONDONTWRITEBYTECODE=1 child environment proven from the wiring (the
+under-run - one end-to-end leg drives main(['--changed']) in a throwaway repo over a rename that
+moves a self-test out of the plane (the range read lists its source path). Since P4.29.1's owner
+tail these legs also pin the runner's BYTECODE-CACHE posture: the purge of every `__pycache__`
+under scripts/ on entry (the ORDERING observed at spawn time, never narrated), the
+PYTHONDONTWRITEBYTECODE=1 child environment proven from the wiring (the
 ambient variable is popped for the leg, so inheritance cannot fake it), and the fail-closed
 refusal when a cache SURVIVES the purge (the length-preserving-mutation-poisons-pycache
 class - see `_purge_bytecode_caches` in the runner). The PYTHONSAFEPATH=1 child environment (G54b
@@ -106,6 +108,55 @@ record("a NEAR-MISS prefix (scripts-extra/) does NOT arm the canary",
        m.fastpath_decision(True, ["scripts-extra/x"])[0] == "skip")
 record("the runner's git wrapper pins core.quotepath=false (source pin)",
        '"core.quotepath=false"' in SCRIPT.read_text(encoding="utf-8"))
+
+
+def _rename_scope_leg() -> tuple[int, str, list[str]]:
+    """E2E, throwaway repo: a committed `git mv` moves a self-test OUT of the gate plane. git's rename
+    detection (`diff.renames`, set on here so a host config cannot mask the replay) lists only the
+    destination, so the range read must list the source path too (`--no-renames`) or the canary
+    under-runs. ROOT points at the throwaway repo and SELFTEST_DIR at an absent dir, so a RUN verdict
+    ends at the empty discovery (rc 1) and nothing is spawned; the GIT_* location variables a hook
+    plane could carry are popped for the leg (GIT_EXEC_PATH stays)."""
+    saved = m.SELFTEST_DIR, m.ROOT
+    popped = {k: os.environ.pop(k) for k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]}
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+
+            def git(*a: str) -> str:
+                return subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", check=True).stdout
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "t@t.t")
+            git("config", "user.name", "t")
+            git("config", "diff.renames", "true")
+            (root / "scripts" / "gate-selftests").mkdir(parents=True)
+            (root / "scripts" / "gate-selftests" / "g24-x.py").write_bytes(b"x = 1\n")
+            (root / "README.md").write_bytes(b"r\n")
+            git("add", "-A")
+            git("-c", "core.hooksPath=", "commit", "-q", "-m", "base")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            git("mv", "scripts/gate-selftests/g24-x.py", "g24-x.md")
+            git("-c", "core.hooksPath=", "commit", "-q", "-m", "move a self-test out of the plane")
+            replay = git("diff", "--name-only", "origin/main..HEAD").split()
+            m.SELFTEST_DIR, m.ROOT = root / "no-selftests", root
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                rc = m.main(["--changed"])
+            return rc, buf.getvalue(), replay
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        return -1, f"raised: {type(e).__name__}: {e}", []
+    finally:
+        m.SELFTEST_DIR, m.ROOT = saved
+        os.environ.update(popped)
+
+
+_rc_mv, _out_mv, _replay_mv = _rename_scope_leg()
+record("scope (E2E): a committed rename moving a self-test OUT of the plane arms the canary - the range read lists the"
+       " source path (`--no-renames`); the rename-detecting read, which lists only the destination, is replayed first",
+       _replay_mv == ["g24-x.md"] and _rc_mv == 1 and "--changed: RUN" in _out_mv
+       and "scripts/gate-selftests/g24-x.py" in _out_mv)
 
 # --- the cross-plane wiring rules: mutation-tested pure legs -----------------------------------
 record("ci rule: the APPENDED `--require-network --changed` mutation is RED (the R1 opus P1 probe)",
@@ -479,9 +530,9 @@ record("ci.yml keeps the FULL --require-network prelude and never passes --chang
 
 # The sibling-canary convention (the r2 opus P3): the last leg pins the others, so a
 # silently-deleted canary leg reds the canary itself - this file newly carries a P0 closure.
-# [Test-Change: G54b -P isolation — old-obsolete+new-correct, security-concept §3: 41 -> 42, the one added leg
-# is the PYTHONSAFEPATH wiring leg above; the count is the live total minus this pin]
-record("the canary's own leg count is pinned (42 + this pin)", len(results) == 42)
+# [Test-Change: P0.2.13 — old-obsolete+new-correct, build-gates G24 row: 42 -> 43, the one added leg is the
+# `scope (E2E)` rename leg above; the count is the live total minus this pin]
+record("the canary's own leg count is pinned (43 + this pin)", len(results) == 43)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-selftest-runner-fastpath] {len(results) - len(failed)}/{len(results)} assertions passed.")

@@ -47,7 +47,7 @@ name = "pre-push"
 trigger = "git push"
 budget_seconds = 180
 budget_kind = "hard"
-enforcement = "lefthook pre-push; range / full-tree gates; cheap-commit (docs-only / check-off) fastpath"
+enforcement = "lefthook pre-push; range / full-tree gates; docs-only fastpath over the six heavy toolchain legs (build-gates §4)"
 mirror = "L2 + L4"
 
 [[plane]]
