@@ -114,7 +114,7 @@ show the placement).
 | Field | Form | Rule |
 |---|---|---|
 | **List bullet** | `- ` | Markdown unordered-list dash + one space. The marker (`[ ]`/`[x]`/`[!]`/`[!extern]`) follows immediately. |
-| **Box-id** | `**P<phase>.<n>**` | **Bold.** `<phase>` is the integer phase number (`0`..`11`); `<n>` is the box number within the phase, **1-based, gap-free** (§7). The id is the loop's stable handle and the inline-decision-tag suffix (`[Build-Session-Entscheidung: P5.4]`, CLAUDE.md §5). |
+| **Box-id** | `**P<phase>.<n>**` | **Bold.** `<phase>` is the integer phase number (`0`..`11`); `<n>` is the box number within the phase, **1-based, gap-free** (§7). The id is the loop's stable handle and the inline-decision-tag suffix (`[Build-Session-Entscheidung: P5.4]`, roles-and-escalation §3). |
 | **Tag** | `[Tag]` | Exactly one primary tag from the taxonomy (§4), in square brackets, right after the box-id. A second tag is allowed only as a comma-joined pair `[Tag,Tag2]` for a genuinely cross-cutting box (§4). |
 | **Title** | short imperative phrase | One line, English (CLAUDE.md §8), imperative ("Wire …", "Author …", "Stage …"), no trailing period. Describes the *deliverable*, not the activity. |
 | **Refs separator** | ` · ` | A space-bullet-space (`·`, U+00B7) separates the title from the references and the reference groups from each other. |
@@ -212,9 +212,9 @@ tag; reach for the pair only when the box genuinely lives in two homes.
 
 ## 5. Dependency annotations — `needs:` and `unlocked-by:`
 
-ConvertIA has **one coherent dependency vocabulary, two directions** (CLAUDE.md §2;
-`build-loop.md` §3 step 2). Both live on their own line directly under the box
-header, before any `>`-note or sub-box.
+ConvertIA has **one coherent dependency vocabulary, two directions** (this section;
+the loop follows it in `build-loop.md` §3 steps 1–2). Both live on their own line
+directly under the box header, before any `>`-note or sub-box.
 
 ### 5.1 `needs:` — the forward dependency (DECISION C)
 
@@ -468,8 +468,8 @@ box carries no ref. `plan-lint` passes it.
   [`roles-and-escalation.md`](../process/roles-and-escalation.md) §4.
 - The gate that enforces this format (`plan-lint`, G7/G20) + the doc-wide
   consistency checks 5–24: [`build-gates.md`](../security/build-gates.md) §6.
-- Project rules / the `needs:` ↔ `unlocked-by:` vocabulary (DECISION C) / DoD
-  summary: [`CLAUDE.md`](../../CLAUDE.md) §2.
+- Project rules (the working model, the anti-patterns): [`CLAUDE.md`](../../CLAUDE.md)
+  §2, §5.
 - The plan index + the phase skeleton this format fills: [`README.md`](README.md).
 - The P0 box areas that author this file (P0.1) + the gate framework (P0.2):
   [`P0-build-and-security.md`](P0-build-and-security.md).

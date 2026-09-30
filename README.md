@@ -122,7 +122,7 @@ reconciled.
 | [security/](docs/security/security-concept.md) | The build-safety concept — threat model, defense-in-depth, and the gate catalogue (`G1..Gnn`): **how we build it safely** (living). |
 | [process/](docs/process/build-loop.md) | The build process — the autonomous build-loop runbook, roles & escalation, and the test strategy (living). |
 | [plan/](docs/plan/README.md) | The implementation roadmap — phased executable TODO (P0 bootstrap + P1–P11). |
-| [CLAUDE.md](CLAUDE.md) | The repo's own project rules for Claude Code (conflict rule, DoD summary, anti-patterns). |
+| [CLAUDE.md](CLAUDE.md) | The repo's own project rules for Claude Code (conflict rule, working model, anti-patterns, owner rules). |
 
 ## Contributing
 
