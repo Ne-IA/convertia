@@ -41,18 +41,36 @@ caged - and fails an escape that is not tracked (dead) or that no pattern matche
 dead glob. A malformed `[[loop_tool]]` table (a key other than `path` and `reason`, an empty or
 non-string value, a duplicate path) makes the whole cage unreadable (exit 2 under --enforce).
 
+MONOTONE RULE: a ratchet the Loop moves as ordinary box work - the §0.8 relied-upon floors in the
+root Cargo.toml and package.json - is uncaged data, and a cage `[[monotone]]` table names it (`file`,
+dotted `table`, `direction = "raise-only"`, `comparator = "semver"`). For every commit in the push
+range whose diff names the file, the table at the commit is compared with the table at its first
+parent: adding a key or raising a value needs no trailer; removing a key, lowering a value by semver
+precedence, changing a value to or from one that is not a semver string, or leaving the table
+removed or unreadable (the file deleted, not valid UTF-8 TOML/JSON by its extension, the table
+missing or not a table) is a WEAKENING and needs `L-neg1-ack: owner` like a caged edit. A parent
+without a readable table constrains nothing (the table is being introduced; a commit that made it
+unreadable was a weakening itself), and a git read that fails at the commit or its parent counts as
+a weakening. The audit refuses an entry whose file a cage pattern matches (a caged file needs the
+ack for every edit) and fails an entry whose file is untracked or whose table is not a table in the
+tracked file (dead), like a dead glob. A malformed `[[monotone]]` table (a key other than the four,
+an empty, padded or non-string value, another direction or comparator, a file that is not .toml or
+.json, an empty table segment, a duplicate file and table) makes the whole cage unreadable.
+
 stdlib-only (tomllib, Python 3.11+). L(-1) security-critical (matched by `scripts/**`).
 
 Usage: check-l-neg1-ack [--base <ref>] [--head <ref>] [--enforce] [--cage <l-neg1-files.toml>]
        (--base default: the @{u}->origin/<branch>->origin/main->origin/HEAD chain; in CI pass
         --base "$GITHUB_EVENT_BEFORE" for the exact push range)
-Exit:  0 = clean or fail-soft (P0); 1 = a missing trailer, a dead/stale-declared cage glob or a
-       refused/dead/orphan loop-tool escape, under --enforce; 2 = bad invocation / cage missing or
-       malformed / `git ls-files` failed under --enforce.
+Exit:  0 = clean or fail-soft (P0); 1 = a missing trailer (a caged edit or a monotone weakening), a
+       dead/stale-declared cage glob, a refused/dead/orphan loop-tool escape or a refused/dead
+       monotone entry, under --enforce; 2 = bad invocation / cage missing or malformed / `git
+       ls-files` failed under --enforce.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -96,12 +114,21 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(parts) + "$")
 
 
+class Monotone(NamedTuple):
+    """One `[[monotone]]` entry: a dotted data table in an uncaged file whose values may only rise."""
+    file: str
+    table: str
+    direction: str
+    comparator: str
+
+
 class Cage(NamedTuple):
-    """The parsed cage: the raw glob strings and the `[[loop_tool]]` escapes (exact path -> reason).
-    A NamedTuple, not a dataclass: the g24 canary loads this file with SourceFileLoader and no
-    sys.modules entry, under which a dataclass cannot be built."""
+    """The parsed cage: the raw glob strings, the `[[loop_tool]]` escapes (exact path -> reason) and
+    the `[[monotone]]` ratchets. A NamedTuple, not a dataclass: the g24 canary loads this file with
+    SourceFileLoader and no sys.modules entry, under which a dataclass cannot be built."""
     patterns: list[str]
     loop_tools: dict[str, str]
+    monotone: list[Monotone]
 
 
 def _read_loop_tools(raw: object) -> dict[str, str] | None:
@@ -123,9 +150,41 @@ def _read_loop_tools(raw: object) -> dict[str, str] | None:
     return tools
 
 
+# The one supported rule: values rise by semver precedence. Another direction or comparator is a
+# malformed entry, never a silently different rule.
+_MONOTONE_KEYS = ("file", "table", "direction", "comparator")
+_MONOTONE_DIRECTIONS = frozenset({"raise-only"})
+_MONOTONE_COMPARATORS = frozenset({"semver"})
+_MONOTONE_SUFFIXES = (".toml", ".json")
+
+
+def _read_monotone(raw: object) -> list[Monotone] | None:
+    """The `[[monotone]]` array -> entries, or None when it is malformed: not an array of tables, a key
+    other than the four, an empty, whitespace-padded or non-string value, a direction or comparator
+    this gate does not implement, a file that is not .toml or .json, an empty table segment, or a
+    duplicate file and table."""
+    if not isinstance(raw, list):
+        return None
+    entries: list[Monotone] = []
+    for entry in raw:
+        if not isinstance(entry, dict) or set(entry) != set(_MONOTONE_KEYS):
+            return None
+        values = [entry[k] for k in _MONOTONE_KEYS]
+        if not all(isinstance(v, str) and v and v == v.strip() for v in values):
+            return None
+        mono = Monotone(*values)
+        if (mono.direction not in _MONOTONE_DIRECTIONS or mono.comparator not in _MONOTONE_COMPARATORS
+                or not mono.file.endswith(_MONOTONE_SUFFIXES) or not all(mono.table.split("."))):
+            return None
+        if any((e.file, e.table) == (mono.file, mono.table) for e in entries):
+            return None
+        entries.append(mono)
+    return entries
+
+
 def _read_cage(cage: Path) -> Cage | None:
     """The parsed cage, or None if the file is missing / unparseable / malformed (an empty or
-    non-string pattern list, or a malformed `[[loop_tool]]` table)."""
+    non-string pattern list, or a malformed `[[loop_tool]]` or `[[monotone]]` table)."""
     if not cage.is_file():
         return None
     try:
@@ -136,9 +195,10 @@ def _read_cage(cage: Path) -> Cage | None:
     if not isinstance(pats, list) or not pats or not all(isinstance(p, str) and p for p in pats):
         return None
     tools = _read_loop_tools(data.get("loop_tool", []))
-    if tools is None:
+    monotone = _read_monotone(data.get("monotone", []))
+    if tools is None or monotone is None:
         return None
-    return Cage(pats, tools)
+    return Cage(pats, tools, monotone)
 
 
 def load_patterns(cage: Path) -> list[re.Pattern[str]] | None:
@@ -254,6 +314,154 @@ def is_l_neg1(path: str, regexes: list[re.Pattern[str]], escapes: Collection[str
     return bool(p) and any(rx.match(p) for rx in regexes) and p not in escapes
 
 
+# --- the monotone rule ------------------------------------------------------------------------
+# The semver comparator is a copy of check-supply-chain's `_parse_ver` / `_version_ge` (the gates are
+# standalone scripts); g24-l-neg1-ack pins the three copies (this, check-supply-chain,
+# check-js-supply-chain) to the same verdicts.
+def _parse_ver(v: str):
+    """(release: tuple[int,int,int], pre: tuple) for a 'X.Y.Z[-pre][+build]' version, comparable so a
+    release outranks its pre-releases and numeric pre-segments sort numerically + below alphanumerics
+    (semver §11). None if the release core is not three ints (the caller fails closed)."""
+    core = v.strip().split("+", 1)[0]            # +build metadata does not affect precedence
+    rel, _, pre = core.partition("-")
+    parts = rel.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return None
+    pre_ids = []
+    for ident in (pre.split(".") if pre else []):
+        pre_ids.append((0, int(ident)) if ident.isdigit() else (1, ident))  # numeric < alphanumeric
+    return (tuple(int(p) for p in parts), tuple(pre_ids))
+
+
+def _version_ge(have: str, floor: str):
+    """have >= floor by semver precedence; None if either is unparseable (caller fails closed)."""
+    a, b = _parse_ver(have), _parse_ver(floor)
+    if a is None or b is None:
+        return None
+    (arel, apre), (brel, bpre) = a, b
+    if arel != brel:
+        return arel > brel
+    if not apre and not bpre:
+        return True                  # equal release, neither a pre-release
+    if not apre:
+        return True                  # have is the release, floor is a pre -> have outranks
+    if not bpre:
+        return False                 # have is a pre, floor is the release -> have is lower
+    return apre >= bpre              # both pre-releases: semver tuple precedence
+
+
+def monotone_table(file: str, table: str, data: bytes | None) -> tuple[str, dict | None]:
+    """(pure) The dotted `table` in a file's bytes: ('absent', None) when there is no file,
+    ('unreadable', None) when the bytes are not UTF-8 TOML / JSON (by the file's extension) or the
+    table is missing or not a table, else ('ok', table)."""
+    if data is None:
+        return "absent", None
+    try:
+        text = data.decode("utf-8")
+        node: object = json.loads(text) if file.endswith(".json") else tomllib.loads(text)
+    except (UnicodeDecodeError, ValueError):     # TOMLDecodeError and JSONDecodeError are ValueErrors
+        return "unreadable", None
+    for key in table.split("."):
+        node = node.get(key) if isinstance(node, dict) else None
+    return ("ok", node) if isinstance(node, dict) else ("unreadable", None)
+
+
+def monotone_weakenings(entry: Monotone, before: bytes | None, after: bytes | None) -> list[str]:
+    """(pure) The weakenings of one `raise-only` / `semver` table from the parent's file bytes
+    (`before`) to the commit's (`after`), None meaning the file is absent. A parent without a readable
+    table constrains nothing; a deleted file, an unreadable table, a removed key, a lowered value and a
+    changed value that is not a semver string on both sides are weakenings. An unchanged value is
+    never one."""
+    where = f"{entry.file} [{entry.table}]"
+    state, old = monotone_table(entry.file, entry.table, before)
+    if state != "ok" or old is None:
+        return []
+    state, new = monotone_table(entry.file, entry.table, after)
+    if state == "absent":
+        return [f"{where}: the file is deleted, so every row is removed"]
+    if state != "ok" or new is None:
+        return [f"{where}: the table is removed or unreadable (not valid UTF-8 TOML/JSON, missing, or not a "
+                "table), so every row is removed"]
+    out: list[str] = []
+    for key in sorted(old):
+        if key not in new:
+            out.append(f"{where}: `{key}` removed (was {old[key]!r})")
+            continue
+        was, now = old[key], new[key]
+        if was == now:
+            continue
+        ge = _version_ge(now, was) if isinstance(was, str) and isinstance(now, str) else None
+        if ge is None:
+            out.append(f"{where}: `{key}` changed {was!r} -> {now!r}, not a semver pair, so the change cannot "
+                       "be shown to rise")
+        elif not ge:
+            out.append(f"{where}: `{key}` lowered {was} -> {now}")
+    return out
+
+
+def monotone_refusals(entries: list[Monotone], pattern_strs: list[str],
+                      escapes: Collection[str]) -> list[tuple[Monotone, str]]:
+    """(pure) Entries the audit refuses: a file the cage already covers needs the ack for every edit,
+    so a monotone entry on it would only suggest a weaker rule than the one that applies."""
+    regexes = [glob_to_regex(p) for p in pattern_strs]
+    return [(e, "a cage pattern matches its file, so every edit already needs the ack")
+            for e in entries if is_l_neg1(e.file, regexes, escapes)]
+
+
+def dead_monotones(entries: list[Monotone], tracked_paths: list[str],
+                   blobs: Mapping[str, bytes | None]) -> list[tuple[Monotone, str]]:
+    """(pure) Entries that guard nothing: the file is not tracked, or its tracked content (`blobs`,
+    file -> bytes) holds no such table - a mis-spelled file or table would leave every commit's parent
+    without a table, and a parent without a table constrains nothing."""
+    tracked = {t.strip().replace("\\", "/") for t in tracked_paths if t.strip()}
+    dead: list[tuple[Monotone, str]] = []
+    for e in entries:
+        if e.file not in tracked:
+            dead.append((e, "the file is not tracked"))
+        elif monotone_table(e.file, e.table, blobs.get(e.file))[0] != "ok":
+            dead.append((e, "the tracked file holds no such table (or is unreadable)"))
+    return dead
+
+
+def _git_bytes(*args: str) -> tuple[int, bytes]:
+    p = subprocess.run(["git", "-c", "core.quotePath=false", *args], capture_output=True)
+    return p.returncode, p.stdout
+
+
+def _index_blob(path: str) -> bytes | None:
+    """The staged content of a root-relative `path` (`:<path>` is root-relative from any CWD), or
+    None when git cannot read it."""
+    rc, data = _git_bytes("cat-file", "blob", f":{path}")
+    return data if rc == 0 else None
+
+
+def _rev_blob(rev: str, path: str) -> tuple[str, bytes | None]:
+    """A root-relative `path` at `rev`: ('ok', bytes), ('absent', None) when the tree has no such
+    entry, or ('error', None) when git cannot list the revision or the entry is not a blob."""
+    rc, out = _git_bytes("ls-tree", "--full-tree", "-z", rev, "--", path)
+    if rc != 0:
+        return "error", None
+    if not out:
+        return "absent", None
+    meta, _, name = out.rstrip(b"\0").partition(b"\t")
+    parts = meta.split()
+    if len(parts) != 3 or parts[1] != b"blob" or name != path.encode("utf-8"):
+        return "error", None
+    rc, data = _git_bytes("cat-file", "blob", parts[2].decode("ascii"))
+    return ("ok", data) if rc == 0 else ("error", None)
+
+
+def commit_weakenings(entry: Monotone, sha: str) -> list[str]:
+    """The weakenings `sha` makes to one monotone table against its first parent; a git read that
+    fails at either revision counts as one (fail-closed)."""
+    state_before, before = _rev_blob(f"{sha}^", entry.file)
+    state_after, after = _rev_blob(sha, entry.file)
+    if "error" in (state_before, state_after):
+        return [f"{entry.file} [{entry.table}]: git cannot read the file at {sha[:12]} or its parent, so a "
+                "weakening cannot be ruled out (fail-closed)"]
+    return monotone_weakenings(entry, before, after)
+
+
 def git(*args: str) -> tuple[int, str]:
     # core.quotePath=false: without it git octal-escapes+quotes any non-ASCII path ("docs/w\303\266..."),
     # so a caged file with e.g. an umlaut would NOT match its glob - an ack silently not required
@@ -305,8 +513,8 @@ def main(argv: list[str] | None = None) -> int:
 
     cage = _read_cage(args.cage)
     if cage is None:
-        msg = (f"cage list {args.cage} missing / unparseable / malformed (patterns or [[loop_tool]]) - "
-               "cannot audit L(-1) acks")
+        msg = (f"cage list {args.cage} missing / unparseable / malformed (patterns, [[loop_tool]] or "
+               "[[monotone]]) - cannot audit L(-1) acks")
         if args.enforce:
             fail(msg)
             return 2
@@ -324,6 +532,9 @@ def main(argv: list[str] | None = None) -> int:
     for p in orphan_esc:
         fail(f"[[loop_tool]] escape {p!r} matches NO cage pattern - an escape from nothing; remove it "
              "in the act that narrows the pattern")
+    mono_refused = monotone_refusals(cage.monotone, pats, escapes)
+    for e, why in mono_refused:
+        fail(f"[[monotone]] entry {e.file} [{e.table}] is refused - {why}; remove the entry")
 
     # cage-liveness audit (the dead-glob class, P4.56.1) - independent of the push range.
     # `--full-name -- :/` pins BOTH the output format and the pathspec scope to the repo root:
@@ -334,6 +545,7 @@ def main(argv: list[str] | None = None) -> int:
     stale: list[str] = []
     orphans: list[str] = []
     dead_esc: list[str] = []
+    dead_mono: list[tuple[Monotone, str]] = []
     rc_ls, ls_out = git("ls-files", "--full-name", "--", ":/")
     if rc_ls != 0:
         (fail if args.enforce else out)("git ls-files failed - cannot audit cage-glob liveness"
@@ -346,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
         stale = stale_declarations(pats, tracked)
         orphans = orphan_declarations(pats)
         dead_esc = dead_escapes(cage.loop_tools, tracked)
+        dead_mono = dead_monotones(cage.monotone, tracked, {e.file: _index_blob(e.file) for e in cage.monotone})
         for p in dead:
             fail(f"cage glob {p!r} matches NO tracked path (patterns are root-anchored `^...$`) - "
                  "it protects nothing; re-spell it to the full repo-relative path, or declare the "
@@ -359,10 +572,14 @@ def main(argv: list[str] | None = None) -> int:
         for p in dead_esc:
             fail(f"[[loop_tool]] escape {p!r} is NOT a tracked path - the tool is gone or the path is "
                  "mis-spelled; remove or re-spell the escape")
-    if dead or stale or orphans or refused or dead_esc or orphan_esc:
+        for e, why in dead_mono:
+            fail(f"[[monotone]] entry {e.file} [{e.table}] is dead - {why}; it guards nothing, so re-spell "
+                 "it or remove it in the act that removes the table")
+    if dead or stale or orphans or refused or dead_esc or orphan_esc or mono_refused or dead_mono:
         summary = (f"G71: {len(dead)} dead + {len(stale)} stale-declared + {len(orphans)} orphan-declared "
                    f"cage glob(s), {len(refused)} refused + {len(dead_esc)} dead + {len(orphan_esc)} "
-                   "orphan loop-tool escape(s)")
+                   f"orphan loop-tool escape(s), {len(mono_refused)} refused + {len(dead_mono)} dead "
+                   "monotone entr(ies)")
         if args.enforce:
             fail(f"{summary} - FAILED (enforced)")
             return 1
@@ -377,30 +594,40 @@ def main(argv: list[str] | None = None) -> int:
     if base is None and commits:
         out(f"no range base resolved - auditing only the tip commit {commits[0][:12]} (degraded; L2 has the full range)")
 
-    violations: list[tuple[str, str, list[str]]] = []
+    violations: list[tuple[str, str, list[str], list[str]]] = []
     for sha in commits:
         subject = git("log", "-1", "--format=%s", sha)[1].strip()
         message = git("log", "-1", "--format=%B", sha)[1]
+        if ACK_RE.search(message):
+            continue   # the owner-ack covers every caged edit and every monotone weakening of the commit
         files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", sha)[1].splitlines() if f.strip()]
         touched = [f for f in files if is_l_neg1(f, regexes, escapes)]
-        if not touched:
-            continue   # touches no caged file - no ack needed (an ordinary commit / a docs/plan check-off
-                       # passes here); there is NO check-off/[!extern] escape for an L(-1)-touching commit
-        if not ACK_RE.search(message):
-            violations.append((sha, subject, touched))
+        # the monotone rule: a commit naming a ratchet's file may raise or add, never lower or remove
+        weakenings = [w for e in cage.monotone if e.file in files for w in commit_weakenings(e, sha)]
+        if touched or weakenings:
+            violations.append((sha, subject, touched, weakenings))
+        # a commit that touches no caged file and weakens no ratchet needs no ack (an ordinary commit /
+        # a docs/plan check-off passes); there is NO check-off/[!extern] escape for an L(-1)-touching commit
 
     if violations:
-        for sha, subject, touched in violations:
-            shown = ", ".join(touched[:3]) + (" …" if len(touched) > 3 else "")
-            fail(f"{sha[:12]} {subject!r} touches L(-1) file(s) [{shown}] without an "
-                 "`L-neg1-ack: owner` trailer")
+        for sha, subject, touched, weakenings in violations:
+            if touched:
+                shown = ", ".join(touched[:3]) + (" …" if len(touched) > 3 else "")
+                fail(f"{sha[:12]} {subject!r} touches L(-1) file(s) [{shown}] without an "
+                     "`L-neg1-ack: owner` trailer")
+            if weakenings:
+                shown = "; ".join(weakenings[:3]) + (" …" if len(weakenings) > 3 else "")
+                fail(f"{sha[:12]} {subject!r} weakens a [[monotone]] ratchet without an "
+                     f"`L-neg1-ack: owner` trailer: {shown}")
         if args.enforce:
-            fail(f"G71: {len(violations)} L(-1)-touching commit(s) lack the owner-ack trailer - FAILED (enforced)")
+            fail(f"G71: {len(violations)} commit(s) with an L(-1) edit or a ratchet weakening lack the "
+                 "owner-ack trailer - FAILED (enforced)")
             return 1
-        out(f"G71: {len(violations)} L(-1)-touching commit(s) lack the owner-ack trailer; fail-SOFT "
-            "during the P0 bootstrap (becomes hard with --enforce from P1)")
+        out(f"G71: {len(violations)} commit(s) with an L(-1) edit or a ratchet weakening lack the owner-ack "
+            "trailer; fail-SOFT during the P0 bootstrap (becomes hard with --enforce from P1)")
         return 0
-    out(f"G71: {len(commits)} commit(s) in range - every L(-1)-touching commit carries the owner-ack trailer")
+    out(f"G71: {len(commits)} commit(s) in range - every L(-1)-touching or ratchet-weakening commit carries "
+        "the owner-ack trailer")
     return 0
 
 

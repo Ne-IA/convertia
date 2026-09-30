@@ -196,7 +196,8 @@ Further blockers route the same way (their mechanics live in build-loop.md, the
   bounded retry. **NEVER** auto-emit a `GO` trailer with fewer than two live reviews;
   hard-stop + escalate
   ([build-loop.md §3 step 5](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1)).
-- **(g) A needed L(-1) security-critical-file edit** — the loop never authors a caged line
+- **(g) A needed L(-1) security-critical-file edit** — the loop never authors a caged line or
+  lowers or removes a `[[monotone]]` ratchet row (a spec §0.8 floor, G71's monotone rule)
   (the gates' own cage, [security-concept §2](../security/security-concept.md#2-working-model--two-sessions-one-branch),
   gate **G71**); the explicit, load-bearing case of (c)'s "any decision a doc reserves as an
   owner decision". A caged **precondition** → a `needs:` on an `[!extern]` precondition box

@@ -14,7 +14,11 @@ incl. the CWD-independence and non-ASCII-path legs), so a clean tip can still ex
 - and (6) the `scripts/**` cage with its `[[loop_tool]]` escapes: every scripts/ path but a declared
 escape is caged, a gate-shaped / nested / extension-bearing escape is refused and stays caged, a
 dead or orphan escape reds the gate, a malformed escape table makes the cage unreadable, and in a
-real temp repo an escape edit needs no ack while a new scripts/ file does.
+real temp repo an escape edit needs no ack while a new scripts/ file does - and (7) the `[[monotone]]`
+rule: the real cage guards exactly the two §0.8 floor tables the supply-chain gates read, a raised or
+added row needs no ack while a lowered or removed row, a removed or unreadable table and a deleted
+file each need it (unit + E2E, per commit, JSON and TOML, from a subdirectory too), a refused, dead or
+malformed entry reds the gate, and the three semver comparator copies agree.
 stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import contextlib
@@ -35,6 +39,17 @@ _loader = importlib.machinery.SourceFileLoader("clna", str(SCRIPT))
 _spec = importlib.util.spec_from_loader("clna", _loader)
 m = importlib.util.module_from_spec(_spec)
 _loader.exec_module(m)
+
+
+def _load_gate(name: str):
+    ldr = importlib.machinery.SourceFileLoader(name.replace("-", "_"), str(SCRIPT.parent / name))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(ldr.name, ldr))
+    ldr.exec_module(mod)
+    return mod
+
+
+CSC = _load_gate("check-supply-chain")        # the Rust floor reader (G18)
+CJS = _load_gate("check-js-supply-chain")     # the JS floor reader (G18c)
 
 # the REAL committed cage (the gate's DEFAULT_CAGE) - so the glob matcher is tested against production
 REGEXES = m.load_patterns(m.DEFAULT_CAGE)
@@ -183,6 +198,158 @@ for label, body in (
         ("a single [loop_tool] table, not an array", '\n[loop_tool]\npath = "scripts/a"\nreason = "r"\n')):
     record(f"cage: {label} in [[loop_tool]] -> malformed (None)", _cage_from(_PATS + body) is None)
 
+# --- the [[monotone]] rule (uncaged ratchets whose values may only rise) --------------------------
+# The real cage first: it guards exactly the two §0.8 floor tables the supply-chain gates read (the
+# binding: a table renamed in a gate but not in the cage, or the reverse, reds here), none refused,
+# none dead over the REAL tracked tree.
+_real_mono = CAGE.monotone if CAGE is not None else []
+record("monotone: the REAL cage guards exactly the two floor tables the G18 / G18c gates read",
+       {(e.file, e.table) for e in _real_mono}
+       == {(CSC.FLOORS_MANIFEST.name, ".".join(CSC.FLOORS_TABLE)),
+           (CJS.PACKAGE_JSON.name, ".".join(CJS.FLOORS_KEY_PATH))}
+       and len(_real_mono) == 2
+       and all((e.direction, e.comparator) == ("raise-only", "semver") for e in _real_mono))
+_real_blobs = {}
+for _e in _real_mono:
+    _b = subprocess.run(["git", "cat-file", "blob", f":{_e.file}"], capture_output=True, cwd=SCRIPT.parents[1])
+    _real_blobs[_e.file] = _b.stdout if _b.returncode == 0 else None
+record("monotone: the REAL cage has no refused and no dead entry over the REAL tracked tree",
+       _ls.returncode == 0 and _real_mono != []
+       and m.monotone_refusals(_real_mono, _real_pats, ESCAPES) == []
+       and m.dead_monotones(_real_mono, _ls.stdout.splitlines(), _real_blobs) == [])
+
+_MT = m.Monotone("f.toml", "a.floors", "raise-only", "semver")
+_MJ = m.Monotone("p.json", "c.floors", "raise-only", "semver")
+
+
+def _t(**rows: str) -> bytes:
+    return ("[a.floors]\n" + "".join(f'{k} = "{v}"\n' for k, v in rows.items())).encode("utf-8")
+
+
+def _weak(before: "bytes | None", after: "bytes | None", entry=_MT) -> list:
+    return m.monotone_weakenings(entry, before, after)
+
+
+# monotone_table: the file states
+record("monotone table: a TOML table -> ok", m.monotone_table("f.toml", "a.floors", _t(x="1.0.0")) == ("ok", {"x": "1.0.0"}))
+record("monotone table: a JSON object -> ok",
+       m.monotone_table("p.json", "c.floors", b'{"c": {"floors": {"x": "1.0.0"}}}') == ("ok", {"x": "1.0.0"}))
+record("monotone table: no file -> absent", m.monotone_table("f.toml", "a.floors", None) == ("absent", None))
+for _label, _entry, _data in (("broken TOML", _MT, b"[a.floors\n"), ("broken JSON", _MJ, b'{"c": '),
+                              ("non-UTF-8 bytes", _MT, b"\xff[a.floors]\n"),
+                              ("the table missing", _MT, b"[a.other]\nx = 1\n"),
+                              ("the table a string", _MT, b'[a]\nfloors = "x"\n'),
+                              ("a parent a string", _MJ, b'{"c": "floors"}'),
+                              ("a JSON top-level array", _MJ, b"[1]")):
+    record(f"monotone table: {_label} -> unreadable",
+           m.monotone_table(_entry.file, _entry.table, _data) == ("unreadable", None))
+
+# monotone_weakenings: the strengthening direction is free
+record("weakening: a raised value -> none", _weak(_t(x="1.2.0"), _t(x="1.3.0")) == [])
+record("weakening: an added key -> none", _weak(_t(x="1.2.0"), _t(x="1.2.0", y="0.1.0")) == [])
+record("weakening: an unchanged table -> none", _weak(_t(x="1.2.0"), _t(x="1.2.0")) == [])
+record("weakening: a build-metadata-only change (equal precedence) -> none",
+       _weak(_t(x="1.2.0"), _t(x="1.2.0+b1")) == [])
+record("weakening: the file edited outside the table -> none",
+       _weak(_t(x="1.2.0"), b"# note\n" + _t(x="1.2.0") + b"[other]\nq = 1\n") == [])
+record("weakening: a pre-release raised (rc.2 -> rc.25, numeric not lexical) -> none",
+       _weak(_t(x="2.0.0-rc.2"), _t(x="2.0.0-rc.25")) == [])
+record("weakening: a pre-release floor promoted to its release (2.0.0-rc.25 -> 2.0.0) -> none",
+       _weak(_t(x="2.0.0-rc.25"), _t(x="2.0.0")) == [])
+# ... a parent without a readable table constrains nothing
+record("weakening: no parent file (the file is added) -> none, whatever the commit holds",
+       _weak(None, b"garbage") == [] and _weak(None, None) == [])
+record("weakening: a parent without the table (the table is introduced) -> none",
+       _weak(b"[a.other]\nq = 1\n", _t(x="0.0.1")) == [])
+record("weakening: an unreadable parent -> none (the commit that broke it was a weakening itself)",
+       _weak(b"[a.floors\n", _t(x="0.0.1")) == [])
+# ... the weakening direction needs the ack
+record("weakening: a lowered value -> caught and named",
+       _weak(_t(x="1.2.0"), _t(x="1.1.9")) == ["f.toml [a.floors]: `x` lowered 1.2.0 -> 1.1.9"])
+record("weakening: a pre-release lowered (rc.25 -> rc.2) -> caught",
+       any("lowered" in w for w in _weak(_t(x="2.0.0-rc.25"), _t(x="2.0.0-rc.2"))))
+record("weakening: a release floor lowered to its own pre-release (2.0.0 -> 2.0.0-rc.25) -> caught",
+       any("lowered" in w for w in _weak(_t(x="2.0.0"), _t(x="2.0.0-rc.25"))))
+record("weakening: a removed key -> caught and named",
+       _weak(_t(x="1.2.0", y="3.0.0"), _t(x="1.2.0")) == ["f.toml [a.floors]: `y` removed (was '3.0.0')"])
+record("weakening: every weakened key is named (a lowered and a removed key -> two lines)",
+       len(_weak(_t(x="1.2.0", y="3.0.0"), _t(x="1.0.0"))) == 2)
+record("weakening: the table removed -> caught",
+       any("removed or unreadable" in w for w in _weak(_t(x="1.2.0"), b"[a.other]\nx = \"1.2.0\"\n")))
+record("weakening: the table emptied -> caught (every row removed)",
+       any("`x` removed" in w for w in _weak(_t(x="1.2.0"), b"[a.floors]\n")))
+record("weakening: the file deleted -> caught", any("deleted" in w for w in _weak(_t(x="1.2.0"), None)))
+record("weakening: the file made unparseable -> caught",
+       any("removed or unreadable" in w for w in _weak(_t(x="1.2.0"), b"[a.floors\nx = ")))
+record("weakening: a value changed to a non-semver string -> caught (cannot be shown to rise)",
+       any("not a semver pair" in w for w in _weak(_t(x="1.2.0"), _t(x="latest"))))
+record("weakening: a value changed from a non-semver string -> caught (either side unparseable)",
+       any("not a semver pair" in w for w in _weak(_t(x="latest"), _t(x="9.0.0"))))
+record("weakening: a value changed to a non-string -> caught",
+       any("not a semver pair" in w for w in _weak(_t(x="1.2.0"), b"[a.floors]\nx = 2\n")))
+record("weakening (JSON): a lowered value -> caught; a raised one -> none",
+       _weak(b'{"c": {"floors": {"z": "5.0.14"}}}', b'{"c": {"floors": {"z": "5.0.13"}}}', _MJ)
+       == ["p.json [c.floors]: `z` lowered 5.0.14 -> 5.0.13"]
+       and _weak(b'{"c": {"floors": {"z": "5.0.14"}}}', b'{"c": {"floors": {"z": "5.1.0"}}}', _MJ) == [])
+record("weakening (JSON): a removed key and a removed object -> caught",
+       any("removed" in w for w in _weak(b'{"c": {"floors": {"z": "5.0.14"}}}', b'{"c": {"floors": {}}}', _MJ))
+       and any("removed or unreadable" in w for w in _weak(b'{"c": {"floors": {"z": "5.0.14"}}}', b'{"c": {}}', _MJ)))
+
+# the three semver comparator copies (this gate, check-supply-chain, check-js-supply-chain) agree
+_PAIRS = [("1.2.3", "1.2.3"), ("1.2.4", "1.2.3"), ("1.2.2", "1.2.3"), ("2.0.0", "1.99.99"), ("0.9.0", "1.0.0"),
+          ("2.0.0-rc.25", "2.0.0-rc.25"), ("2.0.0-rc.26", "2.0.0-rc.25"), ("2.0.0-rc.3", "2.0.0-rc.25"),
+          ("2.0.0", "2.0.0-rc.25"), ("2.0.0-rc.25", "2.0.0"), ("1.0.0-alpha", "1.0.0-1"), ("1.0.0-1", "1.0.0-alpha"),
+          ("1.0.0-rc.1.2", "1.0.0-rc.1"), ("1.0.0+build.9", "1.0.0"), ("1.0.0", "1.0.0+build.9"),
+          ("latest", "1.0.0"), ("1.0.0", "1.0"), ("1.0.x", "1.0.0"), ("", "1.0.0"), (" 1.2.3 ", "1.2.3")]
+record("parity: the three _version_ge copies return the same verdict on every pair",
+       all(m._version_ge(a, b) == CSC._version_ge(a, b) == CJS._version_ge(a, b) for a, b in _PAIRS))
+record("parity: the pair table is not vacuous (True, False and None verdicts all occur)",
+       {m._version_ge(a, b) for a, b in _PAIRS} == {True, False, None})
+
+# the [[monotone]] table shape
+_MONO = '\n[[monotone]]\nfile = "{f}"\ntable = "{t}"\ndirection = "{d}"\ncomparator = "{c}"\n'
+_mono_ok = _cage_from(_PATS + _MONO.format(f="Cargo.toml", t="w.m.c.pf", d="raise-only", c="semver")
+                      + _MONO.format(f="package.json", t="c.pf", d="raise-only", c="semver"))
+record("cage: two well-formed [[monotone]] tables parse to entries",
+       _mono_ok is not None and [(e.file, e.table) for e in _mono_ok.monotone]
+       == [("Cargo.toml", "w.m.c.pf"), ("package.json", "c.pf")])
+record("cage: no [[monotone]] table parses to no entries", _none is not None and _none.monotone == [])
+for label, body in (
+        ("a missing comparator", '\n[[monotone]]\nfile = "a.toml"\ntable = "t"\ndirection = "raise-only"\n'),
+        ("an extra key", _MONO.format(f="a.toml", t="t", d="raise-only", c="semver") + 'note = "x"\n'),
+        ("a lower-only direction", _MONO.format(f="a.toml", t="t", d="lower-only", c="semver")),
+        ("a numeric comparator", _MONO.format(f="a.toml", t="t", d="raise-only", c="numeric")),
+        ("a .yaml file", _MONO.format(f="a.yaml", t="t", d="raise-only", c="semver")),
+        ("an empty table segment", _MONO.format(f="a.toml", t="a..b", d="raise-only", c="semver")),
+        ("an empty table", _MONO.format(f="a.toml", t="", d="raise-only", c="semver")),
+        ("a padded file", _MONO.format(f=" a.toml", t="t", d="raise-only", c="semver")),
+        ("a non-string table", '\n[[monotone]]\nfile = "a.toml"\ntable = 7\ndirection = "raise-only"\ncomparator = "semver"\n'),
+        ("a duplicate file and table", _MONO.format(f="a.toml", t="t", d="raise-only", c="semver") * 2),
+        ("a single [monotone] table, not an array",
+         '\n[monotone]\nfile = "a.toml"\ntable = "t"\ndirection = "raise-only"\ncomparator = "semver"\n')):
+    record(f"cage: {label} in [[monotone]] -> malformed (None)", _cage_from(_PATS + body) is None)
+record("cage: one file with two different tables is two entries (not a duplicate)",
+       _cage_from(_PATS + _MONO.format(f="a.toml", t="t1", d="raise-only", c="semver")
+                  + _MONO.format(f="a.toml", t="t2", d="raise-only", c="semver")) is not None)
+
+# the liveness audit over monotone entries
+_m_caged = m.Monotone("deny.toml", "bans", "raise-only", "semver")
+record("monotone audit: an entry on a CAGED file is refused (a caged file needs the ack for any edit)",
+       [e for e, _ in m.monotone_refusals([_m_caged, _MT], ["deny.toml", "scripts/**"], frozenset())] == [_m_caged])
+record("monotone audit: an entry on an uncaged file is not refused",
+       m.monotone_refusals([_MT], ["deny.toml"], frozenset()) == [])
+record("monotone audit: an untracked file is DEAD, named as untracked (even with readable content at hand)",
+       [(e, "not tracked" in why) for e, why in m.dead_monotones([_MT], ["other.toml"], {"f.toml": _t(x="1.0.0")})]
+       == [(_MT, True)])
+_M_NESTED = m.Monotone("sub/f.toml", "a.floors", "raise-only", "semver")
+record("monotone audit: a tracked file with the table is live (a backslash-spelled listing normalizes)",
+       m.dead_monotones([_MT], ["f.toml"], {"f.toml": _t(x="1.0.0")}) == []
+       and m.dead_monotones([_M_NESTED], ["sub\\f.toml"], {"sub/f.toml": _t(x="1.0.0")}) == [])
+record("monotone audit: a tracked file WITHOUT the table is DEAD (a mis-spelled table guards nothing)",
+       [e for e, _ in m.dead_monotones([_MT], ["f.toml"], {"f.toml": b"[a.other]\n"})] == [_MT])
+record("monotone audit: a tracked file git cannot read is DEAD",
+       [e for e, _ in m.dead_monotones([_MT], ["f.toml"], {"f.toml": None})] == [_MT])
+
 # --- ACK trailer regex ------------------------------------------------------------------------
 record("ack regex: 'L-neg1-ack: owner' line -> match",
        bool(m.ACK_RE.search("subject\n\nbody\nL-neg1-ack: owner\nCo-Authored-By: x")))
@@ -247,10 +414,15 @@ with tempfile.TemporaryDirectory() as td:
     # `.lfsconfig` glob: AUDIT_DECLARED_TARGETLESS is a module constant that applies to whichever
     # cage the gate runs, so a fixture cage WITHOUT the declared glob would trip the orphan leg.
     # The mini cage mirrors the production shape: `scripts/**` plus one [[loop_tool]] escape
-    # (scripts/buildtool), with a gate-shaped scripts/check-x tracked beside it.
+    # (scripts/buildtool), with a gate-shaped scripts/check-x tracked beside it, and two [[monotone]]
+    # ratchets over uncaged data (floors.toml / pkg.json, the Cargo.toml / package.json shapes).
     (repo / "cage.toml").write_text(
         'patterns = ["lefthook.yml", "docs/security/**", "rust-toolchain.toml", ".lfsconfig", "scripts/**"]\n'
-        '\n[[loop_tool]]\npath = "scripts/buildtool"\nreason = "the fixture build tool"\n', encoding="utf-8")
+        '\n[[loop_tool]]\npath = "scripts/buildtool"\nreason = "the fixture build tool"\n'
+        + _MONO.format(f="floors.toml", t="a.floors", d="raise-only", c="semver")
+        + _MONO.format(f="pkg.json", t="b.floors", d="raise-only", c="semver"), encoding="utf-8")
+    (repo / "floors.toml").write_bytes(_t(x="1.2.0", y="2.0.0-rc.25"))
+    (repo / "pkg.json").write_text('{"name": "p", "b": {"floors": {"z": "5.0.14"}}}\n', encoding="utf-8")
     (repo / "docs" / "security").mkdir(parents=True)
     (repo / "docs" / "security" / "build-gates.md").write_text("g\n", encoding="utf-8")
     (repo / "lefthook.yml").write_text("x: 0\n", encoding="utf-8")
@@ -312,6 +484,79 @@ with tempfile.TemporaryDirectory() as td:
     record("E2E: chore(todo) subject over lefthook.yml -> exit 1 (no check-off escape for L(-1))",
            run_gate(repo, rt, fake, enforce=True) == 1)
 
+    # the monotone rule end-to-end: each leg ranges exactly the commits it is about; a leg that
+    # breaks the file restores it in a later commit BEFORE the gate runs, so the liveness audit (which
+    # reads the index) stays green and the exit code can only come from the per-commit weakening
+    def _toml(**rows: str) -> str:
+        return _t(**rows).decode("utf-8")
+
+    def _rm(rel: str, message: str) -> str:
+        _git(repo, "rm", "-q", rel)
+        _git(repo, "commit", "-q", "-m", message)
+        return _git(repo, "rev-parse", "HEAD")
+
+    up = _commit(repo, "floors.toml", _toml(x="1.3.0", y="2.0.0-rc.25"), "build: raise a floor")
+    record("E2E monotone: a raised floor, NO trailer, --enforce -> exit 0 (the strengthening is free)",
+           run_gate(repo, fake, up, enforce=True) == 0)
+    add = _commit(repo, "floors.toml", _toml(x="1.3.0", y="2.0.0-rc.25", w="0.1.0"), "build: floor a new dep")
+    record("E2E monotone: an added floor row, NO trailer, --enforce -> exit 0",
+           run_gate(repo, up, add, enforce=True) == 0)
+    rel = _commit(repo, "floors.toml", _toml(x="1.3.0", y="2.0.0", w="0.1.0"), "build: the rc floor becomes its release")
+    record("E2E monotone: a pre-release floor raised to its release, NO trailer -> exit 0",
+           run_gate(repo, add, rel, enforce=True) == 0)
+    low = _commit(repo, "floors.toml", _toml(x="1.2.9", y="2.0.0", w="0.1.0"), "build: lower a floor")
+    record("E2E monotone: a LOWERED floor, NO trailer, --enforce -> exit 1",
+           run_gate(repo, rel, low, enforce=True) == 1)
+    _err = io.StringIO()
+    with contextlib.redirect_stderr(_err):
+        _rc = run_gate(repo, rel, low, enforce=False)
+    record("E2E monotone: the same lowering, no --enforce -> exit 0, and the weakening is named",
+           _rc == 0 and "weakens a [[monotone]] ratchet" in _err.getvalue()
+           and "`x` lowered 1.3.0 -> 1.2.9" in _err.getvalue())
+    (repo / "mono-sub").mkdir()
+    record("E2E monotone: the same lowering, gate run from a subdirectory -> exit 1 (root-relative reads)",
+           run_gate(repo, rel, low, enforce=True, subdir="mono-sub") == 1)
+    low_ack = _commit(repo, "floors.toml", _toml(x="1.2.8", y="2.0.0", w="0.1.0"),
+                      "build: lower a floor\n\nL-neg1-ack: owner")
+    record("E2E monotone: a lowered floor WITH the trailer -> exit 0", run_gate(repo, low, low_ack, enforce=True) == 0)
+    dropped = _commit(repo, "floors.toml", _toml(x="1.2.8", y="2.0.0"), "build: drop a floor row")
+    record("E2E monotone: a REMOVED floor row, NO trailer -> exit 1", run_gate(repo, low_ack, dropped, enforce=True) == 1)
+    outside = _commit(repo, "floors.toml", "# a note\n" + _toml(x="1.2.8", y="2.0.0") + "[other]\nq = 1\n",
+                      "build: edit the file outside the floor table")
+    record("E2E monotone: an edit to the file outside the table, NO trailer -> exit 0",
+           run_gate(repo, dropped, outside, enforce=True) == 0)
+    dip = _commit(repo, "floors.toml", _toml(x="1.0.0", y="2.0.0"), "build: dip a floor")
+    back = _commit(repo, "floors.toml", _toml(x="1.2.8", y="2.0.0"), "build: restore it")
+    record("E2E monotone: a lowering undone later in the same push -> exit 1 (every commit is audited, "
+           "not the net diff)", run_gate(repo, outside, back, enforce=True) == 1
+           and run_gate(repo, dip, back, enforce=True) == 0)
+    broken = _commit(repo, "floors.toml", "[a.floors\nx = ", "build: break the file")
+    fixed = _commit(repo, "floors.toml", _toml(x="1.2.8", y="2.0.0"), "build: fix the file")
+    record("E2E monotone: a commit leaving the file unparseable -> exit 1; the repair after it -> exit 0",
+           run_gate(repo, back, broken, enforce=True) == 1 and run_gate(repo, broken, fixed, enforce=True) == 0)
+    renamed = _commit(repo, "floors.toml", _toml(x="1.2.8", y="2.0.0").replace("a.floors", "a.floorz"),
+                      "build: rename the floor table")
+    renamed_back = _commit(repo, "floors.toml", _toml(x="1.2.8", y="2.0.0"), "build: rename it back")
+    record("E2E monotone: a commit removing the table (a rename) -> exit 1",
+           run_gate(repo, fixed, renamed, enforce=True) == 1)
+    gone = _rm("floors.toml", "build: delete the floor file")
+    again = _commit(repo, "floors.toml", _toml(x="1.2.8", y="2.0.0"), "build: restore the floor file")
+    record("E2E monotone: a commit deleting the file -> exit 1; re-adding it -> exit 0 (no parent table)",
+           run_gate(repo, renamed_back, gone, enforce=True) == 1 and run_gate(repo, gone, again, enforce=True) == 0)
+    js_low = _commit(repo, "pkg.json", '{"name": "p", "b": {"floors": {"z": "5.0.13"}}}\n', "build: lower a JS floor")
+    js_up = _commit(repo, "pkg.json", '{"name": "p", "b": {"floors": {"z": "5.1.0"}}}\n', "build: raise a JS floor")
+    record("E2E monotone (JSON): a lowered floor -> exit 1; a raised one -> exit 0",
+           run_gate(repo, again, js_low, enforce=True) == 1 and run_gate(repo, js_low, js_up, enforce=True) == 0)
+    _cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        _gerr = m.commit_weakenings(m.Monotone("floors.toml", "a.floors", "raise-only", "semver"), "f" * 40)
+        _gok = m.commit_weakenings(m.Monotone("floors.toml", "a.floors", "raise-only", "semver"), js_up)
+    finally:
+        os.chdir(_cwd)
+    record("E2E monotone: a revision git cannot read -> counted as a weakening (fail-closed), a readable one "
+           "that leaves the file alone -> none", len(_gerr) == 1 and "fail-closed" in _gerr[0] and _gok == [])
+
     # an ALL-ZEROS base (a brand-new ref's github.event.before) must NOT fatal-red under --enforce: it
     # routes to the tip-only fallback (the P1.66 ^{commit}-peel + strip('0')), not a fatal `rev-list
     # 0000..HEAD` -> exit 1. With a CLEAN non-L(-1) tip -> exit 0; the fallback STILL audits the tip,
@@ -358,6 +603,24 @@ with tempfile.TemporaryDirectory() as td:
         _rc = run_gate(repo, new_tool, gate_edit, enforce=False, cage=repo / "cage-esc.toml")
     record("E2E: a refused escape stays caged in the trailer audit (the unacked edit to it is still named)",
            _rc == 0 and "[scripts/check-x] without an `L-neg1-ack: owner` trailer" in _err.getvalue())
+    # the monotone audit end-to-end, each shape isolated on the clean tip
+    _mono_pats = 'patterns = ["lefthook.yml", ".lfsconfig", "rust-toolchain.toml"]\n'
+    for leg, body in (("a dead monotone entry (untracked file)",
+                       _mono_pats + _MONO.format(f="nothere.toml", t="a.floors", d="raise-only", c="semver")),
+                      ("a dead monotone entry (the table is not in the tracked file)",
+                       _mono_pats + _MONO.format(f="floors.toml", t="a.nope", d="raise-only", c="semver")),
+                      ("a refused monotone entry (its file is caged)",
+                       _mono_pats + _MONO.format(f="rust-toolchain.toml", t="toolchain", d="raise-only", c="semver"))):
+        _c = repo / "cage-mono.toml"
+        _c.write_text(body, encoding="utf-8")
+        record(f"E2E: {leg} -> exit 1 under --enforce (clean tip)",
+               run_gate(repo, "0" * 40, clean_tip, enforce=True, cage=_c) == 1)
+        record(f"E2E: {leg}, no --enforce -> exit 0 (fail-soft warns only)",
+               run_gate(repo, "0" * 40, clean_tip, enforce=False, cage=_c) == 0)
+    (repo / "cage-mono.toml").write_text(
+        _mono_pats + _MONO.format(f="floors.toml", t="a.floors", d="lower-only", c="semver"), encoding="utf-8")
+    record("E2E: a malformed [[monotone]] table (an unknown direction) -> exit 2 under --enforce (cage unreadable)",
+           run_gate(repo, "0" * 40, clean_tip, enforce=True, cage=repo / "cage-mono.toml") == 2)
     (repo / "cage-esc.toml").write_text(_esc_pats + '\n[[loop_tool]]\npath = "scripts/buildtool"\n',
                                         encoding="utf-8")
     record("E2E: a malformed [[loop_tool]] table (no reason) -> exit 2 under --enforce (cage unreadable)",

@@ -1153,7 +1153,7 @@ delivered *system*.
   unblessed report against the phase's box list before blessing.
 - **Caged tails (added 2026-09-15):** before the box flips, the sweep lands, under
   owner-ack, every caged tail a box of the phase declared as reds-nothing (the P4.41
-  G38 planted positives, floor rows, tool pins, gate-row wording).
+  G38 planted positives, tool pins, gate-row wording).
 - **Residual-ledger triage:** before the box flips, the Co-Pilot copies every `Open P2/P3:` intake line
   of the phase's commits (found with `git log --grep='^Open P2/P3:'` over the phase range) into the
   phase's section of the [residual ledger](../plan/residual-ledger.md) and gives each line exactly one

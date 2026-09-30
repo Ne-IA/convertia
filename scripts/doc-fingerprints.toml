@@ -32,20 +32,20 @@
 # SCOPE: the ledger holds the bindings whose describing prose no name-check can verify; plan-lint's
 # `_REQUIRED_FP_IDS` is its floor.
 
-# The authoritative L(-1) cage (patterns + the [[loop_tool]] escapes). security-concept §2, the
-# build-gates G71 row and CLAUDE.md §5 name its categories and point to it; none enumerates it.
-# A cage edit (a pattern or an escape added or removed) re-verifies those three descriptions and
-# re-greps every doc that cites a pattern by name ("matched by", "via") — this fingerprint forces
-# it. Both the cage and this ledger are L(-1), so a cage change and this re-bless ride the one
-# owner-acked commit.
+# The authoritative L(-1) cage (patterns + the [[loop_tool]] escapes + the [[monotone]] ratchets).
+# security-concept §2, the build-gates G71 row and CLAUDE.md §5 name its categories and point to
+# it; none enumerates it. A cage edit (a pattern, an escape or a monotone entry added or removed)
+# re-verifies those three descriptions and re-greps every doc that cites a pattern by name
+# ("matched by", "via") — this fingerprint forces it. Both the cage and this ledger are L(-1),
+# so a cage change and this re-bless ride the one owner-acked commit.
 [[source]]
 id = "l-neg1-cage"
 kind = "file"
 file = "scripts/l-neg1-files.toml"
 describes = [
-  "security-concept.md §2 (the L(-1) categories)",
-  "build-gates.md G71 row (the cage categories and the escape rule)",
+  "security-concept.md §2 (the L(-1) categories and the ratchet rule)",
+  "build-gates.md G71 row (the cage categories, the escape rule and the monotone rule)",
   "CLAUDE.md §5 (the L(-1) anti-pattern bullet)",
 ]
-fingerprint = "sha256:12909c675b1b1f9c9c03aa780dbc5f6477d5dc9995a40ce5da60b73987797f1b"
+fingerprint = "sha256:70b1f51ea0e741d3f202543f52577fb1816a455dc565d62260a9de7d80f52e67"
 # ^ Re-blessed at every cage edit; the commit body records what was re-verified.

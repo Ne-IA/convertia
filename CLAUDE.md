@@ -147,8 +147,9 @@ One line each, with the gate that enforces it:
   declared Loop build tools, the hook and CI planes, the supply-chain, secret-scan, toolchain,
   hygiene and lint configs, the caged ratchets, the pinned engine manifest, the Tauri capabilities,
   the G53 fixture and the security/process docs — the authoritative list is
-  `scripts/l-neg1-files.toml`) are the L(-1) set; the Loop parks a box with a caged part
-  (build-loop Step 7) → G71 (owner decision D1,
+  `scripts/l-neg1-files.toml`) are the L(-1) set, and lowering or removing a `[[monotone]]`
+  ratchet row (the §0.8 floors in `Cargo.toml` / `package.json`) needs the same trailer; the Loop
+  parks a box with a caged part (build-loop Step 7) → G71 (owner decision D1,
   [security-concept §2](docs/security/security-concept.md#2-working-model--two-sessions-one-branch)).
 - `--no-verify`, force-push, `core.hooksPath` redirection, or disabling a required CI check — the
   complete forbidden-bypass set (security-concept §3) → G54, G56a.

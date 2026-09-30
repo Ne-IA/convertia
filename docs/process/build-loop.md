@@ -446,12 +446,14 @@ Dual-Review: opus=GO sonnet=GO
 The check-off rides in the box commit: `[x]` for the box and its completed sub-boxes plus the
 Step 1 auto-unlock flips, staged before Step 4a — markers only.
 
-**A caged part** — a `scripts/l-neg1-files.toml` path (G71) that must change in the same push: build
-the uncaged part, run Step 4a (not Step 5), and run the §6 park procedure with reason `caged` (the
-Co-Pilot line names `caged part: <paths> (roles-and-escalation §4(g))`). The owner-acked Co-Pilot
-applies the patch in its clone, adds the caged part, runs Steps 4a and 5 on the whole diff and
-makes the box commit with `Dual-Review:` and `L-neg1-ack: owner`; its landed commit is the park's
-answer. The loop never writes that trailer, and deletes the patch once the box is `[x]` (Step 0).
+**A caged part** — a `scripts/l-neg1-files.toml` path (G71), or a lowered or removed row of a
+`[[monotone]]` ratchet (the spec §0.8 relied-upon floors, G71's monotone rule), that must change in
+the same push: build the uncaged part, run Step 4a (not Step 5), and run the §6 park procedure with
+reason `caged` (the Co-Pilot line names `caged part: <paths> (roles-and-escalation §4(g))`). The
+owner-acked Co-Pilot applies the patch in its clone, adds the caged part, runs Steps 4a and 5 on the
+whole diff and makes the box commit with `Dual-Review:` and `L-neg1-ack: owner`; its landed commit
+is the park's answer. The loop never writes that trailer, and deletes the patch once the box is
+`[x]` (Step 0).
 The preference for a caged part: a precondition box (`needs:` on an `[!extern]` box), then a
 `caged` park, then a pre-declared sweep tail (§5 (b)).
 

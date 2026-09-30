@@ -9,6 +9,12 @@
 # tokio runtime Tauri manages (§0.8/§0.9), pinned transitively in `Cargo.lock`; it is added as a direct
 # dependency where in-crate `async` code first calls into it. The crate compiles to a minimal binary so
 # the workspace, the live G3/G4/G14/G53/G18 gates, and the committed Cargo.lock have a real target.
+#
+# §0.8 floor rows: the relied-upon floor of a load-bearing dependency is a row in the root Cargo.toml
+# `[workspace.metadata.convertia.pinned-floors]` table, added in the commit that adds the dependency
+# (spec §0.8 "Relied-upon floors"). The per-dependency notes below that name check-supply-chain's
+# PINNED_FLOORS, a paired L(-1) floor box or the dep-floor split record where the floor rows lived when
+# each dependency landed.
 [package]
 name = "convertia-core"
 version.workspace = true

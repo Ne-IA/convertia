@@ -26,3 +26,29 @@ rust-version = "1.96.0"
 license = "MIT"
 repository = "https://github.com/Ne-IA/convertia"
 authors = ["Ne-IA and ConvertIA contributors"]
+
+# The §0.8 relied-upon floors: the minimum version ConvertIA's own code relies on for each load-bearing
+# crate. check-supply-chain (G18) fails when a floored crate is absent from Cargo.lock or resolves below its
+# floor; the commit that adds such a dependency adds its row here. Raising a floor is ordinary work; lowering
+# or removing a row needs `L-neg1-ack: owner` (G71's monotone rule, scripts/l-neg1-files.toml). Cargo ignores
+# this table. Floors compare by semver precedence (2.0.0 > 2.0.0-rc.25 > 2.0.0-rc.2).
+[workspace.metadata.convertia.pinned-floors]
+tauri-specta = "2.0.0-rc.25"   # §0.4.5 IPC codegen (the bindings.ts surface)
+specta = "2.0.0-rc.25"         # §0.4.5 type introspection (coupled to tauri-specta)
+walkdir = "2.5.0"              # §1.1 recursive intake
+tempfile = "3.27.0"            # §0.8 owned-scratch atomic write
+proptest = "1.11.0"            # §6.4.2 Rust property-test library (dev-only; a floor is keyed by crate)
+tokio-util = "0.7.18"          # §0.4.4/§1.7 CancellationToken
+tokio = "1.52.3"               # §0.9/§1.7 Semaphore and the spawn_blocking permit lane
+dunce = "1.0.5"                # §2.3.1 \\?\-prefix display normalisation
+winapi-util = "0.1.11"         # §2.3.1 Windows file identity (safe GetFileInformationByHandle wrapper)
+rustix = "1.1.4"               # §2.1.1/§2.1.2 Unix publish primitives (renameat_with NOREPLACE, linkat, fstatvfs)
+windows-sys = "0.61.2"         # §2.1.2 Windows no-replace move (FileRenameInfoEx class) and GetDiskFreeSpaceExW
+chardetng = "1.0.0"            # §1.2 text-encoding detection
+encoding_rs = "0.8.35"         # §1.2 Encoding vocabulary (for_bom, name)
+csv = "1.4.0"                  # §3.5.6 native CSV/TSV RFC-4180 reader/writer
+process-wrap = "9.1.0"         # §1.7 process-group / Job-Object spawn and group kill
+landlock = "0.4.5"             # §2.12.3 Linux Landlock fs-restrict leg
+seccompiler = "0.5.0"          # §2.12.3 Linux seccomp-bpf exec-deny leg
+libc = "0.2.186"               # §2.12.3 Linux syscall numbers and net-ns syscalls, §1.10 macOS memory read
+toml = "1.1.2"                 # §2.12.4 Cargo.lock closure-walk parser (dev-only)

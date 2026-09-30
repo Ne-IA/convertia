@@ -13,12 +13,18 @@ crate reachable only via a non-default feature would escape [bans]), or an unexp
 entering Cargo.lock (the structural PRESENCE scan `_tauri_plugin_drift` — the 2nd enforcer beside plan-lint
 check 13 — accepts only the §0.10-granted set + the forced-transitive-inert `tauri-plugin-fs`). Also
 confirms the REAL committed deny.toml `[graph].targets` equals EXPECTED_GRAPH_TARGETS, and that the REAL
-committed deny.toml + supply-chain/config.toml evaluate clean and main() is target-absent-OK.
+committed deny.toml + supply-chain/config.toml evaluate clean and main() exits 0 over the real tree.
+The §0.8 floor legs read the floors as data (the root Cargo.toml
+`[workspace.metadata.convertia.pinned-floors]`): a missing, unparseable or malformed table and a
+missing Cargo.lock each fail closed. Their verdict legs run over a synthetic table, so a floor row
+raised as box work (§0.8) leaves this canary green.
 stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
+import contextlib
 import copy
 import importlib.machinery
 import importlib.util
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -205,6 +211,7 @@ record("_pinned_floor_assertion(): the REAL Cargo.lock satisfies every §0.8 flo
 
 
 def _floor_with_temp_lock(body: str) -> list:
+    """_pinned_floor_assertion over the REAL floor table (the root Cargo.toml) and a temp lock carrying `body`."""
     saved = m.CARGO_LOCK_CANDIDATES
     with tempfile.TemporaryDirectory() as td:
         lock = Path(td) / "Cargo.lock"
@@ -216,26 +223,137 @@ def _floor_with_temp_lock(body: str) -> list:
             m.CARGO_LOCK_CANDIDATES = saved
 
 
-_all_at_floor = "".join(f'[[package]]\nname = "{c}"\nversion = "{v}"\n\n' for c, v in m.PINNED_FLOORS.items())
+_FLOOR_HDR = "[workspace.metadata.convertia.pinned-floors]\n"
+
+
+def _assert_with(manifest_text: "str | None", lock_body: "str | None") -> list:
+    """_pinned_floor_assertion over a temp manifest (None = absent) and a temp lock (None = absent)."""
+    saved = (m.FLOORS_MANIFEST, m.CARGO_LOCK_CANDIDATES)
+    with tempfile.TemporaryDirectory() as td:
+        man, lock = Path(td) / "Cargo.toml", Path(td) / "Cargo.lock"
+        if manifest_text is not None:
+            man.write_text(manifest_text, encoding="utf-8")
+        if lock_body is not None:
+            lock.write_text(lock_body, encoding="utf-8")
+        m.FLOORS_MANIFEST, m.CARGO_LOCK_CANDIDATES = man, (lock,)
+        try:
+            return m._pinned_floor_assertion()
+        finally:
+            m.FLOORS_MANIFEST, m.CARGO_LOCK_CANDIDATES = saved
+
+
+def _pkg(name: str, version: str) -> str:
+    """One Cargo.lock [[package]] entry."""
+    return f'[[package]]\nname = "{name}"\nversion = "{version}"\n\n'
+
+
+# [Test-Change: G18 floors as data — old-obsolete+new-correct, §0.8] the at-floor leg and the five verdict
+# legs after it were judged against the retired PINNED_FLOORS constant (the at-floor lock generated from it,
+# three verdict locks made by find-and-replace of its specta and walkdir values). The floors are data now, and
+# raising a row is ordinary box work (§0.8) that must leave this caged canary green, so no leg keys on a real
+# row's value or presence: the at-floor lock is generated from the loaded real table, and the verdict legs run
+# over a synthetic two-row table (_TWO_FLOORS, the floors the old fixtures assumed) with the same versions
+# under test and the same assertions.
+_REAL_FLOORS, _REAL_FLOORS_WHY = m._load_floors(m.FLOORS_MANIFEST)
+record("_load_floors(): the REAL root Cargo.toml floor table loads, non-empty, every floor a semver string",
+       _REAL_FLOORS_WHY is None and bool(_REAL_FLOORS)
+       and all(m._parse_ver(v) is not None for v in _REAL_FLOORS.values()))
+_all_at_floor = "".join(_pkg(c, v) for c, v in (_REAL_FLOORS or {}).items())
 record("_pinned_floor_assertion(): a temp lock with every §0.8 crate AT its floor -> clean",
        _floor_with_temp_lock(_all_at_floor) == [])
-_below = _all_at_floor.replace('name = "specta"\nversion = "2.0.0-rc.25"', 'name = "specta"\nversion = "2.0.0-rc.2"')
+_TWO_FLOORS = _FLOOR_HDR + 'specta = "2.0.0-rc.25"\nwalkdir = "2.5.0"\n'
+_SPECTA_AT, _WALKDIR_AT = _pkg("specta", "2.0.0-rc.25"), _pkg("walkdir", "2.5.0")
+_below = _pkg("specta", "2.0.0-rc.2") + _WALKDIR_AT
 record("_pinned_floor_assertion(): specta DOWN to rc.2 (< the rc.25 floor) -> caught (below the API floor)",
-       any("specta" in p and "below the relied-upon API floor" in p for p in _floor_with_temp_lock(_below)))
+       any("specta" in p and "below the relied-upon API floor" in p for p in _assert_with(_TWO_FLOORS, _below)))
 record("_pinned_floor_assertion(): a §0.8 floor crate MISSING from the lock -> caught (relied-upon dep vanished)",
-       any("walkdir" in p and "not in Cargo.lock" in p
-           for p in _floor_with_temp_lock('[[package]]\nname = "specta"\nversion = "2.0.0-rc.25"\n')))
-_garbage = _all_at_floor.replace('version = "2.5.0"', 'version = "garbage"')   # walkdir floor 2.5.0 -> unparseable
+       any("walkdir" in p and "not in Cargo.lock" in p for p in _assert_with(_TWO_FLOORS, _SPECTA_AT)))
+_garbage = _SPECTA_AT + _pkg("walkdir", "garbage")   # walkdir floor 2.5.0 -> unparseable
 record("_pinned_floor_assertion(): an unparseable lock version -> fail-closed (caught, not silently passed)",
-       any("unparseable" in p for p in _floor_with_temp_lock(_garbage)))
+       any("unparseable" in p for p in _assert_with(_TWO_FLOORS, _garbage)))
 # multi-version robustness (Cargo.lock may carry duplicate-version crates): pass if ANY copy >= floor.
-_multi_ok = _all_at_floor + '[[package]]\nname = "walkdir"\nversion = "2.4.0"\n\n'   # walkdir 2.5.0 (floor) + an older 2.4.0
+_multi_ok = _SPECTA_AT + _WALKDIR_AT + _pkg("walkdir", "2.4.0")   # walkdir 2.5.0 (floor) + an older 2.4.0
 record("_pinned_floor_assertion(): a floor crate present at TWO versions (2.5.0 + older 2.4.0) -> clean (a copy >= floor)",
-       _floor_with_temp_lock(_multi_ok) == [])
-_multi_below = (_all_at_floor.replace('name = "walkdir"\nversion = "2.5.0"', 'name = "walkdir"\nversion = "2.3.0"')
-                + '[[package]]\nname = "walkdir"\nversion = "2.4.0"\n\n')   # both walkdir copies below the 2.5.0 floor
+       _assert_with(_TWO_FLOORS, _multi_ok) == [])
+_multi_mid = _SPECTA_AT + _pkg("walkdir", "2.4.0") + _WALKDIR_AT + _pkg("walkdir", "2.3.0")   # floor copy in the middle
+record("_pinned_floor_assertion(): the at-floor copy BETWEEN two older ones (2.4.0, 2.5.0, 2.3.0) -> clean (every copy "
+       "is judged, not only the first or the last)", _assert_with(_TWO_FLOORS, _multi_mid) == [])
+_multi_below = _SPECTA_AT + _pkg("walkdir", "2.3.0") + _pkg("walkdir", "2.4.0")   # both copies below the 2.5.0 floor
 record("_pinned_floor_assertion(): a floor crate present ONLY at versions below floor (2.3.0 + 2.4.0) -> caught",
-       any("walkdir" in p and "below the relied-upon API floor" in p for p in _floor_with_temp_lock(_multi_below)))
+       any("walkdir" in p and "below the relied-upon API floor" in p
+           for p in _assert_with(_TWO_FLOORS, _multi_below)))
+
+
+# --- the floor table is data: every way it can be missing or malformed fails closed ---------------
+def _floors_from(text: "str | bytes | None") -> tuple:
+    """_load_floors over a temp manifest carrying `text` (None = no file at all)."""
+    with tempfile.TemporaryDirectory() as td:
+        man = Path(td) / "Cargo.toml"
+        if text is not None:
+            man.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
+        return m._load_floors(man)
+
+
+record("_load_floors(): a well-formed table -> the rows",
+       _floors_from(_FLOOR_HDR + 'walkdir = "2.5.0"\nspecta = "2.0.0-rc.25"\n')
+       == ({"walkdir": "2.5.0", "specta": "2.0.0-rc.25"}, None))
+record("_load_floors(): an EMPTY table -> no rows, not a finding (G71's monotone rule guards the emptying)",
+       _floors_from(_FLOOR_HDR) == ({}, None))
+for _label, _text, _needle in (
+        ("the manifest missing", None, "missing"),
+        ("the table absent", '[workspace]\nmembers = []\n', "no [workspace.metadata.convertia.pinned-floors] table"),
+        ("a parent key that is not a table", '[workspace]\nmetadata = "x"\n', "no [workspace.metadata"),
+        ("the table spelled as a string", '[workspace.metadata.convertia]\npinned-floors = "x"\n', "no [workspace"),
+        ("unparseable TOML", _FLOOR_HDR + 'walkdir = \n', "unreadable"),
+        ("non-UTF-8 bytes", b"\xff\xfe" + _FLOOR_HDR.encode(), "unreadable"),
+        ("a non-string floor", _FLOOR_HDR + "walkdir = 2\n", "['walkdir']"),
+        ("a floor that is no semver version", _FLOOR_HDR + 'walkdir = "latest"\n', "['walkdir']"),
+        ("a two-part floor", _FLOOR_HDR + 'walkdir = "2.5"\n', "['walkdir']"),
+        ("a sub-table row", _FLOOR_HDR + '[workspace.metadata.convertia.pinned-floors.walkdir]\nv = "1.0.0"\n',
+         "['walkdir']")):
+    _floors, _why = _floors_from(_text)
+    record(f"_load_floors(): {_label} -> fail-closed (no floors, the reason named)",
+           _floors is None and isinstance(_why, str) and _needle in _why)
+
+
+_ONE_ROW = _FLOOR_HDR + 'walkdir = "2.5.0"\n'
+_ONE_PKG = '[[package]]\nname = "walkdir"\nversion = "2.5.0"\n'
+record("_pinned_floor_assertion(): a temp manifest row AT floor over a temp lock -> clean",
+       _assert_with(_ONE_ROW, _ONE_PKG) == [])
+record("_pinned_floor_assertion(): the floor comes from the manifest (a raised row reds the same lock)",
+       any("walkdir" in p and "below the relied-upon API floor" in p
+           for p in _assert_with(_FLOOR_HDR + 'walkdir = "2.6.0"\n', _ONE_PKG)))
+record("_pinned_floor_assertion(): the floor table ABSENT -> caught (fail-closed, the home named)",
+       any("cannot be asserted" in p and "pinned-floors" in p
+           for p in _assert_with("[workspace]\n", _ONE_PKG)))
+record("_pinned_floor_assertion(): the manifest ABSENT -> caught (fail-closed)",
+       any("cannot be asserted" in p for p in _assert_with(None, _ONE_PKG)))
+record("_pinned_floor_assertion(): Cargo.lock ABSENT -> caught (was a silent pass before the floors moved to data)",
+       any("no Cargo.lock" in p for p in _assert_with(_ONE_ROW, None)))
+record("_pinned_floor_assertion(): an EMPTY table over a lock -> clean (no rows to assert)",
+       _assert_with(_FLOOR_HDR, _ONE_PKG) == [])
+
+
+def _main_with_manifest(text: str) -> tuple:
+    """(exit code, stderr) of main() over a temp floor manifest, the live cargo tier stubbed out so the
+    verdict can only come from the frozen policy and the floor leg (no network, no binary)."""
+    saved = (m.FLOORS_MANIFEST, m._live_checks)
+    err = io.StringIO()
+    with tempfile.TemporaryDirectory() as td:
+        man = Path(td) / "Cargo.toml"
+        man.write_text(text, encoding="utf-8")
+        m.FLOORS_MANIFEST, m._live_checks = man, lambda: []
+        try:
+            with contextlib.redirect_stderr(err):
+                rc = m.main()
+        finally:
+            m.FLOORS_MANIFEST, m._live_checks = saved
+    return rc, err.getvalue()
+
+
+_rc_nofloor, _err_nofloor = _main_with_manifest("[workspace]\n")
+record("main(): a manifest WITHOUT the floor table -> exit 1 naming the floor finding (the floor leg is "
+       "wired, fail-closed)", _rc_nofloor == 1 and "relied-upon floors cannot be asserted" in _err_nofloor)
 
 # --- widened malformed-config guard (a NON-UTF-8 / unreadable config must FAIL-CLOSED, not crash with an
 # uncaught UnicodeDecodeError — it is a ValueError, NOT an OSError, so the old `except TOMLDecodeError` alone

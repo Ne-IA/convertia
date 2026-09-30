@@ -7,8 +7,8 @@
 #
 # This file IS the authoritative L(-1) set. security-concept §2, the build-gates G71 row and
 # `CLAUDE.md` §5 name its categories and point here; they never enumerate it. It is itself caged
-# (`scripts/**`), so the cage cannot be silently narrowed: removing a pattern or adding an escape
-# is itself an L(-1) edit that needs the owner-ack trailer.
+# (`scripts/**`), so the cage cannot be silently narrowed: removing a pattern, adding an escape or
+# dropping a monotone entry is itself an L(-1) edit that needs the owner-ack trailer.
 #
 # Patterns are gitignore-style POSIX paths (forward slashes), matched ROOT-ANCHORED against each
 # commit's diff file paths (check-l-neg1-ack compiles `^...$`): `*` matches within one path segment,
@@ -75,3 +75,24 @@ reason = "§6.1.3 engine-asset fetch, Loop-built"
 [[loop_tool]]
 path = "scripts/compile-engine-asset"
 reason = "§6.1.3 from-source compile, Loop-built"
+
+# --- Monotone ratchets: uncaged data whose values may only rise ---
+# A ratchet the Loop moves as ordinary box work lives in uncaged data; each [[monotone]] names its
+# file and dotted table. check-l-neg1-ack compares the table at every commit in the push range that
+# touches the file with the table at the commit's parent: adding a key or raising a value needs no
+# trailer; removing a key, lowering a value (semver precedence) or leaving the table unreadable
+# needs `L-neg1-ack: owner`. An entry whose file a pattern cages is refused (a caged file needs the
+# ack for every edit); an entry whose file is untracked or holds no such table is dead. The caged
+# ratchets (coverage-floors.toml, max_survived_mutants.toml) move only at owner or sweep acts and
+# stay caged whole.
+[[monotone]]
+file = "Cargo.toml"
+table = "workspace.metadata.convertia.pinned-floors"   # the §0.8 Rust relied-upon floors (G18)
+direction = "raise-only"
+comparator = "semver"
+
+[[monotone]]
+file = "package.json"
+table = "convertia.pinned-floors"                        # the §0.8 JS relied-upon floors (G18c)
+direction = "raise-only"
+comparator = "semver"

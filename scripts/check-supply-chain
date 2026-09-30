@@ -23,16 +23,22 @@ So the policy INTENT is FROZEN here (a stdlib TOML parse — no cargo-deny/cargo
     allowlist OR the forced-transitive-inert set {fs}. This is the **2nd, independent structural
     presence-enforcer** of the deny-all-except rule (beside plan-lint check 13; needs no cargo binary);
     the `.plugin()`-registration surface is plan-lint check 13's (it reads `src-tauri/src`) and the fs:
-    capability surface is G47's — this scan guards LOCK PRESENCE only.
+    capability surface is G47's — this scan guards LOCK PRESENCE only;
+  * the §0.8 relied-upon floors hold over Cargo.lock — every crate in the root Cargo.toml
+    `[workspace.metadata.convertia.pinned-floors]` table is in the lock at >= its floor. The floors are
+    DATA, not a constant here: the commit that adds a floored dependency adds its row, and G71's
+    monotone rule (scripts/l-neg1-files.toml `[[monotone]]`) requires the owner-ack on a commit that
+    lowers or removes one. A missing or malformed table, or a missing Cargo.lock, fails closed.
 
-Growing/relaxing any of these means editing the frozen expectation in THIS file - itself L(-1)
+Growing/relaxing any of the frozen expectations means editing THIS file - itself L(-1)
 (scripts/l-neg1-files.toml, G71), so the change carries the owner-ack + a Dual-Review note. The LIVE
 `cargo deny check` runs in P1 (P1.59, once the workspace Cargo.lock exists); the LIVE
 `cargo vet check --locked` is the DEFERRED P10 run (P10.59, per P1.59 - cargo-vet is not yet pinned).
 This gate skips each with a notice until its tier lands. stdlib-only (tomllib).
 
-Exit: 0 = the policy matches the frozen expectation (+ live checks pass or are target-absent);
-      1 = drift / a relaxation; 2 = a config file is missing or unparseable.
+Exit: 0 = the policy matches the frozen expectation and the §0.8 floors hold (+ each live check
+      passes, or skips where its binary is absent); 1 = drift / a relaxation / a floor below, absent
+      or unreadable; 2 = a config file is missing or unparseable.
 """
 from __future__ import annotations
 
@@ -112,37 +118,16 @@ MIN_IMPORT_SOURCES = 2          # >=2 distinct audit DBs (Mozilla + Google basel
 MIN_CONFIDENCE = 0.8            # the license-detection confidence floor (we ship 0.93)
 EXPECTED_EXEMPTION_COUNT = 0    # cargo-vet exemptions accepted; a bump is reviewed HERE with a box-id
 
-# §0.8 pinned-floor (P1.59): the load-bearing crates ConvertIA's OWN code relies on at a known API floor.
-# Each MUST be PRESENT in Cargo.lock at >= its floor, so a drift below a relied-upon API surface fails
-# HERE (deterministically) rather than as an opaque compile break later. Only crates ALREADY in the lock
-# are listed; a named floor activates when its phase adds the crate (csv - at its real home §3.5.6, not
-# the P1.59 box's §1.5 shorthand - and chardetng joined at P3.85; process-wrap §1.7, landlock and
-# seccompiler §2.12.3, libc §2.12.3/§1.10 and the dev-only toml §2.12.4 joined at P4.84, the P4
-# promotion batch; the librsvg >=2.56.3 floor is a C-library binding, not a Cargo crate) -
-# adding a row is the normal growth, lowering a floor is an L(-1) review item. Pre-release floors compare
-# by semver precedence (2.0.0 > 2.0.0-rc.25 > 2.0.0-rc.2). [Build-Session-Entscheidung: P1.59 - reconcile
-# to the present §0.8 deps; grow as P3/P4 land the rest.]
-PINNED_FLOORS = {
-    "tauri-specta": "2.0.0-rc.25",   # §0.4.5 IPC codegen (exact pin - the bindings.ts surface)
-    "specta":       "2.0.0-rc.25",   # §0.4.5 type introspection (coupled to tauri-specta)
-    "walkdir":      "2.5.0",         # §1.1 recursive intake (direct dep from P2.64; P2.64 dep / floor reconciled here)
-    "tempfile":     "3.27.0",        # §0.8 owned-scratch atomic write (direct dep from P3.4; P1.59 floor reconciled-to-present)
-    "proptest":     "1.11.0",        # §6.4.2 Rust property-test lib (in the lock via dev-deps; P2.128 dep / P2.129 floor)
-    "tokio-util":   "0.7.18",        # §0.4.4/§1.7 CancellationToken (direct dep from P2.133; P2.133 dep / P2.134 floor)
-    "tokio":        "1.52.3",        # §0.9/§1.7 Semaphore + spawn_blocking permit lane (direct dep from P3.3; P3.3 dep / P3.82 floor)
-    "dunce":        "1.0.5",         # §2.3.1 \\?\-prefix display normalisation (direct dep from P3.6; P3.6 dep / P3.83 floor)
-    "winapi-util":  "0.1.11",        # §2.3.1 Windows file-identity - safe GetFileInformationByHandle wrapper (cfg(windows) direct dep from P3.6; P3.6 dep / P3.83 floor)
-    "rustix":       "1.1.4",         # §2.1.1/§2.1.2 Unix publish primitives - safe renameat_with(NOREPLACE)=renameat2/renameatx_np + linkat/unlinkat/fstatvfs (cfg(unix) direct dep from P3.12; P3.12 dep / P3.84 floor)
-    "windows-sys":  "0.61.2",        # §2.1.2 Windows publish/free-space externs - FileRenameInfoEx-class no-replace move + GetDiskFreeSpaceExW (cfg(windows) direct dep from P3.14; P3.14 dep / P3.84 floor)
-    "chardetng":    "1.0.0",         # §1.2 text-encoding detection - the bounded pure-Rust in-core detector (direct dep from P3.27; P3.27 dep / P3.85 floor)
-    "encoding_rs":  "0.8.35",        # §1.2 Encoding vocabulary - for_bom/name + chardetng's return type (direct dep from P3.27; P3.27 dep / P3.85 floor)
-    "csv":          "1.4.0",         # §3.5.6 native CSV/TSV RFC-4180 reader/writer - the in-core streamed transform (direct dep from P3.41; P3.41 dep / P3.85 floor)
-    "process-wrap": "9.1.0",         # §1.7 cross-platform process-group / Job-Object spawn + group-kill (direct dep from P4.10; P4.10 dep / P4.84 floor)
-    "landlock":     "0.4.5",         # §2.12.3 Linux Landlock fs-restrict leg (cfg(target_os = "linux") direct dep from P4.15.1; P4.15.1 dep / P4.84 floor)
-    "seccompiler":  "0.5.0",         # §2.12.3 Linux seccomp-bpf exec-deny leg (cfg(target_os = "linux") direct dep from P4.15.3; P4.15.3 dep / P4.84 floor)
-    "libc":         "0.2.186",       # §2.12.3 syscall numbers + net-ns raw syscalls (Linux) / §1.10 host_statistics64 memory read (macOS) - direct since P4.15, macOS row P4.20; P4.84 floor
-    "toml":         "1.1.2",         # §2.12.4 the Cargo.lock closure-walk parser behind crate::untrusted_byte_boundary (direct edge from P4.19, dev-only; P4.40 owns its promotion to production, and a floor is keyed by crate, not dep-kind; dev-deps are floored, the proptest precedent; P4.84 floor)
-}
+# §0.8 relied-upon floors: the root Cargo.toml table below maps each load-bearing crate ConvertIA's OWN code
+# relies on at a known API floor to that floor. Each MUST be PRESENT in Cargo.lock at >= its floor, so a drift
+# below a relied-upon API surface fails HERE (deterministically) rather than as an opaque compile break later.
+# The rows are data in an uncaged file: adding or raising one is ordinary box work (the dep-add commit adds
+# its row), lowering or removing one needs the owner-ack (G71's monotone rule). A C-library floor (librsvg
+# >= 2.56.3) is not a Cargo crate and has no row. Pre-release floors compare by semver precedence
+# (2.0.0 > 2.0.0-rc.25 > 2.0.0-rc.2).
+FLOORS_MANIFEST = ROOT / "Cargo.toml"
+FLOORS_TABLE = ("workspace", "metadata", "convertia", "pinned-floors")
+_FLOORS_TABLE_NAME = ".".join(FLOORS_TABLE)
 
 
 def fail(msg: str) -> None:
@@ -439,13 +424,46 @@ def _version_ge(have: str, floor: str):
     return apre >= bpre              # both pre-releases: semver tuple precedence
 
 
+_FLOOR_HOME = f"`Cargo.toml` `[{_FLOORS_TABLE_NAME}]`"
+_FLOOR_ACK = "(owner-acked, G71 monotone rule)"
+
+
+def _load_floors(manifest: Path) -> tuple[dict[str, str] | None, str | None]:
+    """(floors, None) from the §0.8 floor table in `manifest` (crate -> floor), or (None, why) when the
+    file is missing or unreadable, the table is missing or not a table, or a row's floor is not a string
+    in semver form - each a fail-closed finding for the caller. An empty table is valid here: G71's
+    monotone rule makes removing its rows an owner-acked act."""
+    try:
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, f"{manifest.name} is missing"
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:   # non-UTF-8 is UnicodeDecodeError (a ValueError, not OSError)
+        return None, f"{manifest.name} is unreadable / not valid UTF-8 TOML ({e})"
+    node: object = data
+    for key in FLOORS_TABLE:
+        node = node.get(key) if isinstance(node, dict) else None
+    if not isinstance(node, dict):
+        return None, f"{manifest.name} has no [{_FLOORS_TABLE_NAME}] table"
+    bad = sorted(k for k, v in node.items() if not isinstance(v, str) or _parse_ver(v) is None)
+    if bad:
+        return None, (f"{manifest.name} [{_FLOORS_TABLE_NAME}] row(s) {bad} carry no semver floor string "
+                      "(X.Y.Z[-pre][+build])")
+    return dict(node), None
+
+
 def _pinned_floor_assertion() -> list[str]:
-    """§0.8 pinned-floor (P1.59): each PINNED_FLOORS crate must be in Cargo.lock at >= its floor. A listed
-    crate ABSENT from the lock is a FAIL (a relied-upon dep vanished); an unparseable version is a FAIL
-    (fail-closed). Target-absent (no lock yet) returns clean - the live tier already skip-noticed."""
+    """§0.8 relied-upon floors: each crate in the root Cargo.toml floor table must be in Cargo.lock at >= its
+    floor. A missing or malformed table and a missing Cargo.lock FAIL (the floors cannot be evaluated); a
+    floored crate ABSENT from the lock FAILS (a relied-upon dep vanished); an unparseable lock version
+    FAILS (fail-closed)."""
+    floors, why = _load_floors(FLOORS_MANIFEST)
+    if floors is None:
+        return [f"§0.8 floors: {why} - the relied-upon floors cannot be asserted (fail-closed); restore "
+                f"the {_FLOOR_HOME} table"]
     lock = next((p for p in CARGO_LOCK_CANDIDATES if p.is_file()), None)
     if lock is None:
-        return []
+        return [f"§0.8 floors: no Cargo.lock at {[str(p) for p in CARGO_LOCK_CANDIDATES]} - the {len(floors)} "
+                "floored crate(s) cannot be checked (fail-closed); generate and commit the lockfile"]
     try:
         data = tomllib.loads(lock.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:   # non-UTF-8 is UnicodeDecodeError (a ValueError, not OSError)
@@ -455,11 +473,11 @@ def _pinned_floor_assertion() -> list[str]:
         if isinstance(pkg, dict) and isinstance(pkg.get("name"), str) and isinstance(pkg.get("version"), str):
             versions.setdefault(pkg["name"], []).append(pkg["version"])
     problems: list[str] = []
-    for crate, floor in sorted(PINNED_FLOORS.items()):
+    for crate, floor in sorted(floors.items()):
         have = versions.get(crate)
         if not have:
             problems.append(f"§0.8 floor crate `{crate}` (>= {floor}) is not in Cargo.lock - a relied-upon "
-                            "dependency vanished; restore it or remove the floor row HERE (L(-1)) with a box-id")
+                            f"dependency vanished; restore it or remove its row in {_FLOOR_HOME} {_FLOOR_ACK}")
             continue
         # Cargo.lock can carry MULTIPLE versions of one crate (deny.toml multiple-versions="warn"); the floor
         # is satisfied if ANY present copy is >= floor (our code can resolve to it). Red only when EVERY copy
@@ -472,8 +490,8 @@ def _pinned_floor_assertion() -> list[str]:
                             f"{floor!r}) - failing closed (a floor that cannot be evaluated is not enforced)")
         else:
             problems.append(f"§0.8 floor crate `{crate}` is present only at {sorted(have)} < its pinned floor "
-                            f"{floor} - a drift below the relied-upon API floor; bump the dep or lower the "
-                            "floor HERE (L(-1)) with a box-id + Dual-Review note")
+                            f"{floor} - a drift below the relied-upon API floor; bump the dep, or lower its row "
+                            f"in {_FLOOR_HOME} {_FLOOR_ACK}")
     return problems
 
 
@@ -506,7 +524,7 @@ def main() -> int:
           f"excluded; allow-list-only licenses; yanked=deny; {len(_ignore_set(deny_cfg.get('advisories')))} "
           f"advisory ignore(s) reconciled with cargo-audit; >={MIN_IMPORT_SOURCES} cargo-vet import "
           f"sources; <= {EXPECTED_EXEMPTION_COUNT} exemption(s); every tauri-plugin granted or "
-          f"forced-inert-fs; {len(PINNED_FLOORS)} §0.8 floor crate(s) >= floor)")
+          f"forced-inert-fs; {len(_load_floors(FLOORS_MANIFEST)[0] or {})} §0.8 floor crate(s) >= floor)")
     return 0
 
 

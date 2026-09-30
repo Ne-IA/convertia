@@ -68,12 +68,18 @@ manifest, license compliance).
   presence on any L(-1)-touching commit (the trailer is the **only** sanctioned escape —
   there is **no** check-off / `[!extern]` exemption for an L(-1) edit; a commit touching no
   L(-1) file needs no trailer) and, since P4.56.1, the cage's own liveness (a glob matching
-  no tracked path, a stale/orphan targetless declaration, or a refused, dead or orphan
-  Loop-tool escape fails the gate — the build-gates G71 row carries the mechanics)
+  no tracked path, a stale/orphan targetless declaration, a refused, dead or orphan
+  Loop-tool escape, or a refused or dead monotone entry fails the gate — the build-gates
+  G71 row carries the mechanics)
   (fail-soft during the P0 bootstrap, fail-closed from P1). This is the one **ownership control above the deterministic gates** — the
   trailer records an owner decision; G71 checks the evidence, not the intent (so a leaked
   key or a unilateral cage edit cannot pass unseen). It is independent of the G1
   `Dual-Review:` trailer; both may co-occur on one commit.
+- **Ratchets.** A ratchet the Loop moves as ordinary box work lives in uncaged data with a
+  `[[monotone]]` entry in `scripts/l-neg1-files.toml`: the strengthening direction is free,
+  the weakening direction needs the owner ack (G71); the relied-upon dependency floors
+  (spec §0.8) are such ratchets. A ratchet moved only at owner or sweep acts
+  (`coverage-floors.toml`, `max_survived_mutants.toml`) stays caged whole.
 
 **The dual review is a quality amplifier, not a security control.** The Opus+Sonnet
 review (G1) is self-attested via an unverifiable commit trailer; a gamed `GO/GO`

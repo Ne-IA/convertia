@@ -1572,6 +1572,15 @@ Concrete crate **versions are deliberately not hard-coded in this prose** (they 
 stale); the lockfiles + SBOM are the source of truth (§6.3). This table fixes the
 *choices*, not the digits.
 
+**Relied-upon floors.** The minimum version ConvertIA's own code relies on for a
+load-bearing dependency is data: Rust floors in the root `Cargo.toml`
+`[workspace.metadata.convertia.pinned-floors]`, JS floors in `package.json`
+`convertia.pinned-floors`. G18/G18c fail when a floored dependency is absent from its
+lockfile or resolves below its floor, and fail closed when the table is missing or
+malformed or the lockfile is missing. The commit that adds such a dependency adds its
+floor row; raising a floor is ordinary box work; lowering or removing one needs
+`L-neg1-ack: owner` (G71's monotone rule, `scripts/l-neg1-files.toml`).
+
 ---
 
 ## 0.9 Concurrency, threading & engine-subprocess pool — **owner of the concurrency degree**

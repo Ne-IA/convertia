@@ -47,5 +47,15 @@
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "zustand": "5.0.14"
+  },
+  "convertia": {
+    "pinned-floors": {
+      "@tauri-apps/cli": "2.11.3",
+      "@tauri-apps/api": "2.11.1",
+      "@tauri-apps/plugin-log": "2.8.0",
+      "zustand": "5.0.14",
+      "fast-check": "4.8.0",
+      "vitest-axe": "0.1.0"
+    }
   }
 }

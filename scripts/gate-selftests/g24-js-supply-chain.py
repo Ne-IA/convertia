@@ -9,8 +9,10 @@ evaluate (`userconfig` and its siblings load a further config file), or ANY comm
 pnpm-workspace.yaml every refused setting is caught in any key form and a `${` or a source-redirect
 prefix anywhere; a
 pnpm-lock.yaml resolution URL from a non-allowed host is caught; the onlyBuiltDependencies allowlist
-count is read from both pnpm manifest forms; the REAL committed .npmrc evaluates clean and main() is
-target-absent-OK. stdlib-only.
+count is read from both pnpm manifest forms; the REAL committed .npmrc evaluates clean and main()
+exits 0 over the real tree; the §0.8 floor legs read the floors as data (package.json
+`convertia.pinned-floors`): a missing, unparseable or malformed block and a missing pnpm-lock.yaml
+each fail closed. stdlib-only.
 Exit 0 = all held; 1 = a self-test failed.
 """
 import contextlib
@@ -767,13 +769,16 @@ with tempfile.TemporaryDirectory() as _td:
     base = Path(_td)
     (base / ".npmrc").write_text("registry=https://registry.npmjs.org/\nenable-pre-post-scripts=false\n"
                                  "unsafe-perm=false\n", encoding="utf-8")
-    _orig = (m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES, m.PINNED_FLOORS_JS)
+    _orig = (m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES)
     m.NPMRC, m.PNPM_LOCK = base / ".npmrc", base / "pnpm-lock.yaml"
     m.PNPM_WORKSPACE, m.PACKAGE_JSON = base / "pnpm-workspace.yaml", base / "package.json"
     m.PNPMFILE_CANDIDATES = (base / ".pnpmfile.cjs", base / "pnpmfile.cjs")
-    m.PINNED_FLOORS_JS = {}    # isolate the §0.8 floor from the synthetic-lock URL-guard integration legs
     try:
-        (base / "package.json").write_text('{"name":"x"}', encoding="utf-8")     # manifest, NO lock
+        # [Test-Change: G18 floors as data — old-obsolete+new-correct, §0.8] the synthetic manifest carries an
+        # EMPTY floor block (the gate reads the floors from package.json now) instead of patching the retired
+        # PINNED_FLOORS_JS constant to {}; it isolates the §0.8 floor from the URL-guard legs the same way.
+        (base / "package.json").write_text('{"name":"x","convertia":{"pinned-floors":{}}}',
+                                           encoding="utf-8")                   # manifest, NO lock
         rc_nolock = m.main()
         (base / "pnpm-lock.yaml").write_text("resolution: {tarball: https://evil.example.com/x.tgz}\n",
                                              encoding="utf-8")
@@ -812,8 +817,7 @@ with tempfile.TemporaryDirectory() as _td:
             rc_npmrc_unlisted = m.main()
         (base / ".npmrc").write_text(_npmrc_clean, encoding="utf-8")
     finally:
-        (m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES,
-         m.PINNED_FLOORS_JS) = _orig
+        m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES = _orig
     record("main(): a pnpm manifest WITHOUT a lockfile -> FAIL (not a silent skip)", rc_nolock == 1)
     record("main(): a lockfile with a FOREIGN resolution URL -> FAIL", rc_foreign == 1)
     record("main(): a lockfile with only allowed-registry resolutions -> pass", rc_clean == 0)
@@ -853,17 +857,30 @@ record("_pinned_floor_assertion(): the REAL pnpm-lock.yaml satisfies every §0.8
        m._pinned_floor_assertion() == [])
 
 
-def _floor_with_temp_lock(body: str) -> list:
-    saved = (m.PNPM_LOCK, m.PINNED_FLOORS_JS)
+# [Test-Change: G18 floors as data — old-obsolete+new-correct, §0.8] the two test floors are written into a
+# temp package.json floor block (the gate's data home) instead of patching the retired PINNED_FLOORS_JS
+# constant; the four assertions below are unchanged.
+_TWO_FLOORS = '{"convertia": {"pinned-floors": {"@tauri-apps/cli": "2.11.3", "zustand": "5.0.14"}}}'
+
+
+def _floor_with(manifest: "str | bytes | None", body: "str | None") -> list:
+    """_pinned_floor_assertion over a temp package.json (None = absent) and a temp lock (None = absent)."""
+    saved = (m.PNPM_LOCK, m.PACKAGE_JSON)
     with tempfile.TemporaryDirectory() as td:
-        lock = Path(td) / "pnpm-lock.yaml"
-        lock.write_text(body, encoding="utf-8")
-        m.PNPM_LOCK = lock
-        m.PINNED_FLOORS_JS = {"@tauri-apps/cli": "2.11.3", "zustand": "5.0.14"}
+        lock, pkg = Path(td) / "pnpm-lock.yaml", Path(td) / "package.json"
+        if body is not None:
+            lock.write_text(body, encoding="utf-8")
+        if manifest is not None:
+            pkg.write_bytes(manifest if isinstance(manifest, bytes) else manifest.encode("utf-8"))
+        m.PNPM_LOCK, m.PACKAGE_JSON = lock, pkg
         try:
             return m._pinned_floor_assertion()
         finally:
-            m.PNPM_LOCK, m.PINNED_FLOORS_JS = saved
+            m.PNPM_LOCK, m.PACKAGE_JSON = saved
+
+
+def _floor_with_temp_lock(body: str) -> list:
+    return _floor_with(_TWO_FLOORS, body)
 
 
 _imp = ("importers:\n\n  .:\n    dependencies:\n      zustand:\n        specifier: 5.0.14\n        version: {z}\n"
@@ -879,6 +896,52 @@ record("_pinned_floor_assertion(): a JS floor crate ABSENT from importers -> cau
                                           "        specifier: 5.0.14\n        version: 5.0.14\n")))
 record("_pinned_floor_assertion(): a malformed resolved version (2.0) -> fail-closed (unparseable)",
        any("unparseable" in p for p in _floor_with_temp_lock(_imp.format(z="2.0", c="2.11.3"))))
+
+# --- the floor block is data: every way it can be missing or malformed fails closed ----------------
+_REAL_JS_FLOORS, _REAL_JS_WHY = m._load_floors(m.PACKAGE_JSON)
+record("_load_floors(): the REAL package.json floor block loads, non-empty, every floor a semver string",
+       _REAL_JS_WHY is None and bool(_REAL_JS_FLOORS)
+       and all(m._parse_ver(v) is not None for v in _REAL_JS_FLOORS.values()))
+
+
+def _js_floors_from(text: "str | bytes | None") -> tuple:
+    with tempfile.TemporaryDirectory() as td:
+        pkg = Path(td) / "package.json"
+        if text is not None:
+            pkg.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
+        return m._load_floors(pkg)
+
+
+record("_load_floors(): a well-formed block -> the rows",
+       _js_floors_from(_TWO_FLOORS) == ({"@tauri-apps/cli": "2.11.3", "zustand": "5.0.14"}, None))
+record("_load_floors(): an EMPTY block -> no rows, not a finding (G71's monotone rule guards the emptying)",
+       _js_floors_from('{"convertia": {"pinned-floors": {}}}') == ({}, None))
+for _label, _text, _needle in (
+        ("package.json missing", None, "missing"),
+        ("the convertia block absent", '{"name": "x"}', "no `convertia.pinned-floors` object"),
+        ("the floor key absent", '{"convertia": {}}', "no `convertia.pinned-floors`"),
+        ("convertia not an object", '{"convertia": ["pinned-floors"]}', "no `convertia.pinned-floors`"),
+        ("the floors an array", '{"convertia": {"pinned-floors": ["zustand"]}}', "no `convertia.pinned-floors`"),
+        ("a top-level array", '[1]', "no `convertia.pinned-floors`"),
+        ("unparseable JSON", '{"convertia": {"pinned-floors": {', "unreadable"),
+        ("non-UTF-8 bytes", b'\xff{"convertia": {"pinned-floors": {}}}', "unreadable"),
+        ("a non-string floor", '{"convertia": {"pinned-floors": {"zustand": 5}}}', "['zustand']"),
+        ("a floor that is no semver version", '{"convertia": {"pinned-floors": {"zustand": "^5"}}}', "['zustand']")):
+    _floors, _why = _js_floors_from(_text)
+    record(f"_load_floors(): {_label} -> fail-closed (no floors, the reason named)",
+           _floors is None and isinstance(_why, str) and _needle in _why)
+_AT = _imp.format(z="5.0.14", c="2.11.3")
+record("_pinned_floor_assertion(): the floor comes from package.json (a raised row reds the same lock)",
+       any("zustand" in p and "below the relied-upon API floor" in p for p in _floor_with(
+           '{"convertia": {"pinned-floors": {"@tauri-apps/cli": "2.11.3", "zustand": "5.1.0"}}}', _AT)))
+record("_pinned_floor_assertion(): the floor block ABSENT -> caught (fail-closed, the home named)",
+       any("cannot be asserted" in p and "convertia.pinned-floors" in p for p in _floor_with('{"name": "x"}', _AT)))
+record("_pinned_floor_assertion(): package.json ABSENT -> caught (fail-closed)",
+       any("cannot be asserted" in p for p in _floor_with(None, _AT)))
+record("_pinned_floor_assertion(): pnpm-lock.yaml ABSENT -> caught (was a silent pass before the floors moved to data)",
+       any("pnpm-lock.yaml is missing" in p for p in _floor_with(_TWO_FLOORS, None)))
+record("_pinned_floor_assertion(): an EMPTY block over a lock -> clean (no rows to assert)",
+       _floor_with('{"convertia": {"pinned-floors": {}}}', _AT) == [])
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-js-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")

@@ -32,9 +32,11 @@ freezes the JS supply-chain posture (stdlib only):
   * G36b (RELEASE-TIER slot) - the frontend GPL/AGPL hard-fail runs over the cdxgen SBOM (G35), NOT over
     pnpm-lock.yaml (the lock carries no license data); it is release-tier per build-gates G36b and stays
     target-absent here until G35 lands;
-  * §0.8 JS PINNED-FLOOR (P1.60) - each PINNED_FLOORS_JS dep (@tauri-apps/cli, @tauri-apps/api,
-    @tauri-apps/plugin-log, zustand, fast-check, vitest-axe) must be a DIRECT dep in pnpm-lock.yaml
-    resolved at >= its floor - the JS mirror of the Rust check-supply-chain pinned-floor leg.
+  * §0.8 JS RELIED-UPON FLOORS - each package in package.json `convertia.pinned-floors` must be a DIRECT
+    dep in pnpm-lock.yaml resolved at >= its floor - the JS mirror of the Rust check-supply-chain floor
+    leg. The floors are DATA: the commit that adds a floored dependency adds its row, and G71's monotone
+    rule (scripts/l-neg1-files.toml `[[monotone]]`) requires the owner-ack on a commit that lowers or
+    removes one. A missing or malformed block, or a missing pnpm-lock.yaml, fails closed.
 
 Scope note: once pnpm-lock.yaml exists (P1.2.2) the lockfile resolution scan + the onlyBuiltDependencies
 count + the §0.8 floor are LIVE; the `.npmrc` posture is enforced regardless. The covered surface is the
@@ -43,12 +45,12 @@ major-version bump is itself a pinned-version change (security-concept §0 pin-a
 a re-audit of this gate against the new pnpm config surface. `.npmrc` is L(-1)
 (scripts/l-neg1-files.toml, G71) - relaxing the pin / lockdown is an owner-ack + Dual-Review change.
 
-Exit: 0 = posture OK (+ live checks pass or target-absent); 1 = a relaxation / a foreign-or-non-registry
+Exit: 0 = posture OK (+ the live checks pass); 1 = a relaxation / a foreign-or-non-registry
        resolution / a scoped-registry override / a grown-or-unparseable allowlist / a lock-missing
        manifest / a committed frozen-lockfile setting / a lifecycle pin re-set in pnpm-workspace.yaml /
        a refused setting, a source-redirect prefix or a `${` in pnpm-workspace.yaml /
-       an `.npmrc` key this guard does not evaluate or a spelling it cannot settle;
-       2 = a config file is missing or unparseable.
+       an `.npmrc` key this guard does not evaluate or a spelling it cannot settle /
+       a floor below, absent or unreadable; 2 = a config file is missing or unparseable.
 """
 from __future__ import annotations
 
@@ -155,20 +157,16 @@ _UNLISTED_REASON = ("the committed .npmrc carries only `registry`, scoped `<scop
 EXPECTED_ONLYBUILT_COUNT = 0          # the build-script allowlist; a bump is reviewed HERE with a box-id
 _UNCOUNTABLE = 10 ** 9                 # fail-closed sentinel: an allowlist that is present but unparseable
 
-# §0.8 JS pinned-floor (P1.60): the load-bearing JS deps the frontend/test surface relies on at a known
-# floor - the JS mirror of check-supply-chain's PINNED_FLOORS. Each MUST be a DIRECT dep in pnpm-lock.yaml
-# resolved at >= its floor (a drift below the relied-upon API fails HERE). Only crates ALREADY in the lock
-# are listed; the rest the box names (WebdriverIO v9 + @axe-core/webdriverio) activate
-# when their phase adds them - adding a row is normal growth, lowering a floor is an L(-1) review item.
-# [Build-Session-Entscheidung: P1.60 - reconcile to the present §0.8 JS deps; grow as the E2E/api land.]
-PINNED_FLOORS_JS = {
-    "@tauri-apps/cli": "2.11.3",   # §0.4 Tauri CLI, matched to the `tauri` 2.x core pin (P1.2.3)
-    "@tauri-apps/api": "2.11.1",   # §0.4 Tauri JS API the generated bindings.ts imports (P2.130 dep / P2.131 floor)
-    "@tauri-apps/plugin-log": "2.8.0",  # §7.5.1 the JS log bridge (src/lib/ipc/log.ts façade; P2.95 dep-add, exact pin)
-    "zustand":         "5.0.14",   # §0.4.6 UI state store (P1.31.1)
-    "fast-check":      "4.8.0",    # §6.4 property-based testing (P1.35.1)
-    "vitest-axe":      "0.1.0",    # §5.x a11y assertions in the vitest suite (P1.56)
-}
+# §0.8 JS relied-upon floors: package.json `convertia.pinned-floors` maps each load-bearing JS package the
+# frontend / test surface relies on at a known API floor to that floor - the JS mirror of check-supply-chain's
+# Cargo.toml floor table. Each MUST be a DIRECT dep in pnpm-lock.yaml resolved at >= its floor (a drift below
+# the relied-upon API fails HERE). The rows are data in an uncaged file (JSON carries no comments, so a row
+# has no role note; the spec section that relies on the package names it): adding or raising one is ordinary
+# box work, lowering or removing one needs the owner-ack (G71's monotone rule).
+FLOORS_KEY_PATH = ("convertia", "pinned-floors")
+_FLOORS_KEY_NAME = ".".join(FLOORS_KEY_PATH)
+_FLOOR_HOME = f"package.json `{_FLOORS_KEY_NAME}`"
+_FLOOR_ACK = "(owner-acked, G71 monotone rule)"
 
 # ---- the pnpm-lock.yaml resolution scan (G18c): a fail-closed TEXT scan, no structural YAML model ------------
 # pnpm loads the lock with js-yaml and builds each fetch URL with the WHATWG URL parser
@@ -833,22 +831,50 @@ def _direct_dep_versions(lock_text: str, names: set[str]) -> dict[str, list[str]
     return out
 
 
+def _load_floors(package_json: Path) -> tuple[dict[str, str] | None, str | None]:
+    """(floors, None) from the package.json floor block (package -> floor), or (None, why) when the file is
+    missing or not JSON, the block is missing or not an object, or a row's floor is not a string in semver
+    form - each a fail-closed finding for the caller. An empty block is valid here: G71's monotone rule
+    makes removing its rows an owner-acked act."""
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, f"{package_json.name} is missing"
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        return None, f"{package_json.name} is unreadable / not valid UTF-8 JSON ({e})"
+    node: object = data
+    for key in FLOORS_KEY_PATH:
+        node = node.get(key) if isinstance(node, dict) else None
+    if not isinstance(node, dict):
+        return None, f"{package_json.name} has no `{_FLOORS_KEY_NAME}` object"
+    bad = sorted(k for k, v in node.items() if not isinstance(v, str) or _parse_ver(v) is None)
+    if bad:
+        return None, (f"{package_json.name} `{_FLOORS_KEY_NAME}` row(s) {bad} carry no semver floor string "
+                      "(X.Y.Z[-pre][+build])")
+    return dict(node), None
+
+
 def _pinned_floor_assertion() -> list[str]:
-    """§0.8 JS pinned-floor (P1.60): each PINNED_FLOORS_JS crate must be a DIRECT dep in pnpm-lock.yaml
-    resolved at >= its floor. A listed crate ABSENT from the importers is a FAIL (a relied-upon dep
-    vanished); an unparseable version is a FAIL (fail-closed). The floor is satisfied if ANY resolved copy
-    is >= floor. Target-absent (no lockfile yet) returns clean - the resolution-URL guard already
-    skip-noticed."""
+    """§0.8 JS relied-upon floors: each package in the package.json floor block must be a DIRECT dep in
+    pnpm-lock.yaml resolved at >= its floor. A missing or malformed block and a missing pnpm-lock.yaml FAIL
+    (the floors cannot be evaluated); a floored package ABSENT from the importers FAILS (a relied-upon dep
+    vanished); an unparseable version FAILS (fail-closed). The floor is satisfied if ANY resolved copy is
+    >= floor."""
+    floors, why = _load_floors(PACKAGE_JSON)
+    if floors is None:
+        return [f"§0.8 JS floors: {why} - the relied-upon floors cannot be asserted (fail-closed); restore "
+                f"the {_FLOOR_HOME} block"]
     if not PNPM_LOCK.is_file():
-        return []
-    found = _direct_dep_versions(PNPM_LOCK.read_text(encoding="utf-8"), set(PINNED_FLOORS_JS))
+        return [f"§0.8 JS floors: pnpm-lock.yaml is missing - the {len(floors)} floored package(s) cannot be "
+                "checked (fail-closed); generate and commit the lockfile"]
+    found = _direct_dep_versions(PNPM_LOCK.read_text(encoding="utf-8"), set(floors))
     problems: list[str] = []
-    for crate, floor in sorted(PINNED_FLOORS_JS.items()):
+    for crate, floor in sorted(floors.items()):
         have = found.get(crate) or []
         if not have:
             problems.append(f"§0.8 JS floor crate `{crate}` (>= {floor}) is not a direct dep in "
-                            "pnpm-lock.yaml - a relied-upon dependency vanished; restore it or remove the "
-                            "floor row HERE (L(-1)) with a box-id")
+                            "pnpm-lock.yaml - a relied-upon dependency vanished; restore it or remove its row "
+                            f"in {_FLOOR_HOME} {_FLOOR_ACK}")
             continue
         ges = [_version_ge(v, floor) for v in have]
         if any(g is True for g in ges):
@@ -858,8 +884,8 @@ def _pinned_floor_assertion() -> list[str]:
                             f"(floor {floor!r}) - failing closed")
         else:
             problems.append(f"§0.8 JS floor crate `{crate}` is present only at {sorted(have)} < its pinned "
-                            f"floor {floor} - a drift below the relied-upon API floor; bump the dep or lower "
-                            "the floor HERE (L(-1)) with a box-id + Dual-Review note")
+                            f"floor {floor} - a drift below the relied-upon API floor; bump the dep, or lower "
+                            f"its row in {_FLOOR_HOME} {_FLOOR_ACK}")
     return problems
 
 
@@ -924,22 +950,19 @@ def main() -> int:
                         f"{EXPECTED_ONLYBUILT_COUNT} - a build-script allowlist growth must raise "
                         "EXPECTED_ONLYBUILT_COUNT here with a box-id + Dual-Review note (G18d)")
 
-    problems += _pinned_floor_assertion()                # §0.8 JS pinned-floor (P1.60)
+    problems += _pinned_floor_assertion()                # §0.8 JS relied-upon floors (package.json)
 
     if problems:
         for p in problems:
             fail(p)
         return 1
-    if PNPM_LOCK.is_file():
-        lock_state = "live"
-        floor_state = f"{len(PINNED_FLOORS_JS)} §0.8 JS floor crate(s) >= floor"
-    else:
-        lock_state = "target-absent (no lockfile yet)"
-        floor_state = "§0.8 floor skipped (no lockfile yet)"
+    # a clean run implies package.json and pnpm-lock.yaml exist: the floor leg fails closed without either
+    n_floors = len(_load_floors(PACKAGE_JSON)[0] or {})
     print(f"[G18c/d] JS supply-chain posture OK (registry pinned to {ALLOWED_HOST}, no scoped override; "
           f"pre/post-scripts + unsafe-perm off; no unlisted .npmrc key; no refused pnpm-workspace.yaml setting; "
           f"no committed frozen-lockfile (CI pin = the G18a flag-scan); "
-          f"lockfile resolution-shape + URL + onlyBuiltDependencies checks {lock_state}; {floor_state})")
+          f"lockfile resolution-shape + URL + onlyBuiltDependencies checks live; {n_floors} §0.8 JS floor "
+          f"crate(s) >= floor)")
     return 0
 
 
