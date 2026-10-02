@@ -22,7 +22,11 @@
 #   pip install pip-tools && pip-compile --generate-hashes --strip-extras --no-header \
 #     --output-file=- req.in
 # and splice the body below. --generate-hashes lists ALL distribution hashes per version
-# (every platform wheel + sdist), so --require-hashes resolves on any runner OS.
+# (every platform wheel + sdist), so --require-hashes resolves on any runner OS. The recipe
+# as written re-resolves the whole tree; to move only the bumped package and what its new
+# requirements force, seed it with the current body: copy everything below this header to
+# req.txt, then run the same pip-compile with `--upgrade-package <pkg>==<new>` and
+# `--output-file=req.txt` (not `-`).
 #
 # CORROBORATION (§0): resolved by pip-compile from PyPI in a clean docker python:3.12-slim,
 # then re-verified end-to-end by a clean-room `pip install --require-hashes` in the same image
