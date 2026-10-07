@@ -57,7 +57,7 @@ patterns = [
 ]
 
 # --- Loop-tool escapes: the only uncaged files under scripts/ ---
-# Each [[loop_tool]] names one exact path and the reason the Loop builds it. check-l-neg1-ack
+# Each [[loop_tool]] names one exact path and the reason it is uncaged. check-l-neg1-ack
 # refuses an escape that is nested, carries an extension or has a gate shape (a check-/run-/
 # fastpath- name, plan-lint, install-gate-tools, setup-dev, stage-corpus); a refused escape stays
 # caged. An escape that is not tracked (dead) or that no pattern cages (orphan) fails the audit
@@ -75,6 +75,10 @@ reason = "§6.1.3 engine-asset fetch, Loop-built"
 [[loop_tool]]
 path = "scripts/compile-engine-asset"
 reason = "§6.1.3 from-source compile, Loop-built"
+
+[[loop_tool]]
+path = "scripts/record-action-pins"
+reason = "action-pin row recorder; the caged scripts/action-pins.toml and G56 leg (12) are the trust root"
 
 # --- Monotone ratchets: uncaged data whose values may only rise ---
 # A ratchet the Loop moves as ordinary box work lives in uncaged data; each [[monotone]] names its

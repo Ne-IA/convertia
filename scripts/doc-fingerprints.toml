@@ -47,5 +47,5 @@ describes = [
   "build-gates.md G71 row (the cage categories, the escape rule and the monotone rule)",
   "CLAUDE.md §5 (the L(-1) anti-pattern bullet)",
 ]
-fingerprint = "sha256:70b1f51ea0e741d3f202543f52577fb1816a455dc565d62260a9de7d80f52e67"
+fingerprint = "sha256:eb8fad1da50b597ae49e706c98e3760c56bccbf07ac76b5a76d0a0f6ef0f838f"
 # ^ Re-blessed at every cage edit; the commit body records what was re-verified.

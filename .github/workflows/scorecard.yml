@@ -9,7 +9,8 @@
 # Read-only BY DESIGN: `publish_results: false` + NO SARIF code-scanning upload, so the job
 # needs NO `security-events: write` / `id-token: write` (both of which check-ci-supply-chain
 # forbids until P10) - Scorecard's per-check results are printed to the run log/summary for
-# Co-Pilot review. Actions SHA-pinned (G50). This file is L(-1) security-critical (.github/**).
+# Co-Pilot review. The checkout action is SHA-pinned (G50); the Scorecard image is digest-pinned
+# (G56 leg (12)). This file is L(-1) security-critical (.github/**).
 #
 # REVIEW SURFACE: the `results_file` SARIF below is written but intentionally NOT retained
 # (uploading to code-scanning would need security-events:write); the scorecard binary logs the
@@ -50,9 +51,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      # The wrapped action (ossf/scorecard-action v2.4.4) ran this image by the mutable tag in its own
+      # action.yaml (`runs.image`); this step runs the same image by digest. A container step receives
+      # the Actions cache-write token either way. Dependabot does not bump a `docker://` reference: the
+      # phase-end sweep re-pins it (`record-action-pins --resolve-images`). A `docker://` step gets none
+      # of the action.yaml input defaults, so all seven inputs are written out.
       - name: OSSF Scorecard analysis (informational; no publish, no code-scanning upload)
-        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc  # v2.4.4
+        uses: docker://ghcr.io/ossf/scorecard-action@sha256:ae5104dd3cc28466ebeb11144354be4cac4b7ff829654f9fab89021d71c46670  # v2.4.4
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
           publish_results: false
+          repo_token: ${{ github.token }}
+          file_mode: archive
+          internal_publish_base_url: https://api.scorecard.dev
+          internal_default_token: ${{ github.token }}

@@ -4,7 +4,7 @@
 Proves the G56 residual gate FAILS on each violation and PASSES a clean tree, using
 throwaway temp .github/ fixture trees (invoking the real check with --root <tmp>).
 
-Three leg families:
+Four leg families:
   * happy-path legs (the canonical 2-space block dialect the gate is written against);
   * ADVERSARIAL-DIALECT legs (F1-F6) - valid-but-exotic YAML a malicious/careless
     L(-1) `.github/**` diff could use to walk past a naive line scanner: quoted/dup
@@ -19,10 +19,19 @@ Three leg families:
     no quoted mapping key, no BOM anywhere, no character Python treats as white space or a line break outside the four
     every YAML parser agrees on - the predicate Python's own, pinned over every code point and the
     refusal driven per character; the readers split at LF only) - one leg per refused form, the
-    r4-r13 review spellings replayed, and no-over-fire guards for the forms the dialect keeps.
+    r4-r13 review spellings replayed, and no-over-fire guards for the forms the dialect keeps;
+  * the (12) legs - the action-pin inventory (P4.97): the live tree with its scripts/action-pins.toml, then temp
+    trees carrying a workflow, the 4-ecosystem dependabot.yml and an inventory - one leg per binding, closure, image
+    and row-shape rule (an unrowed / tag-pinned / stale reference, a nested tag pin or unrowed nested SHA, the
+    scorecard-action v2.4.4 mutable `runs.image` replayed with and without an exemption, a stale exemption, a
+    Dockerfile FROM, a local action's digest, the metadata file GitHub reads (action.yml first; a case variant
+    beside it) and its in-tree Dockerfile, a direct `docker://` step, a missing or unparsable inventory) plus the
+    pass directions, and the inert bare-`.github/` tree. The recorder itself runs under its own caged canary,
+    g24-record-action-pins.py.
 
 stdlib-only. Exit 0 = every assertion held; 1 = a self-test assertion FAILED.
 """
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -1699,6 +1708,164 @@ leg("(10) a NON-engine cache restore beside stage-engines passes (the scope pin)
     workflows={"ci.yml": _container_wf("", _OTHER_RESTORE
                                        + "      - run: python3 scripts/stage-engines --check\n"),
                "release.yml": tag_wf()})
+
+# ---------------------------------------------------------------------------
+# (12) the action-pin inventory (P4.97): scripts/action-pins.toml bound to every workflow `uses:` - one leg per
+# rule, the scorecard-action v2.4.4 mutable `runs.image` replayed, and the inert bare-`.github/` tree
+# ---------------------------------------------------------------------------
+_P1, _P2, _P3 = "1" * 40, "2" * 40, "3" * 40
+_DG = "d" * 64
+_SC_TAG = "docker://ghcr.io/ossf/scorecard-action:v2.4.4"
+_SC_DIGEST = "docker://ghcr.io/ossf/scorecard-action@sha256:" + "e" * 64
+
+
+def _q12(v: str) -> str:
+    return '"' + v + '"'
+
+
+def _row12(uses: str, sha: str = _P1, *, meta: str | None = None, using: str = "node24", nested: tuple = (),
+           image: str = "", dfrom: tuple = (), reason: str = "", digest: str = _DG, drop: str = "") -> str:
+    """One `[[action]]` table (the recorder's key order); `drop` omits one key."""
+    if meta is None:
+        base = uses[2:] + "/" if uses.startswith("./") else "".join(p + "/" for p in uses.split("/")[2:])
+        meta = base + "action.yml"
+    fields = [("uses", _q12(uses)), ("sha", _q12(sha)), ("metadata_file", _q12(meta)),
+              ("metadata_sha256", _q12(digest)), ("using", _q12(using)),
+              ("nested_uses", "[" + ", ".join(_q12(x) for x in nested) + "]"), ("image", _q12(image)),
+              ("dockerfile_from", "[" + ", ".join(_q12(x) for x in dfrom) + "]"),
+              ("image_exempt_reason", _q12(reason))]
+    return "[[action]]\n" + "".join(f"{k} = {v}\n" for k, v in fields if k != drop)
+
+
+def _inv12(*rows: str) -> str:
+    return "schema_version = 1\n\n" + "\n".join(rows)
+
+
+def leg12(name: str, want_sub: str, *, uses: tuple = (f"acme/node@{_P1}",), rows=None, inventory: str | None = None,
+          files: dict | None = None, scripts_dir: bool = True, want_rows: int | None = None) -> None:
+    """A passing push workflow whose steps `uses:` each entry, the 4-ecosystem dependabot.yml and (scripts_dir)
+    scripts/action-pins.toml from `inventory` (verbatim) or `rows` (default: one node row per remote pin).
+    want_sub == "" => exit 0 (want_rows: the OK line names that many rows); else exit 1 with the substring."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / ".github" / "workflows").mkdir(parents=True)
+        (root / ".github" / "dependabot.yml").write_text(dependabot(ECOS), encoding="utf-8")
+        steps = "".join(f"      - uses: {u}\n" for u in uses)
+        (root / ".github" / "workflows" / "ci.yml").write_text(_with_steps(push_wf(), steps), encoding="utf-8")
+        for rel, data in (files or {}).items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(data)
+        if scripts_dir:
+            (root / "scripts").mkdir(exist_ok=True)
+            if inventory is None and rows is not None:
+                inventory = _inv12(*rows)
+            elif inventory is None:
+                inventory = _inv12(*(_row12(u.split("@")[0], u.split("@")[1]) for u in uses if "@" in u
+                                     and not u.startswith("docker://")))
+            if inventory is not False:
+                (root / "scripts" / "action-pins.toml").write_text(inventory, encoding="utf-8")
+        rc, out = run(td)
+        if want_sub:
+            ok = rc == 1 and want_sub in out.lower()
+        else:
+            ok = rc == 0 and (want_rows is None or f"+ {want_rows} action-pin row(s)" in out)
+        record(name, ok, f"exit={rc}")
+
+
+_LIVE = subprocess.run([sys.executable, str(CHECK)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+record("(12) the live tree passes with its inventory read (the OK line names the action-pin rows)",
+       _LIVE.returncode == 0 and "action-pin row(s)" in _LIVE.stdout)
+leg12("(12) a remote SHA pin with its row passes, the row counted", "", want_rows=1)
+leg12("(12) a remote SHA pin with NO row fails", "has no row", rows=[_row12("acme/other")])
+leg12("(12) a tag-pinned remote `uses:` fails (a tag moves)", "40-hex commit sha", uses=("acme/node@v4",), rows=[])
+leg12("(12) an upper-case hex SHA pin fails (a lowercase 40-hex commit only)", "40-hex commit sha",
+      uses=("acme/node@" + "A" * 40,), rows=[])
+leg12("(12) a stale row (no workflow uses it) fails", "is stale", rows=[_row12("acme/node"), _row12("acme/gone")])
+leg12("(12) a composite row nesting a tag-pinned action fails", "not an owner/repo[/path]@<40-hex> pin",
+      rows=[_row12("acme/node", using="composite", nested=("acme/inner@v2",))])
+leg12("(12) a composite row nesting a SHA pin WITHOUT its own row fails", "no row of its own",
+      rows=[_row12("acme/node", using="composite", nested=(f"acme/inner@{_P2}",))])
+leg12("(12) the same nested SHA pin WITH its own row passes (the closure is satisfied)", "", want_rows=2,
+      rows=[_row12("acme/node", using="composite", nested=(f"acme/inner@{_P2}",)), _row12("acme/inner", _P2)])
+leg12("(12) a row reached only through nesting, two levels deep, is not stale", "", want_rows=3,
+      rows=[_row12("acme/node", using="composite", nested=(f"acme/mid@{_P2}",)),
+            _row12("acme/mid", _P2, using="composite", nested=(f"acme/leaf@{_P3}",)), _row12("acme/leaf", _P3)])
+leg12("(12) the scorecard-action v2.4.4 replay: a docker row running `docker://…:v2.4.4` with no reason fails",
+      "by a mutable reference", uses=(f"ossf/scorecard-action@{_P1}",),
+      rows=[_row12("ossf/scorecard-action", meta="action.yaml", using="docker", image=_SC_TAG)])
+leg12("(12) the same docker row with an image_exempt_reason passes", "", uses=(f"ossf/scorecard-action@{_P1}",),
+      rows=[_row12("ossf/scorecard-action", meta="action.yaml", using="docker", image=_SC_TAG,
+                   reason="upstream-controlled tag in a SHA-pinned action")])
+leg12("(12) a whitespace-only image_exempt_reason is no reason (fails)", "by a mutable reference",
+      uses=(f"ossf/scorecard-action@{_P1}",),
+      rows=[_row12("ossf/scorecard-action", meta="action.yaml", using="docker", image=_SC_TAG, reason="  ")])
+leg12("(12) a digest-pinned docker row passes", "", uses=(f"ossf/scorecard-action@{_P1}",),
+      rows=[_row12("ossf/scorecard-action", meta="action.yaml", using="docker", image=_SC_DIGEST)])
+leg12("(12) a digest-pinned docker row carrying a reason fails (a stale exemption)", "stale exemption",
+      uses=(f"ossf/scorecard-action@{_P1}",),
+      rows=[_row12("ossf/scorecard-action", meta="action.yaml", using="docker", image=_SC_DIGEST, reason="old")])
+leg12("(12) a Dockerfile row with an undigested FROM fails", "by a mutable reference",
+      rows=[_row12("acme/node", using="docker", image="Dockerfile",
+                   dfrom=("docker.io/library/debian@sha256:" + _DG, "debian:bookworm"))])
+leg12("(12) a Dockerfile row whose every FROM is digest-pinned passes", "",
+      rows=[_row12("acme/node", using="docker", image="Dockerfile", dfrom=("docker.io/library/debian@sha256:" + _DG,))])
+_LOCAL_META = b"name: l\nruns:\n  using: node24\n  main: x.js\n"
+_LOCAL_FILES = {".github/actions/loc/action.yml": _LOCAL_META}
+leg12("(12) a local action whose row's sha256 matches the in-tree file passes", "", uses=("./.github/actions/loc",),
+      files=_LOCAL_FILES, rows=[_row12("./.github/actions/loc", "", digest=hashlib.sha256(_LOCAL_META).hexdigest())])
+leg12("(12) a local action whose row's sha256 does not match the in-tree file fails", "re-record the row",
+      uses=("./.github/actions/loc",), files=_LOCAL_FILES, rows=[_row12("./.github/actions/loc", "")])
+leg12("(12) a local row whose in-tree file is absent fails", "no readable", uses=("./.github/actions/loc",),
+      rows=[_row12("./.github/actions/loc", "")])
+_LOCAL_DOCKER = b"name: l\nruns:\n  using: docker\n  image: Dockerfile\n"
+_LOCAL_DOCKER_FILES = {".github/actions/dk/action.yml": _LOCAL_DOCKER,
+                       ".github/actions/dk/Dockerfile": b"FROM debian:bookworm\n"}
+leg12("(12) a local Dockerfile whose in-tree FROM differs from the row fails (the row's digest binds action.yml only)",
+      "in-tree dockerfile names from", uses=("./.github/actions/dk",), files=_LOCAL_DOCKER_FILES,
+      rows=[_row12("./.github/actions/dk", "", using="docker", image="Dockerfile",
+                   dfrom=("docker.io/library/debian@sha256:" + _DG,), digest=hashlib.sha256(_LOCAL_DOCKER).hexdigest())])
+_LM = hashlib.sha256(_LOCAL_META).hexdigest()
+_YAML_ROW = _row12("./.github/actions/loc", "", meta=".github/actions/loc/action.yaml", digest=_LM)
+leg12("(12) a local row naming the metadata file GitHub reads passes: action.yaml alone, action.yml beside an "
+      "action.yaml", "", uses=("./.github/actions/loc", "./.github/actions/both"), want_rows=2,
+      files={".github/actions/loc/action.yaml": _LOCAL_META, ".github/actions/both/action.yml": _LOCAL_META,
+             ".github/actions/both/action.yaml": _LOCAL_DOCKER},
+      rows=[_YAML_ROW, _row12("./.github/actions/both", "", digest=_LM)])
+leg12("(12) a local row naming action.yaml fails once an action.yml is beside it (GitHub reads action.yml first)",
+      "reads first", uses=("./.github/actions/loc",),
+      files={".github/actions/loc/action.yaml": _LOCAL_META, ".github/actions/loc/action.yml": _LOCAL_DOCKER},
+      rows=[_YAML_ROW])
+leg12("(12) a case variant of a metadata name in a local action's directory fails (a case-insensitive runner reads it)",
+      "case variant", uses=("./.github/actions/loc",),
+      files={".github/actions/loc/action.yaml": _LOCAL_META, ".github/actions/loc/ACTION.YML": _LOCAL_DOCKER},
+      rows=[_YAML_ROW])
+leg12("(12) a direct `uses: docker://img:tag` step fails", "not a digest-pinned", uses=(_SC_TAG,), rows=[])
+leg12("(12) a direct `uses: docker://img@sha256:<64-hex>` step passes", "", uses=(_SC_DIGEST,), rows=[], want_rows=0)
+leg12("(12) `scripts/` without an inventory fails closed", "is missing", inventory=False)
+with tempfile.TemporaryDirectory() as _td12:
+    (Path(_td12) / ".github" / "workflows").mkdir(parents=True)
+    (Path(_td12) / ".github" / "dependabot.yml").write_text(dependabot(ECOS), encoding="utf-8")
+    (Path(_td12) / ".github" / "workflows" / "ci.yml").write_text(
+        _with_steps(push_wf(), "      - uses: acme/tag@v1\n"), encoding="utf-8")
+    _rc12, _out12 = run(_td12)
+    record("(12) a bare `.github/`-only tree has no inventory plane (inert: a tag pin there is zizmor's, not (12)'s)",
+           _rc12 == 0 and "action-pin" not in _out12)
+leg12("(12) an unparsable inventory fails closed", "not readable utf-8 toml", inventory="schema_version = [\n")
+leg12("(12) a schema_version other than 1 fails closed", "schema_version = 1",
+      inventory=_inv12(_row12("acme/node")).replace("schema_version = 1", "schema_version = 2"))
+leg12("(12) an unknown top-level key fails closed", "schema_version = 1", inventory="extra = 1\n" + _inv12(_row12("acme/node")))
+leg12("(12) a row missing a key fails", "not exactly the nine row keys", rows=[_row12("acme/node", drop="using")])
+leg12("(12) a row with an unknown `using` fails", "none of node", rows=[_row12("acme/node", using="python3")])
+leg12("(12) a row whose metadata_file is not the one its uses path names fails", "its `uses` path names",
+      rows=[_row12("acme/node", meta="other/action.yml")])
+leg12("(12) a remote row with a `..` path segment fails", "neither a remote", uses=(f"acme/node/../x@{_P1}",),
+      rows=[_row12("acme/node/../x", meta="x/action.yml")])
+leg12("(12) nested_uses on a node row fails", "not composite", rows=[_row12("acme/node", nested=(f"acme/inner@{_P2}",))])
+leg12("(12) image fields on a node row fail", "not docker", rows=[_row12("acme/node", image=_SC_DIGEST)])
+leg12("(12) a duplicate (uses, sha) row fails - the owner/repo compared case-insensitively", "duplicate row",
+      rows=[_row12("acme/node"), _row12("Acme/Node")])
+leg12("(12) a reusable-workflow call has no action row and fails closed", "reusable-workflow call",
+      uses=(f"acme/node/.github/workflows/w.yml@{_P1}",), rows=[])
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-ci-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")

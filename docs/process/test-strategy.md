@@ -1145,9 +1145,10 @@ delivered *system*.
 - **Re-bless (added 2026-09-09 — the owner's cage-by-direction decision):** the sweep
   re-blesses the monotone leg-name sets of the tool canaries
   (`scripts/gate-selftests/_monotone_pin.py --bless <tool>` for `compile-engine-asset`,
-  `fetch-engine-assets`, `stage-engines`), so the `--selftest` legs the phase's boxes
-  added become pinned against removal and rename — one owner-acked act per phase, the
-  replacement for the per-box tally-bump tail those canaries used to demand. Legs
+  `fetch-engine-assets`, `record-action-pins`, `stage-engines`), so the `--selftest`
+  legs the phase's boxes added become pinned against removal and rename — one
+  owner-acked act per phase, the replacement for the per-box tally-bump tail those
+  canaries used to demand. Legs
   added since the last bless are unpinned against removal until the sweep re-blesses —
   the phase-length window the monotone pin opens; the sweep diffs each canary's
   unblessed report against the phase's box list before blessing.
@@ -1165,6 +1166,10 @@ delivered *system*.
 - **Watch health:** the sweep reads the Dependabot job history the way
   roles-and-escalation §5a does; a failing or silent ecosystem job is a sweep
   finding.
+- **Pinned action inventory:** the sweep runs `python3 -P scripts/record-action-pins --check`
+  (every committed row still reproduces) and `--resolve-images` for each digest-pinned
+  `docker://` step; a moved release is re-pinned as a Co-Pilot re-land (Dependabot does not
+  bump a `docker://` reference).
 - **Who:** the Co-Pilot session (roles-and-escalation §1); an L(-1) surface
   touched by a fix follows the normal owner-ack path (G71).
 - **Second leg:** after the delivery re-test, the same sweep runs the

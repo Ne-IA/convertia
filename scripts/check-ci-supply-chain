@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """check-ci-supply-chain - G56 CI supply-chain config hygiene (P0.2.6 + P0.2.7 runner-host
-+ P0.2.10 cargo-fuzz toolchain pin).
++ P0.2.10 cargo-fuzz toolchain pin + P4.97 action-pin inventory).
 
 The residual CI/config assertions that zizmor (G50) + actionlint (G49) do NOT cover.
 STDLIB-ONLY (no YAML library - the gate plane forbids vendoring one). A naive line scan
@@ -112,12 +112,8 @@ Assertions (after the file is known to be in plain, statically-analysable block 
       deliberately WIDER than jobs.<job>.container/services: it matches ANY `image:`/
       `container:` key at any depth, so a future legitimate non-container `image:` key (a
       matrix dimension, a workflow_dispatch input) lands as a documented exemption, never a
-      silent pass. The r6 sentence's transitive-action-pin half is the owner act P4.97 (fetch every
-      referenced action's action.y*ml at its pinned SHA, then check nested uses: pins and docker
-      runs.image digests over the copies; pinact - which resolves tags to SHAs and version comments
-      through the GitHub API, reads the local workflow and action files it is handed, and never
-      reads a referenced REMOTE action's `action.y*ml`; its `--no-api` mode errors on a bare SHA -
-      and the reserved G67 Scorecard leg corroborate only), not this line scan.
+      silent pass. The r6 sentence's transitive-action-pin half is check (12); pinact and the
+      reserved G67 Scorecard leg corroborate only.
  (10) the G37 restore-re-verify ordering (the G56 workflow-lint sub-rule the G37 row names) -
       a JOB that restores an engine-asset cache (`actions/cache*` + a `.engine-cache` path)
       may not also invoke `scripts/stage-engines`: no lint-recognizable SHA-256 re-verify
@@ -192,6 +188,30 @@ Assertions (after the file is known to be in plain, statically-analysable block 
       document, a duplicate top-level key and a flow map under `on:` / `permissions:` red
       (write plain block style). The caged-file review (G71 + G1) is the backstop behind every
       structural refusal.
+ (12) the action-pin inventory (P4.97) - the caged `scripts/action-pins.toml` records one row per remote
+      `owner/repo[/path]@<40-hex>` action and per local `./path` action the workflows use, and one per action
+      they nest (any depth): the metadata file at the pin, the sha256 of its raw bytes, `runs.using`, the
+      nested `uses:` pins, the container image and a Dockerfile image's `FROM` refs - written by the uncaged
+      `scripts/record-action-pins --write` and reviewed with the raw metadata lines it prints. The leg is
+      offline and deterministic: every workflow `uses:` read over the (11) structural view (a line (11) reds
+      is not read twice) is a remote pin by a lowercase 40-hex SHA with exactly one row, a local action whose
+      row names the metadata file GitHub reads in the tree (`action.yml` before `action.yaml`) and matches its
+      sha256, or a `docker://` reference in the `_IMAGE_DIGEST` form; every row is used directly or through a
+      used row's `nested_uses` (a stale row reds); every nested entry is an `owner/repo[/path]@<40-hex>` pin
+      with its own row; every image - a `docker://` image or each Dockerfile `FROM` - is digest-pinned or its
+      row carries a non-empty `image_exempt_reason`, and a reason on an all-digest row is a stale exemption; a
+      local Dockerfile's in-tree `FROM` refs equal the row's (the row's digest binds `action.yml` only). A
+      remote row's sha256 is a recorded claim `record-action-pins --check` reproduces - the leg cannot fetch,
+      and content at a pinned SHA is immutable. Row shape, each fail-closed: exactly the nine keys with their
+      types; a remote `uses` with a lowercase 40-hex `sha` or a local `./` one with `sha = ""`, no empty, `.`
+      or `..` path segment; the `metadata_file` its `uses` path names (`action.yml` or `action.yaml`); a
+      64-hex digest; `using` node<N> / composite / docker; nested entries on a composite row only, image
+      fields on a docker row only, a relative Dockerfile path; a duplicate (uses, sha) row. A root with no
+      `scripts/` dir (a bare `.github/` fixture tree) has no inventory plane; a root with `scripts/` and no
+      readable inventory fails closed. Named residuals (loud, fail-closed): a `with:` input named `uses` is
+      read as a reference (rename it); a reusable-workflow call has no action row (the inventory models
+      actions); a nested local or `docker://` reference reds; a case variant of `action.yml` / `action.yaml`
+      in a local action's directory reds (a case-insensitive runner reads it; spell the name exactly).
 
 fail-closed: any violation -> exit 1. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
@@ -201,6 +221,7 @@ Exit:  0 = clean; 1 = a violation; 2 = .github not found under --root.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 import tomllib
@@ -1570,6 +1591,18 @@ _USES_KEY_RE = re.compile(r"(?<![\w-])uses\s*:")
 _USES_STEP_RE = re.compile(r"^\s*(?:-\s+)?uses\s*:\s*(.*)$")
 
 
+def _uses_step_value(ln: str) -> str | None:
+    """(pure) The value of a structural line's one `uses` key token when the line is the one shape this reader
+    resolves - a plain block step line `[- ]uses: <value>`, the value on the line and no block-scalar indicator;
+    None when it is outside that shape (a next-line or block-scalar value, a second key token, a `uses` key in
+    any other position). The (11) shape verdict, shared by the (12) read; ask it only of a line with a token."""
+    m = _USES_STEP_RE.match(ln)
+    value = m.group(1).strip() if m else ""
+    if m is None or len(_USES_KEY_RE.findall(ln)) != 1 or not value or value[0] in "|>":
+        return None
+    return value
+
+
 _CACHE_NAME_RE = re.compile(r"(?i)(?<![\w./-])actions/cache(?:/save|/restore)?(?![\w-])")
 _CACHE_PIN_RE = re.compile(r"(?i:actions/cache(?:/save|/restore)?)@([0-9a-f]{40})")
 
@@ -1604,12 +1637,10 @@ def check_cache_lockstep(wfs: list[Path]) -> int:
     problems = 0
     for wf in wfs:
         for ln in structural_lines(wf.read_text(encoding="utf-8", errors="replace").split("\n")):
-            keys = _USES_KEY_RE.findall(ln)
-            if not keys:
+            if not _USES_KEY_RE.search(ln):
                 continue
-            m = _USES_STEP_RE.match(ln)
-            value = m.group(1).strip() if m else ""
-            if m is None or len(keys) != 1 or not value or value[0] in "|>":
+            value = _uses_step_value(ln)
+            if value is None:
                 fail(f"{wf.name}: `uses` outside the one shape this reader resolves (`- uses: <value>` on one line): "
                      f"`{ln.strip()[:60]}` - a next-line or block-scalar value, a second key token or a `uses` key "
                      "in any other position fails closed (G56 cache-lockstep sub-rule)")
@@ -1630,6 +1661,317 @@ def check_cache_lockstep(wfs: list[Path]) -> int:
              "the G56 cache-lockstep sub-rule)")
         problems += 1
     return problems
+
+
+# (12) the action-pin inventory (P4.97): the caged scripts/action-pins.toml, bound offline to every workflow `uses:`
+# (module docstring (12) is the rule set). scripts/record-action-pins writes it and reads the workflows and the
+# fetched metadata through this module (workflow_uses, the dialect, _action_dir, dockerfile_from_refs), so the
+# recorder and this leg share one reader. [Build-Session-Entscheidung: P4.97] one reader, homed in the caged gate: a recorder-side
+# copy of the parser could drift from the rule it records for.
+INVENTORY_REL = "scripts/action-pins.toml"
+_ROW_KEYS = ("uses", "sha", "metadata_file", "metadata_sha256", "using", "nested_uses", "image",
+             "dockerfile_from", "image_exempt_reason")
+_ROW_LIST_KEYS = frozenset({"nested_uses", "dockerfile_from"})
+_REMOTE_USES_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[^@\s]+)?")
+_REMOTE_PIN_RE = re.compile(r"(?P<uses>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[^@\s]+)?)@(?P<ref>[^@\s]+)")
+_SHA1_HEX_RE = re.compile(r"[0-9a-f]{40}")
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+_USING_RE = re.compile(r"node\d+|composite|docker")
+_DOCKER_REF = "docker://"
+_FROM_RE = re.compile(r"(?i)FROM\s+(.*)")
+
+
+def workflow_uses(wfs: list[Path]) -> list[tuple[str, str]]:
+    """(12) Every `uses:` value the workflows carry, as (workflow name, unquoted value), read over the (11)
+    structural view; a line outside the (11) shape is (11)'s red and is not read here."""
+    out: list[tuple[str, str]] = []
+    for wf in wfs:
+        for ln in structural_lines(wf.read_text(encoding="utf-8", errors="replace").split("\n")):
+            if _USES_KEY_RE.search(ln):
+                value = _uses_step_value(ln)
+                if value is not None:
+                    out.append((wf.name, unquote(value)))
+    return out
+
+
+def _action_dir(uses: str) -> str | None:
+    """(pure) The directory prefix (`""` or `<dir>/`) under which a remote `owner/repo[/path]` (repo-relative at the
+    pin) or a local `./path` (repo-relative in the tree, one trailing `/` allowed) keeps its metadata file; None
+    when the reference is neither, or carries an empty, `.` or `..` path segment."""
+    if uses.startswith("./"):
+        segs = uses[2:].removesuffix("/").split("/")
+        if any(s in ("", ".", "..") or any(c.isspace() for c in s) for s in segs):
+            return None
+        return "/".join(segs) + "/"
+    if not _REMOTE_USES_RE.fullmatch(uses):
+        return None
+    segs = uses.split("/")
+    if any(s in ("", ".", "..") for s in segs):
+        return None
+    return "/".join(segs[2:]) + "/" if len(segs) > 2 else ""
+
+
+def dockerfile_from_refs(text: str) -> list[tuple[int, str]]:
+    """(pure) (1-based line, image reference) of every EXTERNAL image a Dockerfile's `FROM` instructions name, in
+    order: `--flag` options dropped, a `FROM <earlier stage name>` and `FROM scratch` skipped, a backslash
+    continuation joined. Raises ValueError on a form this reader does not resolve: an `escape` parser directive
+    (it re-spells the continuation) or a `FROM` that is not `<ref>` or `<ref> AS <name>`."""
+    lines = text.split("\n")
+    refs: list[tuple[int, str]] = []
+    stages: set[str] = set()
+    i = 0
+    while i < len(lines):
+        start, logical = i, lines[i]
+        while logical.rstrip().endswith("\\") and i + 1 < len(lines):
+            i += 1
+            logical = logical.rstrip()[:-1] + " " + lines[i]
+        i += 1
+        s = logical.strip()
+        if re.fullmatch(r"#\s*escape\s*=.*", s, re.I):
+            raise ValueError(f"line {start + 1}: an `escape` parser directive is not read - remove it")
+        m = _FROM_RE.fullmatch(s)
+        if m is None:
+            continue
+        toks = [t for t in m.group(1).split() if not t.startswith("--")]
+        if len(toks) == 3 and toks[1].lower() == "as":
+            ref, stage = toks[0], toks[2].lower()
+        elif len(toks) == 1:
+            ref, stage = toks[0], None
+        else:
+            raise ValueError(f"line {start + 1}: a FROM that is not `<ref>` or `<ref> AS <name>`")
+        if ref.lower() != "scratch" and ref.lower() not in stages:
+            refs.append((start + 1, ref))
+        if stage:
+            stages.add(stage)
+    return refs
+
+
+def _pin_key(uses: str, sha: str) -> tuple[str, str]:
+    """(pure) The row identity: a remote owner/repo is case-insensitive (as GitHub resolves it), a local path is not."""
+    # [Build-Session-Entscheidung: P4.97] GitHub resolves owner/repo case-insensitively, so `Acme/Node` and `acme/node` at one
+    # SHA are one action: one row, and a second spelling is a duplicate
+    return (uses, "") if uses.startswith("./") else (uses.lower(), sha)
+
+
+def _row_label(row: dict) -> str:
+    return f"{row['uses']}@{row['sha'] or '(local)'}"
+
+
+def _row_shape_problems(row: object) -> list[str]:
+    """(pure) Why an inventory row is outside the row shape (module docstring (12)); empty when it is inside."""
+    if not isinstance(row, dict):
+        return ["not a table"]
+    missing = [k for k in _ROW_KEYS if k not in row]
+    unknown = sorted(k for k in row if k not in _ROW_KEYS)
+    if missing or unknown:
+        return [f"its keys are not exactly the nine row keys (missing {missing}, unknown {unknown})"]
+    out = []
+    for k in _ROW_KEYS:
+        v = row[k]
+        if k in _ROW_LIST_KEYS:
+            if not isinstance(v, list) or not all(isinstance(x, str) and x for x in v):
+                out.append(f"`{k}` is not a list of non-empty strings")
+        elif not isinstance(v, str):
+            out.append(f"`{k}` is not a string")
+    if out:
+        return out
+    uses, sha, using, image = row["uses"], row["sha"], row["using"], row["image"]
+    base = _action_dir(uses)
+    if base is None:
+        out.append(f"`uses = {uses!r}` is neither a remote owner/repo[/path] nor a local ./path "
+                   "(no empty, `.` or `..` segment)")
+    elif uses.startswith("./") and sha:
+        out.append(f"the local action {uses} carries `sha = {sha!r}` - a local row's sha is empty")
+    elif not uses.startswith("./") and not _SHA1_HEX_RE.fullmatch(sha):
+        out.append(f"`sha = {sha!r}` is not a lowercase 40-hex commit")
+    if base is not None and row["metadata_file"] not in (base + "action.yml", base + "action.yaml"):
+        out.append(f"`metadata_file = {row['metadata_file']!r}` is not the {base}action.yml / {base}action.yaml "
+                   "its `uses` path names")
+    if not _SHA256_HEX_RE.fullmatch(row["metadata_sha256"]):
+        out.append("`metadata_sha256` is not 64 lowercase hex")
+    if not _USING_RE.fullmatch(using):
+        out.append(f"`using = {using!r}` is none of node<N> / composite / docker")
+    if row["nested_uses"] and using != "composite":
+        out.append("`nested_uses` on a row that is not composite")
+    if using == "docker":
+        if not image:
+            out.append("a docker row without an `image`")
+        elif image.startswith(_DOCKER_REF):
+            if row["dockerfile_from"]:
+                out.append("`dockerfile_from` on a `docker://` image row")
+        elif any(s in ("", ".", "..") for s in image.removeprefix("./").split("/")):
+            out.append(f"`image = {image!r}` is neither a `docker://` image nor a relative Dockerfile path")
+    elif image or row["dockerfile_from"] or row["image_exempt_reason"]:
+        out.append("image fields on a row that is not docker")
+    return out
+
+
+def _image_problems(root: Path, row: dict) -> int:
+    """(12) A docker row's image rule: every image digest-pinned, else a non-empty exemption reason; a reason on an
+    all-digest row is stale; a local Dockerfile's in-tree FROM refs equal the recorded ones."""
+    label, image = _row_label(row), row["image"]
+    if image.startswith(_DOCKER_REF):
+        refs = [image[len(_DOCKER_REF):]]
+    else:
+        refs = list(row["dockerfile_from"])
+        if row["uses"].startswith("./"):
+            # [Build-Session-Entscheidung: P4.97] a local Dockerfile is in the tree and outside the row's digest (which binds
+            # action.yml only), so its FROM refs are re-read here instead of trusted from the row
+            df = root / ((_action_dir(row["uses"]) or "") + image.removeprefix("./"))
+            try:
+                live = [ref for _n, ref in dockerfile_from_refs(df.read_bytes().decode("utf-8").replace("\r\n", "\n"))]
+            except (OSError, UnicodeDecodeError, ValueError) as err:
+                fail(f"{INVENTORY_REL}: {label}'s Dockerfile {df.name} is not readable ({err}) (G56 leg (12))")
+                return 1
+            if live != refs:
+                fail(f"{INVENTORY_REL}: {label}'s in-tree Dockerfile names FROM {live}, the row records {refs} - "
+                     "re-record the row (G56 leg (12))")
+                return 1
+    if not refs:
+        fail(f"{INVENTORY_REL}: {label} is a docker row that records no image (G56 leg (12))")
+        return 1
+    mutable = [r for r in refs if not _IMAGE_DIGEST.fullmatch(r)]
+    reason = row["image_exempt_reason"].strip()
+    if mutable and not reason:
+        fail(f"{INVENTORY_REL}: {label} runs {', '.join(mutable)} by a mutable reference - pin it by digest "
+             "(`<registry>/<image>[:tag]@sha256:<64-hex>`) or record a non-empty `image_exempt_reason` "
+             "(G56 leg (12))")
+        return 1
+    if not mutable and reason:
+        fail(f"{INVENTORY_REL}: {label} carries `image_exempt_reason` while every image it runs is digest-pinned - "
+             "a stale exemption; clear it (G56 leg (12))")
+        return 1
+    return 0
+
+
+def check_action_pins(root: Path, wfs: list[Path]) -> tuple[int, int | None]:
+    """(12) the action-pin inventory bound to every workflow `uses:` (module docstring (12)). Returns (problems, the
+    number of rows read - None when the root has no inventory plane)."""
+    if not (root / "scripts").is_dir():
+        return 0, None                               # a bare `.github/` fixture tree: no inventory plane
+    fix = "record it with `python3 -P scripts/record-action-pins --write` and review the raw lines it prints"
+    inv = root / INVENTORY_REL
+    try:
+        data = tomllib.loads(inv.read_bytes().decode("utf-8"))
+    except FileNotFoundError:
+        fail(f"{INVENTORY_REL} is missing - every workflow `uses:` needs its row; {fix} (G56 leg (12))")
+        return 1, 0
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as err:
+        fail(f"{INVENTORY_REL} is not readable UTF-8 TOML ({err}) - fails closed (G56 leg (12))")
+        return 1, 0
+    actions = data.get("action", [])                 # no `[[action]]` table at all is TOML's empty row set
+    # [Build-Session-Entscheidung: P4.97] the recorder renders a zero-row inventory without any `action` key (TOML has no
+    # empty array-of-tables spelling), so an absent key reads as the empty set, never as a malformed file
+    if not set(data) <= {"schema_version", "action"} or type(data.get("schema_version")) is not int \
+            or data["schema_version"] != 1 or not isinstance(actions, list):
+        fail(f"{INVENTORY_REL}: the top level is not exactly `schema_version = 1` and the `[[action]]` rows "
+             f"(keys {sorted(data)}) - fails closed (G56 leg (12))")
+        return 1, 0
+    problems = 0
+    rows: dict[tuple[str, str], dict] = {}
+    for n, row in enumerate(actions, 1):
+        bad = _row_shape_problems(row)
+        for msg in bad:
+            fail(f"{INVENTORY_REL} row {n}: {msg} (G56 leg (12))")
+        if bad:
+            problems += len(bad)
+            continue
+        key = _pin_key(row["uses"], row["sha"])
+        if key in rows:
+            fail(f"{INVENTORY_REL} row {n}: a duplicate row for {_row_label(row)} - one row per (uses, sha) "
+                 "(G56 leg (12))")
+            problems += 1
+            continue
+        rows[key] = row
+    # the workflow references: a docker:// image by digest, a local action or a remote SHA pin with its row
+    reached: set[tuple[str, str]] = set()
+    frontier: list[tuple[str, str]] = []
+    for wf_name, value in workflow_uses(wfs):
+        if value.startswith(_DOCKER_REF):
+            if not _IMAGE_DIGEST.fullmatch(value[len(_DOCKER_REF):]):
+                fail(f"{wf_name}: `uses: {value}` is not a digest-pinned `docker://<registry>/<image>[:tag]@sha256:"
+                     "<64-hex>` image - a mutable tag fails closed (G56 leg (12))")
+                problems += 1
+            continue
+        if value.startswith("./"):
+            key = _pin_key(value, "")
+        else:
+            pm = _REMOTE_PIN_RE.fullmatch(value)
+            if pm is None or _action_dir(pm["uses"]) is None:
+                fail(f"{wf_name}: `uses: {value}` is neither an owner/repo[/path]@<sha> pin, a local ./path nor a "
+                     "docker:// image - fails closed (G56 leg (12))")
+                problems += 1
+                continue
+            if not _SHA1_HEX_RE.fullmatch(pm["ref"]):
+                fail(f"{wf_name}: `uses: {value}` is not pinned by a lowercase 40-hex commit SHA - a tag or branch "
+                     "moves (G56 leg (12))")
+                problems += 1
+                continue
+            key = _pin_key(pm["uses"], pm["ref"])
+        if key not in rows:
+            why = ("a reusable-workflow call has no action row (the inventory models actions)"
+                   if ".github/workflows/" in value else f"it has no row in {INVENTORY_REL}; {fix}")
+            fail(f"{wf_name}: `uses: {value}` - {why} (G56 leg (12))")
+            problems += 1
+        elif key not in reached:
+            reached.add(key)
+            frontier.append(key)
+    # the nested closure: every nested entry of a used row is a SHA pin with its own row, to any depth
+    while frontier:
+        row = rows[frontier.pop()]
+        for entry in row["nested_uses"]:
+            pm = _REMOTE_PIN_RE.fullmatch(entry)
+            if pm is None or _action_dir(pm["uses"]) is None or not _SHA1_HEX_RE.fullmatch(pm["ref"]):
+                fail(f"{INVENTORY_REL}: {_row_label(row)} nests `uses: {entry}`, which is not an "
+                     "owner/repo[/path]@<40-hex> pin - a nested tag, branch, local or docker:// reference fails "
+                     "closed (G56 leg (12))")
+                problems += 1
+                continue
+            nkey = _pin_key(pm["uses"], pm["ref"])
+            if nkey not in rows:
+                fail(f"{INVENTORY_REL}: {_row_label(row)} nests `uses: {entry}`, which has no row of its own - "
+                     f"every nested action is recorded; {fix} (G56 leg (12))")
+                problems += 1
+            elif nkey not in reached:
+                reached.add(nkey)
+                frontier.append(nkey)
+    for key, row in sorted(rows.items()):
+        if key not in reached:
+            fail(f"{INVENTORY_REL}: the row {_row_label(row)} is stale - no workflow uses it, directly or through a "
+                 "used row's nested_uses (G56 leg (12))")
+            problems += 1
+        if row["uses"].startswith("./"):
+            local = root / row["metadata_file"]
+            try:
+                digest = hashlib.sha256(local.read_bytes()).hexdigest()
+                # the directory's own spelling of each name, whatever this host's file system folds
+                variants = sorted(p.name for p in local.parent.iterdir()
+                                  if p.name.casefold() in ("action.yml", "action.yaml")
+                                  and p.name not in ("action.yml", "action.yaml"))
+            except OSError as err:
+                fail(f"{INVENTORY_REL}: the local action {row['uses']} has no readable {row['metadata_file']} "
+                     f"or action directory ({err.__class__.__name__}) (G56 leg (12))")
+                problems += 1
+                continue
+            if digest != row["metadata_sha256"]:
+                fail(f"{INVENTORY_REL}: the local action {row['uses']}'s {row['metadata_file']} hashes to "
+                     f"{digest[:12]}…, the row records {row['metadata_sha256'][:12]}… - re-record the row "
+                     "(G56 leg (12))")
+                problems += 1
+            # the row must name the file GitHub reads: action.yml before action.yaml, and a case-insensitive
+            # runner (Windows, macOS) matches either name in any case
+            if variants:
+                fail(f"{INVENTORY_REL}: the local action {row['uses']} holds {', '.join(variants)} - a case variant "
+                     "of action.yml / action.yaml, which a case-insensitive runner reads; spell the metadata file "
+                     "exactly (G56 leg (12))")
+                problems += 1
+            elif local.name == "action.yaml" and (local.parent / "action.yml").is_file():
+                fail(f"{INVENTORY_REL}: the local action {row['uses']}'s row records {row['metadata_file']}, but "
+                     "the action.yml beside it is the file GitHub reads first - re-record the row (G56 leg (12))")
+                problems += 1
+        if row["using"] == "docker":
+            problems += _image_problems(root, row)
+    return problems, len(actions)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1665,11 +2007,14 @@ def main(argv: list[str] | None = None) -> int:
     for wf in wfs:
         problems += check_workflow(wf, fuzz_pin)
     problems += check_cache_lockstep(wfs)     # (11) cross-workflow: one sha for every actions/cache half
+    pin_problems, pin_rows = check_action_pins(args.root, wfs)   # (12) the action-pin inventory
+    problems += pin_problems
 
     if problems:
         print(f"[G56] CI supply-chain hygiene FAILED ({problems} problem(s)).", file=sys.stderr)
         return 1
-    print(f"[G56] CI supply-chain hygiene OK ({len(wfs)} workflow(s) + dependabot.yml)")
+    rows_note = "" if pin_rows is None else f" + {pin_rows} action-pin row(s)"
+    print(f"[G56] CI supply-chain hygiene OK ({len(wfs)} workflow(s) + dependabot.yml{rows_note})")
     return 0
 
 

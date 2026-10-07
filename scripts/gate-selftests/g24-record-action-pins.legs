@@ -1,0 +1,34 @@
+node action: one row - uses, sha, action.yml, the raw-byte digest, node24, no nested, no image
+CRLF metadata: the digest covers the raw bytes, CRs kept (never the LF-folded text)
+an action under a path: metadata_file is the path at the pin (`sub/dir/action.yml`)
+action.yml 404 -> the action.yaml fallback is read and named in metadata_file
+action.yml and action.yaml both 404 -> refused, naming both
+an HTTP status other than 200/404 -> refused, never read as an absent file
+composite with a nested SHA pin -> two rows, the pin in the composite's nested_uses
+composite nesting a tag-pinned action -> recorded verbatim, never fetched (leg (12) reds it)
+a nested cycle (a -> b -> a) terminates with one row each
+nested pins are recorded to any depth (three levels -> three rows)
+docker action with a :tag image (scorecard-action v2.4.4's runs: block) -> the image recorded as written
+the review surface prints the raw `image:` line, numbered, beside the row's digest
+a Dockerfile image: the external FROM refs recorded in order (a stage name and scratch skipped)
+a Dockerfile path climbing out of the action (`..`) -> refused
+a flow-style `runs: {...}` -> refused
+a commented `uses:` step the structural read cannot see -> refused (the token count)
+an input named `uses` in a node action -> refused (the token count)
+a UTF-8 BOM -> refused by the gate's dialect, naming the file
+a lone CR -> refused
+bytes that are not UTF-8 -> refused
+an unknown `runs.using` -> refused
+a duplicate `runs.using` -> refused
+no `runs:` block -> refused
+a file above the size bound -> refused, never truncated
+a local ./ action: the in-tree file's digest, sha empty, metadata_file the in-tree path
+a tag-pinned uses and a docker:// uses get no row and no fetch (leg (12) judges them)
+the render is byte-identical across two runs and workflow orders, LF only, one final newline
+the render parses as TOML: schema_version 1 and the rows sorted by (uses, sha)
+--write carries a committed image_exempt_reason over for the same (uses, sha)
+--check: a committed file equal to the re-record exits 0, a changed row exits 1
+--resolve-images: a 401 -> the anonymous Bearer token -> HEAD manifests/<tag> -> the digest reference
+--resolve-images refuses a reference without a registry host or a tag
+--resolve-images refuses a reply without a sha256 digest
+the real HTTP function refuses a non-https URL

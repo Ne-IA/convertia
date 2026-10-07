@@ -196,8 +196,7 @@ After the box's last `git add`, before R1 and after every fix round:
 3. The CI-only legs the diff touches: `src/**` → `pnpm test:a11y` and `pnpm test:coverage`;
    Rust, TypeScript or shell source → the containerized `check-sast --full`; `cfg(unix)` / Linux
    code or `scripts/**` → a run in the `convertia-linux` image (DEVELOPMENT.md "Windows host
-   notes" carries both recipes); `.github/**` → `python3 -P scripts/check-ci-supply-chain`;
-   macOS-only code: CI only.
+   notes" carries both recipes); macOS-only code: CI only.
 4. The brief (Step 5) gets one `<gate>: exit <n>` line per gate run.
 
 ### Step 5 — Pre-commit Opus + Sonnet dual review (G1)

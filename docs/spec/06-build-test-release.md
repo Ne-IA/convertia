@@ -794,7 +794,10 @@ being updated in the same change):
 - **CI workflow hardening** (build-gates **G49/G50/G18a**): every workflow declares
   least-privilege `permissions` (the secret-bearing release job gets `contents: write`
   ONLY and never runs on a fork PR); every third-party action is pinned by full
-  commit SHA (kept current via `dependabot.yml`); `actionlint` (per-push) + `zizmor`
+  commit SHA (kept current via `dependabot.yml`; every action, with its nested `uses:`
+  and container images, is recorded in the caged `scripts/action-pins.toml` that G56
+  binds to the workflows, and a `docker://` step image is digest-pinned and re-pinned by
+  hand); `actionlint` (per-push) + `zizmor`
   (CI) lint the workflows; the build resolves only the committed lockfiles (`--locked`
   / `pnpm install --frozen-lockfile`, with `git diff --exit-code` on the lockfiles);
   per-PUSH-workflow `concurrency` + `cancel-in-progress` + explicit `timeout-minutes`.

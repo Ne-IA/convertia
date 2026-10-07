@@ -286,6 +286,12 @@ failed every run from 2026-06-23 — the committed `.npmrc` `frozen-lockfile` ke
 resolve — until it paused; `check-js-supply-chain` now refuses that key. npm minor and patch updates arrive
 as one grouped PR.
 
+**Action re-land (DECIDED).** A github-actions bump re-land also runs
+`python3 -P scripts/record-action-pins --write`, reviews every row it writes against the raw metadata lines it
+prints and commits the rewritten `scripts/action-pins.toml` in the same commit; G56 leg (12) reds a workflow SHA
+without its row. That review covers the recorder behaviour its caged canary does not pin (the canary's docstring
+lists the shapes it pins).
+
 **Maintenance policy (DECIDED).** A bump commit is the pin, lock or hash change plus the recipe
 that produced it, targeting one G1 round; a code change the bump forces is its own box; gate
 hardening the bump reveals goes to the [residual ledger](../plan/residual-ledger.md). Non-security

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """_monotone_pin - the monotone leg-name pin shared by the tool canaries (2026-09-09).
 
-Used by g24-compile-engine-asset.py, g24-fetch-engine-assets.py and g24-stage-engines.py - the
-three caged canaries that run an un-caged tool's fixture-driven `--selftest` and pin what it ran.
+Used by g24-compile-engine-asset.py, g24-fetch-engine-assets.py, g24-record-action-pins.py and
+g24-stage-engines.py - the four caged canaries that run an un-caged tool's fixture-driven `--selftest`
+and pin what it ran.
 
 WHY. Each of them used to pin the tool's leg COUNT exactly (`len(m._results) == N`). A Loop box
 that added one leg to the un-caged tool therefore reddened the caged canary, and the bump was an
@@ -35,7 +36,7 @@ a data file as a self-test.
 
 Bless (the Co-Pilot's phase-end act; refuses a red or empty suite):
   python3 scripts/gate-selftests/_monotone_pin.py --bless <tool>
-      tool in {compile-engine-asset, fetch-engine-assets, stage-engines}
+      tool in {compile-engine-asset, fetch-engine-assets, record-action-pins, stage-engines}
 """
 from __future__ import annotations
 
@@ -54,7 +55,7 @@ for _stream in (sys.stdout, sys.stderr):          # the console's codepage is no
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-TOOLS = ("compile-engine-asset", "fetch-engine-assets", "stage-engines")
+TOOLS = ("compile-engine-asset", "fetch-engine-assets", "record-action-pins", "stage-engines")
 # the two skip spellings the tools use: `... (skipped: reason)` and `... (skipped - reason)`
 _SKIP_SUFFIX = re.compile(r"\s*\(skipped(?::| -) [^()]*(?:\([^()]*\)[^()]*)*\)\s*$")   # the FINAL balanced parenthetical
 # a double-quoted literal carrying a skip suffix, as the tools spell it on a skip arm

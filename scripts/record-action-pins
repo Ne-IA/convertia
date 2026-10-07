@@ -1,0 +1,772 @@
+#!/usr/bin/env python3
+"""record-action-pins - the action-pin row recorder behind G56 leg (12) (P4.97).
+
+Writes `scripts/action-pins.toml`, the caged inventory that `scripts/check-ci-supply-chain` (12) binds offline to
+every workflow `uses:`: one row per remote `owner/repo[/path]@<40-hex>` action and per local `./path` action the
+workflows use, and one per action they nest, to any depth. A row records the action's metadata file at the pin,
+the sha256 of its raw bytes, its `runs.using`, its nested `uses:` pins (composite), its container image (docker)
+and a Dockerfile image's `FROM` refs. This tool is uncaged (a `[[loop_tool]]` escape in scripts/l-neg1-files.toml):
+the trust root is the caged inventory, every row reviewed against the raw lines this tool prints at each action
+re-land (roles-and-escalation §5a), and leg (12). The caged canary scripts/gate-selftests/g24-record-action-pins.py
+drives the tool from outside over the shapes its docstring lists; the rest of this tool is its own `--selftest`
+scope plus that review.
+
+Reading rules:
+  * the workflow `uses:` set is the gate's own read (`workflow_uses`, loaded read-only from check-ci-supply-chain),
+    so a line the recorder does not read is a line leg (12) reds, never a pass;
+  * a remote action's metadata comes from raw.githubusercontent.com at the pinned SHA - `action.yml`, then
+    `action.yaml`; both 404 is a refusal; any other status is a refusal too (never read as absent). A local
+    action's metadata is the in-tree file;
+  * every metadata file and Dockerfile keeps the adversarial bar of third-party content: strict UTF-8, no lone CR,
+    at most 1 MiB, and (metadata) the gate's dialect - `utf8_bom`, `foreign_spaces` and `precheck` over
+    `structural_lines`. A refusal exits 1 naming the file; there is never a partial row. The digest covers the RAW
+    bytes (a CRLF file keeps its CRs); the reader sees the text with CRLF folded to LF;
+  * `runs:` is a block mapping (a flow or inline value is refused); `using` and, for docker, `image` are its
+    direct children (exactly one each); a composite's nested `uses:` are its steps' own keys, and the count of
+    `uses` key tokens in the raw text must equal the nested `uses:` so read - a token the structural read did not
+    see (a commented step, an input named `uses`) is a refusal;
+  * a nested remote SHA pin is recorded as its own row, to any depth, cycle-safe; a nested reference that is not a
+    remote SHA pin is recorded verbatim in `nested_uses` and never fetched, so leg (12) reds it;
+  * a `runs.image` that is not `docker://` is a Dockerfile path relative to the action: it is read at the pin
+    (remote) or in the tree (local) and its external `FROM` refs are recorded (the gate's `dockerfile_from_refs`).
+
+Modes:
+  (default)              print the inventory TOML (stdout) and, per row, the raw metadata lines it came from
+                         (stderr) - the review surface
+  --write                rewrite scripts/action-pins.toml (UTF-8, LF, byte-stable); an `image_exempt_reason`
+                         committed for a (uses, sha) row is carried over
+  --check                re-record from the workflows and exit 1 on any difference from the committed file - the
+                         reproduction path for a remote row's recorded digest, which leg (12) cannot fetch
+  --resolve-images REF   print the current manifest digest of each `docker://<registry>/<name>:<tag>` (OCI
+                         distribution API, anonymous pull token) as the digest-pinned reference to write
+  --selftest             fixtures through an injected HTTP function; no network
+
+Usage: record-action-pins [--root DIR] [--write | --check | --resolve-images REF... | --selftest]
+Exit:  0 = done; 1 = a refusal, a fetch failure or a --check difference; 2 = usage.
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import difflib
+import hashlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import re
+import sys
+import tempfile
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Callable, NamedTuple
+
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
+GATE_PATH = HERE / "check-ci-supply-chain"
+RAW_BASE = "https://raw.githubusercontent.com"
+# [Build-Session-Entscheidung: P4.97] the byte bars on fetched third-party files: 1 MiB (the largest pinned metadata file is 5 KiB),
+# strict UTF-8, no lone CR, and only 200 or 404 read as an answer - anything else is a refusal, never absent
+MAX_BYTES = 1 << 20                  # a metadata file or Dockerfile above 1 MiB is refused, never truncated
+TIMEOUT_S = 30
+DOCKER = "docker://"
+# the four manifest media types a registry may answer a tag with (an index or a single-platform manifest)
+MANIFEST_ACCEPT = (
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+)
+_TAGGED_REF_RE = re.compile(r"(?P<host>[a-z0-9.\-]+(?::\d+)?)/(?P<name>[a-z0-9._\-]+(?:/[a-z0-9._\-]+)*):(?P<tag>[A-Za-z0-9._\-]+)")
+_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+_LONE_CR_RE = re.compile(r"\r(?!\n)")
+
+HEADER = """\
+# scripts/action-pins.toml - the G56 leg (12) action-pin inventory (P4.97). Generated by
+# `python3 -P scripts/record-action-pins --write`; `image_exempt_reason` is the one hand-set field.
+#
+# One [[action]] row per action the workflows run: every remote `owner/repo[/path]@<40-hex>` pin, every local
+# `./path` action and every action those nest, to any depth. A row records the metadata file at the pin, the
+# sha256 of its raw bytes, `runs.using`, the nested `uses:` pins (composite), the container image (docker) and a
+# Dockerfile image's `FROM` refs. A non-empty `image_exempt_reason` admits a docker row whose image is not
+# digest-pinned (the recorder carries it over); a reason on an all-digest row is a stale exemption.
+#
+# Re-recorded at every action re-land and reviewed with the raw metadata lines the recorder prints
+# (roles-and-escalation §5a); checked offline by scripts/check-ci-supply-chain (12), which binds every workflow
+# `uses:` to a row; `record-action-pins --check` reproduces every remote row's digest at the phase-end sweep
+# (test-strategy §11.2). L(-1): matched by `scripts/**` (G71).
+"""
+
+
+class RecordError(Exception):
+    """A refusal: the inventory is not written and the tool exits 1."""
+
+
+class Response(NamedTuple):
+    status: int
+    headers: dict[str, str]        # lower-cased names
+    body: bytes
+
+
+Http = Callable[[str, str, dict[str, str]], Response]
+
+
+class Row(NamedTuple):
+    uses: str
+    sha: str
+    metadata_file: str
+    metadata_sha256: str
+    using: str
+    nested_uses: tuple[str, ...]
+    image: str
+    dockerfile_from: tuple[str, ...]
+    image_exempt_reason: str
+
+
+class Parsed(NamedTuple):
+    using: str
+    image: str
+    nested: tuple[str, ...]
+    source: tuple[str, ...]        # the raw `runs:` block lines, `<file>:<n>: <text>`
+
+
+class Inventory(NamedTuple):
+    rows: tuple[Row, ...]          # sorted by (uses, sha)
+    sources: dict[tuple[str, str], tuple[str, ...]]   # row key -> the raw lines its fields came from
+    notices: tuple[str, ...]       # workflow references that carry no row (leg (12) judges them)
+
+
+def load_gate():
+    """check-ci-supply-chain as a module (read-only; no sys.modules entry): the one reader of the dialect."""
+    loader = importlib.machinery.SourceFileLoader("check_ci_supply_chain", str(GATE_PATH))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+def real_http(method: str, url: str, headers: dict[str, str]) -> Response:
+    """One HTTPS request (urllib; redirects followed); an HTTP error status is a Response, a transport failure a
+    RecordError. The body is read to MAX_BYTES + 1 so an oversized reply is detectable."""
+    if not url.startswith("https://"):
+        raise RecordError(f"refusing a non-https URL: {url}")
+    req = urllib.request.Request(url, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+            body = resp.read(MAX_BYTES + 1) if method != "HEAD" else b""
+            return Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, body)
+    except urllib.error.HTTPError as err:
+        body = err.read(MAX_BYTES + 1) if method != "HEAD" else b""
+        return Response(err.code, {k.lower(): v for k, v in (err.headers or {}).items()}, body)
+    except (urllib.error.URLError, OSError) as err:
+        raise RecordError(f"{method} {url}: {err}") from None
+
+
+def _text(label: str, data: bytes) -> str:
+    """(pure) The file's text with CRLF folded to LF, after the byte-level bars: size, strict UTF-8, no lone CR."""
+    if len(data) > MAX_BYTES:
+        raise RecordError(f"{label}: larger than {MAX_BYTES} bytes - refused, never truncated")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise RecordError(f"{label}: not UTF-8 ({err})") from None
+    if _LONE_CR_RE.search(text):
+        raise RecordError(f"{label}: a lone CR (a line break to YAML, none to an LF reader) - refused")
+    return text.replace("\r\n", "\n")
+
+
+def _runs_source(gate, label: str, raw: list[str]) -> tuple[str, ...]:
+    """(pure) The raw lines of the top-level `runs:` block, numbered - the review surface of the row's fields. A
+    column-0 line is never inside a block scalar, so the block ends at the next column-0 structural line.
+    [Build-Session-Entscheidung: P4.97] the review surface is the whole `runs:` block (plus a Dockerfile's FROM lines): every row
+    field is read from it, and the digest line beside it names the bytes the reviewer is trusting."""
+    start = end = None
+    for i, ln in enumerate(raw):
+        s = gate.strip_comment_structural(ln)
+        if start is None:
+            if re.match(r"runs\s*:", s):
+                start = i
+            continue
+        if s.strip() and not s[0].isspace():
+            end = i
+            break
+    if start is None:
+        return ()
+    end = len(raw) if end is None else end
+    while end > start + 1 and not gate.strip_comment_structural(raw[end - 1]).strip():
+        end -= 1
+    return tuple(f"{label}:{i + 1}: {raw[i]}" for i in range(start, end))
+
+
+def _direct(body: list[str], key: str) -> list[str]:
+    """(pure) Every inline value of `key:` at the block's direct-child indent."""
+    real = [ln for ln in body if ln.strip()]
+    if not real:
+        return []
+    ci = min(len(ln) - len(ln.lstrip()) for ln in real)
+    out = []
+    for ln in real:
+        if len(ln) - len(ln.lstrip()) != ci:
+            continue
+        m = re.match(rf"^\s*{re.escape(key)}\s*:(.*)$", ln)
+        if m:
+            out.append(m.group(1).strip())
+    return out
+
+
+def read_metadata(gate, label: str, data: bytes) -> Parsed:
+    """(pure) An action metadata file's `runs.using`, docker `runs.image` and composite nested `uses:`, under the
+    adversarial bar (module docstring). Raises RecordError on any refusal."""
+    text = _text(label, data)
+    raw = text.split("\n")
+    struct = gate.structural_lines(raw)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        problems = gate.utf8_bom(label, text) + gate.foreign_spaces(label, text) + gate.precheck(label, struct)
+    if problems:
+        raise RecordError(f"{label}: outside the gate's YAML dialect - " + " | ".join(err.getvalue().split("\n")).strip(" |"))
+    inline, body = gate.top_key(struct, "runs")
+    if inline is not None:
+        raise RecordError(f"{label}: an inline or flow `runs:` value ({inline[:40]}) - write `runs:` as a block mapping")
+    if not any(ln.strip() for ln in body):
+        raise RecordError(f"{label}: no `runs:` block")
+    usings = _direct(body, "using")
+    if len(usings) != 1 or not usings[0]:
+        raise RecordError(f"{label}: `runs.using` appears {len(usings)} time(s) with an inline value - exactly one is read")
+    using = gate.unquote(usings[0])
+    if not re.fullmatch(r"node\d+|composite|docker", using):
+        raise RecordError(f"{label}: `runs.using: {using}` is none of node<N> / composite / docker")
+    image = ""
+    if using == "docker":
+        images = _direct(body, "image")
+        if len(images) != 1 or not images[0]:
+            raise RecordError(f"{label}: a docker action's `runs.image` appears {len(images)} time(s) with an inline value")
+        image = gate.unquote(images[0])
+    nested: list[str] = []
+    if using == "composite":
+        for item in gate.list_items(gate.child_block(body, "steps")):
+            for ln in gate.item_children(item):
+                if not gate._USES_KEY_RE.search(ln):
+                    continue
+                value = gate._uses_step_value(ln)
+                if value is None:
+                    raise RecordError(f"{label}: a step `uses` outside the one-line `uses: <value>` shape ({ln.strip()[:60]})")
+                nested.append(gate.unquote(value))
+    tokens = len(gate._USES_KEY_RE.findall(text))
+    if tokens != len(nested):
+        raise RecordError(f"{label}: {tokens} `uses` key token(s) in the raw text, {len(nested)} read as nested step "
+                          "`uses:` - a token the structural read did not see is refused (a commented step, an input "
+                          "named `uses`, a non-composite action with a `uses` key)")
+    return Parsed(using, image, tuple(nested), _runs_source(gate, label, raw))
+
+
+def _split_remote(gate, uses: str) -> tuple[str, str]:
+    """(pure) (`owner/repo`, the directory prefix `""` or `<path>/`) of a valid remote reference."""
+    prefix = gate._action_dir(uses)
+    if prefix is None:
+        raise RecordError(f"`{uses}` is not an owner/repo[/path] reference")
+    return "/".join(uses.split("/")[:2]), prefix
+
+
+def fetch_remote(gate, http: Http, uses: str, sha: str, name: str) -> Response:
+    repo, prefix = _split_remote(gate, uses)
+    return http("GET", f"{RAW_BASE}/{repo}/{sha}/{prefix}{name}", {})
+
+
+def _fetch_metadata(gate, http: Http, uses: str, sha: str) -> tuple[str, bytes]:
+    """(metadata_file, raw bytes) of a remote action at its pin: `action.yml`, then `action.yaml`."""
+    _repo, prefix = _split_remote(gate, uses)
+    for name in ("action.yml", "action.yaml"):
+        resp = fetch_remote(gate, http, uses, sha, name)
+        if resp.status == 200:
+            return prefix + name, resp.body
+        if resp.status != 404:
+            raise RecordError(f"{uses}@{sha}: HTTP {resp.status} for {prefix}{name} - refused (only a 404 reads as absent)")
+    raise RecordError(f"{uses}@{sha}: neither {prefix}action.yml nor {prefix}action.yaml exists at the pin (both 404)")
+
+
+def _local_metadata(gate, root: Path, uses: str) -> tuple[str, bytes]:
+    prefix = gate._action_dir(uses)
+    if prefix is None:
+        raise RecordError(f"`{uses}` is not a local ./path reference (no empty, `.` or `..` segment)")
+    for name in ("action.yml", "action.yaml"):
+        f = root / (prefix + name)
+        if f.is_file():
+            return prefix + name, f.read_bytes()
+    raise RecordError(f"{uses}: neither {prefix}action.yml nor {prefix}action.yaml exists in the tree")
+
+
+def _dockerfile(gate, http: Http, root: Path, uses: str, sha: str, image: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(the external FROM refs, their numbered raw lines) of the Dockerfile a docker action's `runs.image` names."""
+    rel = image.removeprefix("./")
+    if not rel or any(seg in ("", ".", "..") for seg in rel.split("/")):
+        raise RecordError(f"{uses}: `runs.image: {image}` is not a relative Dockerfile path (no empty, `.` or `..` segment)")
+    prefix = gate._action_dir(uses) or ""
+    label = f"{uses}@{sha or '(local)'} {prefix}{rel}"
+    if uses.startswith("./"):
+        f = root / (prefix + rel)
+        if not f.is_file():
+            raise RecordError(f"{label}: the Dockerfile is not in the tree")
+        data = f.read_bytes()
+    else:
+        resp = fetch_remote(gate, http, uses, sha, rel)
+        if resp.status != 200:
+            raise RecordError(f"{label}: HTTP {resp.status} for the Dockerfile")
+        data = resp.body
+    text = _text(label, data)
+    try:
+        refs = gate.dockerfile_from_refs(text)
+    except ValueError as err:
+        raise RecordError(f"{label}: {err}") from None
+    raw = text.split("\n")
+    return tuple(ref for _n, ref in refs), tuple(f"{prefix}{rel}:{n}: {raw[n - 1]}" for n, _ref in refs)
+
+
+def _key(uses: str, sha: str) -> tuple[str, str]:
+    return (uses, "") if uses.startswith("./") else (uses.lower(), sha)
+
+
+def committed_reasons(root: Path) -> dict[tuple[str, str], str]:
+    """The `image_exempt_reason` of every committed row that carries one (an unreadable inventory carries none).
+    [Build-Session-Entscheidung: P4.97] the reason is the one owner-set field, so --write carries it over for the same (uses, sha)
+    instead of dropping it; a re-pinned SHA starts without one, and leg (12) reds a stale one."""
+    try:
+        data = tomllib.loads((root / "scripts" / "action-pins.toml").read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return {}
+    out = {}
+    for row in data.get("action", []) if isinstance(data.get("action"), list) else []:
+        if isinstance(row, dict) and all(isinstance(row.get(k), str) for k in ("uses", "sha", "image_exempt_reason")):
+            if row["image_exempt_reason"]:
+                out[_key(row["uses"], row["sha"])] = row["image_exempt_reason"]
+    return out
+
+
+def record_inventory(root: Path, http: Http, reasons: dict[tuple[str, str], str] | None = None, gate=None) -> Inventory:
+    """Every row the workflows under `root` need, nested actions included (breadth-first, cycle-safe)."""
+    gate = gate or load_gate()
+    reasons = reasons or {}
+    wfdir = root / ".github" / "workflows"
+    wfs = (sorted(wfdir.glob("*.yml")) + sorted(wfdir.glob("*.yaml"))) if wfdir.is_dir() else []
+    queue: list[tuple[str, str]] = []
+    notices: list[str] = []
+    for wf_name, value in gate.workflow_uses(wfs):
+        if value.startswith(DOCKER):
+            continue                           # a `docker://` step has no row; leg (12) judges its digest directly
+        if value.startswith("./"):
+            queue.append((value, ""))
+            continue
+        pm = gate._REMOTE_PIN_RE.fullmatch(value)
+        if pm is None or not gate._SHA1_HEX_RE.fullmatch(pm["ref"]):
+            notices.append(f"{wf_name}: `uses: {value}` is not a remote SHA pin - no row (leg (12) reds it)")
+            continue
+        queue.append((pm["uses"], pm["ref"]))
+    rows: dict[tuple[str, str], Row] = {}
+    sources: dict[tuple[str, str], tuple[str, ...]] = {}
+    seen: set[tuple[str, str]] = set()
+    while queue:
+        uses, sha = queue.pop(0)
+        key = _key(uses, sha)
+        if key in seen:
+            continue
+        seen.add(key)
+        if uses.startswith("./"):
+            meta, data = _local_metadata(gate, root, uses)
+        else:
+            meta, data = _fetch_metadata(gate, http, uses, sha)
+        label = f"{uses}@{sha or '(local)'} {meta}"
+        parsed = read_metadata(gate, label, data)
+        dfrom: tuple[str, ...] = ()
+        extra: tuple[str, ...] = ()
+        if parsed.using == "docker" and not parsed.image.startswith(DOCKER):
+            dfrom, extra = _dockerfile(gate, http, root, uses, sha, parsed.image)
+        rows[key] = Row(uses, sha, meta, hashlib.sha256(data).hexdigest(), parsed.using, parsed.nested,
+                        parsed.image, dfrom, reasons.get(key, "") if parsed.using == "docker" else "")
+        sources[key] = (f"{label} sha256={rows[key].metadata_sha256} ({len(data)} bytes)",) + parsed.source + extra
+        for entry in parsed.nested:
+            pm = gate._REMOTE_PIN_RE.fullmatch(entry)
+            if pm is not None and gate._action_dir(pm["uses"]) is not None and gate._SHA1_HEX_RE.fullmatch(pm["ref"]):
+                queue.append((pm["uses"], pm["ref"]))
+            else:
+                notices.append(f"{label}: nested `uses: {entry}` is not a remote SHA pin - recorded verbatim, not fetched")
+    ordered = tuple(sorted(rows.values(), key=lambda r: (r.uses, r.sha)))
+    return Inventory(ordered, sources, tuple(notices))
+
+
+def _q(value: str) -> str:
+    """(pure) A TOML basic string."""
+    out = []
+    for ch in value:
+        if ch in ('"', "\\"):
+            out.append("\\" + ch)
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
+def render(rows: tuple[Row, ...]) -> str:
+    """(pure) The inventory file: the header, `schema_version = 1`, one `[[action]]` table per row sorted by
+    (uses, sha), LF line ends and one final newline."""
+    out = [HEADER, "schema_version = 1", ""]
+    for r in sorted(rows, key=lambda r: (r.uses, r.sha)):
+        out += [
+            "[[action]]",
+            f"uses = {_q(r.uses)}",
+            f"sha = {_q(r.sha)}",
+            f"metadata_file = {_q(r.metadata_file)}",
+            f"metadata_sha256 = {_q(r.metadata_sha256)}",
+            f"using = {_q(r.using)}",
+            "nested_uses = [" + ", ".join(_q(x) for x in r.nested_uses) + "]",
+            f"image = {_q(r.image)}",
+            "dockerfile_from = [" + ", ".join(_q(x) for x in r.dockerfile_from) + "]",
+            f"image_exempt_reason = {_q(r.image_exempt_reason)}",
+            "",
+        ]
+    return "\n".join(out)
+
+
+def _bearer_token(http: Http, challenge: str) -> str:
+    """The anonymous pull token a registry's `WWW-Authenticate: Bearer realm=...,service=...,scope=...` names."""
+    if not challenge.lower().startswith("bearer "):
+        raise RecordError(f"the registry's auth challenge is not a Bearer challenge: {challenge[:80]!r}")
+    params = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+    realm = params.pop("realm", "")
+    if not realm.startswith("https://"):
+        raise RecordError(f"the registry's token realm is not https: {realm!r}")
+    resp = http("GET", realm + "?" + urllib.parse.urlencode(sorted(params.items())), {})
+    if resp.status != 200:
+        raise RecordError(f"the token endpoint answered HTTP {resp.status}")
+    try:
+        doc = json.loads(resp.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise RecordError(f"the token endpoint answered no JSON ({err})") from None
+    token = doc.get("token") or doc.get("access_token") if isinstance(doc, dict) else None
+    if not isinstance(token, str) or not token:
+        raise RecordError("the token endpoint answered no token")
+    return token
+
+
+def resolve_image(http: Http, ref: str) -> str:
+    """The digest-pinned `docker://<registry>/<name>@sha256:<64-hex>` a `docker://<registry>/<name>:<tag>` names
+    now: `HEAD /v2/<name>/manifests/<tag>` with the four manifest Accept types, one Bearer round on a 401, and the
+    `Docker-Content-Digest` header."""
+    m = _TAGGED_REF_RE.fullmatch(ref.removeprefix(DOCKER)) if ref.startswith(DOCKER) else None
+    if m is None:
+        raise RecordError(f"`{ref}` is not a `docker://<registry>/<name>:<tag>` reference")
+    host, name, tag = m["host"], m["name"], m["tag"]
+    api = "registry-1.docker.io" if host == "docker.io" else host
+    url = f"https://{api}/v2/{name}/manifests/{tag}"
+    headers = {"Accept": ", ".join(MANIFEST_ACCEPT)}
+    resp = http("HEAD", url, headers)
+    if resp.status == 401:
+        headers["Authorization"] = "Bearer " + _bearer_token(http, resp.headers.get("www-authenticate", ""))
+        resp = http("HEAD", url, headers)
+    if resp.status != 200:
+        raise RecordError(f"{ref}: the registry answered HTTP {resp.status} for the manifest")
+    digest = resp.headers.get("docker-content-digest", "")
+    if not _DIGEST_RE.fullmatch(digest):
+        raise RecordError(f"{ref}: no sha256 Docker-Content-Digest in the registry's reply ({digest[:80]!r})")
+    return f"{DOCKER}{host}/{name}@{digest}"
+
+
+# --- selftest -------------------------------------------------------------------------------------------------
+_results: list[tuple[str, bool]] = []
+
+
+def _record(name: str, ok: bool) -> None:
+    """Store a leg verdict and print it (the caged canary cross-checks the printed stream against `_results`)."""
+    _results.append((name, bool(ok)))
+    print(f"[{'PASS' if ok else 'FAIL'}] {name}")
+
+
+def _refusal(fn) -> str:
+    """The RecordError message fn raised, or "" when it raised none (any other exception propagates)."""
+    try:
+        fn()
+    except RecordError as err:
+        return str(err)
+    return ""
+
+
+def _fixture_http(files: dict[str, bytes], log: list[tuple[str, str]] | None = None, status: dict[str, int] | None = None) -> Http:
+    def http(method: str, url: str, headers: dict[str, str]) -> Response:
+        if log is not None:
+            log.append((method, url))
+        if status and url in status:
+            return Response(status[url], {}, b"")
+        if url in files:
+            return Response(200, {}, files[url])
+        return Response(404, {}, b"")
+    return http
+
+
+_S1 = "1" * 40
+_S2 = "2" * 40
+_S3 = "3" * 40
+_NODE = b"name: n\nruns:\n  using: 'node24'\n  main: 'dist/index.js'\n"
+# scorecard-action v2.4.4's real `runs:` block (action.yaml at 2d1146689b8cda280b9bc96326124645441f03bc)
+_SCORECARD = (b'name: "OSSF Scorecard action"\ninputs:\n  results_file:\n    description: "OUTPUT: Path to file to store results"\n'
+              b'    required: true\n\nruns:\n  using: "docker"\n  image: "docker://ghcr.io/ossf/scorecard-action:v2.4.4"\n')
+
+
+def _composite(*uses: str) -> bytes:
+    steps = "".join(f"    - uses: {u}\n" for u in uses)
+    return f"name: c\nruns:\n  using: composite\n  steps:\n{steps}    - run: echo hi\n      shell: bash\n".encode()
+
+
+def _raw(repo: str, sha: str, rel: str) -> str:
+    return f"{RAW_BASE}/{repo}/{sha}/{rel}"
+
+
+def _tree(td: str, *uses: str, files: dict[str, bytes] | None = None) -> Path:
+    root = Path(td)
+    (root / ".github" / "workflows").mkdir(parents=True)
+    steps = "".join(f"      - uses: {u}\n" for u in uses)
+    (root / ".github" / "workflows" / "ci.yml").write_bytes(
+        ("name: ci\non:\n  push:\n    branches: [main]\npermissions:\n  contents: read\njobs:\n  build:\n"
+         "    runs-on: ubuntu-22.04\n    timeout-minutes: 10\n    steps:\n" + steps + "      - run: echo hi\n").encode())
+    for rel, data in (files or {}).items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data)
+    return root
+
+
+def _legs() -> None:
+    gate = load_gate()
+
+    def inv(td: str, uses: list[str], remote: dict[str, bytes], files: dict[str, bytes] | None = None,
+            log: list | None = None, reasons: dict | None = None) -> Inventory:
+        return record_inventory(_tree(td, *uses, files=files), _fixture_http(remote, log), reasons, gate)
+
+    with tempfile.TemporaryDirectory() as td:
+        got = inv(td, [f"acme/node@{_S1}"], {_raw("acme/node", _S1, "action.yml"): _NODE})
+        r = got.rows[0] if len(got.rows) == 1 else None
+        _record("node action: one row - uses, sha, action.yml, the raw-byte digest, node24, no nested, no image",
+                r == Row("acme/node", _S1, "action.yml", hashlib.sha256(_NODE).hexdigest(), "node24", (), "", (), ""))
+    with tempfile.TemporaryDirectory() as td:
+        crlf = _NODE.replace(b"\n", b"\r\n")
+        got = inv(td, [f"acme/node@{_S1}"], {_raw("acme/node", _S1, "action.yml"): crlf})
+        _record("CRLF metadata: the digest covers the raw bytes, CRs kept (never the LF-folded text)",
+                len(got.rows) == 1 and got.rows[0].metadata_sha256 == hashlib.sha256(crlf).hexdigest()
+                and got.rows[0].metadata_sha256 != hashlib.sha256(_NODE).hexdigest())
+    with tempfile.TemporaryDirectory() as td:
+        got = inv(td, [f"acme/tool/sub/dir@{_S1}"], {_raw("acme/tool", _S1, "sub/dir/action.yml"): _NODE})
+        _record("an action under a path: metadata_file is the path at the pin (`sub/dir/action.yml`)",
+                [r.metadata_file for r in got.rows] == ["sub/dir/action.yml"])
+    with tempfile.TemporaryDirectory() as td:
+        log: list = []
+        got = inv(td, [f"ossf/sc@{_S1}"], {_raw("ossf/sc", _S1, "action.yaml"): _SCORECARD}, log=log)
+        _record("action.yml 404 -> the action.yaml fallback is read and named in metadata_file",
+                [r.metadata_file for r in got.rows] == ["action.yaml"]
+                and [u for _m, u in log] == [_raw("ossf/sc", _S1, "action.yml"), _raw("ossf/sc", _S1, "action.yaml")])
+    with tempfile.TemporaryDirectory() as td:
+        msg = _refusal(lambda: inv(td, [f"acme/none@{_S1}"], {}))
+        _record("action.yml and action.yaml both 404 -> refused, naming both", "both 404" in msg and "action.yaml" in msg)
+    with tempfile.TemporaryDirectory() as td:
+        root = _tree(td, f"acme/node@{_S1}")
+        http = _fixture_http({}, status={_raw("acme/node", _S1, "action.yml"): 500})
+        msg = _refusal(lambda: record_inventory(root, http, None, gate))
+        _record("an HTTP status other than 200/404 -> refused, never read as an absent file", "HTTP 500" in msg)
+    with tempfile.TemporaryDirectory() as td:
+        got = inv(td, [f"acme/comp@{_S1}"], {_raw("acme/comp", _S1, "action.yml"): _composite(f"acme/inner@{_S2}"),
+                                             _raw("acme/inner", _S2, "action.yml"): _NODE})
+        _record("composite with a nested SHA pin -> two rows, the pin in the composite's nested_uses",
+                [(r.uses, r.using, r.nested_uses) for r in got.rows]
+                == [("acme/comp", "composite", (f"acme/inner@{_S2}",)), ("acme/inner", "node24", ())])
+    with tempfile.TemporaryDirectory() as td:
+        log = []
+        got = inv(td, [f"acme/comp@{_S1}"], {_raw("acme/comp", _S1, "action.yml"): _composite("acme/tagged@v1")}, log=log)
+        _record("composite nesting a tag-pinned action -> recorded verbatim, never fetched (leg (12) reds it)",
+                [r.nested_uses for r in got.rows] == [("acme/tagged@v1",)]
+                and not any("acme/tagged" in u for _m, u in log) and any("acme/tagged@v1" in n for n in got.notices))
+    with tempfile.TemporaryDirectory() as td:
+        got = inv(td, [f"acme/a@{_S1}"], {_raw("acme/a", _S1, "action.yml"): _composite(f"acme/b@{_S2}"),
+                                          _raw("acme/b", _S2, "action.yml"): _composite(f"acme/a@{_S1}")})
+        _record("a nested cycle (a -> b -> a) terminates with one row each", [r.uses for r in got.rows] == ["acme/a", "acme/b"])
+    with tempfile.TemporaryDirectory() as td:
+        got = inv(td, [f"acme/c@{_S1}"], {_raw("acme/c", _S1, "action.yml"): _composite(f"acme/d@{_S2}"),
+                                          _raw("acme/d", _S2, "action.yml"): _composite(f"acme/e@{_S3}"),
+                                          _raw("acme/e", _S3, "action.yml"): _NODE})
+        _record("nested pins are recorded to any depth (three levels -> three rows)",
+                [r.uses for r in got.rows] == ["acme/c", "acme/d", "acme/e"])
+    with tempfile.TemporaryDirectory() as td:
+        got = inv(td, [f"ossf/sc@{_S1}"], {_raw("ossf/sc", _S1, "action.yaml"): _SCORECARD})
+        r = got.rows[0] if len(got.rows) == 1 else None
+        src = got.sources.get(("ossf/sc", _S1), ())
+        _record("docker action with a :tag image (scorecard-action v2.4.4's runs: block) -> the image recorded as written",
+                r is not None and r.using == "docker" and r.image == "docker://ghcr.io/ossf/scorecard-action:v2.4.4"
+                and r.dockerfile_from == () and r.image_exempt_reason == "")
+        _record("the review surface prints the raw `image:` line, numbered, beside the row's digest",
+                any(s.endswith(':9:   image: "docker://ghcr.io/ossf/scorecard-action:v2.4.4"') for s in src)
+                and r is not None and r.metadata_sha256 in src[0])
+    with tempfile.TemporaryDirectory() as td:
+        meta = b"name: d\nruns:\n  using: docker\n  image: Dockerfile\n"
+        dockerfile = (b"# syntax=docker/dockerfile:1\nFROM --platform=linux/amd64 ghcr.io/a/build:1 AS build\n"
+                      b"RUN make\nFROM build AS test\nFROM scratch AS empty\nFROM docker.io/library/debian:bookworm@sha256:"
+                      + b"a" * 64 + b"\nCOPY --from=build /x /x\n")
+        got = inv(td, [f"acme/dk@{_S1}"], {_raw("acme/dk", _S1, "action.yml"): meta, _raw("acme/dk", _S1, "Dockerfile"): dockerfile})
+        _record("a Dockerfile image: the external FROM refs recorded in order (a stage name and scratch skipped)",
+                [r.dockerfile_from for r in got.rows]
+                == [("ghcr.io/a/build:1", "docker.io/library/debian:bookworm@sha256:" + "a" * 64)])
+    with tempfile.TemporaryDirectory() as td:
+        meta = b"name: d\nruns:\n  using: docker\n  image: ../Dockerfile\n"
+        msg = _refusal(lambda: inv(td, [f"acme/dk@{_S1}"], {_raw("acme/dk", _S1, "action.yml"): meta}))
+        _record("a Dockerfile path climbing out of the action (`..`) -> refused", "relative Dockerfile path" in msg)
+    for title, data, needle in (
+        ("a flow-style `runs: {...}` -> refused", b"name: f\nruns: {using: node24, main: x.js}\n", "inline or flow `runs:`"),
+        ("a commented `uses:` step the structural read cannot see -> refused (the token count)",
+         b"name: n\nruns:\n  using: node24\n  main: x.js\n# - uses: evil/x@v1\n", "key token(s)"),
+        ("an input named `uses` in a node action -> refused (the token count)",
+         b"name: n\ninputs:\n  uses:\n    description: x\nruns:\n  using: node24\n  main: x.js\n", "key token(s)"),
+        ("a UTF-8 BOM -> refused by the gate's dialect, naming the file", b"\xef\xbb\xbfname: n\nruns:\n  using: node24\n", "dialect"),
+        ("a lone CR -> refused", b"name: n\rruns:\n  using: node24\n", "lone CR"),
+        ("bytes that are not UTF-8 -> refused", b"name: \xff\nruns:\n  using: node24\n", "not UTF-8"),
+        ("an unknown `runs.using` -> refused", b"name: n\nruns:\n  using: python3\n", "none of node"),
+        ("a duplicate `runs.using` -> refused", b"name: n\nruns:\n  using: node24\n  using: docker\n", "2 time(s)"),
+        ("no `runs:` block -> refused", b"name: n\n", "no `runs:` block"),
+        ("a file above the size bound -> refused, never truncated", b"#" * (MAX_BYTES + 1), "larger than"),
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            msg = _refusal(lambda: inv(td, [f"acme/x@{_S1}"], {_raw("acme/x", _S1, "action.yml"): data}))
+            _record(title, needle in msg and "acme/x@" + _S1 in msg)
+    with tempfile.TemporaryDirectory() as td:
+        local = b"name: l\nruns:\n  using: composite\n  steps:\n    - run: echo hi\n      shell: bash\n"
+        got = inv(td, ["./.github/actions/loc"], {}, files={".github/actions/loc/action.yml": local})
+        _record("a local ./ action: the in-tree file's digest, sha empty, metadata_file the in-tree path",
+                [(r.uses, r.sha, r.metadata_file, r.metadata_sha256) for r in got.rows]
+                == [("./.github/actions/loc", "", ".github/actions/loc/action.yml", hashlib.sha256(local).hexdigest())])
+    with tempfile.TemporaryDirectory() as td:
+        log = []
+        got = inv(td, ["acme/tag@v1", "docker://ghcr.io/a/b:1"], {}, log=log)
+        _record("a tag-pinned uses and a docker:// uses get no row and no fetch (leg (12) judges them)",
+                got.rows == () and log == [] and len(got.notices) == 1)
+    with tempfile.TemporaryDirectory() as td:
+        remote = {_raw("acme/comp", _S1, "action.yml"): _composite(f"acme/inner@{_S2}"),
+                  _raw("acme/inner", _S2, "action.yml"): _NODE, _raw("ossf/sc", _S3, "action.yaml"): _SCORECARD}
+        one = render(inv(td, [f"acme/comp@{_S1}", f"ossf/sc@{_S3}"], remote).rows)
+    with tempfile.TemporaryDirectory() as td:
+        two = render(inv(td, [f"ossf/sc@{_S3}", f"acme/comp@{_S1}"], remote).rows)
+    _record("the render is byte-identical across two runs and workflow orders, LF only, one final newline",
+            one == two and "\r" not in one and one.endswith('image_exempt_reason = ""\n') and not one.endswith("\n\n"))
+    parsed = tomllib.loads(one)
+    _record("the render parses as TOML: schema_version 1 and the rows sorted by (uses, sha)",
+            parsed.get("schema_version") == 1
+            and [a["uses"] for a in parsed.get("action", [])] == ["acme/comp", "acme/inner", "ossf/sc"])
+    with tempfile.TemporaryDirectory() as td:
+        root = _tree(td, f"ossf/sc@{_S3}")
+        http = _fixture_http({_raw("ossf/sc", _S3, "action.yaml"): _SCORECARD})
+        (root / "scripts").mkdir()
+        (root / "scripts" / "action-pins.toml").write_bytes(
+            render(record_inventory(root, http, None, gate).rows).replace('image_exempt_reason = ""', 'image_exempt_reason = "planted"').encode())
+        kept = record_inventory(root, http, committed_reasons(root), gate)
+        _record("--write carries a committed image_exempt_reason over for the same (uses, sha)",
+                [r.image_exempt_reason for r in kept.rows] == ["planted"])
+        rc_same = _run_check(root, http, gate)
+        (root / "scripts" / "action-pins.toml").write_bytes(render(kept.rows).replace("docker://", "docker://x").encode())
+        rc_diff = _run_check(root, http, gate)
+        _record("--check: a committed file equal to the re-record exits 0, a changed row exits 1", rc_same == 0 and rc_diff == 1)
+    tok = {"https://ghcr.io/token?scope=repository%3Aossf%2Fsc%3Apull&service=ghcr.io": b'{"token": "t0k"}'}
+    seen: list = []
+
+    def registry(method: str, url: str, headers: dict[str, str]) -> Response:
+        seen.append((method, url, headers.get("Authorization", "")))
+        if url.startswith("https://ghcr.io/token"):
+            return Response(200, {}, tok.get(url, b"{}"))
+        if headers.get("Authorization") != "Bearer t0k":
+            return Response(401, {"www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io",'
+                                                      'scope="repository:ossf/sc:pull"'}, b"")
+        return Response(200, {"docker-content-digest": "sha256:" + "b" * 64}, b"")
+    got_ref = resolve_image(registry, "docker://ghcr.io/ossf/sc:v2.4.4")
+    _record("--resolve-images: a 401 -> the anonymous Bearer token -> HEAD manifests/<tag> -> the digest reference",
+            got_ref == "docker://ghcr.io/ossf/sc@sha256:" + "b" * 64
+            and [m for m, _u, _a in seen] == ["HEAD", "GET", "HEAD"] and seen[0][1] == "https://ghcr.io/v2/ossf/sc/manifests/v2.4.4")
+    _record("--resolve-images refuses a reference without a registry host or a tag",
+            "is not a `docker://" in _refusal(lambda: resolve_image(registry, "docker://debian:12"))
+            and "is not a `docker://" in _refusal(lambda: resolve_image(registry, "docker://ghcr.io/ossf/sc")))
+    _record("--resolve-images refuses a reply without a sha256 digest",
+            "Docker-Content-Digest" in _refusal(lambda: resolve_image(lambda m, u, h: Response(200, {}, b""), "docker://ghcr.io/a/b:1")))
+    _record("the real HTTP function refuses a non-https URL", "non-https" in _refusal(lambda: real_http("GET", "http://x.invalid/a", {})))
+
+
+def _run_check(root: Path, http: Http, gate) -> int:
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        return check(root, http, gate)
+
+
+def selftest() -> int:
+    _results.clear()
+    try:
+        _legs()
+    except Exception as exc:  # noqa: BLE001 - a dead suite is worse than a broad catch: the canary pins leg NAMES
+        _record(f"the suite raised before finishing: {type(exc).__name__}: {exc}", False)
+    failed = [name for name, ok in _results if not ok]
+    print(f"[record-action-pins] selftest: {len(_results) - len(failed)}/{len(_results)} legs passed.")
+    return 1 if failed else 0
+
+
+# --- modes ----------------------------------------------------------------------------------------------------
+def check(root: Path, http: Http, gate=None) -> int:
+    """--check: 0 when the committed inventory equals the re-record, else 1 with a unified diff on stderr.
+    [Build-Session-Entscheidung: P4.97] the whole re-rendered file is compared, not row by row: a row the workflows no longer need
+    and a row they need but lack differ as well as a changed digest."""
+    path = root / "scripts" / "action-pins.toml"
+    try:
+        committed = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as err:
+        print(f"[record-action-pins] {path}: unreadable ({err})", file=sys.stderr)
+        return 1
+    fresh = render(record_inventory(root, http, committed_reasons(root), gate).rows)
+    if fresh == committed:
+        print("[record-action-pins] --check: every committed row reproduces")
+        return 0
+    sys.stderr.writelines(difflib.unified_diff(committed.splitlines(True), fresh.splitlines(True),
+                                               "committed scripts/action-pins.toml", "re-recorded"))
+    print("[record-action-pins] --check: the committed inventory differs from the re-record", file=sys.stderr)
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="record-action-pins", description=__doc__.splitlines()[0])
+    ap.add_argument("--root", type=Path, default=REPO, help="repo root (default: this script's repo)")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--write", action="store_true", help="rewrite scripts/action-pins.toml")
+    mode.add_argument("--check", action="store_true", help="exit 1 when the committed inventory differs")
+    mode.add_argument("--resolve-images", nargs="+", metavar="REF", help="print each docker:// tag's digest reference")
+    mode.add_argument("--selftest", action="store_true", help="run the fixture legs (no network)")
+    args = ap.parse_args(argv)
+    if args.selftest:
+        return selftest()
+    try:
+        if args.resolve_images:
+            for ref in args.resolve_images:
+                print(f"{resolve_image(real_http, ref)}  # {ref.rsplit(':', 1)[-1]}")
+            return 0
+        if args.check:
+            return check(args.root, real_http)
+        inv = record_inventory(args.root, real_http, committed_reasons(args.root))
+    except RecordError as err:
+        print(f"[record-action-pins] REFUSED: {err}", file=sys.stderr)
+        return 1
+    for row in inv.rows:
+        print("\n".join(inv.sources[_key(row.uses, row.sha)]), file=sys.stderr)
+    for note in inv.notices:
+        print(f"[record-action-pins] notice: {note}", file=sys.stderr)
+    text = render(inv.rows)
+    if args.write:
+        (args.root / "scripts" / "action-pins.toml").write_bytes(text.encode("utf-8"))
+        print(f"[record-action-pins] wrote scripts/action-pins.toml ({len(inv.rows)} row(s))")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

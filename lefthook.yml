@@ -117,6 +117,8 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 -P scripts/check-core-deps
     js-supply-chain: # G18c/G18d - JS registry pin + lifecycle lockdown (pnpm-lock URL guard live P1)
       run: python3 -P scripts/check-js-supply-chain
+    ci-supply-chain: # G56 - CI supply-chain config hygiene incl. the (12) action-pin inventory (stdlib, offline)
+      run: python3 -P scripts/check-ci-supply-chain
     generated-drift: # G19 - regenerate codegen artifacts + git diff --exit-code (live since P1)
       run: python3 -P scripts/fastpath-docs-only || python3 -P scripts/check-generated-drift
     test-suppression: # G70 - full-tree test-suppression-marker scan (fail-closed; no diff-base excuse)
