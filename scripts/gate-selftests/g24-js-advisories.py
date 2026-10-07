@@ -126,9 +126,18 @@ def zip_at(d: Path, members: dict[str, bytes], compression: int = zipfile.ZIP_DE
     return d
 
 
+def ignores_text(*entries: tuple[str, str]) -> str:
+    """An osv-ignores.toml body: `schema_version = 1` and one [[ignore]] table per (id, reason)."""
+    return "schema_version = 1\n" + "".join(f'\n[[ignore]]\nid = "{i}"\nreason = "{r}"\n' for i, r in entries)
+
+
 def ignores_file(d: Path, *entries: tuple[str, str]) -> Path:
-    body = "schema_version = 1\n" + "".join(f'\n[[ignore]]\nid = "{i}"\nreason = "{r}"\n' for i, r in entries)
-    return write(d / "osv-ignores.toml", body)
+    return write(d / "osv-ignores.toml", ignores_text(*entries))
+
+
+def above_count() -> tuple[tuple[str, str], ...]:
+    """EXPECTED_IGNORE_COUNT + 1 distinct valid entries: one above the frozen count, whatever its value."""
+    return tuple((f"GHSA-test-{k:04d}", "reviewed") for k in range(m.EXPECTED_IGNORE_COUNT + 1))
 
 
 @contextlib.contextmanager
@@ -266,8 +275,12 @@ def child_in_own_empty_cwd(call: dict[str, object], argv_of: Callable[[Path, Pat
 _real_ignores, _real_problems = m.load_ignores(m.IGNORES.read_text(encoding="utf-8"))
 record("the committed scripts/osv-ignores.toml parses clean and holds exactly EXPECTED_IGNORE_COUNT entries",
        _real_problems == [] and len(_real_ignores) == m.EXPECTED_IGNORE_COUNT)
-record("EXPECTED_IGNORE_COUNT is frozen at 0 (no accepted JS advisory; growth is an owner-acked edit of this pin)",
-       m.EXPECTED_IGNORE_COUNT == 0)
+# [Test-Change: P4.96 - old-obsolete+new-correct, build-gates G17 row] old: the pin read 0, true while the committed
+# ignore file held no entry; the owner accepted braces GHSA-vfj7-8cjw-p6xm (no fixed release), so the file holds
+# one entry and check-js-advisories raised the count to 1 in the same commit. new: 1, the entry count the leg above
+# binds to the committed file; moving the value stays an owner-acked edit of this pin.
+record("EXPECTED_IGNORE_COUNT is frozen at 1 (one accepted JS advisory; growth is an owner-acked edit of this pin)",
+       m.EXPECTED_IGNORE_COUNT == 1)
 _fx_bytes = FIXTURE.read_bytes()
 _fx = json.loads(_fx_bytes)
 record("the fixture is the trimmed incident record (six keys, the GHSA id, the CVE alias, npm undici), LF-only",
@@ -303,13 +316,17 @@ record("load_ignores: an unknown top-level key -> problem",
        any("unknown top-level key" in p for p in problems_of('schema_version = 1\nallow_all = true\n')))
 record("load_ignores: a plain [ignore] table instead of [[ignore]] -> problem",
        any("array of tables" in p for p in problems_of('schema_version = 1\n[ignore]\nid = "x"\nreason = "y"\n')))
-# the growth guard: the default limit is the frozen count (0) - one valid entry above it reds
-_grown = m.load_ignores(_ok_text)[1]
+# the growth guard: the default limit is the frozen count - one valid entry above it reds
+# [Test-Change: P4.96 - old-obsolete+new-correct, build-gates G17 row] old: one entry, above the count only while it
+# was 0 (at 1 the leg read a clean file). new: EXPECTED_IGNORE_COUNT + 1 distinct valid entries, one above the count
+# whatever its value, and the raise path admits exactly them once the count is raised by one.
+_over = ignores_text(*above_count())
+_grown = m.load_ignores(_over)[1]
 record("load_ignores: one valid entry above EXPECTED_IGNORE_COUNT -> problem naming the pin to raise",
        any("raise EXPECTED_IGNORE_COUNT" in p for p in _grown))
-with expected_count(1):
-    _raised = m.load_ignores(_ok_text)[1]
-record("load_ignores: the same entry with EXPECTED_IGNORE_COUNT raised to 1 -> clean (the reviewed growth path)",
+with expected_count(m.EXPECTED_IGNORE_COUNT + 1):
+    _raised = m.load_ignores(_over)[1]
+record("load_ignores: the same entries with EXPECTED_IGNORE_COUNT raised by one -> clean (the reviewed growth path)",
        _raised == [])
 
 # --- evaluate: findings against the ignore ids ---------------------------------------------------------------------
@@ -431,7 +448,9 @@ with tempfile.TemporaryDirectory() as _td:
     record("mode default: a partial database -> exit 1 too (not excusable as absent)", rc_ == 1 and "partial" in out_[0])
     # the arms before the scanner that fail whatever the mode, each red in both check modes (under --require-db an arm
     # that let the input through would still end in another FAIL, so each leg needs its own arm's message)
-    _grown_file = ignores_file(T / "grown", (CVE, "reason"))
+    # [Test-Change: P4.96 - old-obsolete+new-correct, build-gates G17 row] old: one entry, grown only while the count
+    # was 0; new: EXPECTED_IGNORE_COUNT + 1 entries, grown whatever the count.
+    _grown_file = ignores_file(T / "grown", *above_count())
     for _mode, _rq in CHECK_MODES:
         rc_, out_ = without_binary(m.check, lock=_lock, ignores_file=_grown_file, db_dir=T / "none", require_db=_rq)
         record(f"mode {_mode}: a grown ignore file reds even with no binary and no database",

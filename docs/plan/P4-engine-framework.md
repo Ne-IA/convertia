@@ -1231,7 +1231,7 @@
 > now refuse the shape). Caged end to end, so it landed as one owner-acked Co-Pilot act; max+1 convention.
 
 - [x] **P4.96** [GATE,CI] Wire the G17 JS advisory leg — `osv-scanner` offline over `pnpm-lock.yaml` against the Lane-A-refreshed OSV database · §6.3.4 §6.7.1 · G17 G24
-  > **Delivered (Co-Pilot, owner-acked):** the contract is the build-gates G17 row — `scripts/check-js-advisories` (the pinned `osv-scanner` offline over `pnpm-lock.yaml`), the L2 skip with a notice without a local database (the G17 `[[fail_open]]` row), the L4 refresh plus the fail-closed `--require-db` check, the caged `scripts/osv-ignores.toml` growth-guarded at 0, and `g24-js-advisories.py` replaying the undici incident against a temp-dir one-record database.
+  > **Delivered (Co-Pilot, owner-acked):** the contract is the build-gates G17 row — `scripts/check-js-advisories` (the pinned `osv-scanner` offline over `pnpm-lock.yaml`), the L2 skip with a notice without a local database (the G17 `[[fail_open]]` row), the L4 refresh plus the fail-closed `--require-db` check, the caged `scripts/osv-ignores.toml` growth-guarded by `EXPECTED_IGNORE_COUNT`, and `g24-js-advisories.py` replaying the undici incident against a temp-dir one-record database.
 
 ## The G56 transitive-action-pin half — the owner act the r6 sentence promised
 

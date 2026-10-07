@@ -16,3 +16,7 @@
 # check hands the scanner an empty `--config`, so a committed osv-scanner.toml is never read.
 
 schema_version = 1
+
+[[ignore]]
+id = "GHSA-vfj7-8cjw-p6xm"
+reason = "braces through 3.0.3 (CVE-2026-93687, HIGH: stack exhaustion through deeply nested brace patterns) has no fixed release, 3.0.3 being the latest braces on npm; here it is a dev-only transitive of stylelint 17.13.0 through micromatch 4.0.8 (lint-time CSS globbing), absent from the production dependency graph and from the vite build of the WebView bundle, and it expands only the repo's own fixed patterns (the **/*.css lint glob and stylelint's default **/node_modules/** ignore; no config in the extends chain sets ignoreFiles, overrides or referenceFiles, and .stylelintignore goes to the ignore package), never attacker input, so the stack exhaustion has no reachable trigger; once a fixed braces reaches pnpm-lock.yaml the scan stops reporting the advisory and the check reds this entry as stale, so that bump removes it."
