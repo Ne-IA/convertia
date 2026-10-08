@@ -60,7 +60,7 @@ other bracketed token at a box position — a stray `[X]`, `[-]`, `[~]`, `[wip]`
 | `[ ]` | **open / buildable** | Not yet built. The unit of work. | The selection target (§6) — built when it is the next one and its `needs:` are all `[x]`. |
 | `[x]` | **done** | Built, tested, dual-reviewed, committed, gates green. | Skipped (already done); may **unlock** a `[!]` box via `unlocked-by:` (§5). |
 | `[!]` | **blocked-with-note** | Cannot be built **and is not a dependency to follow** — it waits on something the loop genuinely cannot produce. **Rare.** | **Skip + report** at the phase end; read the `>`-note under it. May be auto-flipped to `[ ]` by an `unlocked-by:` dep going `[x]` (§5). |
-| `[!extern]` | **needs something external** | Waits on an **owner / external** action the loop cannot take (an off-repo asset, a human decision, an external dependency — plus the **standing per-phase Co-Pilot hardening-sweep box**, [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). **Rare outside the standing sweep boxes** for a fully-offline OSS app. | **Skip + collect** into the consolidated `[!extern]` list (the per-phase owner-act batch, `build-loop.md` §9). A *non-extern* box that names this one anywhere in its `needs:` closure → **STOP for that closure** — report once, collect, and continue with the next open box outside it (`build-loop.md` §3 step 1); the phase-end sweep box is the one `[!extern]` that blocks its whole successor phase (test-strategy §11.3). |
+| `[!extern]` | **needs something external** | Waits on an **owner / external** action the loop cannot take (an off-repo asset, a human decision, an external dependency — plus the **standing per-phase Co-Pilot hardening-sweep box**, [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). **Rare outside the standing sweep boxes** for a fully-offline OSS app. | **Skip + collect** into the phase's owner-act batch (`plan-lint --report owner-acts --phase <n>`). A box whose `needs:` closure reaches it is not selectable until it is `[x]` (§6, computed by `plan-lint --next`). |
 
 > **`[!]` is the exception, not the tool of first resort — prefer dependency-
 > following (DECISION C, §5).** When the next box needs an *unbuilt but buildable*
@@ -78,10 +78,11 @@ other bracketed token at a box position — a stray `[X]`, `[-]`, `[~]`, `[wip]`
 > `unlocked-by:` marker naming its releaser (§5).
 
 **Sub-box rule for `[x]`.** A box with sub-boxes (§3) is marked `[x]` **only after
-every sub-box is `[x]`** — the top marker is the AND of its children. The loop
+every sub-box is `[x]`** — the top marker is the AND of its children, an `[!extern]`
+sub-box included. The loop
 checks the top box off in the box commit that completes the last sub-box
-(`build-loop.md` Step 7). `plan-lint` (check: sub-box consistency) fails a `[x]`
-top box that still has an open `[ ]`/`[!]` sub-box under it.
+(`build-loop.md` Step 7). `plan-lint` (sub-box consistency, §7) fails a `[x]` top box
+over a `[ ]`, `[!]` or `[!extern]` sub-box.
 
 ---
 
@@ -94,18 +95,19 @@ optional sub-boxes, and optional annotation lines:
 - [ ] **P<phase>.<n>** [Tag] Short imperative title · <spec-§ refs> · <Gnn refs>
   needs: P<x>.<y>[, P<a>.<b> ...]          # optional; forward dependency (§5.1)
   unlocked-by: P<x>.<y>                     # only under a [!] box; reverse unlock (§5.2)
+  l-neg1: <route>                           # optional; the caged-file route (§5.3)
   > optional one-line note (the block, under a [!] / [!extern] box; §3.3)
   - [ ] **P<phase>.<n>.<m>** [Tag] Sub-box title · <spec-§ refs> · <Gnn refs>
   - [ ] **P<phase>.<n>.<m>** [Tag] Sub-box title · <spec-§ refs> · <Gnn refs>
 ```
 
-The annotation lines (`needs:`, `unlocked-by:`, the `>`-note) and the sub-box bullets
-all sit at the **same two-space indent** under the box header, but `plan-lint` reads
-them by their **leading token** — `needs:` / `unlocked-by:` / `>` / `- [` — not by
-indentation, so the order is unambiguous to the linter. For a human author the order
-is fixed: **the annotation lines come first, in the order `needs:` → `unlocked-by:` →
-`>`-note, before the first `- [` sub-box** (§5 states the ordering; the comments above
-show the placement).
+The annotation lines (`needs:`, `unlocked-by:`, `l-neg1:`, the `>`-note) and the sub-box
+bullets all sit at the **same two-space indent** under the box header, but `plan-lint`
+reads them by their **leading token** — `needs:` / `unlocked-by:` / `l-neg1:` / `>` /
+`- [` — not by indentation, so the order is unambiguous to the linter. For a human author
+the order is fixed: **the annotation lines come first, in the order `needs:` →
+`unlocked-by:` → `l-neg1:` → `>`-note, before the first `- [` sub-box** (§5 states the
+ordering; the comments above show the placement).
 
 ### 3.1 The header line — every field
 
@@ -138,16 +140,20 @@ A box that decomposes into ordered steps lists them as **indented** child boxes:
   `plan-lint` (check: sub-box consistency) rejects ragged/odd indentation.
 - The sub-box-id **extends the parent** with a third dotted segment:
   `P<phase>.<n>.<m>`, `<m>` 1-based and gap-free under that parent (§7).
-- Sub-boxes are worked **strictly top to bottom**; the top box is checked off only
-  when **all** sub-boxes are `[x]` (§2). One review per commit: a box, or a sub-box
-  that meets the DoD on its own (`build-loop.md` Step 2).
+- Sub-boxes are worked top to bottom; an `[!extern]` or `[!]` sub-box is skipped and
+  the sub-boxes after it stay buildable when their own closure is clear. The top box
+  is checked off only when **all** sub-boxes are `[x]` (§2). One review per commit: a
+  box, or a sub-box that meets the DoD on its own (`build-loop.md` Step 2).
 - A sub-box carries its own tag + refs and may itself carry a `needs:` (§5). Nesting
   is **at most one level deep** (`P<phase>.<n>.<m>`) — a box that wants three levels
   is two boxes, not a grandchild; `plan-lint` rejects a fourth dotted segment.
-- A sub-box is **never a selection target of its own** (§6): its effective `needs:`
-  closure is its own `needs:` **plus its parent's** (a sub-box `needs:` adds edges,
-  never replaces the parent's). A parent blocked on an `[!extern]` closure (§6 step 4)
-  blocks every sub-box under it (the P4.44 / P4.46 shape).
+- A sub-box is **never a selection target of its own** (§6). It inherits its parent's
+  own `needs:` — never its siblings' — and adds its own edges. A box that `needs:` the
+  parent waits for every sub-box, an `[!extern]` one included (§2); a box that needs
+  only the buildable part names that sub-box. A parent whose own `needs:` closure is
+  blocked blocks every sub-box under it (the P4.44 / P4.46 shape).
+- An owner act is a top-level `[!extern]` box (P4.56.3 is the one legacy `[!extern]`
+  sub-box).
 
 ### 3.3 The `>`-note
 
@@ -211,11 +217,12 @@ tag; reach for the pair only when the box genuinely lives in two homes.
 
 ---
 
-## 5. Dependency annotations — `needs:` and `unlocked-by:`
+## 5. Box annotations — `needs:`, `unlocked-by:` and `l-neg1:`
 
-ConvertIA has **one coherent dependency vocabulary, two directions** (this section;
-the loop follows it in `build-loop.md` §3 steps 1–2). Both live on their own line
-directly under the box header, before any `>`-note or sub-box.
+ConvertIA has **one coherent dependency vocabulary, two directions** (§5.1, §5.2; the
+loop follows it in `build-loop.md` §3 steps 1–2), plus **one routing annotation**,
+`l-neg1:` (§5.3). Each lives on its own line directly under the box header, before any
+`>`-note or sub-box.
 
 ### 5.1 `needs:` — the forward dependency (DECISION C)
 
@@ -303,18 +310,48 @@ selectable again automatically, without a manual edit.
   block — §3.3). A `[!]` box with an `unlocked-by:` and no separate `>`-note is
   **valid** (the `unlocked-by:` names the releaser), though a `>`-note is encouraged.
 
+### 5.3 `l-neg1:` — the caged-file route
+
+```
+- [ ] **P98.3** [BUILD] Stage the example engine · §3.5.5 · G37
+  needs: P98.2
+  l-neg1: same-push
+```
+
+A box whose work edits a file in the L(-1) cage (`scripts/l-neg1-files.toml`,
+CLAUDE.md §5) states how those caged bytes land before the Loop selects it; the Loop
+never authors a caged line (G71). The line carries exactly one route:
+
+| Route | Meaning |
+|---|---|
+| `same-push` | The Loop builds and stages the uncaged part, parks the box and escalates; the Co-Pilot adds the caged part under owner ack and makes the box's final commit (`build-loop.md` Step 7). |
+| `act <box-id>` | A named `[!extern]` owner-act box lands the caged bytes; this box also names it in `needs:`. |
+| `sweep-tail` | The caged tail reds nothing without it and lands at the phase-end sweep act. |
+| `none` | The box names a caged file only as a reference. |
+
+`act` and `sweep-tail` are the plan-data form of the DoD's pre-declared caged half
+(`build-loop.md` §5). An `[!extern]` box carries no `l-neg1:`. A box without an
+`l-neg1:` line that meets a caged path takes the `build-loop.md` Step 7 park.
+`plan-lint --report owner-acts --phase <n>` lists the phase's `same-push`, `act` and
+`sweep-tail` boxes.
+
 ---
 
 ## 6. How the loop selects the next box
 
 The single home of the Build-Loop's selection algorithm (`build-loop.md` Step 1 adds
 the loop's actions), stated against this format so a box author knows exactly how their
-box will be picked:
+box will be picked. `scripts/plan-lint --next` computes this algorithm from plan data
+plus the parked set (`<git common dir>/parked/`, the `build-loop.md` §6 park procedure)
+and prints the answer: a parked box to resume or the target, with its unmet
+prerequisites in build order, the skipped closures with their roots and the pending
+`unlocked-by:` flips.
 
 1. **Scan all `docs/plan/P*.md`, lowest phase first, top to bottom.** Phase order is
    numeric (`P1` before `P2` … before `P11`); within a file, document order. The
    loop's range is **`P1`..`P11`** — **`P0` is bootstrapped manually** (DECISION B,
-   `build-loop.md` §0); a loop reaching a `P0.x` box is out of range and stops.
+   `build-loop.md` §0); the loop never builds a `P0.x` box, and an open one in a `needs:`
+   closure stops that closure like an `[!extern]` box (step 4).
 2. **The target is the first `[ ]` box** in that scan that is **not**
    `[!]`/`[!extern]` — the document-order-next open box, *before* checking its deps.
    (The scan picks the target by position; Step 3 then resolves its dependencies — the
@@ -328,8 +365,17 @@ box will be picked:
    once, collect) and continue with the next open box outside it (`build-loop.md` §3
    step 1) — except the phase-end sweep box, which blocks its whole successor phase
    (test-strategy §11.3). **`[!]`** → read the `>`-note, skip, mention at the phase end.
-5. **Sub-boxes** are worked top to bottom under their parent before the parent is
-   checked off, and inherit the parent's `needs:` closure (§2, §3.2).
+   A **parked** box (the `build-loop.md` §6 park procedure) is skipped with its closure
+   like an `[!extern]` box. A resumable park — a `<box-id>.patch.released` file or a
+   `stop` park — is answered first, in plan order, when its box is selectable: open and
+   in range (steps 1–2), its own `needs:` closure clear and, for a parent, a buildable
+   sub-box (step 5). It carries its build order (step 3); the sweep box's block of its
+   successor phase does not apply to it, since a park there is a DECISION C early build
+   (test-strategy §11.3). Otherwise it is skipped with its roots, the box itself when it
+   is not open or out of range.
+5. **Sub-boxes** are worked top to bottom under their parent; each inherits the
+   parent's own `needs:`, never a sibling's, and an `[!extern]`/`[!]` sub-box is
+   skipped (§3.2).
 6. **Zero open boxes** → emit the convergence report and **stop** (never loop
    forever); a genuine all-blocked deadlock → escalate (`build-loop.md` §3 step 1).
 
@@ -344,13 +390,15 @@ Because selection is deterministic, the **numbering and reference integrity that
 `plan-lint` (G7/G20) runs on both planes — **L1 pre-commit** on a staged plan edit,
 **L4 full-tree fail-closed** — and is itself unit-tested (its checks ship fixtures;
 `plan-lint` check 16 / the G24 self-test discipline). The **format-specific** checks
-this file defines (distinct from the doc-wide consistency checks 5–24 catalogued in
+this file defines (distinct from the doc-wide consistency checks catalogued in
 `build-gates.md` §6, which `plan-lint` also runs) are:
 
+- **Box parse completeness** — a line that looks like a box header but does not parse
+  fails, so a malformed box cannot evade the other checks.
 - **Marker validity** — every box marker ∈ `{[ ], [x], [!], [!extern]}`; no fifth
   state, no empty `[]`, no stray token at a box position (§2).
 - **Sub-box consistency** — two-space-per-level indentation; a `[x]` top box has no
-  open `[ ]`/`[!]` sub-box; nesting at most one level deep (§2, §3.2).
+  `[ ]`, `[!]` or `[!extern]` sub-box; nesting at most one level deep (§2, §3.2).
 - **Header well-formedness** — `- <marker> **P<phase>.<n>** [Tag] Title · <refs>`:
   bold gap-free box-id, exactly one (or a two-tag) taxonomy tag, the ` · ` refs
   separator, a non-empty title (§3.1, §4).
@@ -374,9 +422,8 @@ this file defines (distinct from the doc-wide consistency checks 5–24 catalogu
   id must be whole — `§<n>[.<n>…][a-z]`, `§04/<file>#<slug>` or `G<n>[a-z]` — so an incomplete
   anchor or a glued tail (`§04/images.md#png#jpg`, `§1.7#foo`, `G7#foo`) **fails**. This gives the coverage track (track C) the same resolvable-anchor
   guarantee the numbered `§0`–`§3`/`§5`–`§7` tracks already have. (The leg + its G24
-  self-test landed at P4.60.3, 2026-09-15; this format change was recorded here first, per the
-  format-change protocol below. `_slug`: lowercase, every character except word characters,
-  spaces and hyphens dropped, whitespace collapsed to one hyphen, edge hyphens stripped — `### JPG / JPEG` → `jpg-jpeg`, `### PNG` → `png`.)
+  self-test landed at P4.60.3, recorded here first per the protocol below. `_slug`:
+  lowercase, every character except word characters, spaces and hyphens dropped, whitespace collapsed to one hyphen, edge hyphens stripped — `### JPG / JPEG` → `jpg-jpeg`, `### PNG` → `png`.)
 - **`needs:`-targets exist** — every `needs:` box-id is a real box in the plan; the
   graph is **acyclic** (§5.1; a top box counts as needing its sub-boxes). A dangling or
   cyclic `needs:` fails. **`plan-lint` loads ALL phase files — `P0`..`P11` — when
@@ -390,16 +437,17 @@ this file defines (distinct from the doc-wide consistency checks 5–24 catalogu
   **or** an `unlocked-by:`, and a `[!extern]` box carries a mandatory `>`-note (it
   has no `unlocked-by:`); an open `[ ]`/`[x]`/`[!extern]` box carries no
   `unlocked-by:` (§3.3, §5.2).
+- **`l-neg1:` annotation** — at most one line, a §5.3 route; an `act` target exists, is
+  `[!extern]` (or `[x]`) and is in the box's `needs:`; none under an `[!extern]` box.
 - **Numbering gap-free** — within each phase the box numbers `P<phase>.1, .2, …` are
   **1-based and contiguous** (no gap, no duplicate), and sub-box numbers
   `P<phase>.<n>.1, .2, …` likewise under their parent (§3.1, §3.2). A gap would make
   "the next box" ambiguous and could hide a dropped box.
 
-> **Format change protocol.** Adding or changing a marker, a tag, an annotation, or
-> a numbering rule is a change to the above checks. It is authored **here first**
-> and in the **same commit** as the `plan-lint` code that enforces it, with a `[GATE]`
-> box and the gate's G24 self-test updated — so this spec and its linter never
-> disagree (the living-doc rule, the doc header).
+> **Format change protocol.** Adding or changing a marker, a tag, an annotation, a
+> numbering rule or a check above is authored **here first**, in the **same commit** as
+> the `plan-lint` code that enforces it and its G24 legs. That commit is a Loop `[GATE]`
+> box or a Co-Pilot L(-1) act; `build-gates.md` §6 names every check.
 
 ---
 
@@ -468,7 +516,9 @@ box carries no ref. `plan-lint` passes it.
 - Who follows a `needs:` vs who escalates a block:
   [`roles-and-escalation.md`](../process/roles-and-escalation.md) §4.
 - The gate that enforces this format (`plan-lint`, G7/G20) + the doc-wide
-  consistency checks 5–24: [`build-gates.md`](../security/build-gates.md) §6.
+  consistency checks: [`build-gates.md`](../security/build-gates.md) §6.
+- The selection tool: `scripts/plan-lint --next`, `--show <id>`, `--report owner-acts
+  --phase <n>` (build-gates G7).
 - Project rules (the working model, the anti-patterns): [`CLAUDE.md`](../../CLAUDE.md)
   §2, §5.
 - The plan index + the phase skeleton this format fills: [`README.md`](README.md).

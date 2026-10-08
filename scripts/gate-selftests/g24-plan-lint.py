@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """g24-plan-lint.py - G24 self-test for plan-lint (P0.3.5, G7/G20).
 
-FORMAT-check coverage: for each of the 9 format checks, a CLEAN box yields no finding and a VIOLATING
+FORMAT-check coverage: for each format check (_format.md §7), a CLEAN box yields no finding and a VIOLATING
 box IS flagged (so no check is green-by-vacuity). Plus the base-case golden invariant: the real plan
 passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..33
 get their own legs as they are built. stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
+import contextlib
 import hashlib
 import importlib.machinery
 import importlib.util
+import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -16,6 +19,10 @@ from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "plan-lint"
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,14 +40,14 @@ def record(name: str, ok: bool) -> None:
 
 
 def box(bid="P0.1", marker="x", raw=None, indent=0, tags=None, title="Do the thing",
-        refs="G7", needs=None, unlocked_by=None, notes=None):
+        refs="G7", needs=None, unlocked_by=None, notes=None, l_neg1=None, lineno=1, file="docs/plan/Px.md"):
     phase = int(bid[1:].split(".")[0])
     num = tuple(int(x) for x in bid[1:].split(".")[1:])
     return m.Box(box_id=bid, phase=phase, num=num, marker=(raw if raw is not None else marker),
                  raw_marker=(raw if raw is not None else marker), indent=indent,
                  tags=tags if tags is not None else ["GATE"], title=title, refs=refs,
-                 file="docs/plan/Px.md", lineno=1, needs=needs or [], unlocked_by=unlocked_by or [],
-                 notes=notes or [])
+                 file=file, lineno=lineno, needs=needs or [], unlocked_by=unlocked_by or [],
+                 notes=notes or [], l_neg1=l_neg1 or [])
 
 
 def ctx(boxes):
@@ -181,6 +188,300 @@ record("box-parse-completeness: a malformed box-id (no dotted segment) is a near
        bool(m._NEAR_BOX_RE.match("- [x] **P12** title")) and not m.BOX_RE.match("- [x] **P12** title"))
 record("box-parse-completeness: a valid box-id parses (not a near-miss)",
        bool(m.BOX_RE.match("- [x] **P1.2** title")))
+
+# --- the [!extern] sub-box rule and the l-neg1: route grammar (_format.md §2, §3.2, §5.3) --------------------
+_EXT = {"raw": "!extern", "notes": ["an owner act"]}
+
+
+def _open(bid, **kw):
+    return box(bid=bid, raw=" ", **kw)
+
+
+def _seq(*boxes):
+    """The boxes in document order: each one's lineno is its position (the selection sorts by it)."""
+    for i, b in enumerate(boxes, 1):
+        b.lineno = i
+    return list(boxes)
+
+
+def _lneg1(boxes):
+    return [f.msg for f in m.fmt_l_neg1_annotation(ctx(boxes))]
+
+
+def _plan_root(tmp: Path, text: str, name: str = "P98-x.md") -> Path:
+    d = tmp / "docs" / "plan"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_bytes(text.encode("utf-8"))
+    return tmp
+
+
+def _mode(argv):
+    """(exit code, stdout) of plan-lint's main on a mode argv; stderr is swallowed, an argparse exit is its code."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            rc = m.main(argv)
+        except SystemExit as e:
+            rc = e.code
+    return rc, out.getvalue()
+
+
+record("sub-box: a [x] parent over an open [!extern] child flagged (the P4.56 / P4.56.3 shape)",
+       any("AND-of-children" in f.msg for f in m.fmt_sub_box_consistency(
+           ctx([box(bid="P4.56", raw="x"), box(bid="P4.56.3", indent=2, **_EXT)]))))
+record("l-neg1 annot: the four routes are clean (same-push, sweep-tail, none, act on an [!extern] or [x] needs: target)",
+       _lneg1([_open("P4.1", l_neg1=["same-push"]), _open("P4.2", l_neg1=["sweep-tail"]),
+               _open("P4.3", l_neg1=["none"]), box(bid="P4.4", **_EXT),
+               _open("P4.5", needs=["P4.4"], l_neg1=["act P4.4"]), box(bid="P4.6", raw="x"),
+               _open("P4.7", needs=["P4.6"], l_neg1=["act P4.6"])]) == [])
+record("l-neg1 annot: an unknown route (`same-box`, `same-commit`) flagged",
+       len(_lneg1([_open("P4.1", l_neg1=["same-box"]), _open("P4.2", l_neg1=["same-commit"])])) == 2)
+record("l-neg1 annot: an act target not in the box's needs: flagged",
+       any("not in the box's needs:" in s for s in _lneg1([box(bid="P4.4", **_EXT), _open("P4.5", l_neg1=["act P4.4"])])))
+record("l-neg1 annot: an act target that is [ ] flagged",
+       any("is [ ]" in s for s in _lneg1([_open("P4.4"), _open("P4.5", needs=["P4.4"], l_neg1=["act P4.4"])])))
+record("l-neg1 annot: an act target that is no box flagged",
+       any("no such box" in s for s in _lneg1([_open("P4.5", needs=["P4.9"], l_neg1=["act P4.9"])])))
+record("l-neg1 annot: two l-neg1: lines flagged",
+       any("2 l-neg1: lines" in s for s in _lneg1([_open("P4.1", l_neg1=["same-push", "sweep-tail"])])))
+record("l-neg1 annot: a route under an [!extern] box flagged",
+       any("carries no l-neg1:" in s for s in _lneg1([box(bid="P4.1", l_neg1=["none"], **_EXT)])))
+with tempfile.TemporaryDirectory() as _tl:
+    _lb = m.load_plan(_plan_root(Path(_tl), "- [ ] **P98.1** [DOC] A box · tooling-only\n  l-neg1: same-push, none\n"))[1]
+    record("l-neg1 annot: a joined pair on one line parses as ONE raw entry and is flagged (never comma-split)",
+           _lb["P98.1"].l_neg1 == ["same-push, none"] and any("is not a route" in s for s in _lneg1([_lb["P98.1"]])))
+record("l-neg1 annot: registered as a format check and run before every mode",
+       m.FORMAT_CHECKS.get("format:l-neg1-annotation") is m.fmt_l_neg1_annotation
+       and "format:l-neg1-annotation" in m._MODE_PRECHECKS)
+
+# --- --next: the _format.md §6 selection (select_next is pure; incident replays + the contract) ---------------
+_n = m.select_next(ctx(_seq(box(bid="P4.1"), _open("P4.2", needs=["P4.5"]), _open("P4.3"), box(bid="P4.4", **_EXT),
+                            _open("P4.5", needs=["P4.4"]))))
+record("next: the P4.13 incident - a box whose needs: closure reaches an open [!extern] is never selected; the next "
+       "box outside the closure is", _n.target == "P4.3" and ("P4.2", {"P4.4"}) in _n.blocked)
+_n = m.select_next(ctx(_seq(_open("P4.1"), box(bid="P4.1.1", raw="x", indent=2), _open("P4.1.2", indent=2),
+                            box(bid="P4.1.3", indent=2, **_EXT))))
+_n2 = m.select_next(ctx(_seq(_open("P4.1"), box(bid="P4.1.1", indent=2, **_EXT), _open("P4.1.2", indent=2))))
+record("next: an open [!extern] sub-box never blocks its buildable sibling, above or below it (the P4.56.2 shape)",
+       (_n.target, _n.order) == ("P4.1", ["P4.1.2"]) and (_n2.target, _n2.order) == ("P4.1", ["P4.1.2"]))
+_n = m.select_next(ctx(_seq(_open("P4.1"), box(bid="P4.1.1", raw="x", indent=2), box(bid="P4.1.2", indent=2, **_EXT),
+                            _open("P4.2", needs=["P4.1"]), _open("P4.3"))))
+record("next: a box needing a parent over an [!extern] sub-box is skipped with that sub-box as its root",
+       _n.target == "P4.3" and ("P4.1", {"P4.1.2"}) in _n.blocked and ("P4.2", {"P4.1.2"}) in _n.blocked)
+_n = m.select_next(ctx([_open("P10.1", file="docs/plan/P10-x.md"), _open("P2.1", file="docs/plan/P2-x.md")]))
+record("next: numeric phase order - P2 before P10, never the file-name order", _n.target == "P2.1")
+_sw = box(bid="P2.2", title=m._SWEEP_TITLE + " over P2", **_EXT)
+_n = m.select_next(ctx(_seq(box(bid="P2.1"), _sw, _open("P3.1", needs=["P2.2"]), _open("P3.2"))))
+_sw.raw_marker = "x"
+_n2 = m.select_next(ctx(_seq(box(bid="P2.1"), _sw, _open("P3.1", needs=["P2.2"]), _open("P3.2"))))
+record("next: no P(n+1) box while the P(n) sweep box is open; its check-off opens P(n+1)",
+       _n.target is None and _n.waiting == ["P2.2"] and _n2.target == "P3.1")
+_n = m.select_next(ctx(_seq(_open("P4.1", needs=["P4.3", "P5.2"]), _open("P4.2"), _open("P4.3", needs=["P5.2"]),
+                            box(bid="P4.4", title=m._SWEEP_TITLE + " over P4", **_EXT), _open("P5.1", needs=["P4.4"]),
+                            _open("P5.2"))))
+record("next: DECISION C - every unmet prerequisite before the box needing it, followed across phases",
+       (_n.target, _n.order) == ("P4.1", ["P5.2", "P4.3", "P4.1"]))
+_n = m.select_next(ctx(_seq(_open("P4.1", needs=["P4.2"]), _open("P4.1.1", indent=2), _open("P4.2"))))
+record("next: a sub-box step inherits its parent's unmet needs: into the build order",
+       (_n.target, _n.order) == ("P4.1", ["P4.2", "P4.1.1"]))
+_n = m.select_next(ctx(_seq(_open("P4.1"), box(bid="P4.1.1", raw="x", indent=2), _open("P4.2"))))
+record("next: an open parent whose sub-boxes are all [x] is its own step, never blocked without a root",
+       (_n.target, _n.order, _n.blocked) == ("P4.1", ["P4.1"], []))
+_n = m.select_next(ctx(_seq(box(bid="P4.1"), box(bid="P4.2", raw="!", unlocked_by=["P4.1"]), _open("P4.3"))))
+_n2 = m.select_next(ctx(_seq(box(bid="P4.2", raw="!", unlocked_by=["P4.3"]), _open("P4.3"))))
+record("next: a [!] box whose unlocked-by: is [x] is an unlock and counts as open; one with an open releaser is not",
+       _n.target == "P4.2" and _n.unlocks == [("P4.2", ["P4.1"])] and _n2.target == "P4.3" and _n2.unlocks == [])
+_n = m.select_next(ctx(_seq(_open("P0.1"), _open("P1.1", needs=["P0.1"]), _open("P1.2"))))
+record("next: an open P0 box reached through needs: is a root (out of the loop's range)",
+       _n.target == "P1.2" and ("P1.1", {"P0.1"}) in _n.blocked)
+_n = m.select_next(ctx(_seq(_open("P4.1"), _open("P4.2", needs=["P4.3"]), box(bid="P4.3"))), {"P4.2": True})
+_n2 = m.select_next(ctx(_seq(_open("P4.1", needs=["P4.3"]), _open("P4.2"), box(bid="P4.3", **_EXT))), {"P4.1": True})
+record("next: a resumable park is answered before an earlier open box when its own needs: closure is clear; when it "
+       "is not, it is skipped once with its root and never resumed",
+       (_n.resume, _n.target) == ("P4.2", "P4.2")
+       and (_n2.resume, _n2.target, _n2.blocked) == (None, "P4.2", [("P4.1", {"P4.3"})]))
+_n = m.select_next(ctx(_seq(_open("P4.1"), box(bid="P4.2", **_EXT))), {"P4.2": True})
+_n2 = m.select_next(ctx(_seq(_open("P4.1"), box(bid="P4.2", raw="!", unlocked_by=["P4.3"]), _open("P4.3"))),
+                    {"P4.2": True})
+_n3 = m.select_next(ctx(_seq(_open("P0.1"), _open("P1.1"))), {"P0.1": True})
+record("next: a resumable park whose box the scan never selects - [!extern], [!] with an open releaser, an open P0 "
+       "box - is skipped with the box as its root and never resumed",
+       (_n.resume, _n.target, _n.blocked) == (None, "P4.1", [("P4.2", {"P4.2"})])
+       and (_n2.resume, _n2.target, _n2.blocked) == (None, "P4.1", [("P4.2", {"P4.2"})])
+       and (_n3.resume, _n3.target, _n3.blocked) == (None, "P1.1", [("P0.1", {"P0.1"})]))
+
+
+def _parent_over_extern():
+    """A parent whose every open sub-box needs an [!extern] box: nothing under it is buildable."""
+    return ctx(_seq(box(bid="P4.1"), _open("P4.2"), _open("P4.2.1", indent=2, needs=["P4.3"]),
+                    _open("P4.2.2", indent=2, needs=["P4.3"]), box(bid="P4.3", **_EXT)))
+
+
+_n, _n0 = m.select_next(_parent_over_extern(), {"P4.2": True}), m.select_next(_parent_over_extern())
+record("next: a resumable park on a parent with no buildable sub-box is skipped with its sub-boxes' roots - the "
+       "answer the same plan gives with no park",
+       (_n.resume, _n.target, _n.blocked, _n.waiting) == (None, None, [("P4.2", {"P4.3"})], ["P4.3"])
+       and (_n0.target, _n0.blocked, _n0.waiting) == (None, [("P4.2", {"P4.3"})], ["P4.3"]))
+_n = m.select_next(ctx(_seq(_open("P4.1"), _open("P4.2", needs=["P4.3"]), _open("P4.3"))), {"P4.2": True})
+_n2 = m.select_next(ctx(_seq(_open("P4.1"), _open("P4.2"), box(bid="P4.2.1", raw="x", indent=2),
+                             _open("P4.2.2", indent=2))), {"P4.2": True})
+record("next: a resumed park carries its build order - an unmet buildable prerequisite first (DECISION C), a "
+       "parent's open sub-box as its step",
+       (_n.resume, _n.order) == ("P4.2", ["P4.3", "P4.2"]) and (_n2.resume, _n2.order) == ("P4.2", ["P4.2.2"]))
+_n = m.select_next(ctx(_seq(_open("P4.1", needs=["P4.2"]), box(bid="P4.2", **_EXT))))
+record("next: all blocked - no target, the roots named",
+       _n.target is None and not _n.converged and _n.blocked == [("P4.1", {"P4.2"})] and _n.waiting == ["P4.2"])
+_n = m.select_next(ctx(_seq(_open("P0.9"), box(bid="P1.1"), box(bid="P2.1"))))
+record("next: converged - every P1..P11 box is [x]", _n.converged and _n.target is None)
+_real = m.build_ctx(ROOT)
+_n, _rg = m.select_next(_real, {}), m._plan_graph(_real)
+record("next: the REAL plan's answer is well-formed - each build-order step has a clear closure, or no target and "
+       "the roots named", (_n.target is not None and not any(m._stop_roots(_real, _rg, s) for s in _n.order))
+       or (_n.target is None and bool(_n.converged or _n.blocked or _n.waiting)))
+with tempfile.TemporaryDirectory() as _tn:
+    _r = _plan_root(Path(_tn), "- [ ] **P98.1** [DOC] A · tooling-only\n  needs: P98.9\n")
+    record("next: a malformed plan (a dangling needs:) exits 2 - a mode never answers over it",
+           _mode(["--next", "--root", str(_r)])[0] == 2)
+    _r = _plan_root(Path(_tn), "- [ ] **P98.1** [DOC] A · tooling-only\n  needs: P98.2\n"
+                               "- [!extern] **P98.2** [DOC] B · tooling-only\n  > an owner act\n")
+    _rc, _out = _mode(["--next", "--root", str(_r)])
+    record("next: nothing buildable exits 1 and names each root with what it blocks",
+           _rc == 1 and _out.startswith("nothing buildable") and "skipped: P98.2 [!extern] blocks P98.1" in _out)
+
+# --- --show: the box-unpack incident (read from the header line, never from a line offset) --------------------
+_SHOW_PLAN = ("## P98\n\n"
+              "- [ ] **P98.1** [DOC] First box · tooling-only\n"
+              "  needs: P98.2\n"
+              "  l-neg1: none\n"
+              "  > note one\n"
+              "    an indented continuation line\n"
+              "  - [x] **P98.1.1** [DOC] Sub one · tooling-only\n"
+              "    > sub note\n"
+              "  - [ ] **P98.1.2** [DOC] Sub two · tooling-only\n"
+              "\n"
+              "  > a note after a blank line\n"
+              "\n"
+              "- [ ] **P98.2** [DOC] Second box · tooling-only\n"
+              "  > second note\n")
+_sl = _SHOW_PLAN.splitlines()
+with tempfile.TemporaryDirectory() as _ts:
+    _r = _plan_root(Path(_ts), _SHOW_PLAN)
+    _sc = m.build_ctx(_r)
+    record("show: read from the header line - the needs:/l-neg1: lines, every note and sub-box, nothing of the "
+           "next box", m.box_scope_text(_sc, "P98.1") == _sl[2:12])
+    record("show: a sub-box's scope ends at its next sibling",
+           m.box_scope_text(_sc, "P98.1.1") == _sl[7:9])
+    _rc, _out = _mode(["--show", "P98.1", "--root", str(_r)])
+    record("show: main prints the scope verbatim, then the status line and the commit line",
+           _rc == 0 and _out.splitlines()[:10] == _sl[2:12]
+           and "status: [ ] · unmet: P98.2 · roots: none" in _out and "commits naming P98.1: (no git history)" in _out)
+    record("show: an unknown id exits 2", _mode(["--show", "P98.9", "--root", str(_r)])[0] == 2)
+
+
+# --- --next parks: the parked set a real git dir holds, written by the build-loop.md §6 park procedure ---------
+def _pgit(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=True).stdout.strip()
+
+
+with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as _tp:
+    _repo = Path(_tp)
+    _pgit(_repo, "init", "-q", "-b", "main")
+    for _k, _v in (("user.email", "t@t.t"), ("user.name", "t"), ("core.autocrlf", "false"),
+                   ("commit.gpgsign", "false"), ("core.hooksPath", str(_repo / ".no-hooks"))):
+        _pgit(_repo, "config", _k, _v)
+    _PARK_PLAN = ("- [{m}] **P1.1** [DOC] The parked box · tooling-only\n"
+                  "- [ ] **P1.2** [DOC] Needs the parked box · tooling-only\n  needs: P1.1\n"
+                  "- [ ] **P1.3** [DOC] Outside the closure · tooling-only\n")
+    _plan_root(_repo, _PARK_PLAN.format(m=" "), "P1-x.md")
+    (_repo / "a.txt").write_bytes(b"base\n")
+    _pgit(_repo, "add", "-A")
+    _pgit(_repo, "commit", "-q", "-m", "docs: P1.1 first")
+    for _subject in ("docs: P1.10 other", "docs: P1.1.2 sub", "docs: close P1.1."):
+        _pgit(_repo, "commit", "-q", "--allow-empty", "-m", _subject)
+    # the §6 park procedure, step (1): mkdir -p <git common dir>/parked, git add -N the new files, then the header
+    # line and `git diff --binary HEAD -- <the box's paths>` into parked/<box-id>.patch
+    _base = _pgit(_repo, "rev-parse", "HEAD")
+    _pdir = _repo / _pgit(_repo, "rev-parse", "--git-common-dir") / "parked"
+    _pdir.mkdir(parents=True, exist_ok=True)
+    (_repo / "a.txt").write_bytes(b"box work\n")
+    (_repo / "new.txt").write_bytes(b"a new file\n")
+    _pgit(_repo, "add", "-N", "new.txt")
+    _diff = subprocess.run(["git", "-C", str(_repo), "diff", "--binary", "HEAD", "--", "a.txt", "new.txt"],
+                           capture_output=True, check=True).stdout
+    _patch = _pdir / "P1.1.patch"
+
+    def _park(reason: str, form: str = "# base {sha} reason {reason}") -> None:
+        _patch.write_bytes(form.format(sha=_base, reason=reason).encode("utf-8") + b"\n" + _diff)
+
+    _park("caged")
+    _parks, _probs = m._read_parks(_repo)
+    record("next: parks - a caged park the §6 recipe wrote is read back (box, reason, base, not released)",
+           _probs == [] and [(p.box_id, p.reason, p.base, p.released) for p in _parks] == [("P1.1", "caged", _base, False)])
+    record("next: parks - the header line leaves the patch valid for the §6 step (2) `git apply --check -R`",
+           subprocess.run(["git", "-C", str(_repo), "apply", "--check", "-R", str(_patch)],
+                          capture_output=True).returncode == 0)
+    _rc, _out = _mode(["--next", "--root", str(_repo)])
+    record("next: parks - a caged park and its needs: closure are skipped; the next box outside it is the target",
+           _rc == 0 and _out.startswith("target P1.3 ") and "skipped: P1.1 [parked caged] blocks P1.1, P1.2" in _out)
+    _park("ruling")
+    _rc, _out = _mode(["--next", "--root", str(_repo)])
+    record("next: parks - a ruling park stays a stop root until the Co-Pilot releases it",
+           _rc == 0 and _out.startswith("target P1.3 ") and "skipped: P1.1 [parked ruling]" in _out)
+    _released = _pdir / "P1.1.patch.released"
+    _patch.rename(_released)
+    _rc, _out = _mode(["--next", "--root", str(_repo)])
+    record("next: parks - a released park is answered first, with its reason, patch path and build order",
+           _rc == 0 and _out.splitlines()[:2] == [f"resume P1.1 (ruling, released) patch {_released}",
+                                                  "build order: P1.1"])
+    _released.rename(_patch)
+    _park("stop")
+    _rc, _out = _mode(["--next", "--root", str(_repo)])
+    record("next: parks - a stop park is resumed with no release (the owner's next start)",
+           _rc == 0 and _out.startswith("resume P1.1 (stop) patch "))
+    _plan_root(_repo, "- [!extern] **P1.1** [DOC] The parked box · tooling-only\n  > now an owner act\n"
+               + _PARK_PLAN.split("\n", 1)[1], "P1-x.md")
+    _rc, _out = _mode(["--next", "--root", str(_repo)])
+    record("next: parks - a stop park whose box a landed commit made [!extern] is skipped with its closure, never "
+           "resumed",
+           _rc == 0 and _out.startswith("target P1.3 ") and "skipped: P1.1 [!extern] blocks P1.1, P1.2" in _out)
+    _plan_root(_repo, _PARK_PLAN.format(m=" "), "P1-x.md")
+    _park("caged", "# parked-at {sha} reason {reason}")
+    record("next: parks - a first line off the §6 form (`# parked-at ...`) exits 2, never a dropped park",
+           _mode(["--next", "--root", str(_repo)])[0] == 2)
+    _park("caged")
+    (_pdir / "notes.txt").write_bytes(b"x\n")
+    _stray_rc = _mode(["--next", "--root", str(_repo)])[0]
+    (_pdir / "notes.txt").unlink()
+    record("next: parks - an entry that is no <id>.patch[.released] exits 2", _stray_rc == 2)
+    # a resumed box parked again beside its released file: the §6 step (1) deletes the released file first
+    (_pdir / "P1.1.patch.released").write_bytes(_patch.read_bytes())
+    _twice_rc, _twice = _mode(["--next", "--root", str(_repo)])[0], m._read_parks(_repo)[1]
+    (_pdir / "P1.1.patch.released").unlink()
+    record("next: parks - a box with two park files (a re-park beside its released file) exits 2 and names the §6 "
+           "step (1) rule", _twice_rc == 2 and len(_twice) == 1 and "parked twice" in _twice[0]
+           and "step (1)" in _twice[0])
+    _plan_root(_repo, _PARK_PLAN.format(m="x"), "P1-x.md")
+    _rc, _out = _mode(["--next", "--root", str(_repo)])
+    record("next: parks - a park whose box is [x] is reported stale and never resumed",
+           _rc == 0 and _out.startswith("target P1.2 ") and "stale park: P1.1 is [x]" in _out)
+    record("show: commits naming an id match it whole - P1.1 names neither P1.10 nor P1.1.2",
+           [ln.partition("\t")[2] for ln in m._commits_naming(_repo, "P1.1") or []]
+           == ["docs: P1.1 first", "docs: close P1.1."])
+
+# --- --report owner-acts: the phase's [!extern] acts by needs: closure, then the l-neg1: routes ----------------
+_acts, _routes = m.owner_acts(ctx(_seq(
+    box(bid="P3.1", **_EXT), _open("P4.1", needs=["P3.1"]), box(bid="P4.2", **_EXT), _open("P4.3", needs=["P4.2"]),
+    _open("P4.4", l_neg1=["same-push"]), _open("P4.5", needs=["P4.2"], l_neg1=["act P4.2"]),
+    _open("P4.6", l_neg1=["sweep-tail"]), box(bid="P4.7", l_neg1=["same-push"]), _open("P4.8", l_neg1=["none"]))), 4)
+record("report: owner-acts lists the phase's [!extern] boxes with the open boxes each blocks",
+       ("P4.2", ["P4.3", "P4.5"]) in _acts)
+record("report: owner-acts lists an earlier-phase [!extern] root reached through needs:, in plan order",
+       _acts[0] == ("P3.1", ["P4.1"]))
+record("report: the l-neg1: routes group same-push, act <id>, sweep-tail in that order ([x] and none left out)",
+       _routes == [("same-push", ["P4.4"]), ("act P4.2", ["P4.5"]), ("sweep-tail", ["P4.6"])])
+record("report: --report without --phase, and --phase without --report, exit 2",
+       _mode(["--report", "owner-acts"])[0] == 2 and _mode(["--phase", "4"])[0] == 2)
 
 # --- DOC checks: each catches its violation (negative fixtures; not green-by-vacuity) ---------
 def dctx(docs):

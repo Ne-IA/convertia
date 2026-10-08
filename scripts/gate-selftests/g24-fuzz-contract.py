@@ -198,10 +198,14 @@ record("dormancy: _box_checked on an unfindable box id ARMS (fail-closed)",
        m._box_checked("docs/plan/P7-office.md", "P99.999") is True)
 record("dormancy: a `[!]` (blocked) activating box is a LEGIBLE not-done state -> dormant tolerated",
        dormancy(p373_tree(), "[!]") == 0)
+record("dormancy: an [!extern] activating box is a LEGIBLE not-done state -> dormant tolerated",
+       dormancy(p373_tree(), "[!extern]") == 0)
+# [Test-Change: G48 legible extern marker — old-obsolete+new-correct, _format.md §2] the wiring leg reads a box the way
+# _box_checked does: an [!extern] activating box is a findable not-done box (a legal marker), never an unfindable id.
 record("dormancy: the committed DORMANT_UNTIL/DORMANT_FIXTURES wiring resolves in the REAL plans "
        "(each activating box id is findable - a renumber would strand-and-arm, this leg makes it loud)",
        all((Path(m.ROOT) / pf).is_file()
-           and re.search(r"^\s*- \[(x| |!)\] \*\*" + re.escape(box) + r"\*\*",
+           and re.search(r"^\s*- \[(x| |!|!extern)\] \*\*" + re.escape(box) + r"\*\*",
                          (Path(m.ROOT) / pf).read_text(encoding="utf-8"), flags=re.M)
            for pf, box in list(m.DORMANT_UNTIL.values()) + list(m.DORMANT_FIXTURES.values())))
 

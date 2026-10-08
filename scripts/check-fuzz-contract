@@ -79,12 +79,12 @@ DORMANT_FIXTURES = {
 def _box_checked(plan_file: str, box_id: str) -> bool:
     """True = the activating box is `[x]` OR cannot be resolved (a missing plan file / unfindable box
     id must ARM the target - fail-closed, never a silent waiver); False = the box is LEGIBLY not done
-    (`[ ]` unchecked or `[!]` blocked - both are provable not-done states, so tolerating the dormant
-    absence is semantically correct; only resolution FAILURES arm)."""
+    (`[ ]` unchecked, `[!]` blocked or `[!extern]` waiting on an owner act - all provable not-done
+    states, so tolerating the dormant absence is semantically correct; only resolution FAILURES arm)."""
     p = ROOT / plan_file
     if not p.is_file():
         return True
-    hit = re.search(r"^\s*- \[(x| |!)\] \*\*" + re.escape(box_id) + r"\*\*",
+    hit = re.search(r"^\s*- \[(x| |!|!extern)\] \*\*" + re.escape(box_id) + r"\*\*",
                     p.read_text(encoding="utf-8", errors="replace"), flags=re.M)
     if hit is None:
         return True

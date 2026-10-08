@@ -71,7 +71,7 @@ At session start and after every compaction — the summary is not a rule source
 1. [`CLAUDE.md`](../../CLAUDE.md) — the project rules (the harness loads it; re-read it here).
 2. **This file**, in full.
 3. [`_format.md`](../plan/_format.md) §2–§6 — markers, box anatomy, tags, `needs:` /
-   `unlocked-by:`, the selection algorithm.
+   `unlocked-by:` / `l-neg1:`, the selection algorithm.
 4. [`test-strategy.md`](test-strategy.md) §0, the §1 table, §4, §7, §8 and §10.
 5. [`roles-and-escalation.md`](roles-and-escalation.md) §3–§4 — the tags and the escalation
    triggers.
@@ -112,12 +112,20 @@ check is §6 stop (4):
 - **CI health:** the last `gh run list --workflow ci --branch main --event push` run: success →
   go; in progress → Steps 1–3 only until it concludes (Step 6); red → attribute it (Step 6);
   unreachable → warn and go.
-- **Parks:** list `$(git rev-parse --git-common-dir)/parked/` (§6 park procedure): a `.released`
-  park is re-selected (Step 1); the patch of a box that is `[x]` on `main` is deleted.
+- **Parks:** list `$(git rev-parse --git-common-dir)/parked/` (§6 park procedure): Step 1
+  re-selects a resumable park when its box is selectable; the patch of a box that is `[x]` on
+  `main` is deleted.
 
 ### Step 1 — Find the next buildable box
 
-The selection algorithm is `_format.md` §6; the range is `P1`..`P11`. The loop adds:
+The selection algorithm is `_format.md` §6; the range is `P1`..`P11`.
+`python3 -P scripts/plan-lint --next` computes it (plan data plus the parked set), and its
+answer is the selection: a parked box to resume first or the target, with its build order.
+Exit 1 is §6 stop (2) (nothing buildable); exit 2 (a malformed plan or parked set) stops the
+loop like a Step 0 mismatch (§6 stop (4)); `plan-lint --report owner-acts --phase <n>` prints
+the batch. A disagreement between `_format.md` §6 and the tool is a `plan-lint` defect:
+`_format.md` §6 wins, and the loop escalates it (the script is caged, roles-and-escalation
+§4(g)). The loop adds:
 
 - **An `[!extern]` box in the target's `needs:` closure** → one Co-Pilot line (§8), collect the
   `[!extern]` box into its phase's owner-act batch, and continue with the next open box outside
@@ -126,15 +134,20 @@ The selection algorithm is `_format.md` §6; the range is `P1`..`P11`. The loop 
   blocks the whole successor phase (test-strategy §11.3).
 - **`[!]`** → read its note, skip, report it at the phase end.
 - **Parked** (a `parked/<box-id>.patch` file under the git dir, §6 park procedure) →
-  skip it and its `needs:` closure like an `[!extern]` block; it is re-selected once
-  the Co-Pilot releases the park.
+  skip it and its `needs:` closure like an `[!extern]` block, unless it is resumable: a
+  `<box-id>.patch.released` file (the Co-Pilot released it) or a `stop` park is re-selected
+  first, with its build order, when its box is selectable (`_format.md` §6 step 4: open and
+  in range, its own `needs:` closure clear, a parent with a buildable sub-box); otherwise it
+  is skipped with its roots.
 - **Auto-unlock scan**, every iteration: flip each `[!]` box whose `unlocked-by:` box is `[x]` to
   `[ ]` (`_format.md` §5.2); the flips ride in the next box commit (Step 7).
 - **Nothing buildable** → §6 stop (2).
 
 ### Step 2 — Unpack the box anatomy
 
-Read the header line, prose, every sub-box and every note in full before deciding anything.
+Read the box with `python3 -P scripts/plan-lint --show <id>` — header line,
+`needs:`/`unlocked-by:`/`l-neg1:` lines, every `>`-note and sub-box, in full — never from a
+line offset, before deciding anything.
 Sub-boxes are built top to bottom; one that meets the DoD on its own may be its own iteration
 and commit, and the top box flips `[x]` in the commit that completes its last sub-box.
 
@@ -455,7 +468,8 @@ whole diff and makes the box commit with `Dual-Review:` and `L-neg1-ack: owner`;
 is the park's answer. The loop never writes that trailer, and deletes the patch once the box is
 `[x]` (Step 0).
 The preference for a caged part: a precondition box (`needs:` on an `[!extern]` box), then a
-`caged` park, then a pre-declared sweep tail (§5 (b)).
+`caged` park, then a pre-declared sweep tail (§5 (b)). A box's `l-neg1:` line (`_format.md`
+§5.3) pre-declares which of the three it takes.
 
 ---
 
@@ -536,7 +550,9 @@ On a stop it leaves a clean tree, posts the §8 line and schedules no next itera
   below and keeps building outside the box's `needs:` closure.
 - **A caged part** (§3 Step 7).
 
-**Park procedure (a scoped stop for one box).** (1)
+**Park procedure (a scoped stop for one box).** (1) Delete the box's
+`parked/<box-id>.patch.released` if one is left (a resumed box's re-park supersedes it; a box has
+one park file, and `plan-lint --next` exits 2 on two),
 `mkdir -p "$(git rev-parse --git-common-dir)/parked"`, `git add -N` the box's new files, then
 write `git diff --binary HEAD -- <the box's paths>` to
 `$(git rev-parse --git-common-dir)/parked/<box-id>.patch`, first line
@@ -550,7 +566,8 @@ Co-Pilot line (§8): `Co-Pilot: park <box-id> — <reason> — patch <absolute p
 buildable remains, stop. The Co-Pilot answers with a landed commit — a split of the box, a ruling
 on the disputed point, or a `>` note naming the points narrowed rounds may examine — then renames
 the file to `<box-id>.patch.released`. The loop re-selects the box, may `git apply` the released
-patch as its starting point, restarts at R1, and deletes the released file when the box commits.
+patch as its starting point, restarts at R1, and deletes the released file when the box commits
+or is parked again (step (1)).
 The reason field: `ruling` (G1 non-convergence, a spec contradiction, a gate quarantine) is
 answered as above; `caged` is answered by the Co-Pilot's box commit (§3 Step 7); `stop` runs
 steps (1)–(3), then the loop ends, and the next start re-selects the box with no release.

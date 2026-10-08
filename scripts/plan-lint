@@ -4,9 +4,9 @@
 A single stdlib-only linter over the P0 doc set (CLAUDE.md, SSOT, docs/spec/, docs/security/,
 docs/process/, docs/plan/). It enforces TWO families of checks:
 
-  * FORMAT checks (_format.md §7) — the plan-box grammar: marker validity, sub-box consistency,
-    header well-formedness, tag validity, reference resolution, needs:-targets exist + acyclic,
-    annotation pairing, numbering gap-freeness.
+  * FORMAT checks (_format.md §7) — the plan-box grammar: box parse completeness, marker validity,
+    sub-box consistency, header well-formedness, tag validity, reference resolution, needs:-targets
+    exist + acyclic, annotation pairing, the l-neg1: route grammar, numbering gap-freeness.
   * DOC checks 1..33 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
     hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
     parity, the G68 doc-graph leg, the G69 struct-map leg, the check-27 gate-posture-transition leg, etc.
@@ -17,9 +17,19 @@ silently. Check 10 (the P6.4/P6.5 ffmpeg manifests) is the one target-absent che
 registered no-op; checks 3, 4, 6, 7 and 9 scan whatever their scope holds and have no single target;
 check 31 reads the plan, whose absence exits 2. This file is L(-1) security-critical (G71).
 
-Usage: plan-lint [--check <id>] [--json] [--quiet] [--max-per-check N] [--root <dir>]
+Three read-only modes answer from the same plan data (build-loop.md Steps 1-2): --next computes the
+_format.md §6 selection over the plan plus the parked set (<git common dir>/parked/, the build-loop.md
+§6 park procedure); --show prints one box from its header line through its scope, sub-boxes included;
+--report owner-acts prints a phase's [!extern] owner acts by needs: closure and its l-neg1: routes.
+A mode first runs the selection-relevant format checks and exits 2 on any finding, so it never
+answers over a malformed plan.
+
+Usage: plan-lint [--check <id> | --next | --show <id> | --report owner-acts --phase N]
+                 [--json] [--quiet] [--max-per-check N] [--root <dir>]
 Exit:  0 = clean; 1 = >=1 finding (a missing doc-check target included); 2 = no plan box found
        (docs/plan/P*.md) / a usage error.
+       A mode: 0 = answered or converged; 1 = nothing buildable; 2 = a usage error, a malformed plan
+       or a malformed parked set.
 """
 from __future__ import annotations
 
@@ -48,7 +58,7 @@ LEGAL_TAGS = {"DOC", "GATE", "CI", "RUST", "UI", "BUILD", "TEST", "RELEASE"}
 # `- <marker> **P<phase>.<n>[.<m>]** <rest>` — the box header; <rest> = `[Tag] Title · refs`
 BOX_RE = re.compile(r"^(?P<indent> *)- \[(?P<marker>[^\]]*)\] \*\*(?P<bid>P\d+(?:\.\d+)+)\*\* (?P<rest>.*)$")
 HEADER_REST_RE = re.compile(r"^\[(?P<tags>[^\]]+)\] (?P<title>.+?)(?: · (?P<refs>.+))?$")
-ANNOT_RE = re.compile(r"^(?P<indent> *)(?P<kind>needs|unlocked-by): *(?P<val>.+)$")
+ANNOT_RE = re.compile(r"^(?P<indent> *)(?P<kind>needs|unlocked-by|l-neg1): *(?P<val>.+)$")
 NOTE_RE = re.compile(r"^(?P<indent> *)> ?(?P<text>.*)$")
 REF_SECTION_RE = re.compile(r"§[0-9][0-9A-Za-z.]*")
 REF_GATE_RE = re.compile(r"\bG\d+[a-z]?\b")
@@ -78,6 +88,7 @@ class Box:
     needs: list[str] = field(default_factory=list)
     unlocked_by: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    l_neg1: list[str] = field(default_factory=list)   # one raw entry per `l-neg1:` line (_format.md §5.3)
 
 
 @dataclass
@@ -137,6 +148,9 @@ def load_plan(root: Path) -> tuple[list[Box], dict[str, Box], list[Path]]:
                 continue
             ma = ANNOT_RE.match(line)
             if ma and len(ma.group("indent")) >= current.indent:
+                if ma.group("kind") == "l-neg1":
+                    current.l_neg1.append(ma.group("val").strip())   # never comma-split: a joined pair fails the route grammar
+                    continue
                 vals = [v.strip() for v in ma.group("val").split(",") if v.strip()]
                 (current.needs if ma.group("kind") == "needs" else current.unlocked_by).extend(vals)
                 continue
@@ -299,6 +313,20 @@ def fmt_reference_resolution(ctx: Ctx) -> list[Finding]:
     return out
 
 
+def _plan_graph(ctx: Ctx) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """(pure) The sub-box relation: child id -> parent id, and parent id -> its child ids in document order. A
+    sub-box's id extends its parent's by one dotted segment; a child whose parent id is not a box has no parent."""
+    parent_of: dict[str, str] = {}
+    children: dict[str, list[str]] = {}
+    for b in ctx.boxes:
+        if len(b.num) >= 2:
+            pid = "P" + str(b.phase) + "." + ".".join(map(str, b.num[:-1]))
+            if pid in ctx.by_id:
+                parent_of[b.box_id] = pid
+                children.setdefault(pid, []).append(b.box_id)
+    return parent_of, children
+
+
 def fmt_needs_targets(ctx: Ctx) -> list[Finding]:
     out = []
     for b in ctx.boxes:
@@ -312,14 +340,7 @@ def fmt_needs_targets(ctx: Ctx) -> list[Finding]:
     # own `needs:` on the parent reads that BODY too. The ordinary "sub-box needs its parent" stays clean, while a
     # sub-box that needs a box whose closure needs the parent (the P4.35 -> P4.35.1 -> P4.83 -> P4.35 deadlock,
     # 2026-09-15) or a box that needs the sub-box while the parent needs that box is the cycle it really is.
-    parent_of: dict[str, str] = {}
-    children: dict[str, list[str]] = {}
-    for b in ctx.boxes:
-        if len(b.num) >= 2:
-            pid = "P" + str(b.phase) + "." + ".".join(map(str, b.num[:-1]))
-            if pid in ctx.by_id:
-                parent_of[b.box_id] = pid
-                children.setdefault(pid, []).append(b.box_id)
+    parent_of, children = _plan_graph(ctx)
     body = "#body"
 
     def edges(node: str) -> list[str]:
@@ -377,18 +398,58 @@ def fmt_sub_box_consistency(ctx: Ctx) -> list[Finding]:
         if b.indent % 2 != 0:
             out.append(Finding("format:sub-box-consistency", b.file, b.lineno,
                                f"{b.box_id}: odd indentation ({b.indent} spaces; sub-boxes indent 2/level)"))
-    # [x] top box => no open [ ]/[!] child (AND-of-children): a sub-box's id extends its parent's
-    parent_of: dict[str, Box] = {}
-    for b in ctx.boxes:
-        if len(b.num) >= 2:
-            pid = "P" + str(b.phase) + "." + ".".join(map(str, b.num[:-1]))
-            if pid in ctx.by_id:
-                parent_of[b.box_id] = ctx.by_id[pid]
-    for child_id, parent in parent_of.items():
-        child = ctx.by_id[child_id]
-        if parent.raw_marker == "x" and child.raw_marker in (" ", "!"):
+    # [x] top box => no [ ]/[!]/[!extern] child (AND-of-children, an [!extern] sub-box included): a sub-box's id
+    # extends its parent's
+    parent_of, _ = _plan_graph(ctx)
+    for child_id, pid in parent_of.items():
+        child, parent = ctx.by_id[child_id], ctx.by_id[pid]
+        if parent.raw_marker == "x" and child.raw_marker in (" ", "!", "!extern"):
             out.append(Finding("format:sub-box-consistency", child.file, child.lineno,
                                f"{parent.box_id} is [x] but child {child_id} is [{child.raw_marker}] (AND-of-children)"))
+    return out
+
+
+# the `l-neg1:` caged-file route (_format.md §5.3): one value per box, the `act` target captured
+_LNEG1_ROUTE_RE = re.compile(r"^(?:same-push|sweep-tail|none|act (P\d+(?:\.\d+)+))$")
+
+
+def fmt_l_neg1_annotation(ctx: Ctx) -> list[Finding]:
+    """The `l-neg1:` route grammar (_format.md §5.3): at most one line per box, its value one of `same-push`,
+    `sweep-tail`, `none` or `act <box-id>`; an `act` target exists, is `[!extern]` (or `[x]` once landed) and is
+    in the box's own `needs:` (a real edge, so acyclicity and the selection see it); an `[!extern]` box - the
+    owner act itself - carries none."""
+    out = []
+    for b in ctx.boxes:
+        if not b.l_neg1:
+            continue
+        if b.raw_marker == "!extern":
+            out.append(Finding("format:l-neg1-annotation", b.file, b.lineno,
+                               f"{b.box_id}: an [!extern] box carries no l-neg1: (it is an owner act, not a routed box)"))
+        if len(b.l_neg1) > 1:
+            out.append(Finding("format:l-neg1-annotation", b.file, b.lineno,
+                               f"{b.box_id}: {len(b.l_neg1)} l-neg1: lines (at most one route per box)"))
+        for val in b.l_neg1:
+            mr = _LNEG1_ROUTE_RE.fullmatch(val)
+            if mr is None:
+                out.append(Finding("format:l-neg1-annotation", b.file, b.lineno,
+                                   f"{b.box_id}: l-neg1: {val!r} is not a route (same-push | sweep-tail | none | "
+                                   f"act P<id>, _format.md §5.3)"))
+                continue
+            target = mr.group(1)
+            if target is None:
+                continue
+            t = ctx.by_id.get(target)
+            if t is None:
+                out.append(Finding("format:l-neg1-annotation", b.file, b.lineno,
+                                   f"{b.box_id}: l-neg1: act {target} — no such box"))
+            elif t.raw_marker not in ("!extern", "x"):
+                out.append(Finding("format:l-neg1-annotation", b.file, b.lineno,
+                                   f"{b.box_id}: l-neg1: act {target} is [{t.raw_marker}] (the act is an [!extern] "
+                                   f"owner-act box, or [x] once landed)"))
+            if target not in b.needs:
+                out.append(Finding("format:l-neg1-annotation", b.file, b.lineno,
+                                   f"{b.box_id}: l-neg1: act {target} is not in the box's needs: (the act is a "
+                                   f"real edge)"))
     return out
 
 
@@ -2310,6 +2371,7 @@ FORMAT_CHECKS = {
     "format:reference-resolution": fmt_reference_resolution,
     "format:needs-targets-exist-and-acyclic": fmt_needs_targets,
     "format:annotation-pairing": fmt_annotation_pairing,
+    "format:l-neg1-annotation": fmt_l_neg1_annotation,
     "format:sub-box-consistency": fmt_sub_box_consistency,
     "format:numbering-gap-free": fmt_numbering_gap_free,
 }
@@ -2399,15 +2461,468 @@ def build_ctx(root: Path) -> Ctx:
                docs=load_docs(root), gate_ids=_gate_ids(root))
 
 
+# =============================================================================================
+#  Read-only modes (build-loop.md Steps 1-2): --next, --show <id>, --report owner-acts --phase N
+# =============================================================================================
+# The format checks a mode runs first - the ones whose data the selection reads: every box parsed, legal markers,
+# acyclic resolvable needs:, paired unlocked-by:, the sub-box AND, unique ids, the l-neg1: routes.
+_MODE_PRECHECKS = ("format:box-parse-completeness", "format:marker-validity", "format:needs-targets-exist-and-acyclic",
+                   "format:annotation-pairing", "format:sub-box-consistency", "format:numbering-gap-free",
+                   "format:l-neg1-annotation")
+_ROOT_MARKERS = ("!extern", "!")
+# the build-loop.md §6 park procedure's file name and first line
+_PARK_NAME_RE = re.compile(r"(?P<bid>P\d+(?:\.\d+)+)\.patch(?P<released>\.released)?")
+_PARK_HEADER_RE = re.compile(r"# base (?P<base>[0-9a-f]{7,64}) reason (?P<reason>caged|ruling|stop)")
+_SHOW_COMMITS = 5
+_REPORT_IDS = 8
+
+
+@dataclass
+class Park:
+    box_id: str
+    reason: str            # caged | ruling | stop - the header's reason field
+    base: str              # the HEAD sha the patch was cut against
+    released: bool         # `<id>.patch.released`: the Co-Pilot answered the park
+    path: str
+
+    @property
+    def resumable(self) -> bool:
+        """A released park, or a `stop` park (the next start re-selects it with no release, build-loop.md §6)."""
+        return self.released or self.reason == "stop"
+
+
+@dataclass
+class NextAnswer:
+    target: str | None                                                   # the selected top-level box, or None
+    order: list[str] = field(default_factory=list)                       # unmet prerequisites first, the step last
+    blocked: list[tuple[str, set[str]]] = field(default_factory=list)    # (skipped box, its stop roots), in order
+    unlocks: list[tuple[str, list[str]]] = field(default_factory=list)   # ([!] box, its [x] unlocked-by: targets)
+    converged: bool = False                                              # every P1..P11 box is [x]
+    resume: str | None = None                                            # a parked box to resume first
+    waiting: list[str] = field(default_factory=list)                     # nothing buildable: the range's [!]/[!extern]
+
+
+def _effective_marker(b: Box, by_id: dict[str, Box]) -> str:
+    """(pure) A `[!]` box whose every `unlocked-by:` target is `[x]` counts as open: the build-loop.md Step 1
+    auto-unlock scan flips it in the next box commit (_format.md §5.2)."""
+    if b.raw_marker == "!" and b.unlocked_by and all(u in by_id and by_id[u].raw_marker == "x" for u in b.unlocked_by):
+        return " "
+    return b.raw_marker
+
+
+def _plan_key(b: Box) -> tuple[int, str, int]:
+    """Plan order: numeric phase, then file, then document order - never the file-name order (P10 sorts before P2)."""
+    return b.phase, b.file, b.lineno
+
+
+def _stop_roots(ctx: Ctx, graph: tuple[dict[str, str], dict[str, list[str]]], start: str, *,
+                done_node: bool = True, held: frozenset[str] = frozenset()) -> set[str]:
+    """(pure) The stop roots reached from DONE(start), or BODY(start) when `done_node` is False, over unmet edges of
+    the fmt_needs_targets node model: DONE(x) needs BODY(x) and every child of x; BODY(x) needs each `needs:` target
+    (its DONE, or its BODY when the target is x's own parent) and BODY(parent(x)). A reached `[x]` box ends its
+    branch; a reached `[!extern]`/`[!]` box, a held (parked, not resumable) box or an open P0 box is a root."""
+    parent_of, children = graph
+    by_id = ctx.by_id
+    roots: set[str] = set()
+    seen: set[tuple[str, bool]] = set()
+    stack = [(start, done_node)]
+    while stack:
+        bid, is_done = stack.pop()
+        if (bid, is_done) in seen:
+            continue
+        seen.add((bid, is_done))
+        b = by_id[bid]
+        if bid != start:
+            mk = _effective_marker(b, by_id)
+            if mk == "x":
+                continue
+            if mk in _ROOT_MARKERS or bid in held or b.phase == 0:
+                roots.add(bid)
+                continue
+        if is_done:
+            stack.append((bid, False))
+            stack.extend((c, True) for c in children.get(bid, []))
+        else:
+            stack.extend((n, parent_of.get(bid) != n) for n in b.needs if n in by_id)
+            if bid in parent_of:
+                stack.append((parent_of[bid], False))
+    return roots
+
+
+def _build_order(ctx: Ctx, graph: tuple[dict[str, str], dict[str, list[str]]], step: str) -> list[str]:
+    """(pure) DECISION C (_format.md §5.1): a post-order over the step's unmet prerequisites - its own `needs:`, the
+    `needs:` it inherits from its parent, and a prerequisite's open children - so every prerequisite precedes the
+    box needing it and the step comes last; followed across phases (test-strategy §11.3)."""
+    parent_of, children = graph
+    by_id = ctx.by_id
+    order: list[str] = []
+    seen: set[str] = set()
+
+    def visit(bid: str) -> None:
+        if bid in seen or _effective_marker(by_id[bid], by_id) == "x":
+            return
+        seen.add(bid)
+        pid = parent_of.get(bid)
+        inherited = by_id[pid].needs if pid is not None else []
+        for n in [*by_id[bid].needs, *inherited]:
+            if n in by_id and n != pid:
+                visit(n)
+        for c in children.get(bid, []):
+            if _effective_marker(by_id[c], by_id) == " ":
+                visit(c)
+        order.append(bid)
+
+    visit(step)
+    return order
+
+
+def select_next(ctx: Ctx, parked: dict[str, bool] | None = None) -> NextAnswer:
+    """(pure) The _format.md §6 selection over plan data plus the parked set (`parked`: box id -> resumable, read
+    from git by _read_parks). One rule, step_of, tests every box: it is selectable when it is open, in the loop's
+    range (P1..P11) and not held, its own closure (BODY) reaches no stop root and, for a parent, an open sub-box has a
+    clear closure (an [!extern]/[!] sub-box is skipped, the sub-boxes after it stay buildable); its step is then the
+    box or that sub-box, else it is skipped with its roots (the box itself when it is not open, out of range or held).
+    A resumable park the rule selects is answered first, in plan order, with its step's build order; the phase
+    boundary does not gate it (a park beyond the active phase is a DECISION C early build, test-strategy §11.3).
+    Otherwise the candidates are the open top-level boxes of P1..active - the active phase being the lowest phase
+    >= 2 whose phase-end sweep box is not [x] - in plan order. The answer carries the build order, the skipped boxes
+    before the target, each once, and the pending unlocks."""
+    graph = _plan_graph(ctx)
+    parent_of, children = graph
+    by_id = ctx.by_id
+
+    def eff(bid: str) -> str:
+        return _effective_marker(by_id[bid], by_id)
+
+    unlocks = [(b.box_id, list(b.unlocked_by)) for b in ctx.boxes if b.raw_marker == "!" and eff(b.box_id) == " "]
+    in_range = [b for b in ctx.boxes if b.phase >= 1]
+    if all(b.raw_marker == "x" for b in in_range):
+        return NextAnswer(target=None, unlocks=unlocks, converged=True)
+    live = {bid: r for bid, r in (parked or {}).items() if bid in by_id and by_id[bid].raw_marker != "x"}
+    held = frozenset(bid for bid, r in live.items() if not r)
+
+    def step_of(bid: str) -> tuple[str | None, set[str]]:
+        """(the box's step, no roots) when the box is selectable, else (None, the roots that block it)."""
+        if eff(bid) != " " or by_id[bid].phase == 0 or bid in held:
+            return None, {bid}
+        body_roots = _stop_roots(ctx, graph, bid, done_node=False, held=held)
+        if body_roots:
+            return None, body_roots
+        open_kids = [k for k in children.get(bid, []) if eff(k) != "x"]
+        if not open_kids:
+            return bid, set()
+        kid_roots: set[str] = set()
+        for k in open_kids:
+            if eff(k) in _ROOT_MARKERS or k in held:
+                kid_roots.add(k)
+                continue
+            roots = _stop_roots(ctx, graph, k, held=held)
+            if not roots:
+                return k, set()
+            kid_roots |= roots
+        return None, kid_roots
+
+    blocked: list[tuple[str, set[str]]] = []
+    for bid in sorted((i for i, r in live.items() if r), key=lambda i: _plan_key(by_id[i])):
+        step, roots = step_of(bid)
+        if step is None:
+            blocked.append((bid, roots))
+            continue
+        return NextAnswer(target=bid, order=_build_order(ctx, graph, step), blocked=blocked, unlocks=unlocks,
+                          resume=bid)
+    open_sweeps = [b.phase for b in ctx.boxes
+                   if b.phase >= 2 and b.title.startswith(_SWEEP_TITLE) and b.raw_marker != "x"]
+    active = min(open_sweeps) if open_sweeps else max(b.phase for b in ctx.boxes)
+    cands = sorted((b for b in in_range if b.phase <= active and len(b.num) == 1 and eff(b.box_id) == " "),
+                   key=_plan_key)
+    listed = {bid for bid, _ in blocked}       # a resumable park skipped above is reported once, never re-listed
+    for c in cands:
+        if c.box_id in listed:
+            continue
+        step, roots = step_of(c.box_id)
+        if step is None:
+            blocked.append((c.box_id, roots))
+            continue
+        return NextAnswer(target=c.box_id, order=_build_order(ctx, graph, step), blocked=blocked, unlocks=unlocks)
+    waiting = [b.box_id for b in sorted(in_range, key=_plan_key)
+               if len(b.num) == 1 and b.phase <= active and eff(b.box_id) in _ROOT_MARKERS]
+    return NextAnswer(target=None, blocked=blocked, unlocks=unlocks, waiting=waiting)
+
+
+def _read_parks(root: Path) -> tuple[list[Park], list[str]]:
+    """The parked set the build-loop.md §6 park procedure writes: `<git common dir>/parked/<box-id>.patch`, first line
+    `# base <HEAD sha> reason <caged|ruling|stop>`, renamed `<box-id>.patch.released` when the Co-Pilot answers it.
+    Returns (parks, problems): an entry of another name, a malformed first line, a box parked twice (a box has one
+    park file: a re-park deletes its released file first) or an unreadable git dir is a problem (a mode exits 2),
+    never a silently dropped park. A root without a `.git` entry holds no parks (never the parks of an enclosing
+    repository)."""
+    if not (root / ".git").exists():
+        return [], []
+    try:
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        return [], [f"git rev-parse --git-common-dir could not run ({e})"]
+    if r.returncode != 0:
+        return [], [f"git rev-parse --git-common-dir failed: {r.stderr.strip()[:200]}"]
+    gd = Path(r.stdout.strip())
+    pdir = (gd if gd.is_absolute() else root / gd) / "parked"
+    if not pdir.exists():
+        return [], []
+    if not pdir.is_dir():
+        return [], [f"{pdir} is not a directory"]
+    parks: list[Park] = []
+    problems: list[str] = []
+    seen: dict[str, str] = {}
+    for f in sorted(pdir.iterdir()):
+        mn = _PARK_NAME_RE.fullmatch(f.name)
+        if mn is None or not f.is_file():
+            problems.append(f"{f}: not a park (`<box-id>.patch` or `<box-id>.patch.released`)")
+            continue
+        try:
+            with f.open("rb") as fh:
+                head = fh.readline(512).decode("utf-8", errors="replace").rstrip("\r\n")
+        except OSError as e:
+            problems.append(f"{f}: unreadable ({e})")
+            continue
+        mh = _PARK_HEADER_RE.fullmatch(head)
+        if mh is None:
+            problems.append(f"{f}: first line {head[:80]!r} is not `# base <HEAD sha> reason <caged|ruling|stop>`")
+            continue
+        bid = mn.group("bid")
+        if bid in seen:
+            problems.append(f"{f}: {bid} is parked twice (also {seen[bid]}); a box has one park file - a re-park "
+                            "deletes its released file first (build-loop.md §6 park procedure step (1))")
+            continue
+        seen[bid] = f.name
+        parks.append(Park(box_id=bid, reason=mh.group("reason"), base=mh.group("base"),
+                          released=mn.group("released") is not None, path=str(f)))
+    return parks, problems
+
+
+def box_scope_text(ctx: Ctx, bid: str) -> list[str]:
+    """The box's lines verbatim: its header line through the end of its scope under load_plan's scope rule (its
+    annotation and note lines, indented continuation lines and blank lines), its sub-boxes and their scopes
+    included; trailing blank lines dropped. A header that is not this box or one of its sub-boxes ends it."""
+    b = ctx.by_id[bid]
+    lines = (ctx.root / b.file).read_text(encoding="utf-8", errors="replace").splitlines()
+    out = [lines[b.lineno - 1]]
+    indent = b.indent
+    for line in lines[b.lineno:]:
+        mb = BOX_RE.match(line)
+        if mb:
+            if not mb.group("bid").startswith(bid + "."):
+                break
+            indent = len(mb.group("indent"))
+            out.append(line)
+            continue
+        ma, mn = ANNOT_RE.match(line), NOTE_RE.match(line)
+        if ((ma and len(ma.group("indent")) >= indent) or (mn and len(mn.group("indent")) >= indent)
+                or line.strip() == "" or line.startswith(" " * (indent + 1))):
+            out.append(line)
+            continue
+        break
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
+def _commits_naming(root: Path, bid: str) -> list[str] | None:
+    """`<short sha>\\t<subject>` of every commit whose subject names `bid`, oldest first - never a longer id (P4.3
+    matches neither P4.33 nor P4.3.1); None without a git work tree at root or when git log fails."""
+    if not (root / ".git").exists():
+        return None
+    try:
+        r = subprocess.run(["git", "-C", str(root), "log", "--reverse", "--format=%h%x09%s"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    pat = re.compile(r"(?<![\w.])" + re.escape(bid) + r"(?![\w]|\.\d)")
+    return [ln for ln in r.stdout.splitlines() if pat.search(ln.partition("\t")[2])]
+
+
+def owner_acts(ctx: Ctx, phase: int) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
+    """(pure) The phase's owner-act batch: (1) every `[!extern]` box of the phase plus every `[!extern]` stop root the
+    phase's open boxes reach through their `needs:` closure, each with the open phase boxes it blocks, in plan
+    order; (2) the phase's not-done boxes grouped by `l-neg1:` route - `same-push`, each `act <id>`, `sweep-tail`."""
+    graph = _plan_graph(ctx)
+    by_id = ctx.by_id
+    in_phase = sorted((b for b in ctx.boxes if b.phase == phase), key=_plan_key)
+    blocks: dict[str, list[str]] = {b.box_id: [] for b in in_phase if b.raw_marker == "!extern"}
+    for b in in_phase:
+        if _effective_marker(b, by_id) != " ":
+            continue
+        for r in _stop_roots(ctx, graph, b.box_id):
+            if by_id[r].raw_marker == "!extern":
+                blocks.setdefault(r, []).append(b.box_id)
+    acts = sorted(blocks.items(), key=lambda kv: _plan_key(by_id[kv[0]]))
+    groups: dict[str, list[str]] = {}
+    for b in in_phase:
+        if b.raw_marker != "x" and b.l_neg1 and b.l_neg1[0] != "none":
+            groups.setdefault(b.l_neg1[0], []).append(b.box_id)
+
+    def route_key(route: str) -> tuple:
+        if route == "same-push":
+            return (0,)
+        if route == "sweep-tail":
+            return (2,)
+        return (1, *_plan_key(by_id[route.split(" ", 1)[1]]))
+
+    return acts, sorted(groups.items(), key=lambda kv: route_key(kv[0]))
+
+
+def _short(text: str, width: int = 90) -> str:
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def _parks_or_fail(ctx: Ctx) -> dict[str, Park] | None:
+    """The parked set keyed by box id, or None after printing every problem (a mode exits 2)."""
+    parks, problems = _read_parks(ctx.root)
+    problems += [f"{p.path}: {p.box_id} names no plan box" for p in parks if p.box_id not in ctx.by_id]
+    if problems:
+        for p in problems:
+            print(f"[plan-lint] parked set: {p}", file=sys.stderr)
+        return None
+    return {p.box_id: p for p in parks}
+
+
+def _mode_next(ctx: Ctx) -> int:
+    parks = _parks_or_fail(ctx)
+    if parks is None:
+        return 2
+    by_id = ctx.by_id
+    live = {bid: p for bid, p in parks.items() if by_id[bid].raw_marker != "x"}
+    ans = select_next(ctx, {bid: p.resumable for bid, p in live.items()})
+    if ans.converged:
+        print("converged: every P1..P11 box is [x]")
+    elif ans.target is None:
+        print("nothing buildable")
+    else:
+        if ans.resume is not None:
+            p = live[ans.resume]
+            print(f"resume {p.box_id} ({p.reason}{', released' if p.released else ''}) patch {p.path}")
+        else:
+            t = by_id[ans.target]
+            print(f"target {t.box_id} [{','.join(t.tags)}] {t.title}")
+        print(f"build order: {' -> '.join(ans.order)}")
+        for bid in ans.order:
+            if by_id[bid].l_neg1:
+                print(f"l-neg1: {bid} {by_id[bid].l_neg1[0]}")
+    skipped: dict[str, list[str]] = {}
+    for bid, roots in ans.blocked:
+        for r in sorted(roots, key=lambda i: _plan_key(by_id[i])):
+            skipped.setdefault(r, []).append(bid)
+    for r, ids in skipped.items():
+        label = f"[parked {live[r].reason}]" if r in live and not live[r].resumable else f"[{by_id[r].raw_marker}]"
+        print(f"skipped: {r} {label} blocks {', '.join(ids)}")
+    for bid in ans.waiting:
+        print(f"waiting: {bid} [{by_id[bid].raw_marker}] {_short(by_id[bid].title)}")
+    for bid, releasers in ans.unlocks:
+        print(f"unlock: {bid} ({', '.join(releasers)} {'is' if len(releasers) == 1 else 'are'} [x])")
+    for bid, p in parks.items():
+        if bid not in live:
+            print(f"stale park: {bid} is [x] ({p.path})")
+    return 1 if ans.target is None and not ans.converged else 0
+
+
+def _mode_show(ctx: Ctx, bid: str) -> int:
+    if bid not in ctx.by_id:
+        print(f"[plan-lint] --show: no such box {bid}", file=sys.stderr)
+        return 2
+    parks = _parks_or_fail(ctx)
+    if parks is None:
+        return 2
+    by_id = ctx.by_id
+    b = by_id[bid]
+    for line in box_scope_text(ctx, bid):
+        print(line)
+    graph = _plan_graph(ctx)
+    pid = graph[0].get(bid)
+    unmet = list(dict.fromkeys(n for n in [*b.needs, *(by_id[pid].needs if pid else [])]
+                               if n in by_id and _effective_marker(by_id[n], by_id) != "x"))
+    held = frozenset(i for i, p in parks.items() if by_id[i].raw_marker != "x" and not p.resumable and i != bid)
+    roots = set() if b.raw_marker == "x" else _stop_roots(ctx, graph, bid, held=held)
+    status = f"[{b.raw_marker}]"
+    if _effective_marker(b, by_id) != b.raw_marker:
+        status += " (unlocked: every unlocked-by: is [x])"
+    if bid in parks:
+        p = parks[bid]
+        status += f" parked {p.reason}{' released' if p.released else ''}"
+    print(f"status: {status} · unmet: {', '.join(unmet) or 'none'} · "
+          f"roots: {', '.join(sorted(roots, key=lambda i: _plan_key(by_id[i]))) or 'none'}")
+    commits = _commits_naming(ctx.root, bid)
+    if commits is None:
+        print(f"commits naming {bid}: (no git history)")
+    elif not commits:
+        print(f"commits naming {bid}: (none found)")
+    else:
+        shown = commits[-_SHOW_COMMITS:]
+        print(f"commits naming {bid}: {len(commits)}" + (f", the last {len(shown)}" if len(shown) < len(commits) else ""))
+        for c in shown:
+            print(f"  {c}")
+    return 0
+
+
+def _mode_report(ctx: Ctx, phase: int) -> int:
+    if not any(b.phase == phase for b in ctx.boxes):
+        print(f"[plan-lint] --report: no box in phase P{phase}", file=sys.stderr)
+        return 2
+    by_id = ctx.by_id
+    acts, routes = owner_acts(ctx, phase)
+    print(f"owner acts P{phase}:")
+    if not acts:
+        print("  (none)")
+    for rid, ids in acts:
+        r = by_id[rid]
+        more = f" (+{len(ids) - _REPORT_IDS})" if len(ids) > _REPORT_IDS else ""
+        print(f"  {rid} [{r.raw_marker}] {_short(r.title)} - blocks {len(ids)}: "
+              f"{', '.join(ids[:_REPORT_IDS]) or '-'}{more}")
+    print(f"l-neg1 routes P{phase}:")
+    if not routes:
+        print("  (none)")
+    for route, ids in routes:
+        print(f"  {route}: {', '.join(ids)}")
+    return 0
+
+
+def _run_mode(ctx: Ctx, args: argparse.Namespace) -> int:
+    pre = [f for cid in _MODE_PRECHECKS for f in CHECKS[cid](ctx)]
+    if pre:
+        for f in pre:
+            print(f"[plan-lint] {f.check}  {f.file}:{f.lineno}  {f.msg}", file=sys.stderr)
+        print(f"[plan-lint] {len(pre)} format finding(s): a mode never answers over a malformed plan", file=sys.stderr)
+        return 2
+    if args.show is not None:
+        return _mode_show(ctx, args.show)
+    if args.report is not None:
+        return _mode_report(ctx, args.phase)
+    return _mode_next(ctx)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="plan-lint / spec-lint doc-consistency gate (G7/G20)")
-    ap.add_argument("--check", default=None, help="run only this check id")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--check", default=None, help="run only this check id")
+    mode.add_argument("--next", action="store_true", help="print the next box to build (_format.md §6)")
+    mode.add_argument("--show", metavar="ID", default=None, help="print one box from its header line with its scope")
+    mode.add_argument("--report", choices=("owner-acts",), default=None,
+                      help="print a phase's owner acts and l-neg1: routes (needs --phase)")
+    ap.add_argument("--phase", type=int, default=None, help="the phase --report reads")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--max-per-check", type=int, default=None)
     ap.add_argument("--root", type=Path, default=ROOT)
     args = ap.parse_args(argv)
 
+    is_mode = args.next or args.show is not None or args.report is not None
+    if (args.report is None) != (args.phase is None):
+        print("[plan-lint] --report and --phase N go together", file=sys.stderr)
+        return 2
+    if is_mode and (args.json or args.quiet or args.max_per_check is not None):
+        print("[plan-lint] --json, --quiet and --max-per-check apply to the lint run, never to a mode", file=sys.stderr)
+        return 2
     if args.check and args.check not in CHECKS:
         print(f"[plan-lint] unknown check id: {args.check}", file=sys.stderr)
         return 2
@@ -2415,6 +2930,8 @@ def main(argv: list[str] | None = None) -> int:
     if not ctx.boxes:
         print("[plan-lint] no plan boxes found (docs/plan/P*.md) — target missing", file=sys.stderr)
         return 2
+    if is_mode:
+        return _run_mode(ctx, args)
 
     findings = run(ctx, only=args.check, max_per_check=args.max_per_check)
     if args.json:
