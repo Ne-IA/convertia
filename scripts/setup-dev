@@ -5,7 +5,7 @@ Does the whole local setup the gate plane needs:
   0. on Windows, refuse a `python3` that resolves to the Microsoft Store Python (or to nothing),
   1. install + checksum-verify the pinned gate tools  -> .gate-tools/bin
      (python3 -P scripts/install-gate-tools)
-  2. install the lefthook git-hook plane (pre-commit/pre-push)
+  2. install the lefthook git-hook plane (every hook lefthook.yml declares)
   3. REPAIR lefthook's generated hooks so they work on ANY repo path, then
   4. verify each generated hook parses under POSIX sh, and
   5. on Windows, pin git's ssh-signing to the agent-reachable OpenSSH ssh-keygen.
@@ -13,9 +13,15 @@ Does the whole local setup the gate plane needs:
 WHY step 3: lefthook embeds an UNQUOTED absolute path to its own binary in every
 generated hook. On a repo path containing spaces or parentheses (e.g.
 ".../ne-ia (platform)/...") that unquoted path is a POSIX-sh SYNTAX ERROR - it
-breaks the whole hook, silently disabling local enforcement. This script quotes
+breaks the whole hook, and git aborts the commit or push it guards. This script quotes
 that path after `lefthook install`. On a clean path the quoting is a harmless
 no-op, so setup-dev is safe + identical everywhere.
+
+THE ONE INSTALLER: lefthook.yml sets `no_auto_install: true` (G54b leg (6)). Without it every
+lefthook run re-installed the hooks once the parsed config differed from the last install's and
+wrote the unquoted path back over step 3's repair, and the next commit aborted. No lefthook run
+installs a hook, so a hook that lefthook.yml newly declares is installed only here: re-run this
+script when G54 names a declared hook that is missing, never a bare `lefthook install`.
 
 WHY step 0: every lefthook command runs `python3 -P scripts/...`. On Windows `python3` can resolve
 to the Microsoft Store Python's App Execution Alias (%LOCALAPPDATA%\\Microsoft\\WindowsApps). A process

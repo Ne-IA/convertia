@@ -27,6 +27,12 @@
 
 min_version: "2.1.9"
 assert_lefthook_installed: true
+# scripts/setup-dev is the one hook installer: lefthook writes its own path unquoted into every hook, which a
+# repo path with spaces or parentheses turns into an sh syntax error, and setup-dev quotes it and parse-checks
+# each hook. Without this key every `lefthook run` (a git-invoked hook or a forced local run) re-installs the
+# hooks once the parsed config differs from the last install's and writes the unquoted path back.
+# G54b leg (6) fails closed without the key; G54 names a declared hook that setup-dev has not installed.
+no_auto_install: true
 
 pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
   parallel: true

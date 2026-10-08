@@ -46,8 +46,9 @@ The same checks run **locally** (git hooks, via lefthook) on every commit and pu
   `pnpm lint:css`, `pnpm format:check`, and `pnpm test`.
 - **Rust core:** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 - **Repo gates:** the pinned, standard-library gate scripts under `scripts/` run automatically on
-  commit and push (and are mirrored in CI). A red gate is **fixed, never bypassed** — `--no-verify`
-  and force-pushes to the default branch are not used.
+  commit and push (and are mirrored in CI) once `python3 -P scripts/setup-dev` has installed the git
+  hooks after cloning; setup-dev is their one installer. A red gate is **fixed, never bypassed** —
+  `--no-verify` and force-pushes to the default branch are not used.
 
 Per-OS development prerequisites (toolchains, the platform WebView runtime, system build
 dependencies), the `tauri dev` / `tauri build` commands, and how to obtain the bundled engine
@@ -69,6 +70,11 @@ recurred and never turned `main` red; a class that does gets a mechanical catche
 - **`lefthook run <hook>` on a clean tree** — lefthook skips every command and exits 0 — add `--force`
   (`.gate-tools/bin/lefthook run pre-push --force`); nothing is committed or pushed, so every leg that
   reads the unpushed range sees no commit.
+- **`lefthook install` run by hand** — lefthook writes its own path unquoted into each hook, so with
+  the pinned `.gate-tools/bin/lefthook` on a repo path with spaces or parentheses every hook fails to
+  parse and `git commit` aborts — install with `python3 -P scripts/setup-dev`, which quotes the path
+  and parse-checks each hook; no lefthook run re-installs a hook (`lefthook.yml` sets
+  `no_auto_install: true`, G54b).
 - **A marker in production code, comments included** — `check-deferral` (G8 staged, G21 tree) reads
   `src/` and `src-tauri/src/` minus test paths, in-file `#[cfg(test)]` modules included: `TODO` and the
   marker macros (`todo!`, `unreachable!`, `println!`, …) match anywhere, strings included, the deferral

@@ -107,7 +107,8 @@ check is §6 stop (4):
   flips included (Step 7).
 - **Sync:** `git fetch origin main`; on a clean tree `git merge --ff-only origin/main`; re-read
   any §2 file or selected box it changed. If it changed `lefthook.yml`, run
-  `python3 -P scripts/setup-dev` before the next commit (DEVELOPMENT.md "Windows host notes").
+  `python3 -P scripts/setup-dev` before the next commit: it is the one hook installer, and no lefthook
+  run installs a newly declared hook (DEVELOPMENT.md "Windows host notes").
 - **CI health:** the last `gh run list --workflow ci --branch main --event push` run: success →
   go; in progress → Steps 1–3 only until it concludes (Step 6); red → attribute it (Step 6);
   unreachable → warn and go.

@@ -35,6 +35,17 @@ gates slot into) - is well-formed and complete:
       the rest of the line, so the scan over-reports rather than under-reports). A missing
       `lefthook.yml`, zero workflow files or an unreadable plane file is a finding (fail-closed).
       This leg reads the repository's plane files whichever config path the command names.
+  (6) No hook auto-sync: `lefthook.yml` sets `no_auto_install: true` once, at its top level. Without
+      it every `lefthook run` - a git-invoked hook or a forced local run - re-installs every hook
+      once the parsed config differs from the one the last install recorded, and writes lefthook's
+      own path unquoted into each hook: on a repo path with spaces or parentheses every hook then
+      fails to parse and the next commit aborts (measured with the pinned lefthook 2.1.9). With it,
+      `scripts/setup-dev` is the one installer (it quotes that path and parse-checks each hook), and
+      G54 names a declared hook it has not installed. A missing or non-UTF-8 `lefthook.yml`, an
+      absent key, a value other than `true`, a key only indented under another key or only in a
+      comment, and a second top-level key are each a finding (fail-closed). Like leg (5), this leg
+      reads the repository's `lefthook.yml` whichever config path the command names, and only it: a
+      per-clone `lefthook-local.yml`, which lefthook merges over `lefthook.yml`, can set the key back.
 
 This is the plane-DEFINITION-integrity sibling of G54 (plane-EXECUTION integrity: hooks installed
 + not redirected). stdlib-only (tomllib, Python 3.11+). fail-closed: any defect -> exit 1.
@@ -161,6 +172,45 @@ def plane_isolation_findings(root: Path) -> list[str]:
             continue
         findings.extend(python_isolation_findings(name, text))
     return findings
+
+
+# (6) No hook auto-sync. lefthook 2.1.9 runs its hook sync only when neither `--no-auto-install` nor the config's
+# top-level `no_auto_install` is set (internal/command/run.go). A top-level key sits at column 0 and its colon is
+# followed by a blank or the line end; the value is the comment-stripped rest of the line and must read `true`
+# exactly (yamllint's truthy rule over lefthook.yml admits no other spelling of true).
+_NO_AUTO_INSTALL_RE = re.compile(r"no_auto_install[ \t]*:(?P<value>(?:[ \t].*)?)")
+_NO_AUTO_INSTALL_MSG = ("every lefthook run would re-install the hooks after a config change and write lefthook's "
+                        "path unquoted back over setup-dev's repair; set `no_auto_install: true` at the top level")
+
+
+def no_auto_install_findings(text: str) -> list[str]:
+    """(pure) Leg (6) over a `lefthook.yml` text: [] when exactly one top-level line sets `no_auto_install`
+    and its value is `true` (a trailing comment and a CRLF line end allowed), else one finding."""
+    values: list[str] = []
+    for raw in text.split("\n"):
+        m = _NO_AUTO_INSTALL_RE.fullmatch(strip_line_comment(raw.rstrip("\r")).rstrip())
+        if m:
+            values.append(m.group("value").strip())
+    if values == ["true"]:
+        return []
+    if not values:
+        return [f"lefthook.yml: no top-level `no_auto_install` - {_NO_AUTO_INSTALL_MSG}"]
+    if len(values) > 1:
+        return [f"lefthook.yml: `no_auto_install` is set {len(values)} times at the top level - set it once"]
+    return [f"lefthook.yml: `no_auto_install: {values[0]}` is not `true` - {_NO_AUTO_INSTALL_MSG}"]
+
+
+def lefthook_sync_findings(root: Path) -> list[str]:
+    """Leg (6) over `root`/lefthook.yml. A missing file or one that cannot be read as UTF-8 is a finding
+    (fail-closed)."""
+    try:
+        text = (root / "lefthook.yml").read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        return ["lefthook.yml is missing - `no_auto_install: true` cannot be checked (fail-closed)"]
+    except (OSError, UnicodeDecodeError) as e:
+        return [f"lefthook.yml: cannot be read as UTF-8 ({type(e).__name__}) - not checked for "
+                "`no_auto_install` (fail-closed)"]
+    return no_auto_install_findings(text)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -303,12 +353,18 @@ def main(argv: list[str] | None = None) -> int:
         fail(finding)
         problems += 1
 
+    # (6) No hook auto-sync: the repository's lefthook.yml sets `no_auto_install: true`.
+    for finding in lefthook_sync_findings(ROOT):
+        fail(finding)
+        problems += 1
+
     if problems:
         print(f"[G54b] gate-plane config FAILED ({problems} problem(s)).", file=sys.stderr)
         return 1
     print(f"[G54b] gate-plane config OK ({len(planes)} planes, "
           f"{len(fail_opens)} justified fail-open exception(s), "
-          f"{len(posture_flags)} posture-flag gate(s), every plane Python invocation -P)")
+          f"{len(posture_flags)} posture-flag gate(s), every plane Python invocation -P, "
+          "lefthook hook auto-sync off)")
     return 0
 
 

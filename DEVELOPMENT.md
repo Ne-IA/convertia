@@ -85,9 +85,11 @@ The individual check commands (type-check, lint, tests) are listed in
   `python3 -c "import sys; print(sys.executable)"` prints a path outside `WindowsApps`.
 - **Setup.** Run `python3 -P scripts/setup-dev` after cloning: it installs the pinned gate tools into
   `.gate-tools/bin` and the lefthook hooks, and quotes the path lefthook writes unquoted into each hook,
-  which breaks the hooks on a path with spaces or parentheses. Re-run it after every `lefthook.yml`
-  change, your own or a pulled one: lefthook re-syncs its hooks on its next run and writes the unquoted
-  path back, so the next commit fails with a hook `sh` syntax error.
+  which breaks the hooks on a path with spaces or parentheses. setup-dev installs; lefthook never
+  re-syncs: `lefthook.yml` sets `no_auto_install: true`, so neither a git-invoked hook nor a forced
+  `lefthook run` rewrites the repaired hooks after a `lefthook.yml` change. A hook that `lefthook.yml`
+  newly declares is installed only by setup-dev, and G54 fails the next commit naming it until you
+  re-run setup-dev.
 - **Line endings.** Every first-party text file in the repo is LF (`.gitattributes`, G52); a fixture
   in a corpus tree (`tests/corpus/`, `fuzz/corpus/`, ...) keeps its exact bytes, CRLF included. A Python
   script that writes a repo file opens it with `newline="\n"` or in binary mode; text mode writes

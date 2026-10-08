@@ -17,6 +17,10 @@ malformed shape:
     with `-P`. The incident is replayed: a planted
     `scripts/argparse.py` and `scripts/json/__init__.py` run when a gate starts without `-P`, and
     never with `-P` or under the runner's PYTHONSAFEPATH=1.
+  - leg (6) no hook auto-sync: a top-level `no_auto_install: true` is clean (a trailing comment, a
+    blank before the colon, a CRLF end); an absent key, any other value, a key only indented, only in
+    a comment or with no blank after the colon, and a second top-level key are caught; the real
+    lefthook.yml sets it; a missing or non-UTF-8 lefthook.yml fails closed; main() runs the leg.
 stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import contextlib
@@ -343,12 +347,55 @@ _sd = _setup_dev_spawn()
 record("5 spawner: scripts/setup-dev runs install-gate-tools as `<python> -P scripts/install-gate-tools`",
        _sd is not None and len(_sd) == 3 and _sd[1] == "-P" and _sd[2].endswith("install-gate-tools"), f"{_sd}")
 
-_rc_bad, _err_bad = _main_rc("      run: python3 scripts/x\n")
-_rc_ok, _err_ok = _main_rc(_CLEAN)
+# Both wiring fixtures carry leg (6)'s key, so main() reports leg (5) alone.
+_SYNC_OFF = "no_auto_install: true\n"
+_rc_bad, _err_bad = _main_rc("      run: python3 scripts/x\n" + _SYNC_OFF)
+_rc_ok, _err_ok = _main_rc(_CLEAN + _SYNC_OFF)
 record("5 wiring: main() runs leg (5) over the repository's plane files (a bare invocation -> rc 1 naming "
        "lefthook.yml:1; the -P form -> rc 0)",
        _rc_bad == 1 and "lefthook.yml:1: a Python invocation without -P" in _err_bad and _rc_ok == 0,
        f"bad rc={_rc_bad}, ok rc={_rc_ok}")
+
+
+# --- leg (6) no hook auto-sync: lefthook.yml's top-level `no_auto_install: true` ------------------------------
+# The incident, measured with the pinned lefthook 2.1.9 in a clone on a path with spaces and parentheses: after a
+# lefthook.yml change, a forced `lefthook run pre-commit` re-installed all three hooks with lefthook's path
+# unquoted (each then failed `sh -n`) and a `git commit` aborted in the re-installed commit-msg hook; with the
+# key, the hooks stayed byte-identical through a forced run, a plain run, `git hook run` and a real commit.
+def nai(text: str) -> list[str]:
+    """The leg-(6) findings over one lefthook.yml text."""
+    return m.no_auto_install_findings(text)
+
+
+_ABSENT = "lefthook.yml: no top-level `no_auto_install`"
+record("6 clean: a top-level `no_auto_install: true`, also with a trailing comment, a blank before the colon and a "
+       "CRLF line end",
+       nai('min_version: "2.1.9"\n' + _SYNC_OFF) == [] and nai("no_auto_install: true   # leg (6)\r\n") == []
+       and nai("no_auto_install : true\n") == [])
+record("6 caught: the key absent",
+       [f[:len(_ABSENT)] for f in nai('min_version: "2.1.9"\nassert_lefthook_installed: true\n')] == [_ABSENT])
+record("6 caught: a value other than `true` (`false`, `yes`, `on`, `True`, `\"true\"`, empty)",
+       all(len(f := nai(f"no_auto_install: {v}\n")) == 1 and "is not `true`" in f[0]
+           for v in ("false", "yes", "on", "True", '"true"', "")))
+record("6 caught: the key only indented under another key, only in a comment, or with no blank after the colon",
+       all([f[:len(_ABSENT)] for f in nai(t)] == [_ABSENT]
+           for t in ("pre-commit:\n  no_auto_install: true\n", "# no_auto_install: true\n",
+                     "min_version: x  # no_auto_install: true\n", "no_auto_install:true\n")))
+record("6 caught: the key set twice at the top level (twice true; true then false)",
+       all(len(f := nai(t)) == 1 and "set 2 times" in f[0]
+           for t in (_SYNC_OFF * 2, _SYNC_OFF + "no_auto_install: false\n")))
+_real_sync = m.lefthook_sync_findings(REPO)
+record("6 E2E: the real lefthook.yml sets it", _real_sync == [], "; ".join(_real_sync))
+with tempfile.TemporaryDirectory() as _td:
+    _missing = m.lefthook_sync_findings(Path(_td))
+    (Path(_td) / "lefthook.yml").write_bytes(_SYNC_OFF.encode() + b"# \xff\n")
+    _not_utf8 = m.lefthook_sync_findings(Path(_td))
+record("6 fail-closed: a missing lefthook.yml and one that is not UTF-8 are findings",
+       len(_missing) == 1 and _missing[0].startswith("lefthook.yml is missing")
+       and len(_not_utf8) == 1 and "cannot be read as UTF-8" in _not_utf8[0], f"{_missing} {_not_utf8}")
+_rc_nokey, _err_nokey = _main_rc(_CLEAN)
+record("6 wiring: main() runs leg (6) over the repository's lefthook.yml (no key -> rc 1 naming it; the key -> rc 0)",
+       _rc_nokey == 1 and _ABSENT in _err_nokey and _rc_ok == 0, f"no key rc={_rc_nokey}, key rc={_rc_ok}")
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-gate-planes] {len(results) - len(failed)}/{len(results)} assertions passed.")

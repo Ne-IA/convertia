@@ -3,9 +3,17 @@
 
 Asserts the local git-hook plane is intact and not silently bypassed:
 
-  (1) HOOKS INSTALLED  - the EFFECTIVE hooks dir holds lefthook-managed pre-commit +
-                         pre-push hooks. The effective dir is `core.hooksPath` when set,
-                         else `git rev-parse --git-path hooks` (= .git/hooks).
+  (1) HOOKS INSTALLED  - the EFFECTIVE hooks dir holds a lefthook-managed hook for every
+                         git hook lefthook.yml declares as a top-level block key (column 0,
+                         plain or quoted: pre-commit, commit-msg and pre-push today), and
+                         for pre-commit + pre-push always. The effective dir is `core.hooksPath` when set, else
+                         `git rev-parse --git-path hooks` (= .git/hooks). lefthook.yml sets
+                         `no_auto_install: true` (G54b leg (6)), so no lefthook run installs
+                         a hook: `python3 -P scripts/setup-dev` is the one installer, and a
+                         declared hook it has not installed is a finding here. A
+                         lefthook.yml that cannot be read as UTF-8 is a finding
+                         (fail-closed); a missing one leaves the pre-commit + pre-push
+                         floor (G54b fails closed on it).
   (2) NOT REDIRECTED   - `core.hooksPath`, when set, REDIRECTS the whole plane, so it IS
                          the effective dir checked in (1). We resolve it DIRECTLY and do
                          NOT rely on `git rev-parse --git-path hooks` honouring it - so a
@@ -28,6 +36,7 @@ Exit:  0 = plane intact; 1 = a violation; 2 = not a git repo / git error.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -36,10 +45,47 @@ for _stream in (sys.stdout, sys.stderr):          # the console's codepage is no
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 LEFTHOOK_MARKER = "lefthook"            # lefthook-generated hooks are full of it
-# pre-commit (L1) + pre-push (L2). commit-msg (L3) joins this set when P0.3.3 declares
-# the commit-msg hook (G11/G12) in lefthook.yml - until then there is no commit-msg
-# hook to assert (the incremental gate-slot model; not a silent gap).
-REQUIRED_HOOKS = ("pre-commit", "pre-push")
+# pre-commit (L1) + pre-push (L2) are required whatever lefthook.yml says; every other git hook it declares
+# (commit-msg = L3 today) is required too. No lefthook run installs a newly declared hook (`no_auto_install`),
+# so this check is what names one that setup-dev has not installed yet.
+FLOOR_HOOKS = ("pre-commit", "pre-push")
+# The git hooks lefthook installs (lefthook 2.1.9 internal/config/available_hooks.go, after githooks(5)); a
+# top-level lefthook.yml key outside this set is a lefthook setting, not a hook.
+GIT_HOOKS = frozenset((
+    "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+    "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-push",
+    "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction",
+    "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman",
+    "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit", "post-index-change",
+))
+# A top-level YAML key: column 0, plain or quoted, then the colon and a blank or the line end.
+_TOP_LEVEL_KEY_RE = re.compile(r"""(["']?)([A-Za-z0-9_.-]+)\1[ \t]*:(?=[ \t]|$)""")
+SETUP_DEV = "python3 -P scripts/setup-dev"
+
+
+def declared_hooks(text: str) -> list[str]:
+    """(pure) The git hooks a lefthook.yml text declares: its top-level keys that name a git hook, in file
+    order, each once. Lines are git's: split at LF, a trailing CR dropped."""
+    found: list[str] = []
+    for raw in text.split("\n"):
+        m = _TOP_LEVEL_KEY_RE.match(raw.rstrip("\r"))
+        if m and m.group(2) in GIT_HOOKS and m.group(2) not in found:
+            found.append(m.group(2))
+    return found
+
+
+def required_hooks(lefthook_yml: Path) -> tuple[list[str], str | None]:
+    """The hooks the effective dir must hold - FLOOR_HOOKS, then every other hook `lefthook_yml` declares -
+    and a finding when the file exists but cannot be read as UTF-8 (fail-closed). A missing file leaves the
+    floor (G54b fails closed on it)."""
+    try:
+        text = lefthook_yml.read_bytes().decode("utf-8-sig")
+    except FileNotFoundError:
+        return list(FLOOR_HOOKS), None
+    except (OSError, UnicodeDecodeError) as e:
+        return list(FLOOR_HOOKS), (f"cannot read {lefthook_yml} as UTF-8 ({type(e).__name__}) - the hooks it "
+                                   "declares are unknown (fail-closed)")
+    return list(FLOOR_HOOKS) + [h for h in declared_hooks(text) if h not in FLOOR_HOOKS], None
 
 
 def git(*args: str) -> tuple[int, str]:
@@ -82,11 +128,15 @@ def main(argv: list[str] | None = None) -> int:
             hooks_dir = (Path(top) / hooks_dir).resolve()
 
     problems = 0
-    for hook in REQUIRED_HOOKS:
+    required, read_error = required_hooks(Path(top) / "lefthook.yml")
+    if read_error:
+        fail(read_error)
+        problems += 1
+    for hook in required:
         f = hooks_dir / hook
         if not f.is_file():
             fail(f"{hook} missing from the effective hooks dir {hooks_dir} "
-                 f"- run `lefthook install`{redirect_note}")
+                 f"- run `{SETUP_DEV}` (the one hook installer){redirect_note}")
             problems += 1
             continue
         try:
@@ -115,7 +165,8 @@ def main(argv: list[str] | None = None) -> int:
     if problems:
         print(f"[G54] gate-plane integrity FAILED ({problems} problem(s)).", file=sys.stderr)
         return 1
-    print("[G54] gate-plane integrity OK" + (" (+ push-from-stale-base)" if args.pre_push else ""))
+    print(f"[G54] gate-plane integrity OK ({', '.join(required)} installed)"
+          + (" (+ push-from-stale-base)" if args.pre_push else ""))
     return 0
 
 

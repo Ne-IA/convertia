@@ -6,6 +6,14 @@ in throwaway temp git repos. No real lefthook is needed: the check keys on the
 'lefthook' marker string + file presence, so fixture hook files suffice. Temp repos
 are auto-removed (tempfile.TemporaryDirectory).
 
+Also proves the required set follows lefthook.yml (no lefthook run installs a hook - its
+`no_auto_install: true` - so setup-dev is the one installer): a declared hook that is not
+installed fails naming it and setup-dev (commit-msg; a newly declared post-merge), every
+declared hook installed passes, a lefthook.yml that is not UTF-8 fails closed; only top-level
+git-hook keys count (plain or quoted, with a trailing comment or an anchor; never indented,
+commented out, a setting or an unknown hook name); pre-commit + pre-push are required always;
+the real lefthook.yml declares pre-commit, commit-msg and pre-push.
+
 Also proves scripts/setup-dev's Windows python3 preflight (hermetic, every OS): a `python3`
 that resolves under a `WindowsApps` directory (the Microsoft Store Python - the incident
 path first) or to nothing is refused with the fix named, a python.org install and a
@@ -127,6 +135,77 @@ with tempfile.TemporaryDirectory() as td:
     git(repo, "update-ref", "refs/remotes/origin/main", other)  # origin/main diverged ahead
     rc, out = run_check(repo, "--pre-push")
     record("pre-push stale base fails", rc == 1 and "stale-base" in out.lower(), f"exit={rc}")
+
+# --- the hooks lefthook.yml declares are required: no lefthook run installs one (`no_auto_install: true`) ---
+LEFTHOOK_YML = ('min_version: "2.1.9"\nno_auto_install: true\n'
+                "pre-commit:\n  commands:\n    a:\n      run: exit 0\n"
+                "commit-msg:\n  commands:\n    b:\n      run: exit 0\n"
+                "pre-push:\n  commands:\n    c:\n      run: exit 0\n")
+with tempfile.TemporaryDirectory() as td:
+    repo = setup_repo(td)
+    (repo / "lefthook.yml").write_text(LEFTHOOK_YML, encoding="utf-8")
+    hd = repo / ".git" / "hooks"
+    write_hook(hd, "pre-commit")
+    write_hook(hd, "pre-push")
+    rc, out = run_check(repo)
+    record("a declared hook that is not installed fails, naming it and setup-dev (commit-msg, L3)",
+           rc == 1 and "commit-msg missing" in out and "run `python3 -P scripts/setup-dev`" in out, f"exit={rc}")
+    write_hook(hd, "commit-msg")
+    rc, out = run_check(repo)
+    record("every declared hook installed passes", rc == 0 and "pre-commit, pre-push, commit-msg installed" in out,
+           f"exit={rc}")
+    (repo / "lefthook.yml").write_text(LEFTHOOK_YML + "post-merge:\n  commands:\n    d:\n      run: exit 0\n",
+                                       encoding="utf-8")
+    rc, out = run_check(repo)
+    record("a newly declared hook that setup-dev has not installed fails (post-merge)",
+           rc == 1 and "post-merge missing" in out, f"exit={rc}")
+    (repo / "lefthook.yml").write_bytes(LEFTHOOK_YML.encode() + b"# \xff\n")
+    rc, out = run_check(repo)
+    record("a lefthook.yml that is not UTF-8 fails closed", rc == 1 and "the hooks it declares are unknown" in out,
+           f"exit={rc}")
+
+
+def load_check() -> types.ModuleType:
+    loader = importlib.machinery.SourceFileLoader("check_gate_plane", str(CHECK))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("check_gate_plane", loader))
+    loader.exec_module(mod)
+    return mod
+
+
+DECLARED_SHAPES = ("min_version: x\nno_auto_install: true\nassert_lefthook_installed: true\n"
+                   "pre-commit:        # L1\n"      # a trailing comment
+                   "  pre-push:\n"                  # indented: not a top-level key
+                   "# post-merge:\n"                # commented out
+                   "my-hook:\n"                     # not a git hook
+                   '"commit-msg":\n'                # quoted
+                   "post-checkout: &pc\n"           # an anchor
+                   "pre-commit:\r\n"                # a second time, CRLF
+                   "post-rewrite :\n"               # a blank before the colon
+                   "pre-rebase:x\n")                # no blank after the colon: a scalar, not a key
+try:
+    cg = load_check()
+    shapes = cg.declared_hooks(DECLARED_SHAPES)
+    real = cg.declared_hooks((CHECK.parents[1] / "lefthook.yml").read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory() as td:
+        yml = Path(td) / "lefthook.yml"
+        absent = cg.required_hooks(yml)
+        yml.write_bytes(b"\xef\xbb\xbfpost-merge:\n  commands: {}\n")
+        bom_only_post_merge = cg.required_hooks(yml)
+    check_error = ""
+except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+    shapes, real, absent, bom_only_post_merge = [], [], ([], None), ([], None)
+    check_error = f"{type(e).__name__}: {e}"
+    print(f"[g54-gate-plane] declared-hook legs raised: {check_error}")
+
+record("declared hooks: only top-level git-hook keys count, in file order, each once",
+       shapes == ["pre-commit", "commit-msg", "post-checkout", "post-rewrite"], check_error or f"{shapes}")
+record("declared hooks: the real lefthook.yml declares pre-commit, commit-msg and pre-push",
+       real == ["pre-commit", "commit-msg", "pre-push"], check_error or f"{real}")
+record("required hooks: pre-commit + pre-push always (also without lefthook.yml), then each other declared hook "
+       "(a leading BOM read past)",
+       absent == (["pre-commit", "pre-push"], None)
+       and bom_only_post_merge == (["pre-commit", "pre-push", "post-merge"], None),
+       check_error or f"{absent} {bom_only_post_merge}")
 
 
 # --- scripts/setup-dev: the Windows python3 preflight (hermetic: pure verdicts + a stubbed main, every OS) ---

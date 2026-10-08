@@ -39,6 +39,9 @@ fuzz_nightly = "nightly-2026-07-14"   # cargo-fuzz G48; invoked as `cargo +night
 # A poisoned lefthook can silently no-op EVERY local hook (the core.hooksPath-bypass
 # equivalent), so it is pinned + checksum-verified like every other tool and carries
 # the G24 wrong-checksum self-test (security-concept §0, build-gates §0/G54).
+# lefthook.yml's `no_auto_install: true` (G54b leg (6)) keeps `lefthook run` from re-installing
+# the hooks - measured on 2.1.9; a version bump re-measures it on a repo path with spaces and
+# parentheses (change lefthook.yml, run a hook, the setup-dev-repaired hooks stay byte-identical).
 [tools.lefthook]
 version       = "2.1.9"
 origin        = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/"
