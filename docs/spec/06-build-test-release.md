@@ -800,7 +800,12 @@ being updated in the same change):
   hand); `actionlint` (per-push) + `zizmor`
   (CI) lint the workflows; the build resolves only the committed lockfiles (`--locked`
   / `pnpm install --frozen-lockfile`, with `git diff --exit-code` on the lockfiles);
-  per-PUSH-workflow `concurrency` + `cancel-in-progress` + explicit `timeout-minutes`.
+  per-PUSH-workflow `concurrency` + `cancel-in-progress` + explicit `timeout-minutes`;
+  every apt call in a workflow runs under a coreutils `timeout` wall bound placed after
+  any privilege switch (`sudo timeout <s> apt-get`: a `timeout` before `sudo` runs as the
+  user and cannot stop the root apt-get), the offline `--no-download` install excepted
+  (G56; apt's own timeouts are idle timeouts, which a mirror transfer that still trickles
+  never trips), and a failed try is retried.
 - **CI runner-host integrity** (build-gates **G56**, *added P0 review r2*): the
   secret-bearing signing step (§6.7.2 stage 6) runs on an ephemeral GitHub-hosted
   runner, host-isolated from the self-hosted-VPS Lane-B corpus/fuzz jobs (§6.1.4/§6.7.2);

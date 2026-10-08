@@ -79,17 +79,38 @@ jobs:
       # precedes EVERY Rust-compiling step below — the G19 `cargo run -p xtask -- codegen` regen (live since
       # P1.28), the G3/G4 rust-lint contract, and any live-Rust gate self-test in the G10 canary — each of
       # which compiles the Tauri-dependent convertia-core and so needs this stack on PATH.
+      # Every apt network call is bounded twice (G56 leg (13) asserts the wall bound on every workflow apt call):
+      # apt's acquire options make a dead mirror fail over inside a try (1 retry, a 15 s connect/idle timeout),
+      # and a coreutils `timeout` caps each call (the list refresh 120 s, the download 300 s), because apt's own
+      # timeouts did not end the 2026-10-07 stall: the compile-sanity copy of this step hung 25 min on an
+      # archive.ubuntu.com InRelease under the runner image's 15 s timeout, until the job timeout cancelled the
+      # run (they are idle timeouts, which a transfer that still trickles never trips). A failed try (exit 124 =
+      # a bound fired) re-runs the list refresh as well, since `apt-get update` exits 0 when apt gives a fetch
+      # up and only the download then sees the gap; the third failed try fails the step. dpkg then installs
+      # offline (`--no-download`), so no bound ever stops dpkg mid-install.
       - name: 'Tauri v2 Linux compile deps (webkit2gtk-4.1 / gtk-3 / soup-3 / jsc-4.1 / dbus -sys stack)'
         if: runner.os == 'Linux'
         run: |
-          # retry apt-get update so a transient Ubuntu-mirror hiccup does not spuriously red `main`
-          for i in 1 2 3; do sudo apt-get update && break; echo "apt-get update failed; retry $i"; sleep 5; done
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev \
+          apt_opts=(-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)
+          pkgs=(
+            libwebkit2gtk-4.1-dev
+            libgtk-3-dev
+            libsoup-3.0-dev
+            libjavascriptcoregtk-4.1-dev
             libdbus-1-dev
+          )
+          for try in 1 2 3; do
+            rc=0
+            sudo timeout -k 10 120 apt-get "${apt_opts[@]}" update || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              sudo timeout -k 10 300 apt-get "${apt_opts[@]}" install -y --download-only "${pkgs[@]}" || rc=$?
+            fi
+            if [ "$rc" -eq 0 ]; then break; fi
+            echo "::warning::apt try $try of 3 failed with exit $rc (124 = a wall bound fired)"
+            if [ "$try" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
+          sudo apt-get install -y --no-download "${pkgs[@]}"
       # Node + pnpm via corepack (the runner ships Node; corepack activates the pinned pnpm@10.13.1 from
       # package.json's packageManager). Linux-only: the §6.7.1 JS legs (tsc/eslint/stylelint/prettier/
       # vitest + vitest-axe) are OS-agnostic, so they run ONCE on the Linux leg — populating node_modules
@@ -145,14 +166,15 @@ jobs:
       # across deny.toml + audit.toml (the G18 two-scanner check asserts the two sets are identical).
       - name: 'P1.59 G17: warm the RustSec advisory-db (Linux; OS-agnostic over Cargo.lock)'
         if: runner.os == 'Linux'
-        # 3-try retry (same convention as the apt-get step) so a transient GitHub/CDN hiccup does not
+        # 3-try retry (same convention as the apt-get step: each try under a coreutils `timeout`, since git
+        # over https sets no stall timeout of its own) so a transient or stalled GitHub/CDN fetch does not
         # spuriously red main; rm -rf before each attempt clears a partial clone; fail-CLOSED (exit 1) if
         # all three fail, so the G17 leg never runs against an empty/partial db.
         run: |
           db="${CARGO_HOME:-$HOME/.cargo}/advisory-db"
           for i in 1 2 3; do
             rm -rf "$db"
-            git clone --depth 1 https://github.com/rustsec/advisory-db "$db" && exit 0
+            timeout -k 10 120 git clone --depth 1 https://github.com/rustsec/advisory-db "$db" && exit 0
             echo "advisory-db clone failed; retry $i"; sleep 5
           done
           echo "advisory-db clone failed after 3 attempts" >&2; exit 1
@@ -397,17 +419,31 @@ jobs:
       # The Tauri v2 gtk/webkit/soup/jsc/dbus `-sys` crates resolve their system libs via pkg-config, so the
       # Linux leg needs the matching `-dev` packages to COMPILE (the same compile closure as gate-tooling;
       # macOS/Windows have WKWebView/WebView2 natively). `--no-bundle` means the AppImage RUNTIME/bundle deps
-      # (librsvg/patchelf/FUSE) are NOT needed here.
+      # (librsvg/patchelf/FUSE) are NOT needed here. The apt calls are bounded and retried exactly as in the
+      # gate-tooling step (its comment says why).
       - name: 'Tauri v2 Linux compile deps (webkit2gtk-4.1 / gtk-3 / soup-3 / jsc-4.1 / dbus -sys stack)'
         if: runner.os == 'Linux'
         run: |
-          for i in 1 2 3; do sudo apt-get update && break; echo "apt-get update failed; retry $i"; sleep 5; done
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev \
+          apt_opts=(-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)
+          pkgs=(
+            libwebkit2gtk-4.1-dev
+            libgtk-3-dev
+            libsoup-3.0-dev
+            libjavascriptcoregtk-4.1-dev
             libdbus-1-dev
+          )
+          for try in 1 2 3; do
+            rc=0
+            sudo timeout -k 10 120 apt-get "${apt_opts[@]}" update || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              sudo timeout -k 10 300 apt-get "${apt_opts[@]}" install -y --download-only "${pkgs[@]}" || rc=$?
+            fi
+            if [ "$rc" -eq 0 ]; then break; fi
+            echo "::warning::apt try $try of 3 failed with exit $rc (124 = a wall bound fired)"
+            if [ "$try" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
+          sudo apt-get install -y --no-download "${pkgs[@]}"
       - name: Install JS deps (frozen lockfile)
         run: pnpm install --frozen-lockfile
       # Pre-fetch all workspace crates with a bounded retry so a transient crates.io/CDN hiccup during the
@@ -614,12 +650,28 @@ jobs:
       # by the first seam-filling box — P4.34, whose pull-forward ruling drives the harness
       # before P5.1.1's P5 re-verification — as its own pre-declared .github/** tail, recorded
       # on P4.28.1's [RESOLVED] appendix and P4.34's carry-list.
+      # The apt calls are bounded and retried as in the gate-tooling step (its comment says why); the
+      # container is root, so no sudo, and `shell: bash` is explicit because the step uses bash arrays.
       - name: 'build toolchain (the container is root; packages via the image-pinned signed apt repo)'
+        shell: bash
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            autoconf automake libtool make gcc g++ pkg-config \
+          apt_opts=(-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)
+          pkgs=(
+            autoconf automake libtool make gcc g++ pkg-config
             meson ninja-build cmake gnupg xz-utils tar zstd
+          )
+          for try in 1 2 3; do
+            rc=0
+            timeout -k 10 120 apt-get "${apt_opts[@]}" update || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              timeout -k 10 300 apt-get "${apt_opts[@]}" install -y --no-install-recommends --download-only "${pkgs[@]}" || rc=$?
+            fi
+            if [ "$rc" -eq 0 ]; then break; fi
+            echo "::warning::apt try $try of 3 failed with exit $rc (124 = a wall bound fired)"
+            if [ "$try" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
+          apt-get install -y --no-install-recommends --no-download "${pkgs[@]}"
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

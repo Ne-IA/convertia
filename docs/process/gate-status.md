@@ -158,6 +158,7 @@ is dated.
 |------|--------------|-------------------------|-----------------------------------------------------|---------|
 | **G17 (JS half)** — `osv-scanner` over `pnpm-lock.yaml` | P4.96 | `pnpm-lock.yaml` + the Lane-A OSV npm database (`scripts/check-js-advisories`) | `g24-js-advisories` — a lock pinning undici 7.28.0 against the one-record GHSA-4cwx-7wf7-3272 database MUST fail | 2026-09-30 |
 | **G56 (12)** — action-pin inventory | P4.97 | `scripts/action-pins.toml` + every workflow `uses:` | `g24-ci-supply-chain` — an unrowed action SHA / scorecard-action v2.4.4's mutable `runs.image` MUST fail | 2026-10-03 |
+| **G56 (13)** — apt wall bound | Co-Pilot act (the stalled apt step of ci run 37667094617) | every apt call in a workflow `run:` value | `g24-ci-supply-chain` — the pre-2026-10-07 `for i in 1 2 3; do sudo apt-get update && break; …` loop / the live ci.yml with one refresh's `timeout` removed MUST fail | 2026-10-07 |
 
 ## Over-assurance behavioural backstops (P0.4.5 · §1.2 · G29 G48)
 

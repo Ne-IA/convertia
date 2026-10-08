@@ -98,17 +98,31 @@ jobs:
       # The fuzz targets path-dep on convertia-core (the lib), whose compile closure is the same as
       # compile-sanity's: the Tauri v2 gtk/webkit/soup/jsc/dbus -sys crates resolve system libs via
       # pkg-config on Linux (macOS has WKWebView natively), and the tauri context needs the JS deps
-      # installed (the proven-green gate-tooling/compile-sanity preamble, mirrored verbatim).
+      # installed (the proven-green gate-tooling/compile-sanity preamble, mirrored verbatim; ci.yml's
+      # gate-tooling step comment says why every apt call runs under a wall bound and is retried).
       - name: 'Tauri v2 Linux compile deps (webkit2gtk-4.1 / gtk-3 / soup-3 / jsc-4.1 / dbus -sys stack)'
         if: runner.os == 'Linux'
         run: |
-          for i in 1 2 3; do sudo apt-get update && break; echo "apt-get update failed; retry $i"; sleep 5; done
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev \
+          apt_opts=(-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)
+          pkgs=(
+            libwebkit2gtk-4.1-dev
+            libgtk-3-dev
+            libsoup-3.0-dev
+            libjavascriptcoregtk-4.1-dev
             libdbus-1-dev
+          )
+          for try in 1 2 3; do
+            rc=0
+            sudo timeout -k 10 120 apt-get "${apt_opts[@]}" update || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              sudo timeout -k 10 300 apt-get "${apt_opts[@]}" install -y --download-only "${pkgs[@]}" || rc=$?
+            fi
+            if [ "$rc" -eq 0 ]; then break; fi
+            echo "::warning::apt try $try of 3 failed with exit $rc (124 = a wall bound fired)"
+            if [ "$try" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
+          sudo apt-get install -y --no-download "${pkgs[@]}"
       - name: 'Node/pnpm toolchain via corepack'
         run: corepack enable pnpm
       - name: Install JS deps (frozen lockfile)

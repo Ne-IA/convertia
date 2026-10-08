@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """check-ci-supply-chain - G56 CI supply-chain config hygiene (P0.2.6 + P0.2.7 runner-host
-+ P0.2.10 cargo-fuzz toolchain pin + P4.97 action-pin inventory).
++ P0.2.10 cargo-fuzz toolchain pin + P4.97 action-pin inventory + the apt wall bound).
 
 The residual CI/config assertions that zizmor (G50) + actionlint (G49) do NOT cover.
 STDLIB-ONLY (no YAML library - the gate plane forbids vendoring one). A naive line scan
@@ -212,6 +212,29 @@ Assertions (after the file is known to be in plain, statically-analysable block 
       read as a reference (rename it); a reusable-workflow call has no action row (the inventory models
       actions); a nested local or `docker://` reference reds; a case variant of `action.yml` / `action.yaml`
       in a local action's directory reds (a case-insensitive runner reads it; spell the name exactly).
+ (13) the apt wall bound (after the 2026-10-07 apt stall) - every apt call in a workflow `run:` value runs
+      under coreutils `timeout` with a positive literal duration, placed after any privilege switch
+      (`sudo timeout <s> apt-get`), or is the offline install (`--no-download`, which opens no connection).
+      apt's own acquire timeouts did not end the stall: ci run 37667094617's compile-sanity apt step hung
+      25 min on one InRelease under the runner image's 15 s timeout, until the job timeout cancelled the
+      run (they are idle timeouts, which a transfer that still trickles never trips). The reader takes the
+      `run:` values only (a step name is not shell): a block-scalar body or a single-line value, cut at its
+      shell comments by the raw view's quote-aware cut, backslash line continuations joined; each logical
+      line has its quoted text and `${...}` expansions blanked and is split at the unquoted command
+      separators. In each simple command the first word that is an apt name (`apt-get` / `apt` / `aptitude`
+      / `apt-fast`, bare or path-prefixed; any words such as `sudo`, `do` or an assignment may precede it)
+      is the call: a `timeout` word whose duration (after its options) is a positive literal must come
+      before it and after the last privilege switch before it (`sudo` / `doas` / `su` / `runuser` /
+      `pkexec`, bare or path-prefixed), or a `--no-download` argument after it; `timeout 0` (no bound),
+      `timeout "$t"` (not statically visible) and `timeout <s> sudo apt-get` fail - there the `timeout` runs
+      as the user, who cannot signal the root apt-get, and sudo relays no signal sent from its own process
+      group (measured with jammy's sudo 1.9.9 and no TTY, the runner's shape: `timeout 3 sudo sleep 40`
+      returned after 40 s; under `timeout -k 2 3` the KILL ended sudo after 5 s and left the root sleep
+      running). Named residuals: an apt call the reader cannot see - in a quoted string (`bash -c '...'`, a
+      quoted command word), a called script, a tool that runs apt itself (`add-apt-repository` refreshes the
+      lists) - is not read, and a privilege switch it cannot see (`timeout 120 $SUDO apt-get`) leaves the
+      `timeout` before it counted; an unquoted apt word that is an argument (`command -v apt-get`) or one in
+      a heredoc body reds (quote it).
 
 fail-closed: any violation -> exit 1. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
@@ -1431,6 +1454,140 @@ def check_images_and_engine_cache(name: str, lines: list[str], raw_lines: list[s
     return problems
 
 
+# (13) the apt wall bound (module docstring (13) is the rule set): every apt call in a workflow `run:` value runs
+# under coreutils `timeout` with a positive literal duration, placed after any privilege switch
+# (`sudo timeout <s> apt-get`), or is the offline `--no-download` install.
+_RUN_KEY_RE = re.compile(r"^\s*(?:-\s+)*run\s*:(?:\s+(\S.*))?$")
+_APT_WORD_RE = re.compile(r"(?:\S*/)?(?:apt-get|apt|aptitude|apt-fast)")
+_TIMEOUT_WORD_RE = re.compile(r"(?:\S*/)?timeout")
+_PRIVILEGE_WORD_RE = re.compile(r"(?:\S*/)?(?:sudo|doas|su|runuser|pkexec)")
+_TIMEOUT_VALUED_OPTS = frozenset({"-k", "-s", "--kill-after", "--signal"})
+_DURATION_RE = re.compile(r"(\d+(?:\.\d*)?|\.\d+)[smhd]?")
+_SHELL_SEPARATORS = frozenset(";&|(){}`")
+
+
+def run_values(raw: list[str]) -> list[tuple[int, str]]:
+    """(pure) Every workflow `run:` value as (1-based line, shell text): each line of a block-scalar body, cut at
+    its shell comment by the raw view's quote-aware strip_comment, or a single-line value read through its quotes.
+    The body of every other block scalar is skipped (a `name: |` text is not shell); the header and the body's end
+    are the structural view's (_block_scalar_indent, the excision rule of structural_lines)."""
+    struct = [strip_comment_structural(ln) for ln in raw]
+    out: list[tuple[int, str]] = []
+    i = 0
+    while i < len(struct):
+        run = _RUN_KEY_RE.match(struct[i])
+        indent = _block_scalar_indent(struct[i])
+        if indent is not None:
+            j = i + 1
+            while j < len(struct) and (not struct[j].strip() or len(struct[j]) - len(struct[j].lstrip()) > indent):
+                if run:
+                    out.append((j + 1, strip_comment(raw[j])))
+                j += 1
+            i = j
+            continue
+        if run and run.group(1):
+            out.append((i + 1, unquote(run.group(1))))
+        i += 1
+    return out
+
+
+def _blank_shell_words(text: str) -> str:
+    """(pure) `text` with every quoted span (its quotes included), every backslash escape and every `${...}`
+    expansion outside single quotes turned into spaces, length-preserving: what is left is the unquoted words and
+    command separators of the line (a quoted `"apt-get failed"` names no call; `${a[@]}` holds no brace that
+    splits a command)."""
+    out = list(text)
+    i, quote = 0, None
+    while i < len(text):
+        ch = text[i]
+        if quote != "'" and ch == "\\":
+            out[i:i + 2] = " " * len(text[i:i + 2])
+            i += 2
+            continue
+        if quote != "'" and text.startswith("${", i):
+            end = text.find("}", i)
+            end = len(text) if end < 0 else end + 1
+            out[i:end] = " " * (end - i)
+            i = end
+            continue
+        if quote is None and ch in "'\"":
+            quote = ch
+        elif ch == quote:
+            quote = None
+        elif quote is None:
+            i += 1
+            continue
+        out[i] = " "
+        i += 1
+    return "".join(out)
+
+
+def _timed(prefix: list[str]) -> bool:
+    """(pure) True when the words before an apt word hold, after their last privilege switch (`sudo` / `doas` /
+    `su` / `runuser` / `pkexec`), a `timeout` whose duration - the first word after its options - is a positive
+    literal (`timeout 0` disables the bound; a blanked `"$t"` is no literal). A `timeout` before the switch does not
+    count: before `sudo` it runs as the user, who cannot signal the root apt-get, and sudo relays no signal sent from
+    its own process group (module docstring (13))."""
+    switch = max((n for n, word in enumerate(prefix) if _PRIVILEGE_WORD_RE.fullmatch(word)), default=-1)
+    for n, word in enumerate(prefix[switch + 1:], start=switch + 1):
+        if not _TIMEOUT_WORD_RE.fullmatch(word):
+            continue
+        rest, k = prefix[n + 1:], 0
+        while k < len(rest) and rest[k].startswith("-"):
+            k += 2 if rest[k] in _TIMEOUT_VALUED_OPTS else 1
+        m = _DURATION_RE.fullmatch(rest[k]) if k < len(rest) else None
+        if m and float(m.group(1)) > 0:
+            return True
+    return False
+
+
+def apt_calls(raw: list[str]) -> list[tuple[int, str, bool]]:
+    """(pure) Every apt call in a workflow's `run:` values as (1-based line, the simple command, bounded): the
+    logical lines (a trailing backslash joins the next line) are split at the unquoted command separators; in each
+    simple command the first word that is an apt name is the call, bounded when a timed `timeout` word precedes it
+    after the last privilege switch, or `--no-download` follows it."""
+    logical: list[tuple[int, str]] = []
+    pending: tuple[int, str] | None = None
+    for no, text in run_values(raw):
+        if pending is not None:
+            no, text = pending[0], pending[1] + " " + text
+            pending = None
+        if text.endswith("\\"):
+            pending = (no, text[:-1])
+            continue
+        logical.append((no, text))
+    if pending is not None:
+        logical.append(pending)
+    calls: list[tuple[int, str, bool]] = []
+    for no, text in logical:
+        blank = _blank_shell_words(text)
+        start = 0
+        for end in range(len(blank) + 1):
+            if end < len(blank) and blank[end] not in _SHELL_SEPARATORS:
+                continue
+            words = blank[start:end].split()
+            command = text[start:end].strip()
+            start = end + 1
+            at = next((n for n, word in enumerate(words) if _APT_WORD_RE.fullmatch(word)), None)
+            if at is not None:
+                calls.append((no, command, "--no-download" in words[at + 1:] or _timed(words[:at])))
+    return calls
+
+
+def check_apt_bound(name: str, raw: list[str]) -> int:
+    """(13) every apt call in a `run:` value carries a wall bound or is the offline install (module docstring)."""
+    problems = 0
+    for no, command, bounded in apt_calls(raw):
+        if not bounded:
+            fail(f"{name}:{no}: apt runs without a wall bound: `{' '.join(command.split())}` - put coreutils "
+                 "`timeout <seconds>` before it, after any `sudo` or other privilege switch "
+                 "(`sudo timeout <seconds> apt-get ...`; a `timeout` before `sudo` runs as the user and cannot stop "
+                 "the root apt-get), or install offline with `--no-download` (quote the word if it is no apt call); "
+                 "apt's own acquire timeouts are idle timeouts, which a trickling transfer never trips (G56 leg (13))")
+            problems += 1
+    return problems
+
+
 def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
     name = path.name
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -1446,6 +1603,7 @@ def check_workflow(path: Path, fuzz_pin: str | None = None) -> int:
     problems += check_fuzz_pin(name, stripped, fuzz_pin)
     problems += check_secret_offline_build(name, lines, stripped)
     problems += check_images_and_engine_cache(name, lines, stripped)
+    problems += check_apt_bound(name, raw)
 
     # (5a) flow-style permissions anywhere (top-level OR per-job) cannot be statically
     # verified for contents-read / id-token - reject fail-closed. Empty `{}`/`{ }`
@@ -2014,7 +2172,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[G56] CI supply-chain hygiene FAILED ({problems} problem(s)).", file=sys.stderr)
         return 1
     rows_note = "" if pin_rows is None else f" + {pin_rows} action-pin row(s)"
-    print(f"[G56] CI supply-chain hygiene OK ({len(wfs)} workflow(s) + dependabot.yml{rows_note})")
+    apt_total = sum(len(apt_calls(wf.read_text(encoding="utf-8", errors="replace").split("\n"))) for wf in wfs)
+    print(f"[G56] CI supply-chain hygiene OK ({len(wfs)} workflow(s) + dependabot.yml{rows_note}"
+          f" + {apt_total} apt call(s) bounded or offline)")
     return 0
 
 

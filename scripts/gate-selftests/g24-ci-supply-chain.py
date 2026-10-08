@@ -4,7 +4,7 @@
 Proves the G56 residual gate FAILS on each violation and PASSES a clean tree, using
 throwaway temp .github/ fixture trees (invoking the real check with --root <tmp>).
 
-Four leg families:
+Five leg families:
   * happy-path legs (the canonical 2-space block dialect the gate is written against);
   * ADVERSARIAL-DIALECT legs (F1-F6) - valid-but-exotic YAML a malicious/careless
     L(-1) `.github/**` diff could use to walk past a naive line scanner: quoted/dup
@@ -27,11 +27,18 @@ Four leg families:
     Dockerfile FROM, a local action's digest, the metadata file GitHub reads (action.yml first; a case variant
     beside it) and its in-tree Dockerfile, a direct `docker://` step, a missing or unparsable inventory) plus the
     pass directions, and the inert bare-`.github/` tree. The recorder itself runs under its own caged canary,
-    g24-record-action-pins.py.
+    g24-record-action-pins.py;
+  * the (13) legs - the apt wall bound: an unbounded apt call fails in each shape the reader joins or splits (the
+    pre-2026-10-07 retry loop and continued install, a one-line `run:`, a path prefix, `apt-fast` / `aptitude`, a
+    command substitution, `timeout 0`, a non-literal duration, a `timeout` in an earlier command, a `timeout`
+    before `sudo` or before a later privilege switch), the bounded and offline forms pass (the live step shape,
+    the bound across a continuation, timeout options, a `${...}` beside `--no-download`), an apt word outside a
+    `run:` value or in quoted text passes, and the live ci.yml passes as is and fails with one bound removed.
 
 stdlib-only. Exit 0 = every assertion held; 1 = a self-test assertion FAILED.
 """
 import hashlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -1866,6 +1873,80 @@ leg12("(12) a duplicate (uses, sha) row fails - the owner/repo compared case-ins
       rows=[_row12("acme/node"), _row12("Acme/Node")])
 leg12("(12) a reusable-workflow call has no action row and fails closed", "reusable-workflow call",
       uses=(f"acme/node/.github/workflows/w.yml@{_P1}",), rows=[])
+
+# ---------------------------------------------------------------------------
+# (13) the apt wall bound (after the 2026-10-07 apt stall): every apt call in a workflow `run:` value runs under coreutils `timeout`
+# with a positive literal duration, placed after any privilege switch (`sudo timeout <s> apt-get`), or is the offline
+# `--no-download` install - one leg per arm of the reader (the run values only, joined continuations, blanked quotes,
+# the separators, the duration, the privilege switch) and its pass forms.
+# ---------------------------------------------------------------------------
+_NO_BOUND = "without a wall bound"
+_ORDER = "`sudo timeout <seconds> apt-get ...`"
+
+
+def _run_block(*body: str) -> str:
+    """One `run: |` step whose block-scalar body is the given shell lines."""
+    return "      - run: |\n" + "".join(f"          {ln}\n" for ln in body)
+
+
+def leg13(name: str, want_sub: str, *steps: str) -> None:
+    leg(name, want_sub, workflows={"ci.yml": _with_steps(push_wf(), *steps)})
+
+
+leg13("(13) the pre-2026-10-07 loop `for i in 1 2 3; do sudo apt-get update && break; ...` fails - a stall never exits, "
+      "so the loop never retries it", _NO_BOUND,
+      _run_block('for i in 1 2 3; do sudo apt-get update && break; echo "apt-get update failed; retry $i"; sleep 5; done'))
+leg13("(13) the pre-2026-10-07 install `sudo apt-get install -y \\` continued on the next line fails", _NO_BOUND,
+      _run_block("sudo apt-get install -y \\", "  libgtk-3-dev"))
+leg13("(13) a bound split from its call by a continuation `sudo timeout -k 10 300 \\` passes (the lines are joined)", "",
+      _run_block("sudo timeout -k 10 300 \\", "  apt-get install -y libgtk-3-dev"))
+leg13("(13) a single-line `run: sudo apt install -y x` fails (`apt` itself, a one-line value)", _NO_BOUND,
+      "      - run: sudo apt install -y libgtk-3-dev\n")
+leg13("(13) a path-prefixed `/usr/bin/apt-get update` fails", _NO_BOUND, _run_block("sudo /usr/bin/apt-get update"))
+leg13("(13) `apt-fast install` and `aptitude update` fail", _NO_BOUND,
+      _run_block("apt-fast install -y libgtk-3-dev", "aptitude update"))
+leg13("(13) an apt call in a command substitution `$(apt-get ...)` fails (`(` separates a command)", _NO_BOUND,
+      _run_block('v="$(true)"; out=$(apt-get install -y libgtk-3-dev)'))
+leg13("(13) `timeout 0 apt-get update` fails (a zero duration disables the bound)", _NO_BOUND,
+      _run_block("sudo timeout 0 apt-get update"))
+leg13('(13) `timeout "$t" apt-get update` fails (the duration is no literal, so the bound is not visible)', _NO_BOUND,
+      _run_block('sudo timeout "$t" apt-get update'))
+leg13("(13) a `timeout` in an EARLIER command of the line does not bound the apt call (`;` separates them; no `sudo`, "
+      "so the privilege-switch rule cannot decide it)", _NO_BOUND, _run_block("timeout 5 true; apt-get update"))
+leg13("(13) the live step shape passes: the bounded refresh and download, then the offline `--no-download` install", "",
+      _run_block("apt_opts=(-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)",
+                 "pkgs=(", "  libgtk-3-dev", ")", "for try in 1 2 3; do", "  rc=0",
+                 'sudo timeout -k 10 120 apt-get "${apt_opts[@]}" update || rc=$?',
+                 'if [ "$rc" -eq 0 ]; then',
+                 '  sudo timeout -k 10 300 apt-get "${apt_opts[@]}" install -y --download-only "${pkgs[@]}" || rc=$?',
+                 "fi", 'if [ "$rc" -eq 0 ]; then break; fi',
+                 'echo "::warning::apt try $try of 3 failed with exit $rc (124 = a wall bound fired)"',
+                 'if [ "$try" -eq 3 ]; then exit 1; fi', "sleep 5", "done",
+                 'sudo apt-get install -y --no-download "${pkgs[@]}"'))
+leg13("(13) `timeout 120 sudo apt-get update` fails, and the message names the order "
+      "`sudo timeout <seconds> apt-get` - a timeout before sudo runs as the user and cannot stop the root apt-get",
+      _ORDER, _run_block("timeout 120 sudo apt-get update"))
+leg13("(13) only a `timeout` after the LAST privilege switch counts: `sudo timeout 120 /usr/bin/doas apt-get update` "
+      "fails (a path-prefixed `doas`)", _ORDER, _run_block("sudo timeout 120 /usr/bin/doas apt-get update"))
+leg13("(13) `timeout --kill-after=5 -s KILL 2m apt-get update` passes (options, then a suffixed duration)", "",
+      _run_block("sudo timeout --kill-after=5 -s KILL 2m apt-get update"))
+leg13("(13) an unquoted `${...}` between the apt word and `--no-download` stays in the one command (passes)", "",
+      _run_block("sudo apt-get ${APT_QUIET:+-q} install -y --no-download libgtk-3-dev"))
+leg13("(13) NO OVER-FIRE: an apt word in a quoted string, a shell comment, a step name and two `with:` inputs (one a "
+      "block scalar) passes", "",
+      "      - name: apt-get install deps\n        run: echo \"apt-get update failed\"\n",
+      _run_block("echo 'retry apt-get update'  # sudo apt-get update"),
+      "      - uses: acme/x@" + "a" * 40 + "\n        with:\n          args: sudo apt-get update\n"
+      "          script: |\n            sudo apt-get install -y libgtk-3-dev\n")
+_m13 = re.search(r"\+ (\d+) apt call\(s\) bounded or offline", _LIVE.stdout)
+record("(13) the live tree passes with its apt calls read (the OK line counts them, at least one)",
+       _LIVE.returncode == 0 and _m13 is not None and int(_m13.group(1)) > 0,
+       _m13.group(0) if _m13 else _LIVE.stdout.strip()[-120:])
+_LIVE_CI = (CHECK.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+_BOUND_UPDATE = "sudo timeout -k 10 120 apt-get"
+record("(13) the live ci.yml carries the bounded refresh (the mutation below edits a real line)", _BOUND_UPDATE in _LIVE_CI)
+leg("(13) the live ci.yml with one refresh's `timeout -k 10 120` removed fails (the leg bites on the real file)",
+    _NO_BOUND, workflows={"ci.yml": _LIVE_CI.replace(_BOUND_UPDATE, "sudo apt-get", 1)})
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-ci-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")
