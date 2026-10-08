@@ -19,18 +19,19 @@ moment its target lands) is a distinct event class, logged in the **"P1 gate-act
 flips"** section below (authored by P1.62) — that log carries **no `Status`/`Since` posture
 columns**, so `plan-lint` check 23 (which governs only the owner-decidable ratchet table)
 does not parse it. This ledger tracks only the gates whose posture is an owner/ratchet
-decision (`informational` ↔ `required`), the purely-informational census tools, plus
-one-time **`decided`** owner-adopt rows (a gate the owner adopted/declined once — e.g.
-**G59** build-provenance — recorded so the adopt is a dated committed line, not a buried
-catalogue footnote; a `decided` row carries no ratcheting posture, so it is **not** in the
-`plan-lint` check-23 `_OWNER_DECIDABLE_GATES` map).
+decision (`informational` ↔ `required`), plus one-time **`decided`** owner-adopt rows (a
+gate the owner adopted/declined once — e.g. **G59** build-provenance — recorded so the adopt
+is a dated committed line, not a buried catalogue footnote; a `decided` row for a gate that
+never had a registered posture (G59, Miri, UBSan) is not in the check-23
+`_OWNER_DECIDABLE_GATES` map; a decision that replaced a registered posture keeps its key
+with the value `decided`, so a silent re-promotion reds check 23).
 Each box that introduces such a gate appends its row in the **same commit**:
 
-- **P0.4.5** (this file's creator) — the four over-assurance behavioural backstops below.
+- **P0.4.5** (this file's creator) — the four over-assurance tools (declined for v1).
 - **P0.5.10** — `cargo-mutants` (scoped mutation testing), the fifth ledger row (appended by this box).
 - **P0.7.6** — **G59** (build-provenance attestation), a one-time **`decided`** adopt row — recorded here so the adopt is dated; NOT a ratcheting posture, so it is deliberately absent from the check-23 `_OWNER_DECIDABLE_GATES` map.
 - **P0.7.14** — **G64** (privilege-drop-tier ratchet) + the formal flip protocol.
-- **P0.7.15** — **G65** (engine-subprocess coverage-guided fuzz), a reserved-not-row id registered `informational`; owner flips →`required` on the before-P10 also-per-push decision.
+- **P0.7.15** — **G65** (engine-subprocess coverage-guided fuzz), a reserved-not-row id registered `informational`, now `decided` (scheduled-only).
 - **P0.7.7** — **G17b** (bundled-engine CVE awareness), `informational` per-push; owner flips →`required` via the CVSS ≥ 7-on-an-actively-exercised-§04-path release escalation.
 
 **Status values.** `informational` (runs, never blocks the build) · `required`
@@ -44,21 +45,17 @@ rather than an invisible drift.
 
 | Gate / tool | Status | Since | Activation | Contract (one line) |
 |---|---|---|---|---|
-| `cargo-acl` / cackle | informational | 2026-06-18 | P1 | `cackle.toml` denies `std::net` graph-wide + `std::process::Command` to `crate::isolation` only — catches a renamed/transitive network crate that G18's name-ban and G29 rule (g) both miss |
-| `cargo-careful` | informational | 2026-06-18 | P1 | nightly wrapper adding extra std debug assertions + runtime-UB checks on the untrusted-byte detect/`fs_guard` path (Principle 9) |
-| Kani | informational | 2026-06-18 | P1 | bounded model checking that PROVES the small numeric caps (≤100× decompression ratio, `MAX_SVGZ_SNIFF` ≤64 KiB, the `fs_guard` predicates) rather than fuzzer-hoping them |
-| `cargo-geiger` | informational | 2026-06-18 | P1 | `unsafe`-usage census over the dependency graph — informational-forever (a visibility tool; it never ratchets to `required`) |
+| `cargo-acl` / cackle | decided | 2026-10-08 | — | declined for v1: no per-crate `std::net`/`std::process` capability cap. Accepted residual (T9a): a renamed or transitive network-capable crate, or a `build.rs` opening a socket, that G18 `[bans]`, the G53 core-closure walk and G29 rules (g)/(j) all miss; build-time egress stays bounded by offline-after-fetch + harden-runner BLOCK (G56) |
+| `cargo-careful` | decided | 2026-10-08 | — | declined for v1: no nightly std-assertion / runtime-UB run of the detect/`fs_guard` path. Accepted residual (T1): UB there that neither the G48 ASAN fuzz (Linux) nor the G4/G14 no-panic denies surface |
+| Kani | decided | 2026-10-08 | — | declined for v1: no bounded proof of the ≤ 100× ratio, `MAX_SVGZ_SNIFF` and the `fs_guard` predicates. Accepted residual (T1): the caps are proven by the G16 bound-firing fixtures and sampled by G48, not exhaustively |
+| `cargo-geiger` | decided | 2026-10-08 | — | declined for v1: no `unsafe` census of third-party crates; the enforced first-party policy is G29 |
 | `cargo-mutants` | informational | 2026-06-19 | P3 (P3.72) | scoped mutation testing over `crate::fs_guard`+`crate::detection`+`crate::outcome` (the no-harm/atomicity/no-misroute kernel), a **G15** sub-leg — line coverage proves a line RAN, not that a test would CATCH a regression there; owner flips `informational`→`required` once survived-mutants reach **0** for `crate::fs_guard`+`crate::detection` (the P3.72 first run + the decrease-only per-crate `max_survived_mutants.toml` ratchet) |
 | **G59** — build-provenance attestation (`actions/attest-build-provenance`) | decided | 2026-06-19 | P10 | a v1 OWNER DECISION (promoted from a post-v1 deferral): the one genuinely-free build-**ORIGIN** signal — binds the artifact to runner+workflow+commit, so a silently re-signed release from a poisoned shared VPS is detectable **even if the minisign key leaked**; additive to minisign, **NOT** binary code-signing; needs only `id-token: write` scoped to the release/attestation job. **VERIFIED, not just generated** — a release step runs `gh attestation verify` (fail-on-non-zero); the **Sigstore bundle + a paired `trusted_root.jsonl`** ship as named release assets for OFFLINE verify; both join the **G58** completeness enumeration. `decided` = a one-time adopt → NOT in the check-23 `_OWNER_DECIDABLE_GATES` posture map; §8/catalogue/box statuses agree (check 17: the §8 entry is PROMOTED, not a live deferral) |
 | **G17b** — bundled-engine CVE awareness (`osv-scanner`/`grype`) | informational | 2026-06-19 | P10 | informational per-push OSV/grype over the **PURL-keyed** `engines.lock` (a planted-positive — a known historical internal-FFmpeg-decoder CVE — guards the empty-report-masquerading-as-clean failure; the FFmpeg CPE `cpe:2.3:a:ffmpeg:ffmpeg:<ver>` is MANDATORY); emits a dated open-CVE report (recording the advisory-DB age) as an owner-signed-off release asset; offline-tolerant (vendored DB, refresh warn-only). Owner flips `informational`→`required` via the **CVSS ≥ 7 on an actively-exercised §04 path → release-blocking escalation** (recorded in `vuln-response.md` / `SECURITY.md`); the release-tier advisory-DB-staleness floor (`MAX_ADVISORY_DB_STALENESS`) is shared with **G17**. A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
 | **G64** — privilege-drop-tier ratchet | informational | 2026-06-19 | P9 | records the achieved §2.12.3 privilege-drop tier **per platform** into a tracked `privilege-drop-coverage.toml`, **decrease-guarded** like the coverage floor / `max_survived_mutants.toml` (a commit lowering an achieved tier fails/escalates; raises are deliberate) — the §2.12.3 runtime containment of the untrusted C/C++ decoders is best-effort and silently degrades (the T1 honest residual), and G31 proves the tier FIRED on the runner but nothing tracked the TREND, so G64 makes a NET regression visible. Owner flips `informational`→`required` once the §2.12.3 tier matrix **stabilises** (informational while it is filled in P4–P9). A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
-| **G65** — engine-subprocess coverage-guided fuzz *(reserved id)* | informational | 2026-06-19 | P9/P10 | a **reserved-not-row** id (named in prose, never a `· G65` header ref): the engine-side T1 surface (bundled C/C++ decoders on untrusted bytes) is covered today only by a fixed fault-injected corpus (G26/G31) — G65 adds a **black-box mutational fuzz** of the **real G37-staged SHA-256-verified sidecar** (AFL++ binary-only/QEMU **OR** a `radamsa` harness through the §2.12 isolation wrapper; `zzuf` LD_PRELOAD for LibreOffice headless), reusing the §6.4.2 oracles (no-crash-escapes-boundary + no-egress + no-out-of-input-read via **G42b**), CI-host resource-bounded (cgroup/`ulimit`/`docker --memory` + the G56 `timeout-minutes`). Pre-committed to a **REQUIRED SCHEDULED non-PR-blocking** job (≥ weekly `radamsa`-through-the-isolation-wrapper that FILES AN ISSUE on a boundary-escaping crash, an issue-opener like G66). Owner flips `informational`→`required` on the BEFORE-P10 decision whether to ALSO make it per-push. A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
-
-None of the four over-assurance backstops replaces **G48**'s fuzz; each is an
-**additive** proof/observation layer on top of the deterministic gates, which the
-owner may adopt. `cargo-mutants` (the fifth row, P0.5.10) is likewise additive to
-G48 — fuzzing finds crashes on hostile input; mutation testing finds assertions the
-tests forgot to make. It is detailed in its own section below.
+| **G65** — engine-subprocess coverage-guided fuzz *(reserved id)* | decided | 2026-10-08 | P9 (P9.36) | a **reserved-not-row** id (named in prose, never a `· G65` header ref): the engine-side T1 surface (bundled C/C++ decoders on untrusted bytes) is covered today only by a fixed fault-injected corpus (G26/G31) — G65 adds a **black-box mutational fuzz** of the **real G37-staged SHA-256-verified sidecar** (AFL++ binary-only/QEMU **OR** a `radamsa` harness through the §2.12 isolation wrapper; `zzuf` LD_PRELOAD for LibreOffice headless), reusing the §6.4.2 oracles (no-crash-escapes-boundary + no-egress + no-out-of-input-read via **G42b**), CI-host resource-bounded (cgroup/`ulimit`/`docker --memory` + the G56 `timeout-minutes`). Pre-committed to a **REQUIRED SCHEDULED non-PR-blocking** job (≥ weekly `radamsa`-through-the-isolation-wrapper that FILES AN ISSUE on a boundary-escaping crash, an issue-opener like G66). Decided: the required weekly scheduled issue-opener P9.36 builds; no per-push leg |
+| Miri | decided | 2026-10-08 | — | declined for v1: in-core `unsafe` is FFI-only (G29), which Miri cannot execute; the safe-Rust in-core paths rest on the G4 lints, G16 and G48 |
+| UBSan | decided | 2026-10-08 | — | declined for v1: the C/C++ decoders run behind the §2.12 boundary and the imgworker FFI target keeps ASAN on Linux (G48); UB inside the C closure is the accepted residual (T1) |
 
 ## P1 gate-activation flips (deterministic gates: bootstrap-skip → fail-closed)
 
@@ -99,10 +96,8 @@ un-flip again.**)
 | **G69** — §1a structural-map ↔ on-disk-tree bijection | P1.64 | the CLAUDE.md §1a Repo-layout map + the spec §0.7 physical tree (§1a authored, §0.7 expanded to all 60 tracked dirs, the `PLACEHOLDER` stub removed → the skip lifted; the `spec-0.7-physical-tree` G68 fingerprint re-blessed same-commit) | `g24-plan-lint` check-26 — a planted on-disk dir absent from §1a (disk-not-in-map) / a §1a dir not on disk (map-not-on-disk) / a §1a dir §0.7 does not home (map-not-in-spec07) MUST fail | 2026-06-23 |
 | **G71** — L(-1) change-control cage (the missed fail-soft → fail-closed flip) | P1.66 (corrects the P1.62 exemption miss) | `scripts/check-l-neg1-ack --enforce` wired at L2 (`lefthook.yml`) + L4 (`.github/workflows/ci.yml`); the `[[fail_open]]` excuse removed from `gate-planes.toml` + a permanent `[[posture_flag]]` registry row added | `g24-plan-lint` check-27 — a DUE flip (phase complete) not wired with `--enforce`, or a stale `[[fail_open]]` excuse, MUST fail; + `g24-gate-planes` posture_flag structural legs | 2026-06-23 |
 
-The four **owner-decidable over-assurance contracts** (`cargo-acl`/cackle, Kani, `cargo-careful`,
-`cargo-geiger`) ALSO carry `→ activated in P1`, but — being `informational`-only, not fail-closed —
-their activation is the **presence** of their dated `informational` rows in the ratchet ledger above
-(P1.62.10, a check over those entries), NOT a planted-violation self-test.
+The four over-assurance tools were declined for v1 (ledger `decided` rows); their P1.62.10 activation
+was the presence of their rows.
 
 ## P3 gate-activation flips (deterministic gates: bootstrap-skip → fail-closed)
 
@@ -160,57 +155,12 @@ is dated.
 | **G56 (12)** — action-pin inventory | P4.97 | `scripts/action-pins.toml` + every workflow `uses:` | `g24-ci-supply-chain` — an unrowed action SHA / scorecard-action v2.4.4's mutable `runs.image` MUST fail | 2026-10-03 |
 | **G56 (13)** — apt wall bound | Co-Pilot act (the stalled apt step of ci run 37667094617) | every apt call in a workflow `run:` value | `g24-ci-supply-chain` — the pre-2026-10-07 `for i in 1 2 3; do sudo apt-get update && break; …` loop / the live ci.yml with one refresh's `timeout` removed MUST fail | 2026-10-07 |
 
-## Over-assurance behavioural backstops (P0.4.5 · §1.2 · G29 G48)
+## Declined over-assurance tools (P0.4.5 · §1.2 · G29 G48)
 
-Each contract is `→ activated in P1` (the dependency graph, the crate roots, and the
-numeric-cap code land in P1+); all four are **informational-only in P0** and stay so
-until an explicit owner decision flips one to `required` (recorded here per the flip
-protocol above). Three (`cargo-acl`, `cargo-careful`, Kani) can ratchet to `required`;
-`cargo-geiger` is informational-forever.
-
-### `cargo-acl` / cackle — dependency-graph capability cap
-
-A committed `cackle.toml` denying the **`std::net`** capability to the WHOLE dependency
-graph and **`std::process::Command`** to `crate::isolation` only (the one module that
-legitimately spawns the bundled engines). This is a **build-time graph check**
-(Linux-only). It is **additive to G18 and G29 rule (g)**: G18 bans network crates **by
-name** and G29 rule (g) greps first-party source for `std::net`, but a **renamed or
-transitive** network-capable crate pulled in deep in the graph escapes both — cackle's
-capability-graph analysis catches exactly that class. **Owner decision:**
-informational-then-required (the owner flips it once the dependency graph is stable and
-the build-time cost is acceptable in CI).
-
-### `cargo-careful` — runtime-UB / extra-assertion wrapper
-
-Runs the in-core test suite under `cargo +nightly careful test` on the Linux and macOS
-nightly legs, enabling extra standard-library debug assertions and runtime
-undefined-behaviour checks (uninitialized-memory reads, invalid enum discriminants, and
-similar) specifically on the **untrusted-byte detect / `fs_guard` path** (SSOT
-Principle 9 — the bytes ConvertIA ingests are arbitrary and possibly hostile, so the
-code that first touches them gets the strictest runtime checking available). It is
-**additive to the deny-`unsafe` policy (G29)**: G29 forbids new `unsafe` outside the one
-FFI module statically, while `cargo-careful` exercises the std-internal soundness
-assumptions at run time. **Owner decision:** informational-then-required once the
-nightly leg is stable.
-
-### Kani — bounded model checking of the numeric caps
-
-Bounded model checking (`kani`) that **proves** — rather than fuzzer-hopes — the small,
-finite numeric caps the safety story depends on: the ≤100× decompression-ratio bound,
-`MAX_SVGZ_SNIFF` ≤64 KiB, and the `fs_guard` path-classification predicates. These caps
-are small enough to be tractable for a SAT/SMT-backed proof over all inputs in the
-bounded domain, which is strictly stronger than G48's fuzzing (fuzzing samples the input
-space; Kani exhausts the bounded one). It is **additive to G48**, not a replacement.
-**Owner decision:** informational-then-required once the proof harnesses are written and
-the proof time is acceptable in CI.
-
-### `cargo-geiger` — `unsafe`-usage census
-
-A reporting tool that counts `unsafe` blocks/functions across the dependency graph,
-giving a visible census of where `unsafe` lives in third-party crates. It is **purely
-informational — it never ratchets to `required`** (a visibility aid, not a pass/fail
-gate; the enforced `unsafe` policy is G29). It is recorded here so the decision to keep
-it informational-forever is itself a dated, auditable line.
+The owner declined `cargo-acl`/cackle, `cargo-careful`, Kani, `cargo-geiger`, Miri and UBSan for v1
+(rows above, each with its accepted residual). None ever ran; each would have been additive to
+G18/G29/G48. Re-adopting one is an owner decision: the ledger row, the check-23 registry and an
+owning box change in one owner-acked commit.
 
 ## Scoped mutation testing — `cargo-mutants` (P0.5.10 · §6.4 · G15)
 
@@ -308,11 +258,7 @@ resource-bounded (cgroup / `ulimit` / `docker --memory` + the G56 `timeout-minut
 corpus-induced host OOM/disk-fill is a contained finding, not a shared-VPS outage; the §6.1.4
 VPS runner is the host.
 
-**Owner decision (`informational`↔`required`).** Recorded `informational` here. It is
-**pre-committed to a REQUIRED SCHEDULED, non-PR-blocking** job (at minimum a weekly
-`radamsa`-through-the-isolation-wrapper run that FILES AN ISSUE on a boundary-escaping crash —
-an issue-opener like G66, so it can't wedge a half-built phase); the owner decides **before
-P10** whether to ALSO make it per-push, which is the `informational`→`required` flip. A flip
-edits BOTH this ledger row (status + `Since`) AND the `plan-lint` check-23
-`_OWNER_DECIDABLE_GATES` posture map in the same owner-acked L(-1) commit (the flip protocol
-above). The reserved id `G65` is held now so an adoption does not renumber.
+**Owner decision (`decided`).** A REQUIRED SCHEDULED, non-PR-blocking job — at minimum a weekly
+`radamsa`-through-the-isolation-wrapper run that FILES AN ISSUE on a boundary-escaping crash (an
+issue-opener like G66), built by P9.36; no per-push leg. The registry keeps `g65` as `decided`, so
+re-opening it edits this row and the check-23 map in one owner-acked commit.

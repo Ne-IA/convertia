@@ -99,10 +99,11 @@ Assertions (after the file is known to be in plain, statically-analysable block 
       native code) must set `CARGO_NET_OFFLINE=true` AND carry an explicit `cargo fetch --locked`
       BEFORE the build, so a build script cannot phone home to exfiltrate MINISIGN_SECRET_KEY (cargo-vet
       is a trust signal, not an execution sandbox; harden-runner BLOCK in (6) is the network backstop;
-      the per-crate cap is the P0.4.5 cargo-acl upgrade). The compile scan is scoped to the `steps:`
-      section (a job-level env value embedding "cargo build" is not a phantom compile). Fail-open until
-      the P10 signing job lands. Spec §6.7.2 makes the secret-bearing signing job sign-only + disjoint
-      from the build job, so this binds only if that disjoint-job design is ever violated.
+      a per-crate sandbox (cargo-acl/cackle) is declined for v1 (gate-status.md)). The compile scan is
+      scoped to the `steps:` section (a job-level env value embedding "cargo build" is not a phantom
+      compile). Fail-open until the P10 signing job lands. Spec §6.7.2 makes the secret-bearing
+      signing job sign-only + disjoint from the build job, so this binds only if that disjoint-job
+      design is ever violated.
   (9) container/service image digests (the G56 r6 image-digest sub-rule; its target arrived
       with the P4.28.1 engine-asset-compile container) - every `container:` scalar and every
       `image:` value must be the digest-pinned `<registry>/<image>[:tag]@sha256:<64-hex>`
@@ -1331,8 +1332,8 @@ def check_secret_offline_build(name: str, lines: list[str], raw_lines: list[str]
     with full network by default, and `cargo-vet` is a TRUST signal not an execution sandbox - so the
     secret-bearing job must run cargo build/test with `CARGO_NET_OFFLINE=true` AFTER an explicit
     `cargo fetch --locked` (the build then cannot phone home to exfiltrate the key). harden-runner BLOCK
-    (rule 6) is the network backstop; this is the cargo-level no-network-after-fetch invariant. The full
-    per-crate sandbox is the owner-decidable cargo-acl cap (P0.4.5). Fail-open until the P10 signing job
+    (rule 6) is the network backstop; this is the cargo-level no-network-after-fetch invariant. A per-crate
+    sandbox (cargo-acl/cackle) is declined for v1 (gate-status.md). Fail-open until the P10 signing job
     lands (no secret-bearing build job exists yet). Secret detection mirrors rule (6) (raw_lines, so a
     secret in a multi-line run:/env: is seen)."""
     problems = 0
@@ -1351,9 +1352,9 @@ def check_secret_offline_build(name: str, lines: list[str], raw_lines: list[str]
         # in a job-level env VALUE / name: (a phantom match) is not mistaken for a real compile step.
         # (Honest P10 residual: this is line/text-shape, not per-step env-resolution - a step-level
         # `CARGO_NET_OFFLINE=false` inline override after a job-level `true` is NOT detected here; the
-        # harden-runner BLOCK egress allow-list (check 6) is the live backstop, and the per-crate cap is
-        # the P0.4.5 cargo-acl upgrade. A naive `=false`-reject would false-fail the legitimate
-        # fetch-step-overrides-false form, so it is deliberately not added.)
+        # harden-runner BLOCK egress allow-list (check 6) is the live backstop, and a per-crate sandbox
+        # (cargo-acl/cackle) is declined for v1 (gate-status.md). A naive `=false`-reject would
+        # false-fail the legitimate fetch-step-overrides-false form, so it is deliberately not added.)
         m_steps = re.search(r"(?m)^\s*steps\s*:", text)
         scan = text[m_steps.start():] if m_steps else text
         builds = list(_COMPILE_RE.finditer(scan))

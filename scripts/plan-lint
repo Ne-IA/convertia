@@ -1461,24 +1461,24 @@ def doc20_reviewer_family(ctx: Ctx) -> list[Finding]:
 
 
 # --- check 23 (the G68 sibling): the owner-decidable / informational-then-ratcheted gate-status ledger.
-# _OWNER_DECIDABLE_GATES is the canonical registry of gates whose required-vs-informational posture is an
-# OWNER decision (not a deterministic always-on Gnn). The KEY is matched case-insensitively as a WHOLE
+# _OWNER_DECIDABLE_GATES is the canonical registry of the informational-then-ratcheted gates (value
+# informational / required) plus the owner decisions that replaced a registered posture (value decided),
+# kept so a silent re-promotion reds. The KEY is matched case-insensitively as a WHOLE
 # delimited TOKEN in the ledger row's first column (via _key_binds, so `cargo-acl`/cackle and a back-ticked
 # `Kani` bind but a near-miss like `cargo-aclx` does NOT); the VALUE is the effective posture the ledger
 # row MUST agree with. INVARIANT: no key may be a substring of another. A flip edits BOTH the ledger row AND this
-# map in the SAME owner-acked L(-1) commit — the dual record that makes an informational<->required flip a
-# dated, auditable change, never an invisible drift (build-gates §6 check 23). Seeded with the P0.4.5
-# over-assurance contracts; later boxes APPEND their gate when authored (P0.5.10 cargo-mutants, P0.7.14 G64,
-# P0.7.15 G65, G17b) — each addition rides that box's commit, never a pre-emptive entry for absent code.
+# map in the SAME owner-acked L(-1) commit — the dual record that makes a posture change a
+# dated, auditable change, never an invisible drift (build-gates §6 check 23). A gate enters with the box that
+# authors it; a one-time adopt with no prior posture (G59) stays out.
 _OWNER_DECIDABLE_GATES = {
-    "cargo-acl":     "informational",   # cackle dependency-graph capability cap (P0.4.5)
-    "kani":          "informational",   # bounded model checking of the numeric caps (P0.4.5)
-    "cargo-careful": "informational",   # runtime-UB / extra-assertion nightly wrapper (P0.4.5)
-    "cargo-geiger":  "informational",   # unsafe-usage census, informational-forever (P0.4.5)
+    "cargo-acl":     "decided",         # cackle dependency-graph capability cap (P0.4.5) — declined for v1 (gate-status.md)
+    "kani":          "decided",         # bounded model checking of the numeric caps (P0.4.5) — declined for v1 (gate-status.md)
+    "cargo-careful": "decided",         # runtime-UB / extra-assertion nightly wrapper (P0.4.5) — declined for v1 (gate-status.md)
+    "cargo-geiger":  "decided",         # unsafe-usage census (P0.4.5) — declined for v1 (gate-status.md)
     "cargo-mutants": "informational",   # scoped mutation testing of the fs_guard/detect/outcome kernel, G15 sub-leg (P0.5.10); owner flips ->required at 0 survived for fs_guard+detect (P3.72 ratchet)
     "g17b":          "informational",   # bundled-engine CVE awareness (osv-scanner/grype over the PURL-keyed engines.lock) (P0.7.7); owner flips ->required via the CVSS>=7-on-an-actively-exercised-section-04-path release-blocking escalation (vuln-response.md / SECURITY.md)
     "g64":           "informational",   # privilege-drop-tier ratchet over the §2.12.3 runtime containment (P0.7.14); decrease-guarded privilege-drop-coverage.toml; owner flips ->required once the tier matrix stabilises (informational while filled P4-P9)
-    "g65":           "informational",   # engine-subprocess coverage-guided fuzz, reserved-not-row id (P0.7.15); required-scheduled non-PR-blocking issue-opener now; owner flips ->required on the before-P10 also-per-push decision
+    "g65":           "decided",         # engine-subprocess coverage-guided fuzz, reserved-not-row id (P0.7.15) — required weekly scheduled issue-opener (P9.36), no per-push leg — decided
 }
 _GATE_STATUSES = {"informational", "required", "decided"}
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

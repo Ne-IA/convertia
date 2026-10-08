@@ -118,7 +118,7 @@ always includes the §0.2 output-validity bar.
 | **Unit — React** | Frontend utils / hooks / components (presentational logic, reducers, formatters) | **Vitest** | §6.4.6 (last line) | **G15** (vitest run) · **G27** (TS coverage floor) |
 | **Property / fault-injection** | No-harm + fail-clearly invariants over generated inputs: atomicity-under-interruption, source-byte-identity, divert/fallback, out-of-disk, malformed/adversarial, cancellation, resource budgets | Rust **`proptest`**, TS **`fast-check`** | §6.4.2 | **G16**, **G15**, **G31** |
 | **Integration — per-pair** | **The reliability heart.** Every `(source→target)` pair, **real engine → real output file → real temp FS**, validated by the §0.2 structural reader | `cargo test` driving the real engines | §6.4.3 / §6.4.3a | **G31**, **G32**, **G26** |
-| **Fuzz** | "Never panic / OOM / UB on arbitrary bytes" on the **DECODE path that runs in-core** (outside the §2.12 boundary) + an unsafe census | **`cargo-fuzz`** (libFuzzer); **`cargo-geiger`** (census) | §6.4.2 (in-core fuzz harness) / §2.12.4 | **G48** (fuzz); `cargo-geiger` informational (**G29**) |
+| **Fuzz** | "Never panic / OOM / UB on arbitrary bytes" on the **DECODE path that runs in-core** (outside the §2.12 boundary) | **`cargo-fuzz`** (libFuzzer) | §6.4.2 (in-core fuzz harness) / §2.12.4 | **G48** |
 | **E2E** | The real built app driven through the real window: the §5.2 core flow end-to-end | **`tauri-driver`** + **WebdriverIO** (Win/Linux); macOS = defined degraded smoke | §6.4.6 | *no dedicated Gnn* — E2E runs **on** the **G30** platform matrix; the per-push E2E result blocks red `main` via the CI job directly |
 | **a11y** | WCAG 2.1 AA: ARIA/role/focus + computed contrast | `vitest-axe` (jsdom) + `@axe-core/webdriverio` (live WebView) | §6.4.6a | **G33a** (per-push), **G33b** (release) |
 | **Visual regression** | Screenshot diff of the rendered UI against a baseline | *(no gate — see §9)* | *(none — §6.4.6 family)* | **G34 — VACATED** |
@@ -342,8 +342,8 @@ trust kernel, outside the §2.12 boundary** is the §1.2 detection layer — a p
 OOM / UB there lands in the core (security principle 9). That surface gets a real
 coverage-guided fuzzer; the isolated C/C++ engines do **not** (libFuzzer is
 in-process Rust and cannot reach them — their adversarial coverage is the **G26**
-fixed corpus fault-injection *through* the boundary, and the reserved **G65**
-black-box engine-subprocess fuzz is the build-gates §8 forward item — **G65**).
+fixed corpus fault-injection *through* the boundary, and the reserved **G65** weekly
+scheduled black-box engine-subprocess fuzz (gate-status.md; P9.36)).
 
 **The invariant: "never panic / abort / UB on arbitrary bytes."** `cargo-fuzz`
 (libFuzzer) targets (**G48**), on the **Linux + macOS nightly** legs (date-pinned
@@ -356,9 +356,7 @@ runtime SEGVs at process start on two compiler-rt generations —
 rust#101247/#121624/#146367), so the macOS leg keeps the sancov-guided
 panic/hang/OOM oracle while a **per-run ASAN canary** in `fuzz.yml` emits the loud
 re-arm signal the first time upstream heals (nothing parked on a prose reminder).
-Plus a **UBSan** leg where the toolchain supports it + a small **`cargo miri`**
-leg over the pure-logic in-core paths (Miri covers the safe-Rust side; ASAN
-covers the FFI boundary):
+Miri and UBSan legs are not part of v1 (declined, gate-status.md). The targets:
 
 1. **`crate::detection`/sniff** on a hostile ZIP/OLE2/gzip/svgz/XML corpus — no
    panic/abort; the §1.2 decompression-ratio cap (≤ 100×) and `MAX_SVGZ_SNIFF`
@@ -394,9 +392,10 @@ covers the FFI boundary):
    `.so`/`.dylib`/`.dll` that **cannot** be ASAN-instrumented, so ASAN here catches
    **Rust-side heap violations + FFI-boundary crossings only, NOT bugs inside
    libvips/libheif/librsvg** — a valuable boundary test, *not* a decoder-internals
-   fuzz (that is **G65**). A full-internals fuzz would need a from-source
-   ASAN build asserted same-version as the `engines.lock` pin (owner-decidable — the
-   reserved **G65** full-internals track, build-gates §8).
+   fuzz (that is the reserved **G65** weekly scheduled engine-subprocess fuzz,
+   gate-status.md; P9.36). A full-internals fuzz would need a from-source ASAN build
+   asserted same-version as the `engines.lock` pin (an owner-decidable upgrade, not
+   the default — the G48 row).
 
 **The IPC boundary is a `proptest` contract (G16), NOT a libFuzzer target.** It is the
 TRUSTED WebView→Rust type door (the app's own bundled, CSP-locked, no-network frontend
@@ -456,8 +455,7 @@ every fuzz leg pins **`-rss_limit_mb`**, **`-max_len`**, **`-timeout`** (per inp
 **OOM or timeout is a FINDING** (minimized + committed to `fuzz/crashes/`),
 **never retried**.
 
-**Unsafe census (`cargo-geiger`) is INFORMATIONAL only** — a census of the `unsafe`
-surface, *not* an enforcer (version-fragile; never a required green check). The
+**No `unsafe` census runs** (`cargo-geiger` is declined for v1, gate-status.md). The
 enforced unsafe policy is **G29**: `#![deny(unsafe_code)]` at every first-party
 crate root + a single narrowly allow-listed FFI module.
 
@@ -1284,8 +1282,8 @@ every standing sweep box.
 - Enforcement (the gates named above): [build-gates.md](../security/build-gates.md)
   — **G8** (deferral), **G15** (unit), **G16** (bound-firing/resource fixtures),
   **G24/G24a** (gate + fixture self-test/integrity), **G26** (engine-side corpus),
-  **G27/G28** (coverage floor + diff gate), **G29** (SAST/unsafe policy;
-  `cargo-geiger` informational), **G30** (cross-platform build matrix the E2E flow
+  **G27/G28** (coverage floor + diff gate), **G29** (SAST/unsafe policy),
+  **G30** (cross-platform build matrix the E2E flow
   runs on), **G31/G32** (per-pair corpus + structural readers + round-trip/
   determinism), **G33a/G33b** (a11y), **G34** (vacated visual-regression),
   **G42/G42b** (egress / fs-audit), **G48** (in-core fuzz), **G60** (`diffoscope`),

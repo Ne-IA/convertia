@@ -34,7 +34,7 @@ CI job, immediately before the real scan):
      over-strict, fails-safe). Target-absent -> no-op.
   5. shellcheck over ALL committed *.sh (actionlint only shellchecks workflow `run:` steps, G49) — runs
      AFTER the semgrep legs (it is semgrep-independent, so it also runs when semgrep is absent locally).
-  6. cargo-geiger - INFORMATIONAL only (a census, never a required green check); skipped until crates.
+  6. (retired) cargo-geiger - declined for v1 (docs/process/gate-status.md); no leg.
 
 `--config p/rust` (live registry fetch) is NEVER used - only the vendored `scripts/semgrep-rules/`.
 stdlib-only. L(-1) security-critical (matched by scripts/**).
@@ -666,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
         problems += self_test_prelude()
         problems += real_scan()
         problems += census_scan()
-        # cargo-geiger is INFORMATIONAL only (never blocks) and needs crates (P1) - omitted in P0.
+        # cargo-geiger is declined for v1 (docs/process/gate-status.md) - no census leg.
 
     # These structural greps are semgrep-INDEPENDENT (text-based) and run regardless — they backstop
     # semgrep's Rust matcher (target-absent -> no-op until P1 source).

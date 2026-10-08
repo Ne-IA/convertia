@@ -648,14 +648,15 @@ def _ledger(rows):                                   # rows: list of (name, stat
     return {_GS: "# Ledger doc\n\n## Ledger\n\n" + _LEDGER_HEAD + body}
 
 
-_SEEDED = [("`cargo-acl`/cackle", "informational", "2026-06-18"),
-           ("`cargo-careful`", "informational", "2026-06-18"),
-           ("Kani", "informational", "2026-06-18"),
-           ("`cargo-geiger`", "informational", "2026-06-18"),
+# The declined tools and G65 carry `decided` (the gate-status ledger).
+_SEEDED = [("`cargo-acl`/cackle", "decided", "2026-06-18"),
+           ("`cargo-careful`", "decided", "2026-06-18"),
+           ("Kani", "decided", "2026-06-18"),
+           ("`cargo-geiger`", "decided", "2026-06-18"),
            ("`cargo-mutants`", "informational", "2026-06-19"),   # P0.5.10 — the G15 mutation sub-leg
            ("`G17b`", "informational", "2026-06-19"),            # P0.7.7 — bundled-engine CVE awareness
            ("`G64`", "informational", "2026-06-19"),             # P0.7.14 — privilege-drop-tier ratchet
-           ("`G65`", "informational", "2026-06-19")]             # P0.7.15 — engine-subprocess coverage-guided fuzz
+           ("`G65`", "decided", "2026-06-19")]                   # P0.7.15 — engine-subprocess coverage-guided fuzz
 record("23 gate-status: a clean 8-row ledger (all registered gates) -> no finding",
        m.doc23_ratchet_log(dctx(_ledger(_SEEDED))) == [])
 # [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] the ledger landed (P0.4.5),

@@ -785,8 +785,8 @@ being updated in the same change):
   compile; `forbid` is reserved only for a pure-logic sub-crate with **zero** unsafe.
   A **Semgrep** layer (`p/rust` + `p/typescript` + the committed project-local rules,
   pinned/vendored for offline use; the managed `p/security-audit` pack is fetched live and
-  breaks offline) augments it; `cargo-geiger` is **informational only** (a census, not an
-  enforcer).
+  breaks offline) augments it. No `unsafe` census tool (`cargo-geiger`) is part of v1: the
+  deny-at-root check is the policy.
 - **CI workflow hardening** (build-gates **G49/G50/G18a**): every workflow declares
   least-privilege `permissions` (the secret-bearing release job gets `contents: write`
   ONLY and never runs on a fork PR); every third-party action is pinned by full
