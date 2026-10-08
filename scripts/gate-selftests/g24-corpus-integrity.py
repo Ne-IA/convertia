@@ -11,12 +11,17 @@ via injected runners / monkeypatched defaults). Exit 0 = held.
 import hashlib
 import importlib.machinery
 import importlib.util
+import os
 import sys
 import tempfile
 from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-corpus-integrity"
 _loader = importlib.machinery.SourceFileLoader("cci", str(SCRIPT))

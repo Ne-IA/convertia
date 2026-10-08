@@ -25,6 +25,10 @@ from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-test-suppression"
 _loader = importlib.machinery.SourceFileLoader("cts", str(SCRIPT))
@@ -207,11 +211,6 @@ record("--full passes on the real repo (test files clean — no unjustified mark
 
 
 # --- run_diff E2E in a real temp git repo (the staged-blob path + fail-open-without-base) ------
-# The throwaway-repo git calls and the in-process `m.main(["--diff"])` runs get an environment WITHOUT the
-# GIT_* location variables a hook plane could carry (GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE / ...): with one
-# of them absolute, `git -C <tmp> add` + `commit` would operate on the OUTER repository. GIT_EXEC_PATH stays.
-for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
-    os.environ.pop(_k)
 
 
 def _git(repo, *a):

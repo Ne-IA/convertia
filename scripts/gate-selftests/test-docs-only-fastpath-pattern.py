@@ -25,6 +25,10 @@ from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "fastpath-docs-only"
@@ -82,11 +86,7 @@ record("main: EMPTY range (HEAD..HEAD, 0 changed files) -> MUST-RUN (exit 1)",
 # --- live main() in a throwaway repo: the range verdict joined by the index / working tree --------
 # The six wrapped legs read the working tree, so code staged on top of a docs-only unpushed range (the
 # build-loop Step 4a pre-review sweep runs `lefthook run pre-push --force` over a staged box) must run
-# them. The throwaway-repo git calls get an environment WITHOUT the GIT_* location variables a hook
-# plane could carry (with GIT_DIR absolute, `git -C <tmp>` would reach the OUTER repository);
-# GIT_EXEC_PATH stays.
-for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
-    os.environ.pop(_k)
+# them.
 
 
 def _git(repo: Path, *a: str) -> str:

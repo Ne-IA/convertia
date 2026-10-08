@@ -11,12 +11,18 @@ git-free (the walk is exercised via a monkeypatched `_git_tracked`). Exit 0 = he
 """
 import importlib.machinery
 import importlib.util
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-completeness"
 _loader = importlib.machinery.SourceFileLoader("cc", str(SCRIPT))
@@ -157,15 +163,11 @@ with tempfile.TemporaryDirectory() as td:
 # --- the tracked-file list is read `-z --full-name -- :/` (2026-09-08, the residual-closure review's round-16 finding: this gate's
 # `ls-files` was newline-split and quotepath-default, so a handler in a non-ASCII-named file was skipped by the CONTENT scan and its
 # missing partner test passed silently) - a REAL git repo, the real `_git_tracked` -------------------------------------------------
-import os
-import subprocess
-
-_GIT_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k == "GIT_EXEC_PATH"}
 
 
 def _real_repo(td: str, files: dict) -> None:
     def g(*a):
-        subprocess.run(["git", "-C", td, "-c", "commit.gpgsign=false", *a], check=True, capture_output=True, env=_GIT_ENV)
+        subprocess.run(["git", "-C", td, "-c", "commit.gpgsign=false", *a], check=True, capture_output=True)
     g("init", "-q", "-b", "main")
     (Path(td) / "nohooks").mkdir()
     g("config", "core.hooksPath", str(Path(td) / "nohooks"))

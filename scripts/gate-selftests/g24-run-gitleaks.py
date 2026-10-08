@@ -62,6 +62,10 @@ from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "run-gitleaks"
@@ -70,13 +74,6 @@ _loader = importlib.machinery.SourceFileLoader("rgl", str(SCRIPT))
 _spec = importlib.util.spec_from_loader("rgl", _loader)
 m = importlib.util.module_from_spec(_spec)
 _loader.exec_module(m)
-
-# The throwaway-repo git calls (and the driver's own git + gitleaks runs inside them) get an environment
-# WITHOUT the GIT_* location variables a hook plane can carry (GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE /
-# ...): with one of them set, `git -C <tmp> commit` and gitleaks' `git log` would act on the OUTER
-# repository. GIT_EXEC_PATH stays.
-for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
-    os.environ.pop(_k)
 
 # [Build-Session-Entscheidung: P0.3.1] the throwaway scans run WITHOUT this repository's baseline: a baseline lists
 # findings of THIS repository (its paths, its commits), and gitleaks resolves it relative to the scan source, which

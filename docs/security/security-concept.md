@@ -169,7 +169,12 @@ not honestly make.)
 can be subverted by a file placed beside it: `scripts/re.py` shadows `re` for every
 `python3 scripts/<gate>` run before the gate's code executes, which no in-gate check can
 catch. Every plane therefore runs its Python gates as `python3 -P`, and the canary runner sets
-`PYTHONSAFEPATH=1`; G54b (leg (5)) fails a plane Python invocation without `-P`.
+`PYTHONSAFEPATH=1`; G54b (leg (5)) fails a plane Python invocation without `-P`. A self-test's
+throwaway repository is kept apart from the repository the hook runs in the same way: a hook in
+a linked worktree exports an absolute `GIT_DIR`, under which a canary's own
+`git config core.hooksPath <tmp>` would persist bypass (d) there, so the runner drops the
+inherited `GIT_*` variables (except `GIT_EXEC_PATH`) from every self-test it starts, and every
+self-test that starts git itself drops them first (G24).
 
 ## 4. Security principles (the invariants the gates defend)
 

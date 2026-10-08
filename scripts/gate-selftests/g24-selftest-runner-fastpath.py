@@ -16,13 +16,19 @@ PYTHONDONTWRITEBYTECODE=1 child environment proven from the wiring (the
 ambient variable is popped for the leg, so inheritance cannot fake it), and the fail-closed
 refusal when a cache SURVIVES the purge (the length-preserving-mutation-poisons-pycache
 class - see `_purge_bytecode_caches` in the runner). The PYTHONSAFEPATH=1 child environment (G54b
-leg (5)) is pinned the same way, its ambient value popped. Named with the g24- prefix DELIBERATELY: it is a G24
+leg (5)) is pinned the same way, its ambient value popped. The GIT_* posture is pinned in both halves: the
+runner's child environment drops every inherited GIT_* variable but GIT_EXEC_PATH (the exact set, from the
+wiring, and end to end - the runner over a planted self-test that scrubs nothing leaves the repository a planted
+absolute GIT_DIR names untouched, the same self-test run directly writing it first), and every self-test that
+names git as a program drops the same variables in its header for a direct run (`git_scrub_problem`, planted
+sources and every real self-test file). Named with the g24- prefix DELIBERATELY: it is a G24
 wiring/planted-positive self-test for an internal fastpath of the G24 runner, not a G10
 `test-*-fastpath-pattern` detector.
 
 Run:  python3 scripts/gate-selftests/g24-selftest-runner-fastpath.py
 Exit: 0 = every assertion held; 1 = a self-test assertion FAILED.
 """
+import ast
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -36,6 +42,10 @@ from types import SimpleNamespace
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "run-gate-selftests"
@@ -115,10 +125,9 @@ def _rename_scope_leg() -> tuple[int, str, list[str]]:
     detection (`diff.renames`, set on here so a host config cannot mask the replay) lists only the
     destination, so the range read must list the source path too (`--no-renames`) or the canary
     under-runs. ROOT points at the throwaway repo and SELFTEST_DIR at an absent dir, so a RUN verdict
-    ends at the empty discovery (rc 1) and nothing is spawned; the GIT_* location variables a hook
-    plane could carry are popped for the leg (GIT_EXEC_PATH stays)."""
+    ends at the empty discovery (rc 1) and nothing is spawned; the runner's own range read keeps the
+    inherited environment, which the header scrub of this file has already cleared of GIT_*."""
     saved = m.SELFTEST_DIR, m.ROOT
-    popped = {k: os.environ.pop(k) for k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]}
     try:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -149,7 +158,6 @@ def _rename_scope_leg() -> tuple[int, str, list[str]]:
         return -1, f"raised: {type(e).__name__}: {e}", []
     finally:
         m.SELFTEST_DIR, m.ROOT = saved
-        os.environ.update(popped)
 
 
 _rc_mv, _out_mv, _replay_mv = _rename_scope_leg()
@@ -395,6 +403,202 @@ record("fail-closed: a __pycache__ that SURVIVES the purge refuses the whole run
        "canary spawns (PYTHONDONTWRITEBYTECODE cannot prevent reads of a stale cache - the "
        "r1 sonnet P0)", _survivor_leg())
 
+# --- the GIT_* posture: git exports an absolute GIT_DIR to the hooks of a linked worktree (GIT_INDEX_FILE too at
+# pre-commit), and a canary's throwaway-repo git under it acts on the HOOKED repository - `git init` writes
+# core.bare=true, `git config core.hooksPath <tmp>` turns every local hook off, a fixture commit lands on its branch.
+# The runner drops every GIT_* variable but GIT_EXEC_PATH from each child; a self-test that names git as a program
+# drops the same variables in its header, for a direct run. --------------------------------------------------------
+
+
+def _git_env_wiring_leg() -> bool:
+    """Hermetic (dir globals patched, subprocess stubbed): with the variables a hook plane exports planted in the
+    runner's environment, and the other GIT_* knobs git honours (a work tree, an object store, a common dir, `-c`
+    parameters), the child environment keeps exactly GIT_EXEC_PATH of them, with its value; GITHUB_* and any other
+    variable pass through, and the PYTHON* knobs stay."""
+    planted = {"GIT_DIR": "/outer/.git/worktrees/wt", "GIT_INDEX_FILE": "/outer/.git/worktrees/wt/index",
+               "GIT_WORK_TREE": "/outer", "GIT_COMMON_DIR": "/outer/.git", "GIT_OBJECT_DIRECTORY": "/outer/.git/objects",
+               "GIT_CONFIG_PARAMETERS": "'core.hookspath'='/none'", "GIT_PREFIX": "sub/",
+               "GIT_EXEC_PATH": "/g24/git-core", "GITHUB_ACTIONS": "true", "G24_PASS_THROUGH": "1"}
+    ambient = {k: os.environ.get(k) for k in planted}
+    saved = m.SELFTEST_DIR, m.ROOT, m.subprocess
+    envs: list = []
+
+    def _popen(cmd, **kwargs):
+        envs.append(kwargs.get("env"))
+        return _FakeProc("[g24-fake] 1/1 assertions passed.\n")
+
+    try:
+        os.environ.update(planted)
+        with tempfile.TemporaryDirectory() as td:
+            selftests = Path(td) / "scripts" / "gate-selftests"
+            selftests.mkdir(parents=True)
+            (selftests / "g24-fake.py").write_text("", encoding="utf-8")
+            m.SELFTEST_DIR, m.ROOT = selftests, Path(td)
+            m.subprocess = _fake_subprocess(_popen)
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = m.main([])
+        env = envs[0] if len(envs) == 1 and envs[0] is not None else {}
+        return (rc == 0 and sorted(k for k in env if k.startswith("GIT_")) == ["GIT_EXEC_PATH"]
+                and env.get("GIT_EXEC_PATH") == "/g24/git-core" and env.get("GITHUB_ACTIONS") == "true"
+                and env.get("G24_PASS_THROUGH") == "1" and env.get("PYTHONSAFEPATH") == "1"
+                and env.get("PYTHONDONTWRITEBYTECODE") == "1")
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        print(f"[g24-selftest-runner-fastpath] git-env wiring leg raised: {type(e).__name__}: {e}")
+        return False
+    finally:
+        m.SELFTEST_DIR, m.ROOT, m.subprocess = saved
+        for k, v in ambient.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+record("wiring: every canary child runs without the inherited GIT_* variables but GIT_EXEC_PATH, its value kept - a planted"
+       " GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, GIT_CONFIG_PARAMETERS and GIT_PREFIX"
+       " are all dropped, GITHUB_* and other variables pass through (hermetic: dir globals patched, subprocess stubbed)",
+       _git_env_wiring_leg())
+
+# The planted self-test scrubs NOTHING and runs git in a repository of its own, the shape of every throwaway-repo canary.
+_PLANTED_SELFTEST = (
+    "import subprocess\n"
+    "repo = {repo!r}\n"
+    "subprocess.run(['git', 'init', '-q', repo], check=True, capture_output=True)\n"
+    "subprocess.run(['git', '-C', repo, 'config', 'core.hooksPath', repo + '/no-hooks'], check=True, capture_output=True)\n"
+    "print('[g24-planted] 1/1 assertions passed.')\n")
+
+
+def _git_env_e2e_leg() -> tuple[bool, bool, bool, str]:
+    """E2E, two throwaway 'outer' repositories, each named by an absolute GIT_DIR the way a linked worktree's hook
+    exports it. Replay: the planted self-test run directly under the first one writes that repository's config (the
+    incident; it also proves the green half below cannot pass on a git that ignored GIT_DIR). Runner: main() over the
+    same planted self-test, the second GIT_DIR planted in the runner's own environment - that repository's config stays
+    byte-identical, main() exits 0 and the planted self-test's own repository carries the hooksPath (its git ran, in
+    the right place). Returns (replay wrote, runner kept it, git landed, detail)."""
+    saved = m.SELFTEST_DIR, m.ROOT
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            outers = [root / "outer-replay", root / "outer-runner"]
+            for outer in outers:
+                subprocess.run(["git", "init", "-q", str(outer)], check=True, capture_output=True)
+            before = [(outer / ".git" / "config").read_bytes() for outer in outers]
+            direct = root / "direct" / "g24-planted.py"
+            direct.parent.mkdir()
+            direct.write_text(_PLANTED_SELFTEST.format(repo=str(root / "repo-direct")), encoding="utf-8")
+            subprocess.run([sys.executable, str(direct)], capture_output=True,
+                           env=dict(os.environ, GIT_DIR=(outers[0] / ".git").as_posix()))
+            replay_wrote = (outers[0] / ".git" / "config").read_bytes() != before[0]
+            selftests = root / "scripts" / "gate-selftests"
+            selftests.mkdir(parents=True)
+            (selftests / "g24-planted.py").write_text(_PLANTED_SELFTEST.format(repo=str(root / "repo-runner")),
+                                                      encoding="utf-8")
+            m.SELFTEST_DIR, m.ROOT = selftests, root
+            buf = io.StringIO()
+            os.environ["GIT_DIR"] = (outers[1] / ".git").as_posix()
+            try:
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    rc = m.main([])
+            finally:
+                os.environ.pop("GIT_DIR", None)      # the header scrub left no ambient GIT_DIR to restore
+            kept = rc == 0 and (outers[1] / ".git" / "config").read_bytes() == before[1]
+            config = root / "repo-runner" / ".git" / "config"
+            landed = config.is_file() and "hooksPath" in config.read_text(encoding="utf-8")
+            return replay_wrote, kept, landed, buf.getvalue()[-400:]
+    except Exception as e:  # noqa: BLE001 - a named FAIL beats a dead canary
+        return False, False, False, f"raised: {type(e).__name__}: {e}"
+    finally:
+        m.SELFTEST_DIR, m.ROOT = saved
+
+
+_wrote, _kept, _landed, _e2e_detail = _git_env_e2e_leg()
+record("E2E: the runner over a planted self-test that scrubs nothing, an absolute GIT_DIR naming another repository planted"
+       " in its environment - that repository's config stays byte-identical and the planted git lands in its own repository;"
+       " the same self-test run directly writes that config first (the replayed incident)",
+       _wrote and _kept and _landed)
+if not (_wrote and _kept and _landed):
+    print(f"[g24-selftest-runner-fastpath]   replay wrote={_wrote} runner kept={_kept} landed={_landed}: {_e2e_detail}")
+
+# The direct-run rule. A self-test run outside the runner (a lefthook line, `git rebase -x`) inherits the hook's
+# variables itself, so a file that names git as a program drops them in its header, before anything else runs.
+_HEADER_SCRUB = ast.dump(ast.parse('for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:\n'
+                                   '    os.environ.pop(_k)\n').body[0])
+_HEADER_RECONFIGURE = ast.dump(ast.parse('for _stream in (sys.stdout, sys.stderr):\n'
+                                         '    if hasattr(_stream, "reconfigure"):\n'
+                                         '        _stream.reconfigure(encoding="utf-8", errors="replace")\n').body[0])
+
+
+def names_git(tree: ast.AST) -> bool:
+    """(pure) A string literal that is exactly `git`: git named as a program (an argv head, a `which` probe). A `git`
+    inside a longer string (a source pin) is not one."""
+    return any(isinstance(n, ast.Constant) and n.value == "git" for n in ast.walk(tree))
+
+
+def git_scrub_problem(source: str) -> str | None:
+    """(pure) The direct-run rule for one self-test file: None, or why it fails. A file that names git as a program
+    runs `_HEADER_SCRUB` (every GIT_* variable but GIT_EXEC_PATH, the exact set) as a module-level statement of its
+    header: only the docstring, the imports and the stream reconfigure may run before it, so no gate code, no tool
+    and no git starts under a hook's GIT_DIR. A file that reaches git only through a gate, a tool or a shell command
+    line is outside the rule; under the runner its child environment is scrubbed all the same."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return f"unparsable ({e.msg})"
+    if not names_git(tree):
+        return None
+    shapes = [ast.dump(node) for node in tree.body]
+    if _HEADER_SCRUB not in shapes:
+        return "names git as a program but runs no module-level GIT_* scrub"
+    for i, node in enumerate(tree.body[:shapes.index(_HEADER_SCRUB)]):
+        docstring = (i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+                     and isinstance(node.value.value, str))
+        if not (docstring or isinstance(node, (ast.Import, ast.ImportFrom)) or shapes[i] == _HEADER_RECONFIGURE):
+            return f"line {node.lineno} runs before the GIT_* scrub (only the docstring, the imports and the stream reconfigure may)"
+    return None
+
+
+_RULE_RECONFIGURE = ('for _stream in (sys.stdout, sys.stderr):\n    if hasattr(_stream, "reconfigure"):\n'
+                     '        _stream.reconfigure(encoding="utf-8", errors="replace")\n')
+_RULE_HEAD = '"""a planted self-test."""\nimport os\nimport subprocess\nimport sys\n' + _RULE_RECONFIGURE
+_RULE_SCRUB = 'for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:\n    os.environ.pop(_k)\n'
+_RULE_LOAD = 'm = load_gate("check-x")\n'
+_RULE_SPAWN = 'subprocess.run(["git", "init", "-q", "repo"])\n'
+record("direct runs (rule): a planted self-test that names git as a program and scrubs nothing is named; with the scrub in its"
+       " header it passes - before the scrub only the docstring, the imports and the stream reconfigure, in any order",
+       git_scrub_problem(_RULE_HEAD + _RULE_LOAD + _RULE_SPAWN) == "names git as a program but runs no module-level GIT_* scrub"
+       and git_scrub_problem(_RULE_HEAD + _RULE_SCRUB + _RULE_LOAD + _RULE_SPAWN) is None
+       and git_scrub_problem("import sys\n" + _RULE_RECONFIGURE + "import os\nimport subprocess\n" + _RULE_SCRUB
+                             + _RULE_SPAWN) is None)
+record("direct runs (rule): the scrub after the gate load or after a git spawn is named by the line that runs first, and one"
+       " inside a function is no module-level scrub",
+       (git_scrub_problem(_RULE_HEAD + _RULE_LOAD + _RULE_SCRUB + _RULE_SPAWN) or "").startswith("line 8 runs before")
+       and (git_scrub_problem(_RULE_HEAD + _RULE_SPAWN + _RULE_SCRUB) or "").startswith("line 8 runs before")
+       and git_scrub_problem(_RULE_HEAD + "def scrub():\n" + "".join("    " + ln + "\n" for ln in _RULE_SCRUB.splitlines())
+                             + "scrub()\n" + _RULE_SPAWN) == "names git as a program but runs no module-level GIT_* scrub")
+record("direct runs (rule): only the exact variable set counts - a scrub that keeps GIT_DIR, or drops GIT_EXEC_PATH too, is named",
+       git_scrub_problem(_RULE_HEAD + _RULE_SCRUB.replace('"GIT_EXEC_PATH"', '"GIT_DIR"') + _RULE_SPAWN) is not None
+       and git_scrub_problem(_RULE_HEAD + _RULE_SCRUB.replace(' and k != "GIT_EXEC_PATH"', "") + _RULE_SPAWN) is not None)
+record("direct runs (rule): a `git` only inside a longer string (a source pin) or a docstring names no program, and a file that"
+       " names no git needs no scrub",
+       git_scrub_problem(_RULE_HEAD + _RULE_LOAD + "PIN = '[\"git\", \"init\"]' in SOURCE\n") is None
+       and git_scrub_problem('"""runs git in a temp repo."""\nimport os\n' + _RULE_LOAD) is None
+       and git_scrub_problem(_RULE_HEAD + _RULE_LOAD) is None)
+_scrub_offenders: dict[str, str] = {}
+_git_naming: list[str] = []
+for _p in sorted((REPO / "scripts" / "gate-selftests").glob("*.py")):
+    _text = _p.read_text(encoding="utf-8")
+    _why = git_scrub_problem(_text)
+    if _why:
+        _scrub_offenders[_p.name] = _why
+    elif names_git(ast.parse(_text)):       # no offender, so the source parsed (an unparsable file is one)
+        _git_naming.append(_p.name)
+record("direct runs (real tree): every self-test under scripts/gate-selftests/ that names git as a program runs the GIT_* scrub"
+       " in its header - the rule binds g54-gate-plane.py (the core.hooksPath writer) and g24-release-tag-trust.py"
+       " (the commit.gpgsign writer) among them",
+       not _scrub_offenders and {"g54-gate-plane.py", "g24-release-tag-trust.py"} <= set(_git_naming))
+for _name, _why in _scrub_offenders.items():
+    print(f"[g24-selftest-runner-fastpath]   {_name}: {_why}")
+
 # --- the build-gates.md leg-count cross-check (2026-09-08, the round-12 G1 class: three row counts went stale in ONE
 # commit, one of them `= 51 legs` against a live 220 - the runner is the only plane that KNOWS every canary's live
 # total, so it reads the rows and reds a claim that disagrees) -------------------------------------------------------
@@ -530,9 +734,10 @@ record("ci.yml keeps the FULL --require-network prelude and never passes --chang
 
 # The sibling-canary convention (the r2 opus P3): the last leg pins the others, so a
 # silently-deleted canary leg reds the canary itself - this file newly carries a P0 closure.
-# [Test-Change: P0.2.13 — old-obsolete+new-correct, build-gates G24 row: 42 -> 43, the one added leg is the
-# `scope (E2E)` rename leg above; the count is the live total minus this pin]
-record("the canary's own leg count is pinned (43 + this pin)", len(results) == 43)
+# [Test-Change: G24 GIT_* scrub — old-obsolete+new-correct, build-gates G24 row: 43 -> 50, the seven added legs
+# are the GIT_* posture legs above (the wiring, the E2E, five direct-run rule legs); the count is the live total
+# minus this pin]
+record("the canary's own leg count is pinned (50 + this pin)", len(results) == 50)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-selftest-runner-fastpath] {len(results) - len(failed)}/{len(results)} assertions passed.")

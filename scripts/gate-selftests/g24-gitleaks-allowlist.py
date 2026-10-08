@@ -23,17 +23,16 @@ from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-gitleaks-allowlist"
 _loader = importlib.machinery.SourceFileLoader("cga", str(SCRIPT))
 _spec = importlib.util.spec_from_loader("cga", _loader)
 m = importlib.util.module_from_spec(_spec)
 _loader.exec_module(m)
-
-# the throwaway-repo git calls (and main()'s `git ls-files` inside them) run WITHOUT the GIT_* location variables a
-# hook plane can carry: with GIT_DIR / GIT_INDEX_FILE / ... set they would act on the OUTER repository
-for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
-    os.environ.pop(_k)
 
 PATHS = set(m.EXPECTED_ALLOWLIST_PATHS)
 RULE_IDS = set(m.EXPECTED_CUSTOM_RULE_IDS)

@@ -36,6 +36,10 @@ from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 SCRIPT = Path(__file__).resolve().parents[1] / "check-doc-splice"
 _loader = importlib.machinery.SourceFileLoader("cds", str(SCRIPT))
@@ -284,10 +288,6 @@ def _rmtree_git(d: str) -> None:
     shutil.rmtree(d, ignore_errors=True)
 
 
-# The throwaway-repo git calls (and the script run inside the repo) get an environment WITHOUT the GIT_*
-# location variables a hook plane could carry (GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE / ...): with one of
-# them absolute, `git -C <tmp> add -A` + `commit` would operate on the OUTER repository. GIT_EXEC_PATH stays.
-_GIT_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k == "GIT_EXEC_PATH"}
 _E2E_DIRS: list[str] = []
 
 
@@ -298,8 +298,7 @@ def _e2e_deleted_file(cite: bool, config=(), attributes=None, extra=None) -> tup
     _E2E_DIRS.append(d)
     try:
         def g(*a):
-            subprocess.run(["git", "-C", d, "-c", "commit.gpgsign=false", *a], check=True, capture_output=True,
-                           env=_GIT_ENV)
+            subprocess.run(["git", "-C", d, "-c", "commit.gpgsign=false", *a], check=True, capture_output=True)
         g("init", "-q")
         (Path(d) / "nohooks").mkdir()
         g("config", "core.hooksPath", str(Path(d) / "nohooks"))
@@ -322,7 +321,7 @@ def _e2e_deleted_file(cite: bool, config=(), attributes=None, extra=None) -> tup
         g("commit", "-q", "-m", "base")
         g("rm", "-q", "src-tauri/src/gone.rs")
         r = subprocess.run([sys.executable, str(SCRIPT), "--diff"], capture_output=True, text=True, cwd=d,
-                           encoding="utf-8", errors="replace", env=_GIT_ENV)
+                           encoding="utf-8", errors="replace")
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     finally:
         _rmtree_git(d)
@@ -345,8 +344,7 @@ def _e2e_hijack(env_extra=None) -> tuple[int, str]:
     _E2E_DIRS.append(d)
     try:
         def g(*a):
-            subprocess.run(["git", "-C", d, "-c", "commit.gpgsign=false", *a], check=True, capture_output=True,
-                           env=_GIT_ENV)
+            subprocess.run(["git", "-C", d, "-c", "commit.gpgsign=false", *a], check=True, capture_output=True)
         g("init", "-q")
         (Path(d) / "nohooks").mkdir()
         g("config", "core.hooksPath", str(Path(d) / "nohooks"))
@@ -360,7 +358,7 @@ def _e2e_hijack(env_extra=None) -> tuple[int, str]:
         (src / "x.rs").write_text("/// docs of the fn below\nfn stealer() {}\n\nfn documented() {}\n", encoding="utf-8")
         g("add", "-A")
         r = subprocess.run([sys.executable, str(SCRIPT), "--diff"], capture_output=True, text=True, cwd=d,
-                           encoding="utf-8", errors="replace", env={**_GIT_ENV, **(env_extra or {})})
+                           encoding="utf-8", errors="replace", env={**os.environ, **(env_extra or {})})
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     finally:
         _rmtree_git(d)

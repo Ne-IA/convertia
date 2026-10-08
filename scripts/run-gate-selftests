@@ -32,6 +32,15 @@ under scripts/ is PURGED (the canaries SourceFileLoader-load their tools, which 
 bytecode - see `_purge_bytecode_caches`), and every canary child runs with
 PYTHONDONTWRITEBYTECODE=1 so a gate run recreates none.
 
+Git environment: every canary child runs WITHOUT the inherited GIT_* variables except GIT_EXEC_PATH.
+git exports an absolute GIT_DIR to the hooks of a linked worktree (GIT_INDEX_FILE too at pre-commit), and
+a canary's throwaway-repo git under it acts on the HOOKED repository instead: `git init` writes
+core.bare=true into its config, `git config core.hooksPath <tmp>` turns every local hook off (the
+core.hooksPath bypass, security-concept §3) and a fixture commit lands on its checked-out branch. The
+runner's own reads (the --changed range) keep the inherited variables: they read the hooked repository.
+A self-test that names git as a program drops the same variables in its own header, so a direct run is
+covered too; g24-selftest-runner-fastpath.py pins both halves.
+
 Row leg-count cross-check (2026-09-08, the residual-closure review's round-12/13 class): build-gates.md cites
 canary totals as `N legs` beside a self-test's name and per-check counts as `` N `prefix` legs in `g24-x.py` ``;
 three such counts went stale in ONE commit (one `= 51` against a live 220) and two more hid in spellings a
@@ -275,9 +284,10 @@ def main(argv: list[str] | None = None) -> int:
     # last lines never appeared - the round-14 finding) and the parent flushes per line; stderr is merged into
     # stdout so the transcript interleaves as the child wrote it.
     # PYTHONSAFEPATH keeps the self-test's directory and the working directory off sys.path in the child and in every
-    # Python grandchild it spawns (the -P rule, G54b leg (5)).
-    child_env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
-                     PYTHONSAFEPATH="1")
+    # Python grandchild it spawns (the -P rule, G54b leg (5)). Every GIT_* variable but GIT_EXEC_PATH stays out of the
+    # child: under a hook's GIT_DIR a canary's throwaway-repo git acts on the hooked repository (module docstring).
+    child_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k == "GIT_EXEC_PATH"}
+    child_env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", PYTHONSAFEPATH="1")
 
     failed: list[str] = []
     live: dict[str, int] = {}
