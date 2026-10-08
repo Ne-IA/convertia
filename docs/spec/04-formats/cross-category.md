@@ -458,7 +458,7 @@ the default (MP3) is unchanged — so no platform loses the *operation*, at most
 | ID | Decision | Status |
 |----|----------|--------|
 | **[OPEN-A]** | Extract-audio target subset | **`[DECIDED]` minimum guaranteed subset = MP3★ + WAV + FLAC** (always present → C3 for video sources derivable now). **M4A + OGG are `[DEFER: corpus]`** on top (M4A pending §3.4 AAC confirmation; OGG pending §6.6 OGG-keep validation). The floor is fixed; only which deferred targets ship remains empirical. |
-| **[OPEN-B]** | MP3 *Standard/High/Max* preset → `-q:a`/`-b:a` mapping | **`[DECIDED]`** — owned canonically in [audio.md](audio.md) (High V0 / Standard V2 / Small V5 + explicit CBR), reused verbatim here; resolved at L159 |
+| **[OPEN-B]** | MP3 *Standard/High/Max* preset → `-q:a`/`-b:a` mapping | **`[DECIDED]`** — owned canonically in [audio.md](audio.md) (High V0 / Standard V2 / Small V5 + explicit CBR), reused verbatim here; resolved in Operation 1's *Options / settings + defaults* MP3 row |
 | **[OPEN-C]** | Probe for "no audio track" up front (disable target with reason) vs offer-then-fail — cost vs UX on large recursive batches | `[DEFER: corpus]` — validate in §6.6 |
 | **[OPEN-D]** | Default GIF dither | **`[DECIDED]`** — `bayer:bayer_scale=5` (favours small files, the everyday GIF priority); error-diffusion modes remain available as Advanced |
 | **[OPEN-E]** | to-GIF **trim** scope: hard cap only / Basic start+duration / Advanced (recommend Basic start+duration) | `[DEFER: corpus]` — design leans Basic start+duration; validate in §6.6 |

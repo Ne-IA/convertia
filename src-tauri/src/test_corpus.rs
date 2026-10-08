@@ -1,6 +1,6 @@
 //! The §6.4.5 SINGLE-SOURCE corpus helper — the one place a test resolves a `tests/corpus/` fixture path.
 //!
-//! test-strategy §3 ("Corpus & fixtures (§6.4.5 · G24a)", :601) mandates "Tests reach the corpus through **one
+//! test-strategy §3 ("Corpus & fixtures (§6.4.5 · G24a)") mandates "Tests reach the corpus through **one
 //! helper** (no inline path duplication, no per-test re-listing)", and the P3.61 box restates it
 //! ("single-source helper, no inline duplication"). Before P3.61 the only corpus-reach
 //! path was a PRIVATE `tests_dir()` inside `crate::detection`'s `#[cfg(test)] mod kat_tests` (P3.30) — reachable

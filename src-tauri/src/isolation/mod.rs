@@ -511,7 +511,7 @@ pub async fn run_confined(
                 // A CLEAN completed exit: the invocation ended through its own normal arm, so the guard stands
                 // down (see its `Drop` for why a post-exit group-kill of a SUCCESSFUL run would be a correctness
                 // regression — a launcher that legitimately exits before its worker finishes writing valid
-                // output must not be truncated, §1.7 936-945).
+                // output must not be truncated, §1.7 *Cancellation / kill mechanism*).
                 child.group_settled = true;
                 // §2.12.3 Leg B (P4.17): the CLEAN arm is the ONLY one that stands ConvertIA's own Job Object
                 // down (clear `KILL_ON_JOB_CLOSE`, keep the caps). The crash / reap-fault / cancel arms
@@ -530,7 +530,7 @@ pub async fn run_confined(
                 // group-kills any descendant that outlived the crashed launcher (e.g. a `soffice.bin` left
                 // running by a `soffice` error exit) — otherwise a pure process leak (+ on Windows a
                 // `*.part`-handle holder that would spuriously fail the conductor's cleanup into a
-                // `CleanupResidue`). The §1.7 936-945 stand-down rationale is success-specific ("publishing a
+                // `CleanupResidue`). The §1.7 *Cancellation / kill mechanism* stand-down rationale is success-specific ("publishing a
                 // corrupt output as a clean one"), so it does not apply to a crash. (The Drop's POSIX `killpg`
                 // on this arm accepts the microsecond pgid-recycle window the success arm avoids — negligible
                 // next to the leaked-worker cost; on Windows the held Job-Object handle makes the kill

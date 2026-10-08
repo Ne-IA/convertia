@@ -14,7 +14,7 @@
 // SCOPE (P3.54 = the intake TRIGGER, not the machine consumption). This box's refs are §5.3 (component) / §5.4
 // (native-drop boundary) / §0.4.1 (C2a): it builds the DropZone and FIRES C2a. Driving the §5.2 machine from the
 // drained set — dispatching `startCollecting`/`scanTick`/`collected` — is the **§5.8 drain consumption** (§5.4
-// line 432 names it "the §5.8 C1 drain_intake consumption"), which rides with the SCREEN boxes that make each
+// *Launch-time intake* names it "the §5.8 C1 drain_intake consumption"), which rides with the SCREEN boxes that make each
 // target state reachable (P3.55 Confirm is the first `collected`→Confirm consumer); it is deliberately NOT wired
 // here. So after P3.54 the picker opens and the nudge→drain runs, but the machine advances when P3.55+ land.
 // [Build-Session-Entscheidung: P3.54]
@@ -31,12 +31,12 @@ export interface DropZoneProps {
   readonly disabled?: boolean;
   /** [Build-Session-Entscheidung: P3.60] Bind the §5.10 GLOBAL chords (Ctrl/⌘+O files, Ctrl/⌘+Shift+O folder).
    *  `true` (the default) is the Idle (1) binding; the state-9 `MixedDropRefusal` re-drop passes `false` —
-   *  §5.10:1211 `[DECIDED]` scopes the global chord to `Idle` ONLY, while the per-element **Enter/Space on the
+   *  §5.10 `[DECIDED]` scopes the global chord to `Idle` ONLY, while the per-element **Enter/Space on the
    *  focused surface** works wherever a DropZone renders (it is native `<button>` activation, so it needs no
    *  binding here and is unaffected by this flag). This is the gate the P3.54 DropZone reserved for the P3.60
    *  reuse ("state 9 gets Enter/Space on the focused surface ONLY, never the global chords"). */
   readonly bindGlobalAccelerators?: boolean;
-  /** [Build-Session-Entscheidung: P3.60] Focus the drop surface on mount — the §5.3:306 `[DECIDED]`
+  /** [Build-Session-Entscheidung: P3.60] Focus the drop surface on mount — the §5.3 `[DECIDED]`
    *  focus-on-entry for the state-9 `MixedDropRefusal` re-drop ("focus lands on the re-drop `DropZone`, the
    *  primary action, so a keyboard user can Enter/Space to re-pick immediately"). Defaults `false`: the Idle (1)
    *  DropZone's own focus-on-entry is P4.70.1's contract, not this box's. */
@@ -55,7 +55,7 @@ export function DropZone({
   const [dragActive, setDragActive] = useState(false);
   const surfaceRef = useRef<HTMLButtonElement>(null);
 
-  // §5.3:306 `[DECIDED]` state-9 focus-on-entry: the re-drop surface is the refusal screen's PRIMARY action, so
+  // §5.3 `[DECIDED]` state-9 focus-on-entry: the re-drop surface is the refusal screen's PRIMARY action, so
   // focus lands on it (the heading is announced via its own live region, never focused). Opt-in — the Idle (1)
   // focus-on-entry is P4.70.1's. [Build-Session-Entscheidung: P3.60]
   useEffect(() => {
@@ -68,7 +68,7 @@ export function DropZone({
   // per platform (Cmd on macOS, Ctrl elsewhere) and disambiguates by Shift (openFilePicker has no Shift;
   // chooseFolder requires it). They bind while the DropZone is mounted + enabled + `bindGlobalAccelerators`:
   // App renders the DropZone in Idle (1) and — since P3.60 — in the state-9 MixedDropRefusal re-drop, which
-  // passes `bindGlobalAccelerators={false}` because §5.10:1211 scopes the global chord to `Idle` ONLY (state 9
+  // passes `bindGlobalAccelerators={false}` because §5.10 scopes the global chord to `Idle` ONLY (state 9
   // re-drops via Enter/Space on the focused surface, i.e. native <button> activation, which needs no binding).
   useEffect(() => {
     if (disabled || !bindGlobalAccelerators) {

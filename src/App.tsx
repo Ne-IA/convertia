@@ -114,7 +114,7 @@ export function App() {
   const machine = useAppStore((state) => state.machine);
   // [Build-Session-Entscheidung: P3.60] `dispatch` is a stable store action (never re-created), so selecting it
   // adds no re-render; the router needs it for the ONE §5.3 slice component whose prop contract declares a
-  // callback (AppFaultNotice's `onStartOver`, §5.3:309) — its two sibling state screens declare none and
+  // callback (AppFaultNotice's `onStartOver`, §5.3) — its two sibling state screens declare none and
   // dispatch internally, per their own §5.3 rows.
   const dispatch = useAppStore((state) => state.dispatch);
   return <main>{screenFor(machine, dispatch)}</main>;

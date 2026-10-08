@@ -5,7 +5,7 @@ import { render, cleanup, fireEvent } from "@testing-library/react";
 // leg is the VERBATIM-render contract (the 2026-07-16 P3.60 ruling): the §2.13.3/§7.2-owned `AppFault.message`
 // reaches the user unmodified, per kind, with no chrome body of its own — the orphaned-string defect that
 // ruling exists to prevent. Plus the trace-free promise, the Start-over exit (the P3 screen-box wiring model),
-// and the §5.10:1223/:1245 keyboard contract. [Build-Session-Entscheidung: P3.60]
+// and the §5.10 keyboard contract. [Build-Session-Entscheidung: P3.60]
 import { AppFaultNotice } from "./AppFaultNotice";
 import { useAppStore } from "../state/store";
 import type { AppFault } from "../lib/ipc/commands";
@@ -24,7 +24,7 @@ const engineMissing: AppFault = {
   message: "ConvertIA is missing one of its built-in tools.",
 };
 
-// The §5.3:309 `onStartOver` callback is the component's contract (it is presentational — the RerunPrompt
+// The §5.3 `onStartOver` callback is the component's contract (it is presentational — the RerunPrompt
 // precedent). App wires it to the machine's `startOver` Msg; these legs wire it to the SAME real store dispatch,
 // so the "returns to Idle" assertions exercise the real reducer arm rather than a spy.
 const startOver = (): void => {
@@ -75,7 +75,7 @@ describe("AppFaultNotice — §5.2 AppFault (state 12)", () => {
     expect(text).toBe("Something went wrong" + withTrace.message + "Start over");
   });
 
-  it("focuses Start over on entry — state 12's only action, so Enter activates it (§5.10:1245)", () => {
+  it("focuses Start over on entry — state 12's only action, so Enter activates it (§5.10)", () => {
     const { getByRole } = render(<AppFaultNotice fault={bundleDamaged} onStartOver={startOver} />);
     expect(document.activeElement).toBe(getByRole("button", { name: "Start over" }));
   });
@@ -86,19 +86,19 @@ describe("AppFaultNotice — §5.2 AppFault (state 12)", () => {
     expect(useAppStore.getState().machine).toEqual({ tag: "idle" });
   });
 
-  it("Esc → Start over (§5.10:1245 'identical; no other choice')", () => {
+  it("Esc → Start over (§5.10 'identical; no other choice')", () => {
     render(<AppFaultNotice fault={bundleDamaged} onStartOver={startOver} />);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(useAppStore.getState().machine).toEqual({ tag: "idle" });
   });
 
-  it("Ctrl/⌘+N → Start over (the §5.10:1223 chord, bound in AppFault)", () => {
+  it("Ctrl/⌘+N → Start over (the §5.10 chord, bound in AppFault)", () => {
     render(<AppFaultNotice fault={bundleDamaged} onStartOver={startOver} />);
     fireEvent.keyDown(document, { key: "n", ctrlKey: true });
     expect(useAppStore.getState().machine).toEqual({ tag: "idle" });
   });
 
-  it("is NOT a modal — a full-screen state (§5.7:840)", () => {
+  it("is NOT a modal — a full-screen state (§5.7)", () => {
     const { queryByRole } = render(
       <AppFaultNotice fault={bundleDamaged} onStartOver={startOver} />,
     );

@@ -335,7 +335,7 @@ describe("consumeIntakeNudge (§5.8 nudge consumption, P3.55)", () => {
   });
 
   // [Build-Session-Entscheidung: P3.60] The §5.2 row-9 re-drop: state 9 is the SECOND drainable state (it is
-  // the second state that renders a DropZone, §5.3:295). Without this route the refusal screen's re-drop
+  // the second state that renders a DropZone, §5.3). Without this route the refusal screen's re-drop
   // DropZone would open the picker and then silently no-op — a dead button (the P3.54 NOGO class).
   it("from MixedDropRefusal (9): re-drops into Collecting and routes the fresh set → Confirm (§5.2 row 9)", async () => {
     useAppStore.setState({ machine: { tag: "mixedDropRefusal", found: [["jpg", 2]] } });
@@ -349,7 +349,7 @@ describe("consumeIntakeNudge (§5.8 nudge consumption, P3.55)", () => {
 
   it("state 10 is NOT drainable in the slice — the machine has no entry arm, so the buffer is preserved", async () => {
     // §5.8's full fresh-intake set includes state 10, but the P3.53 slice machine gives `unsupported` no
-    // `Collecting` entry edge (and §5.3:295 renders no DropZone there) — that rides the P4.78 completion.
+    // `Collecting` entry edge (and §5.3 renders no DropZone there) — that rides the P4.78 completion.
     useAppStore.setState({
       machine: { tag: "unsupported", reason: { kind: "unsupported", detected: "PDF" } },
     });
@@ -457,7 +457,7 @@ describe("advanceToTargets (§5.8 Confirm → Targets, P3.55 → the P3.56 persi
     }
   });
 
-  it("C14 fallback → C4 gets besideSource AND persistedFallback=TRUE (the §5.8:926 fallback-note fact)", async () => {
+  it("C14 fallback → C4 gets besideSource AND persistedFallback=TRUE (the §5.8 fallback-note fact)", async () => {
     mockPlanning("fallback");
     await advanceToTargets("cs1");
     expect(invoke).toHaveBeenCalledWith(

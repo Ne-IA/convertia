@@ -664,7 +664,7 @@ pub struct RunResult {
     /// run has a line — an `Option` would invent an "no summary" state the spec does not have. This field is
     /// what the 2026-07-16 P3.59 ruling wired: [`batch_summary_line`] was built at P3.50 but had NO production
     /// caller, and that wire gap is exactly why the pre-ruling fill authored a chrome banner string against
-    /// §5.7:799 (the G1 NOGO).
+    /// §5.7 (the G1 NOGO).
     pub summary_line_display: String,
 }
 
@@ -867,21 +867,21 @@ impl ResidueRecord {
 ///   [`crate::outcome::OutcomeMsg::Residue`] annotation — [Build-Session-Entscheidung: P3.59] the row is
 ///   quoted here VERBATIM from the §2.8.2 catalog ("Converted — a temporary file may remain at {path}."),
 ///   so its "temporary" is §02's own product wording about a leftover FILE, not a G8 deferral marker
-///   about this code; the string may not be reworded (§5.7:799 — one string, one home)
+///   about this code; the string may not be reworded (§5.7 — one string, one home)
 ///   — a NON-failure note in the `Lossy` shape, so the success stands while the summary still says residue may
-///   remain and WHERE (§5.7:830). **[Test-Change: P3.59 — old-obsolete+new-correct, §2.6.4]** this arm
+///   remain and WHERE (§5.7). **[Test-Change: P3.59 — old-obsolete+new-correct, §2.6.4]** this arm
 ///   SUPERSEDES the P3.25 `Succeeded => None` rule, per the 2026-07-16 P3.59 Co-Pilot ruling. OLD OBSOLETE:
 ///   P3.25's rationale ("neither adopts the §2.8.2 `CleanupResidue` *failure* string") was CORRECT against the
-///   failure-worded row — and stays correct: case 1 still does not adopt it. But it left §2.6.4:944's OWN
+///   failure-worded row — and stays correct: case 1 still does not adopt it. But it left §2.6.4's OWN
 ///   already-authored case-1 annotation **carrier-less**, and that gap is what forced the pre-ruling fill to
-///   author a chrome string against §5.7:799's "the UI must not paraphrase" (the G1 NOGO). NEW CORRECT: §2.6.4
+///   author a chrome string against §5.7's "the UI must not paraphrase" (the G1 NOGO). NEW CORRECT: §2.6.4
 ///   case 1 authors that sentence normatively and §2.8.2 now homes it (spec > code); the note rides a
 ///   non-failure variant, so the "not a failure string" invariant P3.25 protected is preserved intact.
 /// - `Cancelled` (case 3): **RATIFIED exactly as built** — the residue does NOT rewrite the per-item reason
 ///   (`None`). §2.6.4 authors no per-item case-3 sentence: its complete per-item surface is the STRUCTURAL
 ///   `CleanupResidue` annotation (the rendered `residue_display` + the C9 reveal link), and the "With residue"
 ///   tail is BATCH-level (the §2.8.2 batch summary table) — routing it per-item would double-render it against the
-///   `RunResult` summary line, and its pathless "see details" wording cannot satisfy §5.7:830's "with where
+///   `RunResult` summary line, and its pathless "see details" wording cannot satisfy §5.7's "with where
 ///   residue remains" anyway. `state` (not the message) is what distinguishes a stopped cancel.
 /// - `Failed` (case 2): **unchanged as built** — the item is reported `Failed` WITH the combined §2.8.2
 ///   `CleanupResidue` message ("This file couldn't be converted, and a temporary file may remain at {path}.")
@@ -3175,7 +3175,7 @@ impl DestinationRegistry {
 ///   (§7.4.1 "always re-validated as writable at use time"): a `Writable` verdict mints + registers a
 ///   `DestinationId` and returns [`InitialDestination::ChosenRoot`]`(DestinationPicked{ destination, display })`;
 ///   a `Divert(_)` verdict (the path is gone / read-only / ephemeral / no-atomic-publish) →
-///   [`InitialDestination::Fallback`] (nothing registered — the §2.7 per-location fallback, §5.8:926 "falls back
+///   [`InitialDestination::Fallback`] (nothing registered — the §2.7 per-location fallback, §5.8 "falls back
 ///   to beside-source"), so a stale pref never reaches the no-harm machinery unchecked. **`Fallback` is
 ///   STRUCTURALLY distinct from `BesideSource`** so the §5.8 passive fallback note surfaces even when beside-source
 ///   itself is writable (the G1 Opus-P2 adoption — only this resolver knows the path failed re-validation).
@@ -3185,7 +3185,7 @@ impl DestinationRegistry {
 /// `AppHandle` / `prefs::load` read itself. **LIVE via P3.56:** its AppHandle-coupled consumer is the C14
 /// `get_initial_destination` handler (`crate::ipc::planning`) — the `prefs::load(app).last_destination_mode` +
 /// `State<InstanceId>` (probe) + `State<DestinationRegistry>` read the frontend's `advanceToTargets` hand-off runs
-/// at the Confirm→Targets advance (§5.8:918); the module-level `not(test)` `dead_code` expect stays fulfilled by
+/// at the Confirm→Targets advance (§5.8); the module-level `not(test)` `dead_code` expect stays fulfilled by
 /// the other still-dead items it covers. [Build-Session-Entscheidung: P3.80 → P3.56]
 pub fn resolve_persisted_destination(
     last: &LastDestinationMode,
@@ -3207,7 +3207,7 @@ pub fn resolve_persisted_destination(
         }
         // §7.4.1/§2.7/§5.8: a gone / read-only / ephemeral persisted path → the beside-source FALLBACK, nothing
         // registered. The `Fallback` fact (STRUCTURALLY distinct from the plain `BesideSource` above) drives the
-        // §5.8:926 passive fallback note the P3.56 DestinationBar renders (§5.7:825 chrome) — surfaced EVEN when
+        // §5.8 passive fallback note the P3.56 DestinationBar renders (§5.7 chrome) — surfaced EVEN when
         // beside-source itself is writable (only this resolver knows the persisted path failed re-validation).
         LocationStatus::Divert(_) => InitialDestination::Fallback,
     }
@@ -6556,7 +6556,7 @@ mod tests {
         // [Test-Change: P4.11 — old-obsolete+new-correct, §1.9] the direct Pending → Cancelled arm is NEW: the
         // §1.9 diagram + the 2026-07-22 owner pre-fill ruling (§1.9 "cancelled before start; nothing written")
         // added it, and P4.11 wires it into `advance` for the stop-dequeue leg. Verified correct vs the §1.9
-        // states diagram (line 1187, the `Pending ──▶ Cancelled` batch-cancel-before-start arm).
+        // states diagram (the `Pending ──▶ Cancelled` batch-cancel-before-start arm).
         assert_eq!(
             advance(JobState::Pending, JobEvent::Cancelled),
             Ok(JobState::Cancelled),
@@ -6611,7 +6611,7 @@ mod tests {
         // direct stop-dequeue arm); the pre-ruling "Pending accepts ONLY Started" pin dropped `Cancelled` from
         // this illegal set. Only `Succeeded`/`Failed` remain illegal from Pending (an item cannot succeed or
         // fail without first Running). Old obsolete: the 2026-07-22 owner ruling authored the direct arm; new
-        // correct: verified against the §1.9 diagram (line 1187) + the valid-transition test above.
+        // correct: verified against the §1.9 diagram + the valid-transition test above.
         for &event in &[JobEvent::Succeeded, JobEvent::Failed(kind)] {
             assert_eq!(
                 advance(JobState::Pending, event),
@@ -9052,7 +9052,7 @@ mod tests {
     // [Test-Change: P3.56 — old-obsolete+new-correct, §5.8] the resolver's return type is re-cut from
     // `Option<DestinationPicked>` to the 3-way `InitialDestination` (Co-Pilot ruling item 2, 7f73553): the two
     // `None` cases (a plain beside-source pref vs a re-validation FALLBACK) MUST be STRUCTURALLY distinct so the
-    // §5.8:926 passive fallback note surfaces even when beside-source is writable (the G1 Opus-P2 adoption). The
+    // §5.8 passive fallback note surfaces even when beside-source is writable (the G1 Opus-P2 adoption). The
     // old `None`/`Some(picked)` assertions are obsolete against the new type; the new `BesideSource`/`ChosenRoot`/
     // `Fallback` assertions verify the SAME behaviours (sentinel→default, writable→registered+read-back, gone→fall-back).
     #[test]
@@ -9644,7 +9644,7 @@ mod cleanup_honesty_tests {
     // §6.4.1 (G15): the §2.6.4 THREE-CASE honesty — each disposition gets the reason §2.6.4 authors for it, and
     // NONE of them rewrites the item's terminal state: `Failed` (case 2) the combined §2.8.2 `CleanupResidue`
     // FAILURE message ("never a clean success"); `Succeeded` (case 1) the §2.8.2 NON-failure `Residue`
-    // annotation (the success stands, with where residue remains — §5.7:830); `Cancelled` (case 3) NO reason
+    // annotation (the success stands, with where residue remains — §5.7); `Cancelled` (case 3) NO reason
     // (§2.6.4 authors no per-item case-3 sentence; its surface is the structural `cleanup_incomplete` entry +
     // the BATCH-level tail). The machine-checkable "never a silent clean success" guard.
     //
@@ -9653,14 +9653,14 @@ mod cleanup_honesty_tests {
     // (1) OLD OBSOLETE: the P3.25 expectation encoded "case 1 imposes no reason override". Its rationale — that
     //     case 1 must not adopt the §2.8.2 CleanupResidue *failure* string — was CORRECT and still holds (the
     //     new arm is a NON-failure variant carrying no `ConversionErrorKind`). What it got wrong is that it
-    //     left §2.6.4:944's OWN authored case-1 sentence — [Build-Session-Entscheidung: P3.59] quoted
+    //     left §2.6.4's OWN authored case-1 sentence — [Build-Session-Entscheidung: P3.59] quoted
     //     verbatim from the spec ("converted — a temporary file may remain at <path>"), so its
     //     "temporary" is §02 product copy about a leftover FILE, not a G8 deferral about this test —
     //     with no carrier at all, which is what forced the pre-ruling P3.59 fill to author a chrome paraphrase
-    //     against §5.7:799 — the defect the G1 NOGO surfaced. The ruling promoted that sentence into §2.8.2 and
+    //     against §5.7 — the defect the G1 NOGO surfaced. The ruling promoted that sentence into §2.8.2 and
     //     gave it the `OutcomeMsg::Residue` slot; spec > code, so the expectation is obsolete.
     // (2) NEW CORRECT: verified against §2.6.4 case 1 (the success stands + the summary carries the annotation)
-    //     and §5.7:830 ("not a clean success WITH WHERE residue remains"), and by READ-BACK below — the arm is
+    //     and §5.7 ("not a clean success WITH WHERE residue remains"), and by READ-BACK below — the arm is
     //     compared to `crate::outcome::residue_annotation(display)` (the catalog's own output, never a
     //     re-hardcoded string), with the {path} substitution and the non-failure shape both asserted.
     // The `Cancelled` (case 3) and `Failed` (case 2) expectations are UNCHANGED — RATIFIED as built.
@@ -9697,7 +9697,7 @@ mod cleanup_honesty_tests {
                     if text.contains(display) && !text.contains("{path}")
             ),
             "§2.6.4/§2.8.2: case 1 is a Residue annotation with the {{path}} slot substituted — the item's \
-             success STANDS (§5.7:830 'with where residue remains'), never downgraded to a failure"
+             success STANDS (§5.7 'with where residue remains'), never downgraded to a failure"
         );
         assert!(
             !matches!(&succeeded, Some(OutcomeMsg::Failure { .. })),
@@ -11297,7 +11297,7 @@ mod run_conversion_tests {
     // `ItemFinished{Cancelled}` ("a cancelled item DID dispatch"). The 2026-07-22 owner stop-dequeue ruling +
     // the P4.11 leg OBSOLETE that: a token tripped BEFORE an item starts now stop-dequeues it (nothing runs, no
     // live event) — the more efficient + honest "cancelled before start; nothing written" behaviour. New
-    // correct: verified vs §1.9:1187-1200 (the direct arm) + the P2.37.4 no-live-event-for-a-never-started-item
+    // correct: verified vs §1.9 (the direct arm) + the P2.37.4 no-live-event-for-a-never-started-item
     // policy (bindings.ts `ItemFinished` doc) + read-back of the retained `RunResult`. The DISPATCHED
     // `Running → Cancelled` path (which still emits a live event) is covered by
     // `convert_item_cancelled_arm_cleans_the_temp_and_carries_no_residue_on_a_clean_cancel` below (a direct

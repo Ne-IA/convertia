@@ -283,11 +283,11 @@ pub async fn set_destination(
 }
 
 /// **C14 `get_initial_destination`** (§0.4.1, P3.56) — the returning-user DestinationBar initial-state query the
-/// frontend's Confirm→Targets advance runs (§5.8:918) BEFORE the first C4 `plan_output`. Resolves the persisted
+/// frontend's Confirm→Targets advance runs (§5.8) BEFORE the first C4 `plan_output`. Resolves the persisted
 /// §7.4.1 `lastDestinationMode` CORE-side into a structural [`InitialDestination`] (`BesideSource` / `ChosenRoot` /
 /// `Fallback`) the frontend maps onto C4's first `destination` argument — keeping §0.6's 2-variant
 /// `DestinationChoice` permanently (no `Last` variant, no C4 mirror-back; the P3.80 hand-off form). The
-/// re-validation FALLBACK is distinguished STRUCTURALLY from a plain beside-source pref so the §5.8:926 passive
+/// re-validation FALLBACK is distinguished STRUCTURALLY from a plain beside-source pref so the §5.8 passive
 /// fallback note surfaces even when beside-source is writable (the G1 Opus-P2 adoption).
 ///
 /// [Build-Session-Entscheidung: P3.56] Naming = this box's fill decision (the `get_*` query convention, cf.
@@ -304,7 +304,7 @@ pub async fn set_destination(
 #[tauri::command]
 #[specta::specta]
 pub async fn get_initial_destination(app: AppHandle) -> Result<InitialDestination, IpcError> {
-    // §5.8:918/§7.4.1 (P3.56): read the persisted `lastDestinationMode` + re-validate it on a DEDICATED BLOCKING
+    // §5.8/§7.4.1 (P3.56): read the persisted `lastDestinationMode` + re-validate it on a DEDICATED BLOCKING
     // THREAD (`prefs::load` opens `settings.json`; the resolver's §2.7.2 `location_status` probe is blocking FS
     // I/O), the same async-safety discipline C4 applies to its preview (§1.1 "MUST NOT block a Tokio worker").
     // `AppHandle` moves into the closure; State is re-resolved inside. A `JoinError` (should-never-happen) surfaces

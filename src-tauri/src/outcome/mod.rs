@@ -280,7 +280,7 @@ pub struct AppFault {
 /// PartialEq, Eq` (ergonomics + the serialize-pin tests); NOT `Copy` (owns a `String` per variant); NO
 /// `Deserialize` (outbound-only, mirroring `IpcError`/`ConversionErrorKind`). Adjacently tagged
 /// (`tag = "type", content = "data"`) so each variant is a discriminated `{ type, data }` object on the wire.
-/// Registered in the P1.25 type registry (§2.8.2 line 1261 mandate), which pulls its referenced `SkipReason`
+/// Registered in the P1.25 type registry (the §2.8.2 mandate), which pulls its referenced `SkipReason`
 /// (+ the already-registered `ConversionErrorKind`/`LossyKind`) into the export as named types. `Failure.kind`
 /// is spelled with the CONCRETE `ConversionErrorKind`, NOT the `ErrorKind` alias — mirroring the P2.19
 /// `IpcError.kind` decision (referencing the forward-declared alias from a production-dead item trips the
@@ -327,7 +327,7 @@ pub enum OutcomeMsg {
 
 // ─── §1.12 forward projection helper — SkipReason → ErrorKind (one-way, non-inverted) ──
 /// The §1.12 / §0.6 forward projection of a §0.6 `SkipReason` onto its §2.8.1 `ErrorKind` (== the concrete
-/// `ConversionErrorKind`). This is the ONE-WAY, non-invertible conversion the spec sanctions (§0.6 line 733 /
+/// `ConversionErrorKind`). This is the ONE-WAY, non-invertible conversion the spec sanctions (§0.6 /
 /// §1.12): it is applied ONLY when a `Skipped` item must ALSO surface an `ErrorKind`-shaped display string —
 /// never to turn a skip into a failure (the `OutcomeMsg::Skipped` variant keeps skip ≠ fail; §1.12 "must not
 /// be conflated"). There is deliberately NO reverse `ErrorKind → SkipReason` map: `Uncertain → Unrecognized`
@@ -481,17 +481,17 @@ pub fn conversion_message_template(kind: ConversionErrorKind) -> Option<&'static
 
 /// The §2.8.2 **case-1 residue-annotation** row — the canonical English note for §2.6.4 case 1 (the output
 /// published, but its temp could not be removed): the item's success STANDS and the summary says residue may
-/// remain and WHERE (§5.7:830 "not a clean success **with where residue remains** — never a green done"). Its
+/// remain and WHERE (§5.7 "not a clean success **with where residue remains** — never a green done"). Its
 /// `{path}` slot takes the item's §2.10.1 `residue_display`.
 ///
-/// [Build-Session-Entscheidung: P3.59] PROMOTED verbatim from §2.6.4's own already-authored copy (02:944,
+/// [Build-Session-Entscheidung: P3.59] PROMOTED verbatim from §2.6.4's own already-authored copy (§2.6.4,
 /// *"converted — a temporary file may remain at &lt;path&gt;"*) into the §2.8.2 catalog per the 2026-07-16 ruling —
 /// "verbatim modulo catalog capitalization", so the leading `c`→`C` and the sentence-final `.` match every
 /// sibling row's form (`{path}` replaces the prose `<path>` placeholder). It is homed as its OWN const rather
 /// than a [`conversion_message_template`] arm because that table is keyed by `ConversionErrorKind` — a FAILURE
 /// taxonomy — and this row is deliberately NOT a failure (`ConversionErrorKind::CleanupResidue` is case 2's
 /// row and stays exactly as built); keying case 1 off a failure kind is precisely the conflation the ruling
-/// rejected. One string, one home (§2.8.2 owns it; the UI renders it verbatim, §5.7:799).
+/// rejected. One string, one home (§2.8.2 owns it; the UI renders it verbatim, §5.7).
 const RESIDUE_ANNOTATION_TEMPLATE: &str = "Converted — a temporary file may remain at {path}.";
 
 /// Build the §2.8.2 [`OutcomeMsg::Residue`] case-1 annotation, filling `{path}` from `residue_display` (the
@@ -1003,21 +1003,21 @@ mod tests {
     // strings — the module's convention for every §02-owned
     // string it homes. Without it the row would be MUTATION-SURVIVABLE: every other assertion on it is either
     // self-referential (comparing `residue_item_reason`'s output to `residue_annotation`'s own) or
-    // substitution-only, so a reworded row would drift from §2.8.2 / §2.6.4:944 with the suite still green —
+    // substitution-only, so a reworded row would drift from §2.8.2 / §2.6.4 with the suite still green —
     // and this is the exact string the 2026-07-16 P3.59 ruling promoted and gave §02 ownership of.
     // [Build-Session-Entscheidung: P3.59]
     #[test]
     fn residue_annotation_row_matches_the_exact_canonical_english() {
         assert_eq!(
             RESIDUE_ANNOTATION_TEMPLATE, "Converted — a temporary file may remain at {path}.",
-            "§2.8.2: the case-1 residue row is §02's canonical English, promoted from §2.6.4:944 (verbatim modulo the catalog's leading capital + sentence-final period) — one string, one home"
+            "§2.8.2: the case-1 residue row is §02's canonical English, promoted from §2.6.4 (verbatim modulo the catalog's leading capital + sentence-final period) — one string, one home"
         );
         assert_eq!(
             residue_annotation("/src/.data.tsv.part"),
             OutcomeMsg::Residue {
                 text: "Converted — a temporary file may remain at /src/.data.tsv.part.".to_owned(),
             },
-            "§2.6.4 case 1: {{path}} is filled from the item's §2.10.1 residue_display, and the note rides the NON-failure Residue variant (the success stands, with where residue remains — §5.7:830)"
+            "§2.6.4 case 1: {{path}} is filled from the item's §2.10.1 residue_display, and the note rides the NON-failure Residue variant (the success stands, with where residue remains — §5.7)"
         );
     }
 

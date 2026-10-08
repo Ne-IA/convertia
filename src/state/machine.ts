@@ -72,9 +72,9 @@ export interface Planned {
   readonly destination: DestinationChoice;
   /** The last C4/C5 plan preview: the "will save to…" line + divert + §1.10 preflight + §2.5 rerun verdict. */
   readonly preview: OutputPlanPreview;
-  /** §5.8:926 — the persisted-destination re-validation FALLBACK fact: `true` iff the C14 `get_initial_destination`
+  /** §5.8 — the persisted-destination re-validation FALLBACK fact: `true` iff the C14 `get_initial_destination`
    *  hand-off reported the saved `lastDestinationMode` path failed re-validation (gone/read-only/ephemeral) and fell
-   *  back to beside-source. Drives the DestinationBar's passive §5.7:825 chrome fallback note — surfaced even when
+   *  back to beside-source. Drives the DestinationBar's passive §5.7 chrome fallback note — surfaced even when
    *  beside-source itself is writable (only the resolver knows the fallback happened; the G1 Opus-P2 adoption).
    *  Structural, never a path/string. [Build-Session-Entscheidung: P3.56] */
   readonly persistedFallback: boolean;
@@ -112,7 +112,7 @@ export type State =
     }
   /** State 8 — the §1.12 end-of-batch summary over the terminal `RunResult` + the frozen set that names its items.
    *  [Derived-Assumption: P3.59 — the source-display side of the §1.12 output→source map comes from the frozen
-   *  `CollectedSet`, derived from §1.12:1425 ("`item` keys the output→source mapping **against the CollectedSet**")
+   *  `CollectedSet`, derived from §1.12 ("`item` keys the output→source mapping **against the CollectedSet**")
    *  + the §0.6 `ItemResult.item` doc ("the source is named for display via the `CollectedSet`'s
    *  `DroppedItem.display_name`"). `RunResult` alone cannot name a source: P3.76 retired `ItemResult.source:
    *  PathBuf` in favour of the `ItemId` anchor (2026-07-06 core-owned paths, §2.10.1). The store's live `progress`
@@ -154,11 +154,11 @@ export type Msg =
       readonly offer: TargetOffer;
       readonly plan: OutputPlanPreview;
       readonly destination: DestinationChoice;
-      /** §5.8:926 — the C14 hand-off's persisted-destination re-validation FALLBACK fact (→ `Planned.persistedFallback`). */
+      /** §5.8 — the C14 hand-off's persisted-destination re-validation FALLBACK fact (→ `Planned.persistedFallback`). */
       readonly persistedFallback: boolean;
     }
   /** Cancel the pre-run wizard back to Idle (§5.2/§5.10) — the Confirm Esc (row 3) AND the Targets/Destination
-   *  Ctrl/⌘+N "cancel back to Idle" (§5.10 row 1180 — no temp written yet, so nothing to clean). Distinct from
+   *  Ctrl/⌘+N "cancel back to Idle" (§5.10 Ctrl/⌘+N row — no temp written yet, so nothing to clean). Distinct from
    *  the Targets `back` (→ Confirm, preserving the frozen set). */
   | { readonly type: "cancel" }
   /** The user selected a different target tile — updates `selected` (the wiring re-fires C4 → `planResolved`). */
@@ -361,7 +361,7 @@ function fromTargets(state: State & { tag: "targets" }, msg: Msg): State {
       return { ...state, plan: { ...state.plan, preview: msg.plan } };
     case "destinationResolved":
       // §2.5.1: C5 re-evaluates the destination-dependent preview but CARRIES `rerun` THROUGH UNCHANGED (the v1
-      // EquivKey is destination-independent), so the refreshed preview keeps the held C4 `rerun`. §5.8:926: the
+      // EquivKey is destination-independent), so the refreshed preview keeps the held C4 `rerun`. §5.8: the
       // user ACTIVELY chose a destination via Change, so the persisted-destination FALLBACK note no longer applies
       // (it described the INITIAL persisted-choice re-validation) — clear `persistedFallback` so a stale note
       // never contradicts the newly-chosen "will save to …" line (the G1 dual-review P2).
@@ -392,10 +392,10 @@ function fromTargets(state: State & { tag: "targets" }, msg: Msg): State {
       // the `SingleSet` threaded through `Planned` from Confirm is the preserved set, re-rendered verbatim.
       return { tag: "confirm", set: state.plan.set };
     case "cancel":
-      // §5.10 row 1180: Ctrl/⌘+N in Targets/Destination (4/5) is a "cancel back to Idle" escape — no temp is
+      // §5.10 Ctrl/⌘+N row: Ctrl/⌘+N in Targets/Destination (4/5) is a "cancel back to Idle" escape — no temp is
       // written yet, so nothing to clean (distinct from `back`, which preserves the set for Confirm). It shares
       // the Confirm-Esc `cancel` Msg (both abandon the pre-run wizard → Idle); the key→Msg map is the keymap's
-      // (P3.54). RerunPrompt (6) is deliberately NOT bound to Ctrl/⌘+N (§5.10 row 1180 omits it) — its escape is
+      // (P3.54). RerunPrompt (6) is deliberately NOT bound to Ctrl/⌘+N (the §5.10 Ctrl/⌘+N row omits it) — its escape is
       // Esc → `rerunCancel` → Targets.
       return { tag: "idle" };
     default:

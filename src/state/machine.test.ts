@@ -186,7 +186,7 @@ describe("Collecting (§5.2 state 2)", () => {
 // ─── state 3: Confirm ────────────────────────────────────────────────────────────────────────────────────
 describe("Confirm (§5.2 state 3)", () => {
   const confirm: State = { tag: "confirm", set: singleSet() };
-  it("targetsReady → Targets, selecting the offer's default + threading the set + the §5.8:926 fallback fact forward", () => {
+  it("targetsReady → Targets, selecting the offer's default + threading the set + the §5.8 fallback fact forward", () => {
     const next = transition(confirm, {
       type: "targetsReady",
       offer: offer(),
@@ -248,7 +248,7 @@ describe("Targets/Destination (§5.2 states 4/5)", () => {
       },
     });
   });
-  it("destinationResolved CLEARS persistedFallback — the user actively chose, so the §5.8:926 note no longer applies", () => {
+  it("destinationResolved CLEARS persistedFallback — the user actively chose, so the §5.8 note no longer applies", () => {
     // Start in a persisted-fallback state (returning user whose saved path failed re-validation → beside-source).
     const start: State = { tag: "targets", plan: planned(null, true) };
     const resolved: DestinationResolved = {
@@ -291,7 +291,7 @@ describe("Targets/Destination (§5.2 states 4/5)", () => {
   it("back → Confirm, PRESERVING the threaded frozen set (§5.2 row-4 Back)", () => {
     expect(transition(targetsSt(), { type: "back" })).toEqual({ tag: "confirm", set: singleSet() });
   });
-  it("cancel (Ctrl/⌘+N from Targets/Destination) → Idle, discarding the set (§5.10 row 1180)", () => {
+  it("cancel (Ctrl/⌘+N from Targets/Destination) → Idle, discarding the set (§5.10 Ctrl/⌘+N row)", () => {
     expect(transition(targetsSt(), { type: "cancel" })).toEqual({ tag: "idle" });
   });
 });

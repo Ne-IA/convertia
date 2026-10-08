@@ -1326,7 +1326,7 @@ mod kat_tests {
     // [Build-Session-Entscheidung: P3.61] The corpus/`tests/` path resolution moved to the §6.4.5
     // SINGLE-SOURCE helper (`crate::test_corpus`): P3.61's sentinel test in `crate::engines` needs the same
     // resolution, and re-deriving `CARGO_MANIFEST_DIR/../tests` there would be the inline duplication
-    // test-strategy §3 (:601) forbids. This module's own `fn tests_dir()` was that single source while it was
+    // test-strategy §3 forbids. This module's own `fn tests_dir()` was that single source while it was
     // the only consumer.
     use crate::test_corpus::{corpus_dir, tests_dir};
 

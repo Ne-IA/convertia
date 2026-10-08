@@ -276,7 +276,7 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **Engine(s):** **vips** (load built-in; **save via native `gifsave`/cgif**, vips
   ≥ 8.12; ImageMagick `magicksave` fallback only). No patent (LZW patent long
   expired). **Licence landmine cross-ref `[DECIDED]`:** the cgif `gifsave` palette path
-  (and the palette-PNG path, line 188) depends on **libimagequant**, which **MUST be the
+  (and the palette-PNG path, *PNG* entry) depends on **libimagequant**, which **MUST be the
   BSD-2-Clause `lovell/libimagequant` v2.4.x fork — NEVER upstream libimagequant 4.x
   (GPLv3-or-commercial, which would taint the LGPL image-worker)**; the bundled libvips
   must build/link against that fork's API/soname (§3.1 row 1e owns this — version pin +

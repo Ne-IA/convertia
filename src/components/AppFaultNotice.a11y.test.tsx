@@ -3,7 +3,7 @@ import { render, cleanup } from "@testing-library/react";
 import { axe } from "vitest-axe";
 
 // §6.4.6a / G33a a11y (per-push): the §5.3 AppFaultNotice (state 12) — an assertive-heading full-screen STATE
-// (NOT an alertdialog, §5.7:840) + the single focusable Start-over action, rendered INTO a `<main>` like the
+// (NOT an alertdialog, §5.7) + the single focusable Start-over action, rendered INTO a `<main>` like the
 // other per-screen a11y legs. [Build-Session-Entscheidung: P3.60]
 import { AppFaultNotice } from "./AppFaultNotice";
 import type { AppFault } from "../lib/ipc/commands";

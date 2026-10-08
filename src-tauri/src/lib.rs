@@ -184,7 +184,7 @@ fn register_ipc_identity_types(types: specta::Types) -> specta::Types {
 }
 
 /// [Build-Session-Entscheidung: P2.8] The §2.8.2-mandated standalone wire-taxonomy registration. §2.8.2
-/// (line 1261) EXPLICITLY requires `LossyKind` (with `OutcomeMsg`/`ConversionErrorKind`, both P2.18/P2.20)
+/// EXPLICITLY requires `LossyKind` (with `OutcomeMsg`/`ConversionErrorKind`, both P2.18/P2.20)
 /// derive `specta::Type` AND be registered in `collect_types![]` so `Target.lossy` / `OutcomeMsg.kind`
 /// never generate as `any` in `bindings.ts`. `LossyKind` lands here at P2.8 (when it is authored); the
 /// other two §2.8.2 types join when they are authored. This is a SPEC mandate — distinct from the other
@@ -199,7 +199,7 @@ fn register_ipc_identity_types(types: specta::Types) -> specta::Types {
 /// consumer (the P2.18 defer-to-IpcError/OutcomeMsg decision).
 ///
 /// [Build-Session-Entscheidung: P2.20] `OutcomeMsg` (§2.8.2 — the surfaced per-item `ItemResult.reason`
-/// line) joins here: §2.8.2 (line 1261) mandates it derive `specta::Type` AND be registered so
+/// line) joins here: §2.8.2 mandates it derive `specta::Type` AND be registered so
 /// `ItemResult.reason` mirrors as the named `OutcomeMsg`, not `any`; registering it pulls its referenced
 /// `SkipReason` (`OutcomeMsg::Skipped.reason`) into the export as a named type (the `ConversionErrorKind`/
 /// `LossyKind` it also references are already named via `IpcError` / the standalone `LossyKind`).
@@ -448,7 +448,7 @@ fn best_effort_scratch_cleanup(app: &tauri::AppHandle) {
 
 /// [Build-Session-Entscheidung: P2.90] §7.5.2 the persistence target: the OS-specific log DIRECTORY,
 /// resolved per-OS by Tauri's `app_log_dir()`. `tauri-plugin-log` resolves `TargetKind::LogDir` at runtime
-/// via `app_handle.path().app_log_dir()` (tauri-plugin-log 2.8.0 `lib.rs:628`), so this hard-codes NO path —
+/// via `app_handle.path().app_log_dir()` (tauri-plugin-log's `app_log_dir()` default), so this hard-codes NO path —
 /// the location tracks Tauri, not a fragile literal. Per-OS: Windows `%LOCALAPPDATA%\dev.ne-ia.convertia\logs`,
 /// macOS `~/Library/Logs/dev.ne-ia.convertia`, Linux `~/.config/dev.ne-ia.convertia/logs`. The Linux
 /// **config-dir** resolution (Tauri's `app_log_dir()` resolves via `$XDG_CONFIG_HOME`, deviating from strict
@@ -3190,8 +3190,8 @@ mod log_config {
     }
 
     // §7.5.2 (P2.90): the persistence target is the plugin's `LogDir` with the DEFAULT file name, whose
-    // runtime path the plugin resolves via Tauri's `app_handle.path().app_log_dir()` (tauri-plugin-log 2.8.0
-    // lib.rs:628) — the per-OS §7.5.2 location incl. the Linux config-dir deviation. Pinning
+    // runtime path the plugin resolves via Tauri's `app_handle.path().app_log_dir()` (tauri-plugin-log 2.8.0's
+    // `app_log_dir()` default) — the per-OS §7.5.2 location incl. the Linux config-dir deviation. Pinning
     // `LogDir { file_name: None }` (NOT a hard-coded `Folder { path }`, NOT a custom file name) guarantees the
     // per-OS resolution stays Tauri's `app_log_dir()`, not a literal that could drift from §7.5.2.
     #[test]

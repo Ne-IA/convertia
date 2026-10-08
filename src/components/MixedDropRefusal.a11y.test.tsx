@@ -3,7 +3,7 @@ import { render, cleanup } from "@testing-library/react";
 import { axe } from "vitest-axe";
 
 // §6.4.6a / G33a a11y (per-push): the §5.3 MixedDropRefusal (state 9) — an assertive-heading full-screen STATE
-// (NOT an alertdialog, §5.7:840) composing the active re-drop DropZone, rendered INTO a `<main>` like the other
+// (NOT an alertdialog, §5.7) composing the active re-drop DropZone, rendered INTO a `<main>` like the other
 // per-screen a11y legs. Mock the §5.1 events façade (the composed DropZone fires C2a through it).
 // [Build-Session-Entscheidung: P3.60]
 vi.mock("../lib/ipc/events", () => ({ pickForIntake: () => Promise.resolve() }));

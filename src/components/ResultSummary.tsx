@@ -5,7 +5,7 @@
 // list, so nothing the user dropped is silently dropped), each carrying its terminal status word, the §1.12
 // output→source map, and its §2.8 reason line. Plus the fully-failed banner (§5.2 row 8: never a quiet "done").
 //
-// STRING OWNERSHIP (§5.7:799) — the load-bearing rule here: EVERY user-facing outcome string on this screen is
+// STRING OWNERSHIP (§5.7) — the load-bearing rule here: EVERY user-facing outcome string on this screen is
 // §02-owned, core-resolved, and rendered VERBATIM; this component authors none of it. That holds at both levels:
 //   - per item — `ItemResult.reason.text` (the §2.8/§2.9/§2.6.4 line `crate::outcome` already substituted);
 //   - per batch — `RunResult.summaryLineDisplay` (the §2.8.2 situation row + the §2.6.4 "With residue" tail,
@@ -13,12 +13,12 @@
 // Only the surrounding CHROME is §5.7's: the status word, the "Saved as …" frame, the reveal-residue label, and
 // the §5.2 row-8 decision to dress a fully-failed batch as an alert banner. The 2026-07-16 P3.59 ruling wired
 // that batch line onto the wire precisely because its absence had forced an earlier fill to author the copy in
-// chrome — which the G1 dual review rejected against §5.7:799.
+// chrome — which the G1 dual review rejected against §5.7.
 //
-// RESIDUE (§2.6.4, three cases — residue NEVER rewrites an item's terminal STATE; §2.6.2:827 / §2.1.3:197
+// RESIDUE (§2.6.4, three cases — residue NEVER rewrites an item's terminal STATE; §2.6.2 / §2.1.3
 // "annotated, **not an item failure**"). What each case ships, and what this component does with it:
 //   - case 1 (Succeeded + undeletable tmp) → stays `succeeded`; `reason` carries the §2.8.2 NON-failure
-//     `OutcomeMsg::Residue` annotation, which already names {path} (the P3.59 ruling promoted §2.6.4:944's own
+//     `OutcomeMsg::Residue` annotation, which already names {path} (the P3.59 ruling promoted §2.6.4's own
 //     authored copy into the catalog and gave it this carrier);
 //   - case 2 (Failed + uncleaned partial) → `Failed`, `reason` = the `cleanup_residue` FAILURE row, also
 //     naming {path};
@@ -44,7 +44,7 @@ export interface ResultSummaryProps {
   /** The terminal §1.12 `RunResult` the machine's `summary` state carries (§5.3 props = `RunResult`). */
   readonly result: RunResult;
   /** The §1.12 output→SOURCE half of the map: each `ItemId`'s frozen display name, derived by the
-   *  SummaryScreen from the threaded `CollectedSet` (§1.12:1425 "`item` keys the output→source mapping against
+   *  SummaryScreen from the threaded `CollectedSet` (§1.12 "`item` keys the output→source mapping against
    *  the CollectedSet"). Covers the whole §0.6-invariant-6 id space — eligible items AND pre-flight skips. */
   readonly sources: ReadonlyMap<ItemId, string>;
 }
@@ -80,7 +80,7 @@ function ResultRow({ item, sourceDisplay, residueDisplay }: RowProps) {
       {item.outputDisplay !== null ? (
         <span className="text-sm text-text-muted">{formatSavedAs(item.outputDisplay)}</span>
       ) : null}
-      {/* The §2.8/§2.9/§2.6.4 reason line — core-resolved, rendered VERBATIM (§5.7:799), never paraphrased.
+      {/* The §2.8/§2.9/§2.6.4 reason line — core-resolved, rendered VERBATIM (§5.7), never paraphrased.
           This ONE line covers every outcome incl. residue: a §2.6.4 case-1 item carries the §2.8.2 residue
           ANNOTATION (`OutcomeMsg::Residue` — the success stands) and a case-2 item the `cleanup_residue`
           FAILURE row; both already name {path}, so the UI adds no second path line of its own (which is also
@@ -133,7 +133,7 @@ export function ResultSummary({ result, sources }: ResultSummaryProps) {
     <div className="flex flex-col gap-4">
       {/* The §1.12 batch-level summary line — core-assembled (`batch_summary_line` → the wire's
           `summaryLineDisplay`) and rendered VERBATIM: the §2.8.2 situation row for this run's totals + the
-          §2.6.4 "With residue" tail when any residue survived. §5.2 row 8 / §5.7:831: a FULLY-FAILED batch is
+          §2.6.4 "With residue" tail when any residue survived. §5.2 row 8 / §5.7: a FULLY-FAILED batch is
           dressed as a clear failure banner (`role="alert"` + the failure token), never a quiet "done" — but the
           PRESENTATION is this component's and the STRING is §02's, so the UI never authors the copy (the
           pre-ruling chrome banner is removed; the 2026-07-16 P3.59 ruling). */}

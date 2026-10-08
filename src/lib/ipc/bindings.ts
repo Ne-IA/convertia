@@ -240,11 +240,11 @@ export const commands = {
 	setDestination: (collectedSetId: CollectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice) => __TAURI_INVOKE<DestinationResolved>("set_destination", { collectedSetId, target, options, destination }),
 	/**
 	 *  **C14 `get_initial_destination`** (§0.4.1, P3.56) — the returning-user DestinationBar initial-state query the
-	 *  frontend's Confirm→Targets advance runs (§5.8:918) BEFORE the first C4 `plan_output`. Resolves the persisted
+	 *  frontend's Confirm→Targets advance runs (§5.8) BEFORE the first C4 `plan_output`. Resolves the persisted
 	 *  §7.4.1 `lastDestinationMode` CORE-side into a structural [`InitialDestination`] (`BesideSource` / `ChosenRoot` /
 	 *  `Fallback`) the frontend maps onto C4's first `destination` argument — keeping §0.6's 2-variant
 	 *  `DestinationChoice` permanently (no `Last` variant, no C4 mirror-back; the P3.80 hand-off form). The
-	 *  re-validation FALLBACK is distinguished STRUCTURALLY from a plain beside-source pref so the §5.8:926 passive
+	 *  re-validation FALLBACK is distinguished STRUCTURALLY from a plain beside-source pref so the §5.8 passive
 	 *  fallback note surfaces even when beside-source is writable (the G1 Opus-P2 adoption).
 	 *
 	 *  [Build-Session-Entscheidung: P3.56] Naming = this box's fill decision (the `get_*` query convention, cf.
@@ -1199,8 +1199,8 @@ export type EnumChoice = {
  *  state, resolved CORE-side from the persisted §7.4.1 `lastDestinationMode` at the Confirm→Targets advance. A
  *  **STRUCTURAL 3-way outcome** (a FACT on the wire, never a path/string): the frontend maps it onto the FIRST C4
  *  `plan_output` `destination` argument (`ChosenRoot(id)` / `BesideSource`), keeping §0.6's 2-variant
- *  `DestinationChoice` permanently — no `Last` variant, no C4 mirror-back field (the P3.80 hand-off form, §5.8:918).
- *  `Fallback` is distinguished from `BesideSource` STRUCTURALLY so the §5.8:926 passive fallback note surfaces even
+ *  `DestinationChoice` permanently — no `Last` variant, no C4 mirror-back field (the P3.80 hand-off form, §5.8).
+ *  `Fallback` is distinguished from `BesideSource` STRUCTURALLY so the §5.8 passive fallback note surfaces even
  *  when beside-source itself is writable (only the resolver knows the persisted path failed re-validation — the G1
  *  Opus-P2 adoption). Serialize-only (a command return is Rust→WebView, never deserialized in Rust); the real
  *  re-validated `PathBuf` stays core-side in the §0.4.4 `DestinationRegistry` (never on the wire, §2.10.1).
@@ -1219,7 +1219,7 @@ export type InitialDestination =
 { chosenRoot: DestinationPicked } |
 /**
  *  The persisted `ChosenPath` FAILED re-validation (gone / read-only / ephemeral) → the beside-source fallback.
- *  The STRUCTURAL fact (never a path/string) that drives the §5.8:926 passive fallback note (§5.7:825 chrome).
+ *  The STRUCTURAL fact (never a path/string) that drives the §5.8 passive fallback note (§5.7 chrome).
  */
 "fallback";
 
@@ -1514,8 +1514,8 @@ export type LabelKey = string;
  *  governs FIELD names; LossyKind is a fieldless discriminant enum, so its snake_case is a per-catalog
  *  discriminant casing, not a §0.4.3 deviation.]
  *
- *  [Build-Session-Entscheidung: P2.8] Registered standalone in the P1.25 type registry — §2.8.2 (line
- *  1261) EXPLICITLY mandates LossyKind (with OutcomeMsg/ConversionErrorKind) derive `specta::Type` + be
+ *  [Build-Session-Entscheidung: P2.8] Registered standalone in the P1.25 type registry — §2.8.2
+ *  EXPLICITLY mandates LossyKind (with OutcomeMsg/ConversionErrorKind) derive `specta::Type` + be
  *  registered in `collect_types![]` so `Target.lossy` / `OutcomeMsg.kind` never generate as `any`. Derives
  *  both `Serialize` + `Deserialize` (Copy, fieldless) so it round-trips AND embeds in the round-trippable
  *  `Target`; the §2.8 sibling enums are Serialize-only, but LossyKind's embedding in a `Deserialize`
@@ -1705,7 +1705,7 @@ export type OptionValues = { [key in OptionKey]: OptionValue };
  *  PartialEq, Eq` (ergonomics + the serialize-pin tests); NOT `Copy` (owns a `String` per variant); NO
  *  `Deserialize` (outbound-only, mirroring `IpcError`/`ConversionErrorKind`). Adjacently tagged
  *  (`tag = "type", content = "data"`) so each variant is a discriminated `{ type, data }` object on the wire.
- *  Registered in the P1.25 type registry (§2.8.2 line 1261 mandate), which pulls its referenced `SkipReason`
+ *  Registered in the P1.25 type registry (the §2.8.2 mandate), which pulls its referenced `SkipReason`
  *  (+ the already-registered `ConversionErrorKind`/`LossyKind`) into the export as named types. `Failure.kind`
  *  is spelled with the CONCRETE `ConversionErrorKind`, NOT the `ErrorKind` alias — mirroring the P2.19
  *  `IpcError.kind` decision (referencing the forward-declared alias from a production-dead item trips the
@@ -1974,7 +1974,7 @@ export type RunResult = {
 	 *  run has a line — an `Option` would invent an "no summary" state the spec does not have. This field is
 	 *  what the 2026-07-16 P3.59 ruling wired: [`batch_summary_line`] was built at P3.50 but had NO production
 	 *  caller, and that wire gap is exactly why the pre-ruling fill authored a chrome banner string against
-	 *  §5.7:799 (the G1 NOGO).
+	 *  §5.7 (the G1 NOGO).
 	 */
 	summaryLineDisplay: string,
 };

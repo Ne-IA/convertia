@@ -122,7 +122,7 @@ function intakeEntryMsg(state: State, collectingId: CollectingId): Msg | null {
  * drives the §5.2 "Scanning… N files" count via `scanTick`.
  *
  * SLICE POLICY: the drainable states are `Idle` (1) and — since P3.60 — `MixedDropRefusal` (9), i.e. exactly the
- * states that RENDER a `DropZone` (§5.3:295) and that the P3.53 machine gives a `Collecting` entry edge
+ * states that RENDER a `DropZone` (§5.3) and that the P3.53 machine gives a `Collecting` entry edge
  * ({@link intakeEntryMsg}). The REST of the §5.4 fresh-intake set (a nudge in Confirm/Targets/Destination/
  * Summary/state-10 re-drains) stays unwired: the §5.2 machine has no entry arm from those states, which requires
  * the P4.78 machine completion — so a nudge there is a no-op HERE and the core-side `PendingIntake` buffer is
@@ -160,12 +160,12 @@ export async function consumeIntakeNudge(): Promise<void> {
 
 /**
  * [Build-Session-Entscheidung: P3.60] The §5.8 `app://fault` CONSUMPTION: route an app-level §2.13 fault into the
- * §5.2 machine's `appFault` WILDCARD (→ AppFault, state 12, from ANY state — the §5.2:262-69 global edge). This
+ * §5.2 machine's `appFault` WILDCARD (→ AppFault, state 12, from ANY state — the §5.2 global edge). This
  * is the seam {@link AppEventHandlers.onFault} reserved and the ONLY runtime entry into state 12 in P3 (the
  * DTO-less run-path entry is P4.50's, per the 2026-07-16 P3.60 ruling).
  *
  * The `AppFault` is passed through UNTOUCHED — its `message` is the §2.13.3/§7.2-owned calm line the
- * `AppFaultNotice` renders verbatim (§5.7:799), so nothing is re-authored, re-classified or dropped on the way.
+ * `AppFaultNotice` renders verbatim (§5.7), so nothing is re-authored, re-classified or dropped on the way.
  * Homed here beside {@link consumeIntakeNudge}/{@link consumeMountDrain}: every §5.8 event consumption dispatches
  * from this façade, so the store write stays inside `src/lib/ipc/**` (the §5.1 one-IPC-consumer discipline).
  */
@@ -187,7 +187,7 @@ export async function cancelIntakeCollect(collectingId: CollectingId): Promise<v
 }
 
 /**
- * [Build-Session-Entscheidung: P3.55 → P3.56] The §5.8 Confirm → Targets (3 → 4) advance: run the §5.8:918
+ * [Build-Session-Entscheidung: P3.55 → P3.56] The §5.8 Confirm → Targets (3 → 4) advance: run the §5.8
  * persisted-destination HAND-OFF (C14 `get_initial_destination`) to resolve the returning user's initial
  * destination CORE-side, then fire C3 `get_targets` + the eager C4 `plan_output` (with the pre-highlighted default
  * target + the resolved first-call destination), then dispatch `targetsReady` so the machine enters `Targets`.
@@ -196,9 +196,9 @@ export async function cancelIntakeCollect(collectingId: CollectingId): Promise<v
  * P3.80 resolver's consumer is now WIRED — C14 resolves the saved §7.4.1 `lastDestinationMode` into a structural
  * `InitialDestination` ({@link mapInitialDestination} maps it): a re-validated `ChosenRoot` → the ordinary
  * `ChosenRoot(DestinationId)` first-call destination (no path on the wire, §2.10.1, keeping §0.6's 2-variant
- * `DestinationChoice` — no `Last` variant, no C4 mirror-back); a `Fallback` → beside-source + the §5.8:926
+ * `DestinationChoice` — no `Last` variant, no C4 mirror-back); a `Fallback` → beside-source + the §5.8
  * fallback-note fact; a plain `BesideSource` → the §2.7.1 default (no note). The fact rides `targetsReady` into
- * `Planned.persistedFallback` (the DestinationBar renders the passive §5.7:825 chrome note).
+ * `Planned.persistedFallback` (the DestinationBar renders the passive §5.7 chrome note).
  *
  * A rejection (a stale `CollectedSetId` §0.4.3 `IpcError`, or an opaque core panic) RE-THROWS unhandled to the
  * §7.5.1 global frontend-error bridge and LEAVES the machine in Confirm (the user retries the gate). The full
@@ -222,8 +222,8 @@ export async function advanceToTargets(collectedSetId: CollectedSetId): Promise<
 
 /**
  * [Build-Session-Entscheidung: P3.56] Map the C14 `InitialDestination` hand-off onto the FIRST C4 `(destination,
- * persistedFallback)` pair (§5.8:918): `chosenRoot` → the ordinary `ChosenRoot(DestinationId)` wire choice (the
- * WebView carries only the id, never the path); `fallback` → beside-source + the §5.8:926 fallback-note fact;
+ * persistedFallback)` pair (§5.8): `chosenRoot` → the ordinary `ChosenRoot(DestinationId)` wire choice (the
+ * WebView carries only the id, never the path); `fallback` → beside-source + the §5.8 fallback-note fact;
  * `besideSource` → the plain §2.7.1 default (no note). Pure — unit-tested over all three arms.
  */
 function mapInitialDestination(initial: InitialDestination): {

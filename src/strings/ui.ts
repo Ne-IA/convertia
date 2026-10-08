@@ -93,7 +93,7 @@ export const ui = {
   targets_back: "Back",
 
   // The section 2.7.2 per-location divert note -- shown under the will-save-to line when the C4 plan diverted
-  // (OutputPlanPreview.diverted is Some). Chrome (section 5.7 line 825: "divert noted", string owned here); it
+  // (OutputPlanPreview.diverted is Some). Chrome (§5.7: "divert noted", string owned here); it
   // explains WHY the output moved to the shown safe folder. One line per section 0.6 DivertReason variant.
   // [Build-Session-Entscheidung: P3.56]
   destination_divert_unwritable:
@@ -103,9 +103,9 @@ export const ui = {
   destination_divert_no_atomic_publish:
     "The original folder can't safely store the result, so it's being saved here instead.",
 
-  // The section 5.8:926 persisted-destination FALLBACK note -- shown when the C14 get_initial_destination hand-off
+  // The section 5.8 persisted-destination FALLBACK note -- shown when the C14 get_initial_destination hand-off
   // reported the saved lastDestinationMode path failed re-validation (gone/read-only/ephemeral) and fell back to
-  // beside-source. Chrome (section 5.7:825, string owned here); surfaced EVEN when beside-source is writable (only
+  // beside-source. Chrome (section 5.7, string owned here); surfaced EVEN when beside-source is writable (only
   // the resolver knows the fallback happened -- the G1 Opus-P2 adoption). [Build-Session-Entscheidung: P3.56]
   destination_persisted_fallback:
     "Your saved destination folder isn't available, so files will be saved beside each source.",
@@ -143,13 +143,13 @@ export const ui = {
   // ── P3.59 ──────────────────────────────────────────────────────────────────────────────────────────
   // The section 5.2 Summary screen (state 8) — the ResultSummary + OpenActions CHROME (section 5.7: button
   // text + screen copy owned here). The per-item OUTCOME lines are NOT here: a row renders its
-  // core-supplied OutcomeMsg.text verbatim (section 5.7:800 -- section 02-owned, never paraphrased), and the
+  // core-supplied OutcomeMsg.text verbatim (section 5.7 -- section 02-owned, never paraphrased), and the
   // section 2.8.2 BATCH-level summary line (all / partial / all-failed / cancelled + the section 2.6.4
   // with-residue tail) is NOT here either: the 2026-07-16 P3.59 ruling wired the core's existing
   // batch_summary_line onto RunResult.summaryLineDisplay, and the Summary renders that VERBATIM -- so the
   // fully-failed banner is a section 5.2 row-8 PRESENTATION of a section 02-owned string, not a chrome
   // paraphrase of it (the pre-ruling fill authored one here and the G1 dual review rejected it against
-  // section 5.7:799). [Build-Session-Entscheidung: P3.59]
+  // section 5.7). [Build-Session-Entscheidung: P3.59]
   summary_heading: "Results",
   // The per-row outcome chrome: the status word (textual, never colour-alone -- section 5.6) + the
   // output->source mapping line (section 1.12 / SSOT How It Feels 7: every output maps back to its source).
@@ -182,7 +182,7 @@ export const ui = {
 
   // ── P3.60 ──────────────────────────────────────────────────────────────────────────────────────────
   // The section 5.2 MixedDropRefusal (state 9) — the section 1.3 hard pre-flight refusal. CHROME in full:
-  // section 5.7:803 names "the mixed-drop refusal phrasing" as a UI-owned string and section 5.7:823 gives the
+  // section 5.7 names "the mixed-drop refusal phrasing" as a UI-owned string and section 5.7 gives the
   // row's owner as "here (chrome)"; crate::outcome's one-string-one-home comment likewise refuses section 2.8.2
   // homing for MixedDrop ("via the section 5.2 pre-flight UI"), so this screen has no section 02 body to render.
   // The found-formats line is composed in strings/format.ts over the wire's [format, count] tally.
@@ -225,8 +225,8 @@ export const ui = {
   // 7.2/section 2.13.3 own those WORDS (the 2026-07-16 P3.60 ruling; crate::outcome deliberately refuses section
   // 2.8.2 homing for the three app-level kinds — "render via the section 2.13.3 app://fault catalog", one string
   // one home). So NO body/message key lives here: authoring one would fork a section 02-owned catalog (the
-  // section 5.7:799 doctrine, the P3.56-item-1 / P3.59 rejected class). The run-path fault line (the section
-  // 5.8:1021 chrome literal, whose core is dead and can author nothing) is P4.50's leg, not this box's.
+  // section 5.7 doctrine, the P3.56-item-1 / P3.59 rejected class). The run-path fault line (the section
+  // 5.8 chrome literal, whose core is dead and can author nothing) is P4.50's leg, not this box's.
   // [Build-Session-Entscheidung: P3.60]
   appfault_heading: "Something went wrong",
   appfault_start_over: "Start over",

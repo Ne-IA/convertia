@@ -3,8 +3,8 @@ import { render, cleanup, fireEvent } from "@testing-library/react";
 
 // §6.4.6 unit (G15): the §5.3 ResultSummary — the §1.12 end-of-batch outcome. Mock the §5.1 events façade (the
 // C9 reveal-residue round-trip). The load-bearing assertions are the §2.6.4 THREE-CASE residue contract (the
-// item's terminal state is never rewritten by residue — §2.6.2:827 / §2.1.3:197 "annotated, not an item
-// failure") and the §5.7:800 verbatim-reason rule. [Build-Session-Entscheidung: P3.59]
+// item's terminal state is never rewritten by residue — §2.6.2 / §2.1.3 "annotated, not an item
+// failure") and the §5.7 verbatim-reason rule. [Build-Session-Entscheidung: P3.59]
 const openResultTarget = vi.fn<(...args: unknown[]) => Promise<void>>();
 vi.mock("../lib/ipc/events", () => ({
   openResultTarget: (...args: unknown[]) => openResultTarget(...args),
@@ -83,7 +83,7 @@ describe("ResultSummary — §5.3 / §1.12", () => {
     expect(getByText("Saved as a.tsv")).not.toBeNull();
   });
 
-  it("renders a failed item's §2.8 reason VERBATIM — the core-supplied text, never paraphrased (§5.7:800)", () => {
+  it("renders a failed item's §2.8 reason VERBATIM — the core-supplied text, never paraphrased (§5.7)", () => {
     const text = "ConvertIA couldn't convert this file.";
     const { getByText } = render(
       <ResultSummary result={result([failed(0, text)])} sources={sources} />,
@@ -102,7 +102,7 @@ describe("ResultSummary — §5.3 / §1.12", () => {
     // [Test-Change: P3.59 — old-obsolete+new-correct, §1.12] These expectations moved from the chrome literal
     // "No files were converted" to the core's `summaryLineDisplay`. OLD OBSOLETE: the 2026-07-16 P3.59 ruling
     // wired `batch_summary_line` onto the wire and REMOVED the chrome banner string — §2.8.2 owns the copy
-    // (§5.7:799), so asserting a UI-authored literal now asserts a §5.7 violation. NEW CORRECT: verified vs
+    // (§5.7), so asserting a UI-authored literal now asserts a §5.7 violation. NEW CORRECT: verified vs
     // §2.8.2 (the "All failed" row is the §02 string) + §5.2 row 8 (the UI owns the BANNER, not the words);
     // the line's assembly is read back Rust-side, and rendering it verbatim is pinned here.
     it("renders the core's §2.8.2 line VERBATIM as an alert banner when EVERY item failed", () => {
@@ -171,7 +171,7 @@ describe("ResultSummary — §5.3 / §1.12", () => {
       ).not.toBeNull();
     });
 
-    it("authors NO batch copy of its own — the rendered line is exactly what the wire carried (§5.7:799)", () => {
+    it("authors NO batch copy of its own — the rendered line is exactly what the wire carried (§5.7)", () => {
       // A sentinel the §2.8.2 catalog would never produce: if the component ever paraphrased/derived the line
       // instead of rendering the wire field, this fails.
       const run = result([failed(0, "x")], { summaryLineDisplay: "SENTINEL-LINE-FROM-CORE" });
@@ -193,7 +193,7 @@ describe("ResultSummary — §5.3 / §1.12", () => {
       },
     });
 
-    it("case 1: a SUCCEEDED item with residue stays Done — not downgraded to Failed (§2.6.2:827)", () => {
+    it("case 1: a SUCCEEDED item with residue stays Done — not downgraded to Failed (§2.6.2)", () => {
       const run = result([residueAnnotation(0, "/tmp/a.part")], {
         cleanupIncomplete: [{ item: 0, residueDisplay: "/tmp/a.part" }],
       });
@@ -205,7 +205,7 @@ describe("ResultSummary — §5.3 / §1.12", () => {
     });
 
     it("case 1: the residue line is the core's §02-owned text — the UI adds NO chrome path line of its own", () => {
-      // §5.7:799: the UI must not author/paraphrase a §2.8 string. Pinning the exact rendered text set means a
+      // §5.7: the UI must not author/paraphrase a §2.8 string. Pinning the exact rendered text set means a
       // re-introduced chrome frame ("A temporary file may remain at …") fails here.
       const run = result([residueAnnotation(0, "/tmp/a.part")], {
         cleanupIncomplete: [{ item: 0, residueDisplay: "/tmp/a.part" }],

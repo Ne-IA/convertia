@@ -88,7 +88,7 @@ const STAGED_SOURCE_PREFIX: &str = "src-";
               arm, so this mechanism has no production caller there and is dead in every production build \
               of those two targets. That target-dependent split is exactly why this is `allow` and never \
               `expect`: an `expect` would go UNFULFILLED on macOS, the one target this Windows host cannot \
-              compile. The crate::platform precedent (platform/mod.rs:948) uses `allow` for the same \
+              compile. The crate::platform precedent (platform/mod.rs) uses `allow` for the same \
               cross-target reason."
 )]
 fn stage_source_into_scratch(

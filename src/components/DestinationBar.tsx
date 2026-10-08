@@ -1,8 +1,8 @@
 // src/components/DestinationBar.tsx — the §5.3 DestinationBar: the §5.2 Destination (state 5) preview + actions (P3.56).
 //
 // Always visible before Convert (§5.2 state 5): the "will save to …" line (the C4 plan's `finalDirDisplay`,
-// §1.8/§2.7); the §5.8:926 passive FALLBACK note when the persisted-destination hand-off (C14) fell back to
-// beside-source (`persistedFallback`, §5.7:825 chrome); the per-location divert note when the plan diverted
+// §1.8/§2.7); the §5.8 passive FALLBACK note when the persisted-destination hand-off (C14) fell back to
+// beside-source (`persistedFallback`, §5.7 chrome); the per-location divert note when the plan diverted
 // (§2.7.2); the Change-destination button (drives C2b `pick_destination` → C5 `set_destination`, §5.4); and the
 // Convert button — DISABLED (no Note) when the C4 `preflight.upFrontFail` is `Some(kind)` (the SSOT "fails fast up
 // front", §1.10/§5.3). Presentational + wired to the machine via `onChangeDestination`/`onConvert` (§5.3).
@@ -20,8 +20,8 @@ import { ui } from "../strings/ui";
 export interface DestinationBarProps {
   /** The C4 plan preview — the "will save to …" dir, the §2.7.2 divert, and the §1.10 preflight verdict. */
   readonly preview: OutputPlanPreview;
-  /** §5.8:926 — the persisted-destination re-validation FALLBACK fact (from the C14 hand-off via `Planned`);
-   *  `true` renders the passive §5.7:825 chrome fallback note (surfaced even when beside-source is writable). */
+  /** §5.8 — the persisted-destination re-validation FALLBACK fact (from the C14 hand-off via `Planned`);
+   *  `true` renders the passive §5.7 chrome fallback note (surfaced even when beside-source is writable). */
   readonly persistedFallback: boolean;
   /** Fired on the Change-destination button — the parent drives C2b `pick_destination` → C5 `set_destination`. */
   readonly onChangeDestination: () => void;

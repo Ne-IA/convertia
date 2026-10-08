@@ -937,7 +937,7 @@ pub enum InitialDestination {        // C14 get_initial_destination return (§0.
     BesideSource,                    // the §2.7.1 default (plain pref / absent) — no fallback note
     ChosenRoot(DestinationPicked),   // the persisted ChosenPath re-validated (§2.7.2) → registered id + display
     Fallback,                        // the persisted ChosenPath FAILED re-validation → beside-source fallback;
-                                     //   STRUCTURALLY distinct from BesideSource so the §5.8:926 passive fallback
+                                     //   STRUCTURALLY distinct from BesideSource so the §5.8 passive fallback
                                      //   note surfaces even when beside-source is writable [P3.56]
 }
 // [PROPOSED — the P3.80 wire/core split, the Build-Loop escalation ruling] The pure §1.8/§2.7 orchestrator

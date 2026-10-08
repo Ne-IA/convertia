@@ -154,7 +154,7 @@ covers = [["TSV", "CSV"]]
 "TSV→CSV" = { result = "success" }
 
 [[file]]
-# The §0.9 TIMEOUT-SENTINEL for the P3 slice (§0.9:1633 "a deterministic input / a `#[cfg(test)]` sidecar
+# The §0.9 TIMEOUT-SENTINEL for the P3 slice (§0.9 "a deterministic input / a `#[cfg(test)]` sidecar
 # that reliably exceeds the budget or stalls without progress"), which `crate::pool`'s
 # NATIVE_CSV_TSV_TIMEOUT doc names P3.61 as the author of.
 #

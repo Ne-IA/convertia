@@ -4,7 +4,7 @@ import { render, cleanup, fireEvent } from "@testing-library/react";
 // §6.4.6 unit (G15): the §5.3 UnsupportedNotice — the state-10 intake-refusal notice. Pins all FOUR §5.3
 // variants (incl. the DERIVED `Unreadable`, which has no wire arm of its own), the §02-supplied payloads that
 // must ride through VERBATIM (`detected`, the §1.2 `Uncertain.note`), the §5.2 row-10 Empty skip tally, the
-// §5.3:307 focus-on-entry, and the Dismiss/Esc → Idle exit (the P3 screen-box wiring model).
+// §5.3 focus-on-entry, and the Dismiss/Esc → Idle exit (the P3 screen-box wiring model).
 // [Build-Session-Entscheidung: P3.60]
 import { UnsupportedNotice, resolveVariant } from "./UnsupportedNotice";
 import { useAppStore } from "../state/store";
@@ -35,7 +35,7 @@ describe("UnsupportedNotice — §5.2 Unsupported (state 10)", () => {
   });
 
   it("Uncertain: renders the §1.2 note VERBATIM as a calm secondary line — the payload is never dropped", () => {
-    // §5.2 row 10 / §5.3:307: `Uncertain.note` is core-produced text; the UI renders it, never paraphrases it.
+    // §5.2 row 10 / §5.3: `Uncertain.note` is core-produced text; the UI renders it, never paraphrases it.
     const note = "The header says PNG but the tail looks like a ZIP archive.";
     const { getByRole, getByText } = render(
       <UnsupportedNotice reason={{ kind: "uncertain", note }} />,
@@ -99,13 +99,13 @@ describe("UnsupportedNotice — §5.2 Unsupported (state 10)", () => {
     expect(resolveVariant({ kind: "empty", skipped: [] }).tally).toBeNull();
   });
 
-  it("announces its heading assertively and focuses the DISMISS button, never the heading (§5.3:307)", () => {
+  it("announces its heading assertively and focuses the DISMISS button, never the heading (§5.3)", () => {
     const { getByRole } = render(
       <UnsupportedNotice reason={{ kind: "unsupported", detected: "PDF" }} />,
     );
     const heading = getByRole("heading", { name: /Can't convert this type/ });
     expect(heading.getAttribute("aria-live")).toBe("assertive");
-    // Focus on Dismiss so Enter activates it (§5.10:1241) — a tabindex=-1 heading would make Enter a no-op.
+    // Focus on Dismiss so Enter activates it (§5.10) — a tabindex=-1 heading would make Enter a no-op.
     expect(document.activeElement).toBe(getByRole("button", { name: "Dismiss" }));
   });
 
@@ -117,13 +117,13 @@ describe("UnsupportedNotice — §5.2 Unsupported (state 10)", () => {
     expect(useAppStore.getState().machine).toEqual({ tag: "idle" });
   });
 
-  it("Esc dismisses → Idle (§5.10:1231)", () => {
+  it("Esc dismisses → Idle (§5.10)", () => {
     render(<UnsupportedNotice reason={{ kind: "unsupported", detected: "PDF" }} />);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(useAppStore.getState().machine).toEqual({ tag: "idle" });
   });
 
-  it("is NOT a modal — a full-screen state, so no alertdialog/focus trap (§5.7:840)", () => {
+  it("is NOT a modal — a full-screen state, so no alertdialog/focus trap (§5.7)", () => {
     const { queryByRole } = render(
       <UnsupportedNotice reason={{ kind: "unsupported", detected: "PDF" }} />,
     );

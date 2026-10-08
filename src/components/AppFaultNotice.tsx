@@ -10,7 +10,7 @@
 // because they "render via the §2.13.3 `app://fault` catalog" — one string, one home. So this component
 // authors NO body copy: a chrome line here would leave the §7.2 strings with no renderer anywhere (the
 // orphaned-string class) and would show a damaged-bundle user the factually wrong "the conversion stopped".
-// Only the heading + the Start-over label are chrome (§5.7:799: §02/§7.2 own the words, the UI owns the frame).
+// Only the heading + the Start-over label are chrome (§5.7: §02/§7.2 own the words, the UI owns the frame).
 //
 // NO kind-switch, NO fallback line: the machine's state-12 payload is a non-null `AppFault` (P3.53), and in P3
 // every entry into state 12 carries a real DTO — the `app://fault` wildcard is the only runtime entry (its
@@ -20,7 +20,7 @@
 // a DTO-less fault, and that class's chrome copy. This box never synthesizes a wire `AppFault` client-side
 // (§5.2: the backend is the source of truth for facts).
 //
-// SLICE SCOPE (P3.60): focus-on-entry lands on Start over — the screen's ONLY action — so §5.10:1245's
+// SLICE SCOPE (P3.60): focus-on-entry lands on Start over — the screen's ONLY action — so §5.10's
 // "Enter → Start over" is native <button> activation and Esc maps to the same single action. The §5.6.1(2)
 // assertive announce-ON-ENTRY (distinct from the §5.6.1(1) `aria-live` heading attribute this box builds) is
 // **P4.75**'s, which fires the shared `announcer.ts` live region per state transition and names state 12
@@ -39,7 +39,7 @@ export interface AppFaultNoticeProps {
    *  per-kind branch here would re-implement the §2.13.3 catalog it deliberately does not home in §2.8.2. */
   readonly fault: AppFault;
   /** §5.2 row 12: the single Start-over action (button, Esc, or the §5.10 Ctrl/⌘+N chord) → `Idle`. A CALLBACK,
-   *  not an internal dispatch, per the §5.3:309 prop contract — this component is presentational (the
+   *  not an internal dispatch, per the §5.3 prop contract — this component is presentational (the
    *  `RerunPrompt` precedent, whose §5.3 row likewise lists its callbacks). Its two sibling state screens take
    *  no callback because their §5.3 rows declare none. */
   readonly onStartOver: () => void;
@@ -49,13 +49,13 @@ export interface AppFaultNoticeProps {
 export function AppFaultNotice({ fault, onStartOver }: AppFaultNoticeProps) {
   const startOverRef = useRef<HTMLButtonElement>(null);
 
-  // §5.10:1245 — Start over is state 12's ONLY action, so focus lands on it and Enter activates it natively.
+  // §5.10 — Start over is state 12's ONLY action, so focus lands on it and Enter activates it natively.
   useEffect(() => {
     startOverRef.current?.focus();
   }, []);
 
-  // §5.10:1223/:1245 — the Ctrl/⌘+N "Start over" chord (bound in AppFault per the canonical table) and Esc,
-  // which §5.10:1245 maps to the SAME single action ("identical; no other choice").
+  // §5.10 — the Ctrl/⌘+N "Start over" chord (bound in AppFault per the canonical table) and Esc,
+  // which §5.10 maps to the SAME single action ("identical; no other choice").
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape" || matchesAccelerator(event, keymap.startOver)) {

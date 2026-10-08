@@ -4,7 +4,7 @@ import { render, cleanup, fireEvent } from "@testing-library/react";
 // §6.4.6 unit (G15): the §5.3 MixedDropRefusal — the §1.3 hard pre-flight refusal (state 9). Pins the §5.2
 // row-9 contract: the formats-found tally, the ACTIVE re-drop DropZone as the primary action (§5.3 [DECIDED]),
 // the Dismiss/Esc → Idle exit (the P3 screen-box wiring model: a rendered action MUST fire its command), the
-// §5.3:306 focus-on-entry, and the §5.10:1211 global-chord gate. Mock the §5.1 events façade — the composed
+// §5.3 focus-on-entry, and the §5.10 global-chord gate. Mock the §5.1 events façade — the composed
 // DropZone fires C2a through it. [Build-Session-Entscheidung: P3.60]
 const pickForIntake = vi.fn<(kind: string) => Promise<void>>();
 vi.mock("../lib/ipc/events", () => ({ pickForIntake: (kind: string) => pickForIntake(kind) }));
@@ -35,14 +35,14 @@ describe("MixedDropRefusal — §5.2 MixedDropRefusal (state 9)", () => {
     expect(getByText("Found 30 JPG, 12 PNG, 3 PDF")).not.toBeNull();
   });
 
-  it("announces its heading via an assertive live region, and does NOT focus it (§5.3:306)", () => {
+  it("announces its heading via an assertive live region, and does NOT focus it (§5.3)", () => {
     const { getByRole } = render(<MixedDropRefusal found={found} />);
     const heading = getByRole("heading", { name: "More than one kind of file" });
     expect(heading.getAttribute("aria-live")).toBe("assertive");
     expect(document.activeElement).not.toBe(heading);
   });
 
-  it("focuses the re-drop DropZone on entry — the PRIMARY action (§5.3:306 [DECIDED])", () => {
+  it("focuses the re-drop DropZone on entry — the PRIMARY action (§5.3 [DECIDED])", () => {
     const { getByRole } = render(<MixedDropRefusal found={found} />);
     expect(document.activeElement).toBe(getByRole("button", { name: /Drop files here/ }));
   });
@@ -55,7 +55,7 @@ describe("MixedDropRefusal — §5.2 MixedDropRefusal (state 9)", () => {
     expect(pickForIntake).toHaveBeenCalledWith("files");
   });
 
-  it("does NOT bind the §5.10:1211 global chords — Ctrl+O is Idle-only; state 9 re-drops via the focused surface", () => {
+  it("does NOT bind the §5.10 global chords — Ctrl+O is Idle-only; state 9 re-drops via the focused surface", () => {
     render(<MixedDropRefusal found={found} />);
     fireEvent.keyDown(document, { key: "o", ctrlKey: true });
     fireEvent.keyDown(document, { key: "o", ctrlKey: true, shiftKey: true });
@@ -68,7 +68,7 @@ describe("MixedDropRefusal — §5.2 MixedDropRefusal (state 9)", () => {
     expect(useAppStore.getState().machine).toEqual({ tag: "idle" });
   });
 
-  it("Esc is the secondary Dismiss → Idle (§5.10:1232)", () => {
+  it("Esc is the secondary Dismiss → Idle (§5.10)", () => {
     render(<MixedDropRefusal found={found} />);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(useAppStore.getState().machine).toEqual({ tag: "idle" });
@@ -81,7 +81,7 @@ describe("MixedDropRefusal — §5.2 MixedDropRefusal (state 9)", () => {
     expect(queryByRole("button", { name: /convert/i })).toBeNull();
   });
 
-  it("is NOT a modal — a full-screen state, so no alertdialog/focus trap (§5.7:840)", () => {
+  it("is NOT a modal — a full-screen state, so no alertdialog/focus trap (§5.7)", () => {
     const { queryByRole } = render(<MixedDropRefusal found={found} />);
     expect(queryByRole("alertdialog")).toBeNull();
     expect(queryByRole("dialog")).toBeNull();

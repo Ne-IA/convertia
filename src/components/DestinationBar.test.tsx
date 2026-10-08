@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, cleanup, fireEvent } from "@testing-library/react";
 
-// §6.4.6 unit (G15): the §5.3 DestinationBar (state 5) — the will-save-to line, the §5.8:926 persisted-fallback
+// §6.4.6 unit (G15): the §5.3 DestinationBar (state 5) — the will-save-to line, the §5.8 persisted-fallback
 // note, the §2.7.2 divert note, the Change/Convert callbacks, and the §1.10 up-front-fail DISABLE (disable-only in
 // P3; the §2.8 Note rides P4.69/P4.72). Pure presentational (props only), so no mocks. [Build-Session-Entscheidung: P3.56]
 import { DestinationBar } from "./DestinationBar";
@@ -97,7 +97,7 @@ describe("DestinationBar — §5.3 destination preview + actions (state 5)", () 
     expect(getByText(ui.destination_divert_unwritable)).not.toBeNull();
   });
 
-  it("renders the §5.8:926 passive fallback note when persistedFallback is true (§5.7:825 chrome)", () => {
+  it("renders the §5.8 passive fallback note when persistedFallback is true (§5.7 chrome)", () => {
     const { getByText } = render(
       <DestinationBar
         preview={basePreview}

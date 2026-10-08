@@ -3,7 +3,7 @@ import { render, cleanup } from "@testing-library/react";
 import { axe } from "vitest-axe";
 
 // §6.4.6a / G33a a11y (per-push): the §5.3 UnsupportedNotice (state 10) — an assertive-heading full-screen
-// STATE (NOT an alertdialog, §5.7:840) + a focusable Dismiss, rendered INTO a `<main>` like the other
+// STATE (NOT an alertdialog, §5.7) + a focusable Dismiss, rendered INTO a `<main>` like the other
 // per-screen a11y legs. Each of the four §5.3 variants is scanned: they differ in the rendered subtree (the
 // Uncertain note line, the Empty tally line), so one variant's clean scan does not cover the others.
 // [Build-Session-Entscheidung: P3.60]

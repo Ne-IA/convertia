@@ -1120,7 +1120,7 @@ fn classify_exit(
 /// no-progress bound over a no-tick engine would FALSELY reap a live-but-quiet conversion the instant it ran
 /// past `no_progress` (e.g. a large LibreOffice `doc→pdf`, since `NO_PROGRESS_TIMEOUT < SUBPROCESS_WALL_CLOCK`).
 /// `InProcessFraction` never reaches this lane (the in-core native engine has no subprocess; §1.7). **[FORWARD:
-/// output-file growth]** §1.7 (843-846) / §0.9 (1637-1649) name output-file-SIZE growth as a third no-progress
+/// output-file growth]** §1.7 / §0.9 name output-file-SIZE growth as a third no-progress
 /// signal; monitoring `out_tmp` size for a no-tick encode (or the LibreOffice §1.11 progress heuristic) is a
 /// refinement homed with the no-native-progress engines in P5–P7 — until then the wall-clock is the honest
 /// bound for a no-tick model, never a spurious `no_progress` reap.
@@ -3184,7 +3184,7 @@ mod tests {
     }
 
     // §6.4.2 bound-firing (G16): the §0.9 TIMEOUT-SENTINEL over the REAL transform + the REAL §0.9 lane —
-    // `tests/corpus/expansion_sentinel.csv` (P3.61). §0.9:1633 asks for "a deterministic input / a
+    // `tests/corpus/expansion_sentinel.csv` (P3.61). §0.9 asks for "a deterministic input / a
     // `#[cfg(test)]` sidecar that reliably exceeds the budget or stalls without progress" so the §1.7 reap is
     // "test-covered, not prose"; `NATIVE_CSV_TSV_TIMEOUT`'s own doc names P3.61 as this sentinel's author.
     //
