@@ -39,9 +39,8 @@
 > criterion, (f) the single-instance double-extract macOS sub-test — so a failure in
 > any one is attributable and re-walked on its own.
 >
-> **This is the v0 BASE** — the smallest-atomic `[ ]` boxes are below, grouped under
-> `### ` sub-headings; a later adversarial review will deepen, split and complete
-> them.
+> Each phase's boxes are audited against the as-built codebase at the preceding phase's
+> sweep (test-strategy §11).
 
 ---
 
@@ -215,9 +214,7 @@
 > carries `needs:` on this sweep, so the RC cannot sign off over an unswept P11.
 
 - [!extern] **P11.34** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P11 delivery — adversarial re-test at the hardest technically-possible level · §6.4
-  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P11 box except the P11.33 RC sign-off is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
-  > **Second leg (§11.4):** vacuous — P11 has no successor plan (the final phase).
-  > **Boundary stop:** P11.33 (the RC sign-off, the plan's terminal box) carries `needs:` on this box — the RC cannot be signed off until the final sweep is `[x]`; there is no successor phase (plan convergence follows the sign-off).
+  > Co-Pilot act (never the Build-Loop); procedure and entry condition: test-strategy §11; check 31 binds the phase boundary.
 
 ---
 

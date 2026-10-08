@@ -18,9 +18,8 @@
 > [`07-app-shell.md`](../spec/07-app-shell.md) (§7.6 no-update posture).
 > Box format: [`_format.md`](_format.md). Index: [README.md](README.md).
 >
-> **This is the v0 base** — the smallest atomic `[ ]` boxes below, grouped under
-> `### ` sub-headings; a later adversarial-review pass deepens, splits and reconciles
-> them (incl. P0.7's `→ executed in P10` cross-refs against these real box-ids). When
+> Each phase's boxes are audited against the as-built codebase at the preceding phase's
+> sweep (test-strategy §11). When
 > in doubt the boxes are made **smaller and more numerous**, never coarser.
 
 ## Boundaries (read against P0.7, P4–P9, P11)
@@ -339,6 +338,4 @@
 > [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
 
 - [!extern] **P10.60** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P10 delivery — adversarial re-test at the hardest technically-possible level · §6.4
-  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P10 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
-  > **Second leg (§11.4, owner directive 2026-07-22):** the same sweep then pre-fill-audits the P11 plan boxes over every test-strategy §11.4 surface; §11.4 binds, this note only points; resolvable findings land as dual-reviewed plan/spec edits BEFORE the P11 build session starts, genuine forks go to the owner batched at the boundary.
-  > **Boundary stop:** P11.1 carries `needs:` on this box — the phase-end sweep box is the one `[!extern]` that blocks its WHOLE successor phase (`_format.md` §2 / §6 step 4, test-strategy §11.3), so the loop hard-stops at the P10→P11 boundary and hands off to the Co-Pilot until the sweep is `[x]`.
+  > Co-Pilot act (never the Build-Loop); procedure and entry condition: test-strategy §11; check 31 binds the phase boundary.

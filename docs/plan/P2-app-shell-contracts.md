@@ -18,9 +18,6 @@
 > §7.6 no-updater, §7.7 shell-out, §7.8 OS-intake funnel + §7.8.2 negatives).
 > Index: [plan/README.md](README.md). Box format: [`_format.md`](_format.md).
 >
-> **This is the v0 base.** The atomic `[ ]` boxes below derive exhaustively from
-> the spec homes; a later adversarial review deepens, splits and completes them.
->
 > **Boundaries (read against P1).** P1 already **scaffolded everything structural** —
 > the workspace `Cargo.toml` + `src-tauri` crate (P1.6), the §0.7 module tree as
 > downward-only shells incl. the G9 assertion (P1.11), the React/TS/Vite/Tailwind

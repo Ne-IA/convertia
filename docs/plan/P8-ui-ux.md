@@ -27,9 +27,8 @@
 > branding** — **NON-BLOCKING, may trail the P11 RC** (SSOT §9 marks only
 > "modern/eye-candy" polish non-blocking); each scope-(ii) box says so in its note.
 >
-> **This is the v0 BASE** — the smallest atomic `[ ]` boxes below, derived
-> exhaustively from the spec homes; a later adversarial review will deepen, split
-> and complete them.
+> Each phase's boxes are audited against the as-built codebase at the preceding phase's
+> sweep (test-strategy §11).
 
 ## Boundaries (so P8 does not double-build P1/P4–P7)
 
@@ -48,16 +47,8 @@
 - **P9 validates** a11y (headed-E2E axe-core contrast G33b, SR smoke, keyboard-path
   equivalence) and **P11** runs the §6.6 usability walkthrough — P8 ships the
   *implementation* those phases verify, not the validation harness.
-- **Cross-phase edges carried INLINE (no reconciliation box):** unlike the
-  format-exercise phases (P5/P6/P7), P8 ships **no** per-pair tests against the P4
-  reliability runner and **no** deferred P4-harness edges, so it carries the
-  cross-phase reconciliation obligation (P4.77; reciprocal of P3.70/P5.74/P6.92/
-  P7.77/P9.46) **inline on each box** rather than in a dedicated reconciliation box:
-  P8.1.1→P2.39/P1.37 (the payload-less `app://intake` nudge + strings), P8.3/P8.16→P2.85 (the core-owned `settings.json`
-  prefs blob, §7.4.2), P8.10/P8.12→P2.34 (C11 `get_app_info`), P8.15→P2.33 (C10
-  `open_project_page`), P8.19→P3.68 (§2.8.2 catalog), P8.20→P1.31.2/P3.69 (§5.1 store +
-  §2.9.1 catalog). No P8 box `>`-note defers a `needs:` with the P4.77-forbidden
-  phrasing (`the fill pass adds those needs` / `the reconciliation pass wires those`).
+- **Cross-phase edges:** each P8 box names its own prerequisites in `needs:`
+  (`_format.md` §5a).
 
 ---
 
@@ -185,6 +176,4 @@
 > [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
 
 - [!extern] **P8.28** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P8 delivery — adversarial re-test at the hardest technically-possible level · §6.4
-  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P8 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
-  > **Second leg (§11.4, owner directive 2026-07-22):** the same sweep then pre-fill-audits the P9 plan boxes over every test-strategy §11.4 surface; §11.4 binds, this note only points; resolvable findings land as dual-reviewed plan/spec edits BEFORE the P9 build session starts, genuine forks go to the owner batched at the boundary.
-  > **Boundary stop:** P9.1 carries `needs:` on this box — the phase-end sweep box is the one `[!extern]` that blocks its WHOLE successor phase (`_format.md` §2 / §6 step 4, test-strategy §11.3), so the loop hard-stops at the P8→P9 boundary and hands off to the Co-Pilot until the sweep is `[x]`.
+  > Co-Pilot act (never the Build-Loop); procedure and entry condition: test-strategy §11; check 31 binds the phase boundary.

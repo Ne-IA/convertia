@@ -21,12 +21,8 @@
 > size budgets). Threat-map: [`00-architecture.md`](../spec/00-architecture.md) §0.11.
 > Box format: [`_format.md`](_format.md). Index: [README.md](README.md).
 >
-> **This is the v0 base** — the smallest atomic `[ ]` boxes below, grouped under
-> `### ` sub-headings, worked top to bottom; a later adversarial-review pass deepens,
-> splits and reconciles them (incl. P0's `→ activated in P9` / `→ executed in P9`
-> cross-refs from P0.5.9 / P0.7.11 / P0.7.12 / P0.7.14 / P0.7.15, which name P9 as the
-> activation target for the egress-deny window, the privilege-drop-tier ratchet, the
-> release-confirmation G42/G42b leg, the G33b contrast scan, and the engine-fuzz job).
+> Each phase's boxes are audited against the as-built codebase at the preceding phase's
+> sweep (test-strategy §11).
 
 ## Boundaries (read against P1/P4/P5–P7/P8)
 
@@ -124,13 +120,13 @@
 ### §2.10 real-world filename / content fidelity validation
 
 - [ ] **P9.19** [TEST] Author the adversarial-filename §6.4.1 unit corpus — emoji / CJK / RTL / spaces / multi-dot / extension-only stems · §2.10.1 §6.4.1 · G15
-  > unit tests over `fs_guard::output_name` proving the stem is preserved **byte-for-byte** (no transliteration, ASCII-folding, emoji-stripping): multi-dot (`my.report.final`→`.pdf`), extension-only-looking tokens, same-format re-encode (`photo.jpg`→`photo (1).jpg` never overwriting), and the space-paren `(n)` numbering shape — not `_1`/`-1`/a hash. (Exercises the P3-built `fs_guard::output_name` primitive, **P3.10** — this box only ADDS the adversarial unit corpus over it, no new mechanism; named in prose per the P9 reciprocal-reconciliation convention.)
+  > unit tests over `fs_guard::output_name` proving the stem is preserved **byte-for-byte** (no transliteration, ASCII-folding, emoji-stripping): multi-dot (`my.report.final`→`.pdf`), extension-only-looking tokens, same-format re-encode (`photo.jpg`→`photo (1).jpg` never overwriting), and the space-paren `(n)` numbering shape — not `_1`/`-1`/a hash. (Exercises the P3-built `fs_guard::output_name` primitive, **P3.10** — this box only ADDS the adversarial unit corpus over it, no new mechanism.)
 - [ ] **P9.20** [TEST] Validate path-as-opaque-OsString — no lossy `to_string_lossy()` in any FS *operation* (display-only at the last step) · §2.10.1 · G9 G15
-  > assert ConvertIA operates on the original `OsString`/`PathBuf` and only converts to `String` for *display* to the WebView (replacement char shown, original operated on losslessly); covers Windows WTF-8/UTF-16 (emoji/CJK/combining-mark round-trip) and Unix arbitrary-byte paths. Pairs with the G9 invariant grep (P0.3.10) that no operation path drops to lossy. (Validates the P3-built `fs_guard` FS-operation paths — incl. `output_name` (P3.10) / `check_path_limit` (P3.11) — exercising them, not introducing a new mechanism; named in prose per the P9 convention.)
+  > assert ConvertIA operates on the original `OsString`/`PathBuf` and only converts to `String` for *display* to the WebView (replacement char shown, original operated on losslessly); covers Windows WTF-8/UTF-16 (emoji/CJK/combining-mark round-trip) and Unix arbitrary-byte paths. Pairs with the G9 invariant grep (P0.3.10) that no operation path drops to lossy. (Validates the P3-built `fs_guard` FS-operation paths — incl. `output_name` (P3.10) / `check_path_limit` (P3.11) — exercising them, not introducing a new mechanism.)
 - [ ] **P9.21** [TEST] Validate the macOS NFC-vs-NFD identity invariant — no missed-identity / duplicate from normalization · §2.10.1 §2.3.1 · G15
   > assert the stem is preserved verbatim (no cross-OS re-normalization) and the §2.3 identity check uses inode/file-index, NOT the name string, so an NFC-vs-NFD difference never causes a missed-identity or a duplicate frozen-set entry.
 - [ ] **P9.22** [TEST] Validate `PathTooLong` fail-clearly — Windows 260 / 255-component, macOS 255-byte/PATH_MAX, Linux 255/4096 (no truncation) · §2.10.1 §2.2.3 · G15 G48
-  > assert appending `(n)` / swapping the extension that would exceed the **component** or **total** limit emits `PathTooLong` (§2.8) — truncation is never the escape hatch — including on the §2.7 divert path (identical guarantee); the Windows `\\?\` extended-length prefix is used for ConvertIA's own syscalls but a user-facing path > 260 still fails clearly. Sits alongside the §6.4.5 bound-firing fixtures and the P0.4.3 `fs_guard` fuzz. (Validates the P3-built `fs_guard::check_path_limit` primitive, **P3.11** — exercising it, not introducing a new mechanism; named in prose per the P9 convention.)
+  > assert appending `(n)` / swapping the extension that would exceed the **component** or **total** limit emits `PathTooLong` (§2.8) — truncation is never the escape hatch — including on the §2.7 divert path (identical guarantee); the Windows `\\?\` extended-length prefix is used for ConvertIA's own syscalls but a user-facing path > 260 still fails clearly. Sits alongside the §6.4.5 bound-firing fixtures and the P0.4.3 `fs_guard` fuzz. (Validates the P3-built `fs_guard::check_path_limit` primitive, **P3.11** — exercising it, not introducing a new mechanism.)
 - [ ] **P9.23** [TEST] Validate CJK/RTL body-text fidelity through every document/sheet/slide pair against the bundled font floor · §2.10.2 §6.4.3 · G31 G32
   needs: P9.31
   > assert CJK + RTL (Arabic/Hebrew) body text survives the doc/sheet/slide conversions (§2.10) rendering from the **committed bundled font set alone** (§3.9.3: Liberation + Carlito + Caladea + curated Noto CJK/RTL) — a missing-font regression fails the gate rather than silently degrading to host-font substitution (no tofu); uses the `cjk-body`/`rtl-body` content-floor corpus tags (P0.4.11 / §6.4.5).
@@ -240,10 +236,8 @@
 
 ### Cross-phase reconciliation (the deferred P9→P4 mechanism `needs:`)
 
-- [ ] **P9.46** [GATE] Wire the deferred P9→P4 mechanism reconciliation `needs:` edges — §2.12 isolation boundary, §2.12.3 privilege-drop tiers, the egress/fault validations exercise · §2.12 §2.12.3 · G7 G20
-  needs: P4.37, P4.15, P4.16, P4.17, P4.18, P4.18.1
-  > the P9 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.77): P9 EXERCISES controls earlier phases built, so the boxes that run a P4-built mechanism must carry the edge — the fault-injection / adversarial-egress / fuzz boxes (P9.32/P9.34/P9.36/P9.37) run the decoder through the **P4.37 §2.12 isolation boundary**; the privilege-drop-tier validation (P9.40/P9.42) reads the **P4.15/P4.16/P4.17 per-OS privilege-drop tiers (Linux/Windows best-effort, macOS decided cheap-tier — P4.16) + the P4.18 `privilege-drop-coverage.toml`** the G64 ratchet drives, and **P9.40 VALIDATES the per-run tier-APPLIED regression INSTANTIATED in P4.18.1** (P9.40 `needs: P4.18.1` — it verifies that regression green per platform + adds the macOS-T11 behavioural delta, it does not re-instantiate it). `needs:` these P4 boxes here so the §6 selection builds the P4 mechanism first (P4 is `[x]` before the loop reaches P9 — the edges must RESOLVE, not dangle; the per-engine §3.5.x controls P9 exercises are P5–P7's, named in each P9 box's prose). No P9 box `>`-note defers a `needs:` with the P4.77-forbidden phrasing.
-  > **Why P9.46 carries explicit `needs:` while the master P4.77 carries NONE (the two reconciliation-gate models, made explicit):** P4.77 runs a PURELY STRUCTURAL audit (the G20 rule fires on the plan TEXT — it does not build or execute code against the boxes it lists, so it requires none of them `[x]` first). P9.46 is different: the P9 boxes it groups EXECUTE Rust assertions that READ runtime artefacts P4 PRODUCES at build/run time (e.g. the P4.18 `privilege-drop-coverage.toml` the tier-APPLIED regression reads, the P4.37 isolation boundary the fault-injection spawns through), so it takes PHYSICAL `needs:` to guarantee those artefacts exist before the gate runs. Both are valid; the distinction is structural-audit (no needs:) vs runtime-artefact-reading gate (physical needs:) — not an inconsistency.
+- [x] **P9.46** [GATE] Wire the deferred P9→P4 mechanism reconciliation `needs:` edges — §2.12 isolation boundary, §2.12.3 privilege-drop tiers, the egress/fault validations exercise · §2.12 §2.12.3 · G7 G20
+  > RECONCILE: void — cross-phase edges live on the consumer boxes and the check-31 phase chain (`_format.md` §5a); the planned plan-lint legs are not built.
 
 ---
 
@@ -261,6 +255,4 @@
 > [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
 
 - [!extern] **P9.48** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P9 delivery — adversarial re-test at the hardest technically-possible level · §6.4
-  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P9 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
-  > **Second leg (§11.4, owner directive 2026-07-22):** the same sweep then pre-fill-audits the P10 plan boxes over every test-strategy §11.4 surface; §11.4 binds, this note only points; resolvable findings land as dual-reviewed plan/spec edits BEFORE the P10 build session starts, genuine forks go to the owner batched at the boundary.
-  > **Boundary stop:** P10.1 carries `needs:` on this box — the phase-end sweep box is the one `[!extern]` that blocks its WHOLE successor phase (`_format.md` §2 / §6 step 4, test-strategy §11.3), so the loop hard-stops at the P9→P10 boundary and hands off to the Co-Pilot until the sweep is `[x]`.
+  > Co-Pilot act (never the Build-Loop); procedure and entry condition: test-strategy §11; check 31 binds the phase boundary.

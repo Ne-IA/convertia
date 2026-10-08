@@ -15,19 +15,17 @@
 > §5.6/§5.7/§5.10). Index: [plan/README.md](README.md). Box format:
 > [`_format.md`](_format.md). Conflict order: **SSOT > spec > security/process docs > plan**.
 >
-> **This is the v0 base — the atomic `[ ]` boxes below.** A multi-round adversarial
-> review will deepen, split and complete them afterwards. Boxes are kept as small and
-> single-purpose as the spec allows. Box-ids are **phase-scoped, two-segment**
-> (`P1.<n>`, 1-based gap-free across the whole phase — the `### ` headings are group
-> labels, not box-id segments), with at most one level of sub-boxes (`P1.<n>.<m>`).
+> Boxes are kept as small and single-purpose as the spec allows. Box-ids are
+> **phase-scoped, two-segment** (`P1.<n>`, 1-based gap-free across the whole phase — the
+> `### ` headings are group labels, not box-id segments), with at most one level of
+> sub-boxes (`P1.<n>.<m>`).
 >
 > **P0 activation targets.** Many P0 boxes carry `> → activated in P1`: their
 > enforcement targets (the workspace `Cargo.toml`/`Cargo.lock`, `pnpm-lock.yaml`,
 > `tauri.conf.json`/capabilities/`index.html`, the `strings/ui.ts` keys, the
 > codegen output, the cross-platform build matrix) are **scaffolded here**. P1
 > boxes that stand those targets up name the P0 gate they satisfy in their `Gnn`
-> refs so a later reconciliation pass can match P0's `needs:` against real P1
-> box-ids. P0 itself is **not** a `needs:` target of any P1 box — P0 is buildable
+> refs. P0 itself is **not** a `needs:` target of any P1 box — P0 is buildable
 > on a clean checkout and is `[x]` before the loop reaches P1.
 
 ---
