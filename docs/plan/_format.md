@@ -62,20 +62,13 @@ other bracketed token at a box position — a stray `[X]`, `[-]`, `[~]`, `[wip]`
 | `[!]` | **blocked-with-note** | Cannot be built **and is not a dependency to follow** — it waits on something the loop genuinely cannot produce. **Rare.** | **Skip + report** at the phase end; read the `>`-note under it. May be auto-flipped to `[ ]` by an `unlocked-by:` dep going `[x]` (§5). |
 | `[!extern]` | **needs something external** | Waits on an **owner / external** action the loop cannot take (an off-repo asset, a human decision, an external dependency — plus the **standing per-phase Co-Pilot hardening-sweep box**, [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). **Rare outside the standing sweep boxes** for a fully-offline OSS app. | **Skip + collect** into the phase's owner-act batch (`plan-lint --report owner-acts --phase <n>`). A box whose `needs:` closure reaches it is not selectable until it is `[x]` (§6, computed by `plan-lint --next`). |
 
-> **`[!]` is the exception, not the tool of first resort — prefer dependency-
-> following (DECISION C, §5).** When the next box needs an *unbuilt but buildable*
-> box, the loop does **not** mark it `[!]` and move on (that is the
-> block-and-skip model, which ConvertIA does **not** use, `build-loop.md` §3 step
-> 2). It follows the `needs:` annotation, builds the prerequisite **in place**, and
-> returns — leaving **no hole**. `[!]` / `[!extern]` are reserved for a block the
-> loop **cannot resolve by building** (an owner action, an external input). The
-> test: *can the loop build the thing it is blocked on?* If yes ⇒ it is a `needs:`
-> dependency, not a `[!]`. If no ⇒ mark the *blocker*: when the owner/external act is
-> separable, author it as its own `[!extern]` box and keep the dependent box `[ ]` +
-> `needs:` it (the P5.1→P4.81 / P4.34→P4.89 shape, §5.1); mark the blocked box itself
-> `[!]` (or `[!extern]` if the blocker is off-repo) only when there is nothing to build AT
-> the box yet, with a one-line `>`-note saying **why** and (where applicable) an
-> `unlocked-by:` marker naming its releaser (§5).
+> **`[!]` is the exception, not the tool of first resort.** When the next box needs an
+> unbuilt but buildable box, the loop follows the `needs:` edge and builds it first
+> (DECISION C, `build-loop.md` Step 2) — no hole. `[!]`/`[!extern]` are for a block the
+> loop cannot resolve by building: a separable owner or external act is its own
+> `[!extern]` box that the dependent box names in `needs:`; a box with nothing to build
+> yet is itself `[!]` (or `[!extern]`), with a one-line `>`-note saying why and, when a
+> scheduled box releases it, an `unlocked-by:` (§5.2).
 
 **Sub-box rule for `[x]`.** A box with sub-boxes (§3) is marked `[x]` **only after
 every sub-box is `[x]`** — the top marker is the AND of its children, an `[!extern]`
@@ -116,9 +109,9 @@ ordering; the comments above show the placement).
 | Field | Form | Rule |
 |---|---|---|
 | **List bullet** | `- ` | Markdown unordered-list dash + one space. The marker (`[ ]`/`[x]`/`[!]`/`[!extern]`) follows immediately. |
-| **Box-id** | `**P<phase>.<n>**` | **Bold.** `<phase>` is the integer phase number (`0`..`11`); `<n>` is the box number within the phase, **1-based, gap-free** (§7). The id is the loop's stable handle and the inline-decision-tag suffix (`[Build-Session-Entscheidung: P5.4]`, roles-and-escalation §3). |
+| **Box-id** | `**P<phase>.<n>**` | **Bold.** `<phase>` is the integer phase number (`0`..`11`); `<n>` is the box number within the phase, **1-based, gap-free** (§7). The id is the loop's stable handle and the inline-decision-tag suffix (`[Build-Session-Entscheidung: <box-id>]`, roles-and-escalation §3). |
 | **Tag** | `[Tag]` | Exactly one primary tag from the taxonomy (§4), in square brackets, right after the box-id. A second tag is allowed only as a comma-joined pair `[Tag,Tag2]` for a genuinely cross-cutting box (§4). |
-| **Title** | short imperative phrase | One line, English (CLAUDE.md §8), imperative ("Wire …", "Author …", "Stage …"), no trailing period. Describes the *deliverable*, not the activity. |
+| **Title** | short imperative phrase | One line of at most 160 characters, English (CLAUDE.md §8), imperative ("Wire …", "Author …", "Stage …"), no trailing period. Describes the *deliverable*, not the activity. |
 | **Refs separator** | ` · ` | A space-bullet-space (`·`, U+00B7) separates the title from the references and the reference groups from each other. |
 | **Spec-§ refs** | `§<n>.<...>` | Zero or more spec section references (`§2.1.2`, `§3.5.6`, `§0.10`). **Every one must resolve** to a real heading/anchor in `docs/spec/` (§7). The acceptance criteria live there. The **format-coverage track (`docs/spec/04-formats/`) is prose-anchored, not numbered** — its category files (`images.md`/`audio.md`/… ) carry `### <FORMAT>` slug headings, no numbered `§4.x` sections — so a box citing a per-format/per-pair coverage CONTRACT uses the **`§04/<file>#<slug>` anchor form** (e.g. `§04/images.md#png`, `§04/audio.md#mp3`), which `plan-lint` resolves to a real `### ` heading anchor in that category file (§7). A bare `§4` / `§4.x` token does **not** resolve (there is no numbered §4 tree) and **fails** — the resolvable coverage ref is always the `§04/<file>#<slug>` form. A conversion-behaviour box that implements a per-pair acceptance fact (which sources→targets, the per-pair lossy classification, the per-source default target) **should carry the `§04/<file>#<slug>` ref alongside** its `§3.x` engine ref / `§6.x` test ref so the builder routes to the coverage contract, not only the engine/test spec. |
 | **Gate-id refs** | `G<nn>` | Zero or more gate IDs (`G31`, `G47`, `G54`). **Every one must resolve** to a row in [`build-gates.md`](../security/build-gates.md) (§7). A box that *builds* or *activates* a gate names it; a box merely *governed by* a gate need not. |
@@ -157,16 +150,12 @@ A box that decomposes into ordered steps lists them as **indented** child boxes:
 
 ### 3.3 The `>`-note
 
-A Markdown blockquote (`  > …`) directly under a box records a fact the
-header cannot carry — for a blocked box, **what** the block is. Each `>`-note is a
-**single line**, but a box may carry **more than one** consecutive single-line
-`>`-note (the established forward-ref convention pairs a structured
-`> **Forward-ref note (DECISION-C ordering inversion):** …` line with the box's
-descriptive `>`-note — both single-line, stacked). `plan-lint` (§7) enforces **no
-"exactly one `>`-note" cap**; it parses each `>`-leading line independently. The requirement is
-the **either-or** the linter enforces (§5.2, §7 "annotation pairing"): a `[!]` /
-`[!extern]` box must not be a **silent** block, so it carries a `>`-note **or** an
-`unlocked-by:` (or both). Concretely:
+A Markdown blockquote (`  > …`) directly under a box records a fact the header cannot
+carry — for a blocked box, **what** the block is. Each `>`-note is a single line; a box
+may carry several consecutive ones, and `plan-lint` (§7) parses each `>`-leading line
+independently. A `[!]` / `[!extern]` box is never a **silent** block: it carries a
+`>`-note **or** an `unlocked-by:` (or both), the either-or `plan-lint` enforces (§5.2,
+§7 "annotation pairing"):
 
 - **`[!extern]`** has no loop-releasable `unlocked-by:` (it waits on an owner /
   external action, not on a buildable box), so its `>`-note is **mandatory** — it is
@@ -175,20 +164,47 @@ the **either-or** the linter enforces (§5.2, §7 "annotation pairing"): a `[!]`
   releaser; in practice a clear `[!]` box carries **both** — the `unlocked-by:` for
   the auto-unlock scan and a one-line `>`-note saying why (§5.2).
 
-Under an open `[ ]` box the note is optional (a clarifying constraint, a phasing note
-like "`→ activated in P1`"). Notes are **prose, not parsed for acceptance criteria** —
-those are in the spec `§§`.
+**A note on a box that is not `[x]` carries only:** the scope, in and out, in one line; a
+decided literal the spec does not carry (a pre-decided choice, a measured fact the build
+needs), in one line, pointing to its home; for a `[!]`/`[!extern]` box, what the block
+waits on.
 
-**Reference, never restate (owner rule, 2026-09-09).** A note names the deciding `§`
+**Everything else lives elsewhere.** A normative choice (a decided fork, a ruling, a
+mechanism) goes to its spec `§` or gate row in the same commit, and the box keeps a
+one-line pointer — a diet never drops a ruling. An implementation choice the Loop may
+make itself is not written: the Loop tags it `[Build-Session-Entscheidung: <box-id>]` at
+the code site. Evidence, provenance, review records and the tests a commit added go to
+the commit body. A dependency is the `needs:` line, never a forward-ref note:
+`plan-lint --show` prints the box's unmet needs and the roots that block its closure. A
+caged-file route is the `l-neg1:` line (§5.3).
+
+**Size.** The notes of a box that is not `[x]` have a budget of 1,500 characters in total,
+wrapped one idea per `>` line, no line over 400 characters. The budget is a target, never
+a reason to drop binding content (what a note carries, above, and its ruling pointers): a
+box still over it once its normative choices sit in their spec homes keeps that content,
+and the commit that leaves it over the budget acknowledges that with the reason. No
+calendar date appears in a phase file: git is the clock, and a ruling is cited by its spec
+home, box id or short SHA.
+
+**Reference, never restate.** A note names the deciding `§`
 and quotes at most the decided literal it depends on; it does not paraphrase the
 mechanism. A paraphrase is a second copy that drifts — the spec-restatement class
 `plan-lint` check 30 polices inside the spec is authorial here — and every drift is a
 plan-vs-spec difference the loop must reconcile mid-box (the spec wins,
 roles-and-escalation §4(a)). A reference names a `§` (plus the heading or row name when the
 `§` is long), never a line number: the spec README *Citing the spec* rule. The pre-fill audit (test-strategy §11.4) strips restated
-prose back to references as it passes. A note that records a Co-Pilot ruling uses the
-ruling tag of the spec's tag glossary ([spec README](../spec/README.md)
-*Tag glossary*), never a reopen clause.
+prose back to references as it passes. A note carries neither a reopen clause nor the
+Co-Pilot ruling tag of the spec's tag glossary ([spec README](../spec/README.md)
+*Tag glossary*): that tag is dated, so it lives in the ruling's spec home, and the note
+cites the ruling as the **Size** paragraph says.
+
+**A delivered box** carries no delivery note: its commit names the box id in the subject,
+and `plan-lint --show <id>` lists that commit. A deviation from the box as written is
+recorded in its spec home in the same commit, and the box keeps at most one `>` line
+pointing there. A box whose delivery notes predate these rules may be condensed to the
+single note `> Delivered: <short-sha>` once every live obligation they carry has its home
+(a spec `§`, a gate row, an open box or a residual-ledger line). A note that a `plan-lint`
+check reads is never condensed; each such check names its box in its own code.
 
 ---
 
@@ -227,23 +243,16 @@ loop follows it in `build-loop.md` §3 steps 1–2), plus **one routing annotati
 ### 5.1 `needs:` — the forward dependency (DECISION C)
 
 ```
-- [ ] **P5.7** [BUILD] Stage libheif/x265 for HEIC read · §3.5.5 · G37 G38
-  needs: P4.3, P4.9
+- [ ] **P98.7** [BUILD] Stage the example decoder · §3.5.5 · G37 G38
+  needs: P98.3, P99.2
 ```
 
 `needs: P<x>.<y>[, ...]` declares that this box **requires** the listed box(es) to
 be `[x]` first. It is what makes a forward dependency **detectable** — and detection
 is the whole point of **DECISION C, dependency-following**:
 
-> **If the next buildable box has a `needs:` pointing at a box that is not yet
-> `[x]`, the loop does NOT skip and does NOT leave a hole. It builds that
-> prerequisite box first (recursively — following *its* `needs:` too), then RETURNS
-> and builds the original box.** The plan is dependency-*following*, not
-> dependency-stepping-over.
-
-This **replaces a `[!]`-block-and-skip model**, which ConvertIA does not use:
-that model marks a box `[!]` and moves on, leaving a hole to be filled later out of order.
-ConvertIA resolves the dependency **in place**.
+> `needs:` is followed, never skipped: the loop builds an unbuilt prerequisite first and
+> returns (DECISION C, `build-loop.md` Step 2).
 
 - `needs:` targets are **other box-ids** (`P<x>.<y>` or a sub-box `P<x>.<y>.<z>`),
   comma-separated. **Every target must exist** in the plan (§7) — a dangling
@@ -265,15 +274,15 @@ ConvertIA resolves the dependency **in place**.
   its own `[!extern]` box (with its `>`-note) and the blocked box names it in `needs:`
   (§2, §6 step 4 — the loop STOPs for that closure); if there is nothing to build AT the
   box yet, the box itself is `[!]` / `[!extern]` with its releaser in `unlocked-by:` (the
-  `P5.4` shape, §5.2). A `[ ]` box never carries a `needs:` that points at nothing
+  §9 `P98.4` shape, §5.2). A `[ ]` box never carries a `needs:` that points at nothing
   buildable AND nothing `[!extern]`.
 
 ### 5.2 `unlocked-by:` — the reverse direction (auto-unlock)
 
 ```
-- [!] **P9.4** [TEST] Headed-E2E axe-core contrast scan · §6.4.6 · G33b
-  unlocked-by: P9.1
-  > blocked: needs the tauri-driver + WebdriverIO harness (P9.1) standing first.
+- [!] **P98.4** [TEST] Cross-decoder re-validate · §6.4.5 · G32
+  unlocked-by: P99.1
+  > blocked: needs the P99.1 sidecar staged first.
 ```
 
 `unlocked-by: <box-id>` sits under a **`[!]`** box and names the box whose
@@ -291,17 +300,17 @@ selectable again automatically, without a manual edit.
   follows it in place, the normal case. Use **`unlocked-by:`** only on a genuinely
   `[!]`-blocked box that becomes buildable the moment a *named, scheduled* box lands
   — it is the auto-unblock marker, not a substitute for dependency-following.
-- **The deciding test (worked example, §9):** `P5.4` is `[!]` + `unlocked-by: P6.1`,
-  **not** `[ ]` + `needs: P6.1`, because the cross-decoder re-validation is genuinely
-  **un-buildable** until the FFmpeg sidecar (`P6.1`) exists — there is nothing for the
-  loop to build at `P5.4` yet, so it is a skip-and-report block, not a dependency to
-  follow. Had `P5.4` merely needed `P6.1` *staged as an input* to a step it can run,
-  it would be `[ ]` + `needs: P6.1`, and DECISION C would build `P6.1` early and
-  return. The test is always §2's: *can the loop build the thing it is blocked on?*
-  Yes ⇒ `needs:`; no ⇒ the *blocker* gets the marker — its own `[!extern]` box named in
-  `needs:` when the owner act is separable (§5.1), else `[!]` / `[!extern]` on the
-  blocked box itself when there is nothing to build AT the box yet — the `P5.4` shape,
-  whose releaser is named in `unlocked-by:` rather than `needs:`.
+- **The deciding test (worked example, §9):** `P98.4` is `[!]` + `unlocked-by: P99.1`,
+  **not** `[ ]` + `needs: P99.1`, because the cross-decoder re-validation is genuinely
+  **un-buildable** until the `P99.1` sidecar exists — there is nothing for the loop to
+  build at `P98.4` yet, so it is a skip-and-report block, not a dependency to follow.
+  Had `P98.4` merely needed `P99.1` *staged as an input* to a step it can run, it would
+  be `[ ]` + `needs: P99.1`, and DECISION C would build `P99.1` early and return. The
+  test is always §2's: *can the loop build the thing it is blocked on?* Yes ⇒ `needs:`;
+  no ⇒ the *blocker* gets the marker — its own `[!extern]` box named in `needs:` when
+  the owner act is separable (§5.1), else `[!]` / `[!extern]` on the blocked box itself
+  when there is nothing to build AT the box yet — the `P98.4` shape, whose releaser is
+  named in `unlocked-by:` rather than `needs:`.
 - `unlocked-by:` appears **only** under a `[!]` box; `plan-lint` (check: marker /
   annotation pairing) fails an `unlocked-by:` under a `[ ]`/`[x]`/`[!extern]` box. It
   fails a **silent block**: a `[!]` box that carries **neither** a `>`-note **nor**
@@ -334,6 +343,34 @@ never authors a caged line (G71). The line carries exactly one route:
 `l-neg1:` line that meets a caged path takes the `build-loop.md` Step 7 park.
 `plan-lint --report owner-acts --phase <n>` lists the phase's `same-push`, `act` and
 `sweep-tail` boxes.
+
+---
+
+## 5a. Editing the plan
+
+An edit to a phase file follows these rules:
+
+- A new box takes the next free number of its phase (max+1) and sits at its build
+  position, before the phase-end sweep box (`plan-lint` check 31, `build-gates.md` §6,
+  fails a later box that does not `needs:` the sweep). Existing boxes may move within
+  their phase file; ids never change.
+- Never renumber, never delete: a duplicate or obsolete box becomes `[x]` with the single
+  note `> RECONCILE: <where the work lives, or why it is void>` and drops its annotation
+  lines (`needs:`, `unlocked-by:`, `l-neg1:`; a box after its phase's sweep box keeps its
+  `needs:` on the sweep, check 31); the header stays as written, and a box whose `needs:`
+  or `unlocked-by:` names it re-points that edge to where the work lives.
+- Edges live on the consumer: a box names its own load-bearing prerequisites; no box
+  carries edges on behalf of others. An edge into an earlier phase that ends in its sweep
+  box (every phase from `P2` on) is implied by the phase chain — `P<n+1>.1` needs the
+  `P<n>` sweep (check 31) — and is not written, except an edge to a `[!]` box (it can
+  stay open past its phase's sweep, test-strategy §11.2) and the edges of a box that an
+  earlier-phase box reaches through `needs:` (a DECISION C early build can run before
+  that sweep, test-strategy §11.3).
+- Owner acts are top-level `[!extern]` boxes (§3.2).
+- Split an over-grained box by extracting the leaf the consumer needs into its own box
+  at max+1 and giving the consumer a `needs:` on it; never defer the consumer.
+- Read a box from its header line: `scripts/plan-lint --show <id>`.
+- A format change follows the §7 protocol.
 
 ---
 
@@ -478,33 +515,41 @@ The plan is **split per phase**, indexed by a README:
 
 ## 9. A worked example
 
-A small, well-formed slice illustrating every construct (illustrative box-ids/refs):
+A small, well-formed slice of one phase. Every example box in this file carries a
+fictional id from phases `P97`–`P99`, outside the real `P0`..`P11` range, so no example
+is mistaken for a real box; the refs are real:
 
 ```markdown
-## P5 — Images (libvips family)
+## P98 — Example phase (fictional ids)
 
-- [x] **P5.1** [BUILD] Stage libvips core + cgif offline · §3.5.5 · G37 G38
-- [ ] **P5.2** [RUST] Wire libvips raster→raster through the isolation boundary · §2.12 §1.7 · G29 G31
-  needs: P4.3
-  - [x] **P5.2.1** [RUST] imgworker raster decode/encode command · §3.5.5 · G31
-  - [ ] **P5.2.2** [TEST] Per-pair integration: png→webp output-validity · §6.4.3 §6.5 · G32
-- [ ] **P5.3** [UI] Register webp-quality advanced-option declaration · §1.6 §2.9 · G47
-- [!] **P5.4** [TEST] Cross-library AVIF re-validate via ffprobe · §6.4.5 · G32
-  unlocked-by: P6.1
-  > blocked: needs the FFmpeg sidecar (P6.1) staged for the cross-decoder check.
-- [ ] **P5.5** [DOC] Record the ICO build-spike outcome in this plan's notes · tooling-only
+- [x] **P98.1** [RUST] Add the example engine's argument builder · §3.5 · G29
+  needs: P97.9
+- [ ] **P98.2** [RUST] Wire the example conversion through the isolation boundary · §2.12 §1.7 · G29 G31
+  needs: P99.2
+  - [x] **P98.2.1** [RUST] Worker decode/encode command · §3.5.5 · G31
+  - [ ] **P98.2.2** [TEST] Per-pair integration: output validity of one pair · §6.4.3 §6.5 · G32
+- [ ] **P98.3** [BUILD] Stage the example engine · §3.5.5 · G37
+  needs: P98.2
+  l-neg1: same-push
+- [!] **P98.4** [TEST] Cross-decoder re-validate · §6.4.5 · G32
+  unlocked-by: P99.1
+  > blocked: needs the P99.1 sidecar staged first.
+- [ ] **P98.5** [DOC] Refresh the contributor setup steps · tooling-only
 ```
 
-Reading it the way the loop does: `P5.1` is done; the next open box is `P5.2`, which
-`needs: P4.3` — if `P4.3` is not `[x]`, the loop builds `P4.3` first (DECISION C),
-then returns to `P5.2` and works its sub-boxes `P5.2.1` → `P5.2.2` before checking
-`P5.2` off; `P5.3` follows; `P5.4` is `[!]`-blocked with a note and will auto-flip
-to `[ ]` when `P6.1` is `[x]`; `P5.5` is a pure-tooling doc box with **neither** a spec
-`§` **nor** a gate id, so it carries the explicit `· tooling-only` token (§3.1) to
+Reading it the way the loop does: `P98.1` is done, and its `needs: P97.9` is the phase
+chain's edge to the `P97` sweep box (check 31, §5a). The next open box is `P98.2`, which
+`needs: P99.2`, a later-phase box — if `P99.2` is not `[x]`, the loop builds it first
+(DECISION C), then returns to `P98.2` and works its sub-boxes `P98.2.1` → `P98.2.2`
+before checking `P98.2` off. `P98.3` follows; its `l-neg1: same-push` line sends its
+caged part to the Co-Pilot (§5.3). `P98.4` is `[!]`-blocked with a note and auto-flips
+to `[ ]` when `P99.1` is `[x]`. `P98.5` is a pure-tooling doc box with **neither** a
+spec `§` **nor** a gate id, so it carries the explicit `· tooling-only` token (§3.1) to
 declare that absence — a box with a real `§` would *not* carry `tooling-only`, since
 the two are mutually exclusive. Numbering is gap-free (`.1`–`.5`; sub-boxes `.1`–`.2`);
 every `§` and `Gnn` resolves; every tag is in the taxonomy; the one `tooling-only`
-box carries no ref. `plan-lint` passes it.
+box carries no ref. In a plan where `P97.9`, `P99.1` and `P99.2` exist, the §7 checks
+pass it.
 
 ---
 
