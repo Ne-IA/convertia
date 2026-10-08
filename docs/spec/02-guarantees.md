@@ -4,12 +4,9 @@
 > Origin: SSOT *Never harm the original*, *Fail clearly*, *Local/private/offline*,
 > *Security posture*. The SSOT states the promise; this file states the mechanism.
 >
-> **Conventions.** Decision tags `[DECIDED]` / `[OPEN]` / `[DEFER]` per the spec
-> [README](README.md). Rust identifiers/crates are named concretely so Phase 3 can
-> be derived directly; where two implementations are equally valid a **recommended
-> default** is marked and the genuine owner-level choice is flagged `[OPEN]` (it
-> feeds the README open-questions log). **OS primitives are named per platform
-> (Win / macOS / Linux) wherever they differ.**
+> **Conventions.** Decision tags follow the spec [README](README.md) *Tag glossary*.
+> Rust identifiers/crates are named concretely so the plan can be derived directly.
+> **OS primitives are named per platform (Win / macOS / Linux) wherever they differ.**
 >
 > **What this file owns vs references.** This file owns the *guarantee mechanisms*:
 > atomic write, no-clobber, resolved-identity link safety, the frozen set, re-run
@@ -1925,12 +1922,11 @@ now **`[DECIDED]`: yes** — the text-encoding heuristic, the Rust ZIP central-d
 peek, and the `.svgz` bounded inflate (pure safe Rust, no C/C++ decoder, ≤64 KiB + ≤100×
 caps) **stay in-core** (memory-safe, bounded, not a full decode), so the §2.12.4 absolute
 is satisfied (it forbids third-party **C/C++** decoders in-core, which none of these are).
-(Moved off `[OPEN]` in the consolidation pass — README resolved log.) The absolute
+The absolute
 as worded above is **not** weakened by any of these because none invokes a third-party
 C/C++ decoder. This is true for **all** engines including the
 image core: image decode/encode runs in a **separate image-worker process**
-`[DECIDED]` (§0.7/§3.5.5 — the README/§3.5.5 in-process-vs-worker `[OPEN]` is resolved
-to the worker), so a memory-corruption exploit in libvips/libheif/libde265/librsvg/a
+`[DECIDED]` (§0.7/§3.5.5), so a memory-corruption exploit in libvips/libheif/libde265/librsvg/a
 TIFF loader executes inside that throwaway worker's address space, **not** ConvertIA's
 core — the §2.12.1 process boundary contains it exactly as for FFmpeg/LibreOffice and
 T1 (§0.11) is uniformly subprocess-isolated. (This also reinforces §3.6: copyleft

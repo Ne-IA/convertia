@@ -20,13 +20,7 @@
 > invariants (§2.11), the sidecar arg construction (§3.5), and the UI states/
 > About/OpenActions (§5.2/§5.3/§5.9).
 >
-> Decision tags: `[DECIDED]` fixed here/by SSOT · `[OPEN]` owner-level call (feeds
-> the README open-questions log) · `[REC]` a recommended default that, **per the owner's
-> standing mandate, is ADOPTED AS DECIDED** (sensible-default sections — instance/run
-> identity §7.1, sidecar verification §7.2.3, window model §7.3.1, persistence §7.4,
-> logging §7.5, OS shell-out §7.7, intake posture §7.8 — are all decided; the `[REC]`
-> marker is retained only to show the call originated as a recommendation) ·
-> `[DEFER]` settled during implementation. **No section in 07 is genuinely `[OPEN]`.**
+> Decision tags follow the spec [README](README.md) *Tag glossary*.
 
 ---
 
@@ -856,7 +850,7 @@ per-location fallback applies if it has since become read-only/gone) — it is a
   Principle 2 — a per-user preference file is not "system pollution" (no installer, no
   scattered system state); the §6.10 row 21 Procmon/fsusage/strace gate explicitly permits
   writes to the OS config/log dir and the user's chosen output, and nothing else.
-  **Config-dir location `[DECIDED]` (was `[OPEN→README, minor]`):** `settings.json` lives in
+  **Config-dir location `[DECIDED]`:** `settings.json` lives in
   the **OS per-user config dir** (adopting the `[REC]`), **not** beside the executable — a
   beside-binary file breaks when the portable app runs from a read-only medium (USB/DMG),
   and the OS config dir is the cross-platform-correct, writable home regardless of where the

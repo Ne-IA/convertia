@@ -12,7 +12,7 @@
   source of truth.
 - **Conflict rule:** if the spec ever contradicts the SSOT, the **SSOT wins** and
   the spec is corrected.
-- **Derivation:** Phase 3 (the implementation TODO/plan) is derived from this
+- **Derivation:** the implementation plan (`docs/plan/`) is derived from this
   spec, so it must be **complete** — every behaviour the SSOT promises has a
   technical home here.
 - **Scope:** technical specification of the *software*. **Out of scope:**
@@ -33,22 +33,58 @@
 | 06 | [build-test-release](06-build-test-release.md) | Build matrix, checksums/releases, SBOM, repo-policy artifacts, release gates, test strategy & real-world corpus | A+B+C+D (spans all) |
 | 07 | [app-shell](07-app-shell.md) | ConvertIA as a running app: instance/run identity, lifecycle, persistence, logging, update posture | **A** |
 
-_Legend — **A** Architecture & app shell · **B** Core engine & guarantees · **C** Format coverage · **D** UI (these are the Phase-1 A/B/C/D buckets; 06 spans all). **Read 00 and 07 together** — 07 is A-track foundational despite its file number._
+_Legend — **A** Architecture & app shell · **B** Core engine & guarantees · **C** Format coverage · **D** UI (06 spans all). **Read 00 and 07 together** — 07 is A-track foundational despite its file number._
 
 ## Conventions
 
-- **Decision tags:** `[DECIDED]` (fixed here / by the SSOT), `[REC]` (an `[OPEN]` resolved with a
-  recommended default; it ranks below `[DECIDED]`), `[OPEN]` (a genuine unresolved owner-level call —
-  collected in the log below), `[DEFER: …]` (design is decided; only an empirical number or a
-  real-world validation remains). A Co-Pilot ruling reads `[DECIDED — Co-Pilot ruling <YYYY-MM-DD>]`,
-  the date being the day its commit landed (it names the ruling: "the 2026-09-15 ruling"), and
-  `[DECIDED — Co-Pilot ruling <YYYY-MM-DD>, owner-ratified]` once the owner ratified it. A ruling binds
-  from landing and carries no reopen clause; the owner overturns it by an ordinary edit
+### Tag glossary
+
+One glossary for every spec file; per-file headers point here.
+
+- `[DECIDED]` — binding, fixed here or by the SSOT. A short qualifier after a colon may say *what*
+  is decided (`[DECIDED: dropped v1]`). Apart from the Co-Pilot ruling form below, a tag carries no
+  date, no plan-box id and no other provenance.
+- `[REC]` — an `[OPEN]` resolved with a recommended default; it ranks below `[DECIDED]`. It binds
+  like `[DECIDED]`; the rank only orders a contradiction between the two (the pre-check of
+  [roles-and-escalation §4(a)](../process/roles-and-escalation.md)).
+- `[DEFER: post-v1]` — decided: out of v1 scope. It returns only through an SSOT scope change.
+- `[DEFER: <what>]`, also written bare as `[DEFER]` — the design is decided; only the empirical
+  value or real-world validation the sentence names remains, calibrated by the §6.5 corpus, the
+  named spike or the implementing plan box. It is neither an owner question nor a licence to
+  redesign.
+- `[OPEN: P<n>.<m>]` — a live owner-level fork. The id is an open plan box that carries the fork:
+  the box that rules it, or the first box whose build needs the answer. No other `[OPEN` spelling
+  marks a live fork, and no `[PROPOSED` tag is written: a proposal is decided (`[DECIDED]`) or it
+  is an `[OPEN: …]` fork.
+- A Co-Pilot ruling reads `[DECIDED — Co-Pilot ruling <YYYY-MM-DD>]`, the date being the day its
+  commit landed (it names the ruling: "the 2026-09-15 ruling"), and
+  `[DECIDED — Co-Pilot ruling <YYYY-MM-DD>, owner-ratified]` once the owner ratified it. A ruling
+  binds from landing and carries no reopen clause; the owner overturns it by an ordinary edit
   ([roles-and-escalation §4](../process/roles-and-escalation.md)).
-- **SSOT references** by section *name* (e.g. *Never harm the original*).
+- A decision label such as `[XCAT-A]` (cross-category), `[IMG-1]` (images) or `[PRES-1]`
+  (presentations) names a decision so other files can cite it; the tag beside it states its
+  status.
+
+### Writing the spec
+
+- The spec states current behaviour. Apart from the Co-Pilot ruling tag above, dates, plan-box
+  ids, "formerly / earlier / was" narratives, superseded or correction blocks and review
+  provenance live in git history and the commit body, never here.
+- A ruling lands as one binding sentence in its owning §; every other § points to it instead of
+  restating it.
+- A rejected design gets at most one line: `Rejected: <design> — <reason>.`
 - Code/identifiers in English; this doc in English (public OSS repo).
 
-## Parked decisions inherited from Phase 1 (the "how" seeds)
+### Citing the spec
+
+- Cite a § by its number, adding the heading or row name when the § is long
+  (`§5.10 Ctrl/⌘+N row`). Stable ordinals (`§5.2 row 7a`, `§7.2.1 step 6`, `§0.6 invariant 6`)
+  are part of the text: an edit keeps them, and a new one is appended, never inserted.
+- Never cite a line number (`§N.N:NNN`, `<file>:NNN`, `line NNN`, `row NNN`): it rots on the
+  next edit of the cited file.
+- SSOT references by section *name* (e.g. *Never harm the original*).
+
+## Foundational decisions (the "how" seeds)
 
 - **Framework:** Tauri (Rust core + React/TS/Tailwind/Vite UI). `[DECIDED]`
 - **Engine delivery:** bundle **everything**, fully offline, no runtime fetch. `[DECIDED]`
@@ -196,8 +232,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   with **no Floyd–Steinberg/error-diffusion MODE** and no `bayer_scale`-style param (the
   earlier "bayer, cgif's only mode" phrasing was imprecise: there is no mode dropdown on this
   path at all; the bayer-vs-sierra2_4a choice exists only on the FFmpeg video→GIF path).
-  Owner: images.md / cross-category.md [OPEN-D].
-  Owner: images.md / cross-category.md [OPEN-D].
+  Owner: images.md / cross-category.md [XCAT-D].
+  Owner: images.md / cross-category.md [XCAT-D].
 - **libimagequant guard = lockfile pin, not soname `[DECIDED]`** — since the BSD v2.4.x fork
   is statically vendored in libvips' cgif path there is no runtime soname; the §6.1.3 guard is
   a COPYRIGHT-BSD-text check + a Cargo.lock/engines.lock provenance pin. Owner: §3.1 row 1e /
@@ -316,7 +352,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **§1.6 defaults registry `[REC]`→`[DECIDED]`** — CI-generated `OptionDecl.default` index;
   §6.7.1 Lane-A guard fails the build if any §04 pair lacks a default; §6.10 row 7 now
   "owned by §1.6" (de-hedged). Owner: §1.6 / §6.7.1 / §6.10.
-- **NSIS NOT shipped v1 `[DECIDED-6.1a]`** — portable `.zip` is the only v1 Windows
+- **NSIS NOT shipped v1 `[DECIDED]`** — portable `.zip` is the only v1 Windows
   artifact (SSOT portable-first); NSIS deferred post-v1. Resolves the former `[OPEN-6.1a]`.
   Owner: §6.1.2; propagated §6.7.2 / §6.10 row 13 / §0.3.1 / §3.4.5 / §3.9.
 - **§6.4.6 macOS WKWebView contradiction fixed** — opener no longer claims a macOS
@@ -386,7 +422,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   the §5.2 Collecting cancel control + §5.10 Esc back it. Owner: §0.4/§1.1/§5.
 - **HEIC/AVIF encode code-path** — standardise on libvips `heifsave` (one AV1 encoder,
   libaom; standalone heif/avif dropped). **x265 ships as a dynamically-loaded libheif
-  encoder plugin** (never statically linked). Owner: images.md [OPEN-1] / §3.5.5 / §3.6.1.
+  encoder plugin** (never statically linked). Owner: images.md [IMG-1] / §3.5.5 / §3.6.1.
 - **GIF native; BMP/ICO require ImageMagick** — native `gifsave` (cgif, MIT). **libvips
   has NO native BMP or ICO save at any version**, so **BMP (load+save) and ICO (save)
   go through the REQUIRED ImageMagick `magicksave`/`magickload` delegate — ImageMagick
@@ -643,11 +679,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **WebView2-absent portable launch fails before the core runs** — cannot show an in-app
   fault; the "fail clearly" substitute is the §6.2.4 download-page prerequisite note;
   `minimumWebview2Version` is NSIS-installer-only and **NSIS is NOT shipped v1** (§6.1.2
-  `[DECIDED-6.1a]`), so this floor-enforcement mechanism is absent in v1 — the download-page
+  `[DECIDED]`), so this floor-enforcement mechanism is absent in v1 — the download-page
   note is the sole Windows floor mechanism. Owner: §0.3.1 / §6.2.4.
 - **Windows portable artifact = a `.zip`** (app exe + `binaries/` + `resources/` engine
   trees, post-build packaging), NOT a single `.exe`; **it is the ONLY v1 Windows artifact —
-  NSIS NOT shipped v1** (§6.1.2 `[DECIDED-6.1a]`, deferred post-v1). Owner: §6.1.2 / §6.10
+  NSIS NOT shipped v1** (§6.1.2 `[DECIDED]`, deferred post-v1). Owner: §6.1.2 / §6.10
   row 13.
 - **Linux log dir = `~/.config/dev.ne-ia.convertia/logs/`** (Tauri v2 `app_log_dir()`
   resolves via `configDir`, not the data dir). Owner: §7.5.2.
@@ -1064,7 +1100,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Resource budget numbers** — "too big" ceiling, memory/handle ceilings,
   per-category heuristics, **headroom margin 1.3×**, **GIF duration cap ~10 s** ship
   as finite starting values, tuned against the §6 corpus. Owner: §1.10 (co-owned
-  §0.9 + cross-category [OPEN-F]).
+  §0.9 + cross-category [XCAT-F]).
 - **Documents `MD→PDF`/`MD→ODT/DOCX` ownership** (LO 26.2 MD import unproven; default
   LO, pandoc fallback) and **`RTF→markup` ownership** (pandoc, LO fallback if too
   lossy). `DOC→markup` is already DECIDED LibreOffice. Owner: documents.md.
@@ -1079,12 +1115,12 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   with **M4A + OGG as `[DEFER: corpus]`** on top (M4A pending §3.4 AAC confirmation; OGG
   pending §6.6 OGG-keep). The floor is fixed; only which deferred targets ship is empirical.
   **"no audio track" up-front probe** (disable-with-reason vs offer-then-fail) stays
-  `[DEFER: corpus]`. Owner: cross-category [OPEN-A]/[OPEN-C].
+  `[DEFER: corpus]`. Owner: cross-category [XCAT-A]/[XCAT-C].
 - **to-GIF option scope** (trim: hard-cap / Basic start+duration / Advanced) stays
   `[DEFER: corpus]`. **Default dither `[DECIDED]`:** video→GIF (FFmpeg) = `bayer:bayer_scale=5`
   (a real mode choice exists on that path); image→GIF (cgif) = a single dither AMOUNT (no
   mode selector — corrected this pass, libvips `gifsave` `dither` is a float, not a
-  bayer-vs-sierra2_4a choice). Owner: cross-category [OPEN-D]/[OPEN-E] / images.md.
+  bayer-vs-sierra2_4a choice). Owner: cross-category [XCAT-D]/[XCAT-E] / images.md.
 - **Video HEVC-source default `[DECIDED]`** — re-encode HEVC→H.264 by default (honours
   the SSOT mov→mp4 "plays everywhere" usability-floor; the §6.10 row-7 no-required-choices
   gate can verify it), with verbatim remux offered as an Advanced "keep original quality
@@ -1177,10 +1213,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   text-size** (→ `--text-base` = 16px floor), the **WebdriverIO pin** (→ v9), and the
   **`CollectedSet::Empty` payload / CollectedNoteKind `Other` / C4-vs-C5 destination
   authority / `tauri-plugin-dialog` / `image_alpha_flatten` wiring** blockers. This round
-  also **demoted `[OPEN-6.1c]` (Linux/Windows arm64 → `[DECIDED-6.1c]`, out of v1 / post-v1
-  by demand)** and **`[OPEN-6.8a]` (`GOVERNANCE.md` → `[DECIDED-6.8a]`, not adopted v1)**,
-  and **synced the cross-category.md inline body tags `[OPEN-A]/[OPEN-C]/[OPEN-D]/[OPEN-E]/
-  [OPEN-F]` to their own §"Open items (honest)" table dispositions** (A/C/E/F `[DEFER: corpus]`;
+  also **demoted `[OPEN-6.1c]` (Linux/Windows arm64 → `[DECIDED]`, out of v1 / post-v1
+  by demand)** and **`[OPEN-6.8a]` (`GOVERNANCE.md` → `[DECIDED]`, not adopted v1)**,
+  and **synced the cross-category.md inline body tags `[XCAT-A]/[XCAT-C]/[XCAT-D]/[XCAT-E]/
+  [XCAT-F]` to their own §"Open items (honest)" table dispositions** (A/C/E/F `[DEFER: corpus]`;
   D `[DECIDED]`) so no live bare `[OPEN]` remains in the body that the table already settled.
   So the claim is true rather than aspirational. The remaining unknowns are **empirical calibration
   only** (`[DEFER: corpus/build]` — resource-budget digits, the ≤400 MB compressed ceiling

@@ -178,10 +178,11 @@ and quotes at most the decided literal it depends on; it does not paraphrase the
 mechanism. A paraphrase is a second copy that drifts — the spec-restatement class
 `plan-lint` check 30 polices inside the spec is authorial here — and every drift is a
 plan-vs-spec difference the loop must reconcile mid-box (the spec wins,
-roles-and-escalation §4(a)). The pre-fill audit (test-strategy §11.4) strips restated
+roles-and-escalation §4(a)). A reference names a `§` (plus the heading or row name when the
+`§` is long), never a line number: the spec README *Citing the spec* rule. The pre-fill audit (test-strategy §11.4) strips restated
 prose back to references as it passes. A note that records a Co-Pilot ruling uses the
-ruling tag of the spec's decision-tag legend ([spec README](../spec/README.md)
-Conventions), never a reopen clause.
+ruling tag of the spec's tag glossary ([spec README](../spec/README.md)
+*Tag glossary*), never a reopen clause.
 
 ---
 

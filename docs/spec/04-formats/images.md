@@ -36,7 +36,7 @@ assembler fallback)),
 via libvips' SVG loader** (so the *raster save* stays in vips — still one engine for
 the pair; resvg is NOT a libvips backend and is **not shipped** [DECIDED] §3.1 row 1c).
 (There are **no separate `heif`/`avif` short-names** — the standalone encoders were
-dropped; all HEIC/AVIF encode is `vips heifsave`, [OPEN-1] [DECIDED].) See *Engines*
+dropped; all HEIC/AVIF encode is `vips heifsave`, [IMG-1] [DECIDED].) See *Engines*
 for the binding.
 
 | src ＼ tgt | JPG | PNG | WEBP | GIF | BMP | TIFF | HEIC | AVIF | ICO |
@@ -146,7 +146,7 @@ savers are libvips load/save modules, not separate pipeline stages), never a cha
 > encoder). So `raster→HEIC`, `raster→AVIF`, and the cross-codec `HEIC→AVIF` /
 > `AVIF→HEIC` are each **one vips process** — every pair single-engine, one code path,
 > and **only ONE AV1 encoder ships** (libaom). The standalone `heif`/`avif` CLI
-> encoders are **not** bundled (dropped in [OPEN-1] [DECIDED]; see *Category-wide →
+> encoders are **not** bundled (dropped in [IMG-1] [DECIDED]; see *Category-wide →
 > [DECIDED]* and §3.4 / §3.5.5 / §3.6.1).
 
 Patent dispositions (HEVC for HEIC, AV1 build/ship posture for AVIF) are **owned
@@ -289,7 +289,7 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
     error-diffusion MODE** — the only control is the dither *strength*. So the v1 UI exposes a
     dither on/off (or 0–1 strength) toggle, **not** a mode dropdown — there is no
     `bayer`-vs-`sierra2_4a` choice on this path (that choice exists only on the FFmpeg
-    video→GIF path, below). This parallels the video→GIF default (cross-category.md [OPEN-D]
+    video→GIF path, below). This parallels the video→GIF default (cross-category.md [XCAT-D]
     `[DECIDED]`) only in spirit; the cgif path has no `bayer_scale`-style parameter at all.
     `bitdepth`/colour count ≤ 256 — default **8** (256 colours); `effort` (palette
     search) — default **7** (vips default). `interframe maxerror`/`reuse` for

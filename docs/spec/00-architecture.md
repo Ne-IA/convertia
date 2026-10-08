@@ -153,7 +153,7 @@ This is the principal portability risk and it interacts hard with *no-network*
 
 | OS | WebView runtime | Risk | Disposition |
 |----|-----------------|------|-------------|
-| Windows | **WebView2** (Chromium/Edge) | May be **absent or old** on older Windows; the standard Tauri remedy is the WebView2 **bootstrapper/installer**, but *that downloads at install time* — forbidden by *no-network / no-installation* | **Recommend: rely on the OS, require a present WebView2; do NOT download a runtime in v1.** Windows 11 ships WebView2 by default; Windows 10 has shipped it via Edge/Windows Update for years. **Honest failure mode `[DECIDED]`:** when WebView2 is **absent**, the WebView2 loader fails **before the Rust core runs** — the window flashes and closes and the core **cannot** present a §2.13/§7.2 in-app fault (tauri#12030; there is no built-in detection hook on the portable path). So the "fail clearly" substitute for the **canonical portable artifact (§6.1.2)** is a **§6.2.4 download-page WebView2 prerequisite note**, **not** a runtime dialog — the unconditional "never a silent blank window" promise does **not** hold for the portable launch. `bundle.windows.minimumWebview2Version` is **installer-only** (NSIS/WiX bootstrapper) — it is **inert for the portable artifact**, and since **NSIS is NOT shipped in v1** (§6.1.2 `[DECIDED-6.1a]` — the portable `.zip` is the only v1 Windows artifact) this floor-enforcement mechanism is **not present in v1 at all**. On the portable path the practical floor is the §0.3.1 supported-OS floor (Win10 1809+ ships a recent-enough Evergreen runtime), surfaced honestly via the §6.2.4 download-page prerequisite note. (Stronger options recorded, not v1: a future post-v1 **NSIS per-user installer with bootstrapper** could enforce/install the floor, and/or **bundle a fixed-version WebView2 runtime beside the exe** — a bundled runtime is not a runtime *download*, so no-network holds, at an artifact-size cost.) |
+| Windows | **WebView2** (Chromium/Edge) | May be **absent or old** on older Windows; the standard Tauri remedy is the WebView2 **bootstrapper/installer**, but *that downloads at install time* — forbidden by *no-network / no-installation* | **Recommend: rely on the OS, require a present WebView2; do NOT download a runtime in v1.** Windows 11 ships WebView2 by default; Windows 10 has shipped it via Edge/Windows Update for years. **Honest failure mode `[DECIDED]`:** when WebView2 is **absent**, the WebView2 loader fails **before the Rust core runs** — the window flashes and closes and the core **cannot** present a §2.13/§7.2 in-app fault (tauri#12030; there is no built-in detection hook on the portable path). So the "fail clearly" substitute for the **canonical portable artifact (§6.1.2)** is a **§6.2.4 download-page WebView2 prerequisite note**, **not** a runtime dialog — the unconditional "never a silent blank window" promise does **not** hold for the portable launch. `bundle.windows.minimumWebview2Version` is **installer-only** (NSIS/WiX bootstrapper) — it is **inert for the portable artifact**, and since **NSIS is NOT shipped in v1** (§6.1.2 `[DECIDED]` — the portable `.zip` is the only v1 Windows artifact) this floor-enforcement mechanism is **not present in v1 at all**. On the portable path the practical floor is the §0.3.1 supported-OS floor (Win10 1809+ ships a recent-enough Evergreen runtime), surfaced honestly via the §6.2.4 download-page prerequisite note. (Stronger options recorded, not v1: a future post-v1 **NSIS per-user installer with bootstrapper** could enforce/install the floor, and/or **bundle a fixed-version WebView2 runtime beside the exe** — a bundled runtime is not a runtime *download*, so no-network holds, at an artifact-size cost.) |
 | macOS | **WKWebView** (system Safari/WebKit) | Tied to the OS version; no separate install | Pinned by `bundle.macOS.minimumSystemVersion`. |
 | Linux | **WebKitGTK** (`libwebkit2gtk-4.1`) | **Distro drift** — version varies widely; the portable AppImage must locate a compatible host WebKitGTK | Located on the host at the `libwebkit2gtk-4.1` floor, never bundled (§3.9.1) — the AppImage packaging (§6.1) carries none, so WebKitGTK keeps the distro's security patches. **Honest failure mode `[DECIDED]` [Co-Pilot ruling 2026-09-15 — owner may overturn]:** a **missing** `libwebkit2gtk-4.1` stops the dynamic loader **before the Rust core runs**, so its "fail clearly" substitute is a **§6.2.4 download-page prerequisite note** (the Windows WebView2 pattern); an old or broken runtime the core observes stays a §7.2 startup fault with a plain message. |
 
@@ -940,7 +940,7 @@ pub enum InitialDestination {        // C14 get_initial_destination return (§0.
                                      //   STRUCTURALLY distinct from BesideSource so the §5.8 passive fallback
                                      //   note surfaces even when beside-source is writable [P3.56]
 }
-// [PROPOSED — the P3.80 wire/core split, the Build-Loop escalation ruling] The pure §1.8/§2.7 orchestrator
+// [DECIDED] The pure §1.8/§2.7 orchestrator
 // legs (Batch.destination, build_batch, common_ancestor, plan_output_preview) consume a CORE-RESOLVED form,
 // NOT the id-keyed wire DestinationChoice: C4/C6 resolve ChosenRoot(DestinationId) against the §0.4.4
 // picked-roots registry to its real PathBuf at the IPC boundary (an unknown id → §0.4.3 refusal), so no
@@ -1476,11 +1476,9 @@ convertia/
    └─ workflows/                   # ci.yml / release.yml / scorecard.yml / secrets-history.yml
 ```
 
-**Engine-registry-as-crate `[OPEN → recommend: module first, extract later]`:**
-the §3.2 seam *could* be its own crate (`convertia-engines`) to enforce the
-dependency direction at the compiler level. Recommendation: **start as a module**
-(`src-tauri/src/engines/`) and extract to a workspace crate only if a second
-consumer (e.g. a headless test harness) appears. Flagged for §3.2/§0.7 sign-off.
+**Engine registry is a module `[DECIDED]`:** the §3.2 seam lives in
+`src-tauri/src/engines/`; it becomes a workspace crate (`convertia-engines`) only if a
+second consumer (e.g. a headless test harness) appears.
 
 > **Note — image codecs run in a separate image-worker process `[DECIDED]`.** Unlike
 > FFmpeg/LibreOffice/pandoc/poppler (clearly separate binaries), the image core
@@ -2035,9 +2033,8 @@ for core-side sources.)
 `log:default` for the §7.5 local log bridge — the only plugin grant (the §7.4 prefs blob is
 core-owned, §7.4.2, with no `store:` grant). The image-core runs as a **separate image-worker
 process** `[DECIDED]` (§0.7/§2.12/§3.5.5) — a raw Rust spawn, so it adds **no**
-WebView capability regardless. The
-former `[OPEN]` (shell scope WebView-exposed vs Rust-only) is **closed: Rust-only,
-no shell grant** (§3.3.3). Cross-refs: §3.3.3 (spawn model), §7.4 (prefs, core-owned), §7.5 (log),
+WebView capability regardless. The shell scope is **Rust-only: there is no shell
+grant** (§3.3.3). Cross-refs: §3.3.3 (spawn model), §7.4 (prefs, core-owned), §7.5 (log),
 §7.7 (opener scope it constrains).
 
 ---

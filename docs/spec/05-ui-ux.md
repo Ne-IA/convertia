@@ -238,7 +238,7 @@ per-item outcome); the machine only sequences the user through them.
 > near-instant walk) the missing launch-time `Collecting` is not user-visible; a heavy launch folder would
 > show `Idle` then `Confirm`.
 >
-> **`[OPEN]` — reconcile the aspirational launch-`Collecting` line + `launchCollectingState`'s fate
+> **`[OPEN: P4.78]` — reconcile the aspirational launch-`Collecting` line + `launchCollectingState`'s fate
 > (escalated to Co-Pilot, NOT self-decided):** making a launch-with-files *also* show `Collecting` would
 > need a **synchronous launch-with-files signal at store init** — a mechanism that does not exist today;
 > the P3.53 `machine.ts` `launchCollectingState()` constructor is the **anticipatory shell** for it,
@@ -1258,7 +1258,7 @@ native menu is added) are app-window scoped.
 
 ---
 
-## 5.11 Section decisions (formerly `[OPEN]`s → README open-questions log)
+## 5.11 Section decisions
 
 | Item | Decision | Owner |
 |------|----------|-------|
@@ -1267,8 +1267,8 @@ native menu is added) are app-window scoped.
 | **Theme persistence** | **`[DECIDED]`** — §7.4 ships the 3-key prefs blob (`theme` + `lastDestinationMode` + `verboseLog`), so the chosen theme persists; a minimal Light/Dark/System toggle is provided (sets the `theme` key through the core-owned prefs door, §7.4.2). Default `system`. (No longer open.) | §7.4 / §5.5 |
 
 > The two **inherited** UI-adjacent items from 04-formats — the **to-GIF option
-> scope** (`[OPEN-E]` `[DEFER: corpus]`, trim leans Basic start+duration) and the
-> **extract-audio target subset** (`[OPEN-A]` `[DEFER: corpus]`) — are **owned by
+> scope** (`[XCAT-E]` `[DEFER: corpus]`, trim leans Basic start+duration) and the
+> **extract-audio target subset** (`[XCAT-A]` `[DEFER: corpus]`) — are **owned by
 > 04-formats/cross-category**, not here;
 > this section will render whatever option descriptors §1.6/04 declare
 > (OptionsPanel is descriptor-driven), so neither blocks the UI build. Listed here

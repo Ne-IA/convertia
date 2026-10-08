@@ -116,7 +116,7 @@ control + generation-loss disclosure; see Format-default decisions item 2 / see
 - **Role:** both.
 - **As source → targets:** **WAV ★**, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC.
   *(MP3→MP3 not offered — see diagonal note; the per-source default is WAV per the
-  Category-wide table, [OPEN/DEFER]: WAV-vs-FLAC.)* All conversions decode MP3 to PCM
+  Category-wide table, *Format-default decisions* 1.)* All conversions decode MP3 to PCM
   first, so every target inherits the source's already-lost detail.
 - **As target ← sources:** WAV, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC, WMA
   (**MP3 is the default target of every other audio source** — the universally
@@ -558,7 +558,7 @@ Exact strings live in the **§2.9 message catalog** (home); this file only recor
   extension (`.mp3` that is really FLAC; `.m4a` that is really ALAC) is handled
   correctly.
 
-### Format-default decisions (resolved — were `[OPEN]`)
+### Format-default decisions
 
 1. **MP3-source default target — WAV vs FLAC. `[DECIDED]` → WAV.** Since MP3→MP3 is
    excluded, the MP3 source needs *some* default. **DECIDED: WAV** (maximally

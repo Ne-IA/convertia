@@ -20,7 +20,7 @@
 > `pdf→docx`). PDF therefore appears **only as a target** of this category, never
 > as a source of a presentation. **Slide → image fan-out** (one PNG/JPG per slide)
 > is a one-to-many conversion and is **parked** (SSOT *Future Ideas*); see
-> [OPEN/Parked] at the foot of this file.
+> *Decisions / Parked (resolved)* at the foot of this file.
 
 ## Engine
 
@@ -76,7 +76,7 @@ Notes on the cells:
   `.pptx`"; "open this old `.ppt` in modern PowerPoint as `.pptx`"). They are
   **lossy whenever crossing the MS↔ODF boundary** (`✓~`): ODP→PPTX, ODP→PPT,
   PPTX→ODP, PPT→ODP all round-trip through Impress's model and can drop/approximate
-  features. **The two within-MS-family directions are NOT symmetric `[OPEN-1] resolved`:**
+  features. **The two within-MS-family directions are NOT symmetric `[PRES-1] resolved`:**
   **`PPT→PPTX` (modernizing to a richer format) stays plain `✓`** — the newer format can
   hold everything the legacy one did. **`PPTX→PPT` (downgrading to legacy BIFF8 /
   PowerPoint-97) is `✓~` lossy** — PPT **structurally cannot represent** SmartArt, modern
@@ -129,7 +129,7 @@ Notes on the cells:
     re-encode at engine default. (No quality/compression knob is meaningful for
     office→office; SSOT *It just works by default*.)
 - **Lossy?:** As source to PDF — yes (§2.9 `slides_to_pdf_flatten`); to ODP — yes,
-  crossing MS→ODF (§2.9 `office_roundtrip_approx`). **To PPT — yes, `✓~`** ([OPEN-1]
+  crossing MS→ODF (§2.9 `office_roundtrip_approx`). **To PPT — yes, `✓~`** ([PRES-1]
   resolved): downgrading to legacy BIFF8 loses SmartArt / modern charts / Morph that PPT
   cannot store → §2.9 **`pptx_to_ppt_legacy`** note.
 - **Edge cases:** **embedded media** (video/audio in slides) — *not* embedded in
@@ -170,7 +170,7 @@ Notes on the cells:
   target; no options for office→office.
 - **Lossy?:** As source to PDF — yes (§2.9 `slides_to_pdf_flatten`); to ODP — yes,
   crossing MS→ODF (§2.9 `office_roundtrip_approx`). **To PPTX — NOT lossy, plain `✓`**
-  ([OPEN-1] resolved): this is the *modernizing* direction — the richer PPTX can hold
+  ([PRES-1] resolved): this is the *modernizing* direction — the richer PPTX can hold
   everything the legacy PPT did, so no §2.9 note (unlike the reverse PPTX→PPT downgrade).
 - **Edge cases:** Legacy binary PPT can carry **VBA macros** — never executed,
   dropped on re-export. **Older/rare PPT features** (some legacy effects,
@@ -283,14 +283,14 @@ class* of loss):
 |---|---|---|
 | `PPTX/PPT/ODP → PDF` | `slides_to_pdf_flatten` | Editability lost; **animations/transitions/triggers flattened** to final slide state; **embedded video/audio dropped** (poster only); **fonts substituted** if not embedded → reflow/clipping; speaker notes omitted unless the notes switch is on. |
 | `ODP → PPTX/PPT`, `PPTX/PPT → ODP` | `office_roundtrip_approx` | Cross-model (ODF↔MS) round-trip: ODF-only shapes/styles/transitions and MS-only effects (some SmartArt/WordArt/transition types) approximated or dropped to fit the other schema; minor layout shift. |
-| `PPT → PPTX` (modernizing) | *(none — resolved [OPEN-1])* | Within-MS-family re-render to a *richer* format; the newer format holds everything the legacy one did → **not** flagged. |
+| `PPT → PPTX` (modernizing) | *(none — resolved [PRES-1])* | Within-MS-family re-render to a *richer* format; the newer format holds everything the legacy one did → **not** flagged. |
 | `PPTX → PPT` (downgrade to legacy) | `pptx_to_ppt_legacy` | Downgrade to BIFF8/PowerPoint-97: **SmartArt, modern charts, and newer transitions (e.g. Morph) cannot be stored** in the legacy format → simplified or dropped. A genuine content-faithfulness loss → §2.9 note. |
 
 All →PDF pairs surface a **single passive inline note** (`slides_to_pdf_flatten`)
 at the moment PDF is the chosen target (SSOT Principle 7: calm, non-blocking, not a
 per-conversion nag).
 
-> **[OPEN-1] resolved — the two MS-family directions are asymmetric.**
+> **[PRES-1] resolved — the two MS-family directions are asymmetric.**
 > **`PPT → PPTX` (modernizing)** does **not** get a §2.9 note: it goes to a *richer*
 > format that holds everything the legacy one did — any drift is incidental, not the
 > *predictable, content-faithfulness* loss §2.9 is scoped to (§2.9.2).
@@ -311,7 +311,7 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
 2. **Bundle a sensible base font set** with the LibreOffice sidecar so common
    decks render acceptably offline (the bundled-font inventory and whether to
    ship metric-compatible substitutes — e.g. Liberation/Carlito/Caladea for
-   Arial/Calibri/Cambria — is owned by §3.x bundling; **[OPEN-2] `[DECIDED]`** below —
+   Arial/Calibri/Cambria — is owned by §3.x bundling; **[PRES-2] `[DECIDED]`** below —
    §3.9.3 baseline, only CJK breadth `[DEFER: size]`). Metric-compatible substitutes keep
    line breaks ⇒ much less reflow than arbitrary fallback.
 3. **No runtime font download** (SSOT offline floor) — missing fonts are
@@ -323,7 +323,7 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
 
 - **Text content fidelity** (CJK, RTL/Arabic/Hebrew, mixed scripts) comes through
   intact (SSOT *Content fidelity*) **provided a glyph-bearing font is available**
-  — this re-emphasises the bundled-font set ([OPEN-2] `[DECIDED]`) must cover at least
+  — this re-emphasises the bundled-font set ([PRES-2] `[DECIDED]`) must cover at least
   Latin + common CJK/RTL coverage, or those slides render with `.notdef` boxes. This is
   the same constraint as `documents.md`.
 - **Colour:** slides are RGB; PDF export keeps RGB. No CMYK/colour-management
@@ -357,7 +357,7 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
 
 ### Decisions / Parked (resolved)
 
-- **[OPEN-1] — RESOLVED (asymmetric): `ppt→pptx` is NOT a disclosed loss; `pptx→ppt` IS.**
+- **[PRES-1] — RESOLVED (asymmetric): `ppt→pptx` is NOT a disclosed loss; `pptx→ppt` IS.**
   The two within-MS-family directions differ. **`ppt→pptx` (modernizing)** goes to a
   *richer* format that holds everything the legacy one did → incidental drift only, **no
   §2.9 note**. **`pptx→ppt` (downgrade to legacy BIFF8/PowerPoint-97)** **structurally
@@ -365,14 +365,14 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
   the new **`pptx_to_ppt_legacy`** §2.9 note fires. The cross-model
   `office_roundtrip_approx` note still covers the ODF↔MS direction. (Corrects the earlier
   too-broad "within-MS is not-lossy" reading; no longer open, retained for traceability.)
-- **[OPEN-2] — Bundled font set for fidelity. `[DECIDED]` (resolved centrally).** The
+- **[PRES-2] — Bundled font set for fidelity. `[DECIDED]` (resolved centrally).** The
   font set shipped with the LibreOffice sidecar is the §3.9.3 baseline
   (Liberation+Carlito+Caladea metric-compatible MS substitutes + a curated Noto CJK/RTL
   subset), *shared* with `documents.md` and `spreadsheets.md` (same engine, same font
   dependence) and owned once in §3.x bundling. Only the **CJK breadth** remains
   `[DEFER: size]` against the binary-size budget (§3.9). Recorded here because fonts are
   the dominant fidelity lever for slides.
-- **[OPEN-3] — Notes-pages switch. `[DECIDED]` → `ExportNotesPages=true`.** The single
+- **[PRES-3] — Notes-pages switch. `[DECIDED]` → `ExportNotesPages=true`.** The single
   Basic switch ("Include speaker-notes pages") maps to **`ExportNotesPages=true`** (notes
   **pages**, the full-page layout) — NOT `ExportNotes=true` (notes as PDF annotations) —
   because that is what users mean by "export with my notes". The exact UI-string final

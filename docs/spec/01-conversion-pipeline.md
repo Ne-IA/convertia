@@ -8,11 +8,10 @@
 
 ## Status & decision tags
 
-`[DECIDED]` fixed here / by the SSOT · `[OPEN]` needs an owner-level call (feeds the
-README open-questions log) · `[REC]` an `[OPEN]` resolved here with a recommended
-default. Parked Phase-1 decisions honoured throughout: **Tauri** (Rust core +
-React UI), **bundle everything offline / zero runtime fetch**, **copyleft engines
-isolated as separate invoked binaries** (§3.6).
+Decision tags follow the spec [README](README.md) *Tag glossary*. The README's
+*Foundational decisions* hold throughout: **Tauri** (Rust core + React UI), **bundle
+everything offline / zero runtime fetch**, **copyleft engines isolated as separate invoked
+binaries** (§3.6).
 
 ## What this file owns vs references
 
@@ -1351,7 +1350,7 @@ struct SizeEstimate {
 
 - **Per-category heuristic** (cheap, no decode): e.g. images ≈ source-pixels ×
   bytes-per-pixel for the target codec; **GIF** uses the explicit `frames × w × h ×
-  ~1 byte/px` guardrail (supplied by `cross-category.md` [OPEN-F]); audio/video
+  ~1 byte/px` guardrail (supplied by `cross-category.md` [XCAT-F]); audio/video
   bounded by source size/duration. The heuristic **constants** are co-owned with
   04 and **must be finite** (a missing cap reintroduces the foot-gun).
 - **Where the cheap estimate's inputs come from `[DECIDED]`** (so it never needs the
@@ -1368,7 +1367,7 @@ struct SizeEstimate {
     (§3.5's `ffprobe`, which runs then anyway), where a refined estimate may still trip
     the mid-run enforcement. So `PerCategoryHeuristic` is the up-front basis; `EngineProbe`
     is the convert-time refinement, never an up-front cost. (Aligns the cross-category
-    `[OPEN-C]`.)
+    `[XCAT-C]`.)
 - **Headroom margin:** require **free space ≥ footprint × margin** on **each physical
   volume** (see the split below — `est_output` and `est_scratch` may land on different
   volumes). `[REC]` margin **1.3×** as a starting value (confirm against the §6 corpus).
@@ -1427,7 +1426,7 @@ struct SizeEstimate {
   per-item projected output, ~16 GB aggregate-batch projected output** — finite from day
   one so `TooBig` is enforceable, calibrated against the corpus), the **memory/handle
   ceilings**, the per-category heuristic constants, the **headroom margin (1.3× starting
-  value)**, and the **GIF duration cap (~10 s starting value)** (`cross-category.md` [OPEN-F]).
+  value)**, and the **GIF duration cap (~10 s starting value)** (`cross-category.md` [XCAT-F]).
   These are **genuinely empirical** — the right thresholds depend on corpus
   timing/measurement (a §6 asset), so they are **deferred to corpus calibration**,
   not left open as a design question. They ship with the stated finite starting

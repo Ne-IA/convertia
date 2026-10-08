@@ -77,7 +77,7 @@ is intrinsic to the operation (to-GIF) — see each operation's entry below.
 Pull the audio track out of a video and save it as a standalone audio file.
 
 - **Role:** operation. **Source side:** any v1 video format. **Target side:** a
-  **subset of the audio category** (chosen below; exact subset is **[OPEN-A] `[DEFER: corpus]`** —
+  **subset of the audio category** (chosen below; exact subset is **[XCAT-A] `[DEFER: corpus]`** —
   subset shape decided, only the OGG-keep call awaits §6.6 validation; see the table).
 - **Engine:** **FFmpeg** (the shared **GPL-2.0+** binary — enables libx264, §3.6.1;
   copyleft-isolated separate binary per §3.6, invoked via §3.5/§1.7, through the §2.12
@@ -87,7 +87,7 @@ Pull the audio track out of a video and save it as a standalone audio file.
   the output file's own signature is the target audio format's (owned by
   [audio.md](audio.md)).
 
-### Target subset offered — `[OPEN-A]`: floor `[DECIDED]`, M4A/OGG `[DEFER: corpus]`
+### Target subset offered — `[XCAT-A]`: floor `[DECIDED]`, M4A/OGG `[DEFER: corpus]`
 
 The audio category has ten formats (MP3, WAV, FLAC, AAC, M4A, OGG, OPUS, WMA,
 AIFF, ALAC). Offering **all ten** as extract-audio targets fails the SSOT
@@ -112,7 +112,7 @@ patent one),
 (Windows-legacy, declining), **AIFF** (Apple-uncompressed — WAV covers the
 uncompressed want), **ALAC** (Apple-lossless — FLAC covers the lossless want).
 
-> **`[OPEN-A]` — extract-audio target subset.** **Minimum GUARANTEED subset `[DECIDED]` =
+> **`[XCAT-A]` — extract-audio target subset.** **Minimum GUARANTEED subset `[DECIDED]` =
 > MP3★ + WAV + FLAC** (the always-present v1 extract-audio targets, so **C3 for a video source
 > is derivable now** — the SSOT mov→mp3 case is in scope and MP3★ is the default). **M4A and
 > OGG are `[DEFER: corpus]`** additions on top of that floor (M4A pending the §3.4 AAC
@@ -176,7 +176,7 @@ result). The **no-decision default** path is: drop video → choose "Extract aud
 
 | Target | Option (where) | Values | **Default (no-decision)** |
 |--------|----------------|--------|---------------------------|
-| MP3 | Quality (Advanced) | the MP3 preset set is **owned canonically by [`audio.md`](audio.md)** — *High (V0) / Standard (V2) / Small (V5)* + explicit CBR — reused **verbatim** here (no separate label set; resolves [OPEN-B]) | **Standard ≈ `-q:a 2` (VBR ~190 kbps)** |
+| MP3 | Quality (Advanced) | the MP3 preset set is **owned canonically by [`audio.md`](audio.md)** — *High (V0) / Standard (V2) / Small (V5)* + explicit CBR — reused **verbatim** here (no separate label set; resolves [XCAT-B]) | **Standard ≈ `-q:a 2` (VBR ~190 kbps)** |
 | M4A | (none by default) — copy when AAC source; Quality (Advanced) only applies on re-encode | re-encode bitrate *Standard / High* | copy if AAC source, else **`-b:a 192k`** |
 | WAV | (none) | fixed 16-bit PCM `pcm_s16le` | **16-bit PCM**, source sample rate & channels preserved |
 | FLAC | Compression level (Advanced only, rarely useful) | 0–8 | **5** (FFmpeg default) — lossless regardless |
@@ -193,7 +193,7 @@ result). The **no-decision default** path is: drop video → choose "Extract aud
   the target container supports tags (per [audio.md](audio.md) tag policy); never
   invent tags. Cover-art extraction is **not** part of extract-audio.
 
-> **`[OPEN-B]` — MP3 quality preset → FFmpeg flag mapping. `[DECIDED]`** The
+> **`[XCAT-B]` — MP3 quality preset → FFmpeg flag mapping. `[DECIDED]`** The
 > *Standard / High / Small* labels and their exact `-q:a` / `-b:a` values are shared
 > with the audio category (MP3 as a standalone target) and are **defined once** — the
 > canonical MP3 preset table is **owned by [audio.md](audio.md)** and referenced here
@@ -228,7 +228,7 @@ lossy compression — the disclosure should not imply WAV/FLAC *improves* qualit
   engine error). **Better
   if cheaply knowable:** probe during detection/collected-summary so the
   extract-audio target is shown disabled-with-reason rather than offered-then-
-  failed — feasibility flagged **[OPEN-C] `[DEFER: corpus]`** (a full `ffprobe` of every
+  failed — feasibility flagged **[XCAT-C] `[DEFER: corpus]`** (a full `ffprobe` of every
   item in a large recursive batch has a cost; header-level stream-count is cheap; validate
   the cost/UX trade in §6.6 — see the table). Never writes a 0-byte audio file.
 - **Multiple audio tracks** (multilingual MKV, commentary track): **first track
@@ -282,13 +282,13 @@ and §2.6 temp ownership):
 **v1-exposed** dither modes are `bayer` / `sierra2_4a` / `floyd_steinberg` / `none`
 (FFmpeg also accepts `sierra2` and `heckbert` — and `sierra3`/`burkes`/`atkinson` on
 6.0+ — which we deliberately do **not** expose in v1), and the v1 default is
-`bayer:bayer_scale=5` per [OPEN-D] `[DECIDED]`, matching §3.5.1.) Exact filter string
+`bayer:bayer_scale=5` per [XCAT-D] `[DECIDED]`, matching §3.5.1.) Exact filter string
 is constructed in §3.5; shown here to fix the **method**, not to own argument
 syntax. `lanczos` scaling and a per-clip optimised palette are
 what make the result look good; `fps` downsampling + width cap are what keep the
 file sane. `stats_mode=diff` weights the palette toward moving regions
 (better motion fidelity); `dither` choice trades dot-pattern visibility vs
-banding (**[OPEN-D] `[DECIDED]`** — default `bayer:bayer_scale=5`; see the table).
+banding (**[XCAT-D] `[DECIDED]`** — default `bayer:bayer_scale=5`; see the table).
 
 > Single-pass `palettegen` in the same graph (no separate analysis pass writing a
 > PNG) is the chosen trade-off: marginally less optimal than a true two-pass
@@ -296,7 +296,7 @@ banding (**[OPEN-D] `[DECIDED]`** — default `bayer:bayer_scale=5`; see the tab
 > call for an everyday converter. A second analysis pass is **not** worth the
 > temp-file + double-decode cost for v1.
 
-### Options / settings + defaults — scope is `[OPEN-E]` `[DEFER: corpus]`
+### Options / settings + defaults — scope is `[XCAT-E]` `[DEFER: corpus]`
 
 The honest open decision is **how many knobs to expose**. SSOT says expose only
 settings that materially change a normal user's result; for to-GIF, **fps**,
@@ -306,12 +306,12 @@ settings that materially change a normal user's result; for to-GIF, **fps**,
 |--------|-------|--------|---------------------------|
 | **FPS** | Basic (it visibly changes smoothness vs size) | presets *Smooth 15 / Standard 12 / Small 10* (or a 5–20 range, Advanced) | **12 fps** |
 | **Width** | Basic | presets *Large 640 / Medium 480 / Small 320* px (height auto, aspect kept, `-1`) | **480 px** |
-| **Trim (start + duration)** | **[OPEN-E] `[DEFER: corpus]`** — leans Basic start+duration (validate §6.6) | start `-ss`, duration `-t` | **whole clip, capped** (see guardrail) |
-| Dither | Advanced (rarely touched) | `bayer` / `sierra2_4a` / `floyd_steinberg` / `none` (the **v1-exposed subset**; FFmpeg `paletteuse` additionally supports `sierra2` and `heckbert`, not exposed in v1 — note this is FFmpeg, NOT the cgif `gifsave` path, so error-diffusion IS available here) | **`bayer:bayer_scale=5`** ([OPEN-D] `[DECIDED]`) |
+| **Trim (start + duration)** | **[XCAT-E] `[DEFER: corpus]`** — leans Basic start+duration (validate §6.6) | start `-ss`, duration `-t` | **whole clip, capped** (see guardrail) |
+| Dither | Advanced (rarely touched) | `bayer` / `sierra2_4a` / `floyd_steinberg` / `none` (the **v1-exposed subset**; FFmpeg `paletteuse` additionally supports `sierra2` and `heckbert`, not exposed in v1 — note this is FFmpeg, NOT the cgif `gifsave` path, so error-diffusion IS available here) | **`bayer:bayer_scale=5`** ([XCAT-D] `[DECIDED]`) |
 | Loop | (none) | — | **infinite loop** (`-loop 0`, the GIF norm) |
 | Max colours | (not exposed) | — | **256** (full palette) |
 
-> **`[OPEN-E]` `[DEFER: corpus]` — trim scope.** A GIF of a 90-minute film is absurd; some
+> **`[XCAT-E]` `[DEFER: corpus]` — trim scope.** A GIF of a 90-minute film is absurd; some
 > way to pick a short window is arguably essential to the operation's everyday value.
 > Three candidate v1 positions:
 > 1. **No trim UI, hard duration cap** (simplest): always GIF-ify from the start
@@ -324,7 +324,7 @@ settings that materially change a normal user's result; for to-GIF, **fps**,
 > the owner. *Recommendation leaning option 2* (a trim window is most of why
 > people make GIFs), but explicitly deferred. Tracked in open-questions log.
 
-> **`[OPEN-D]` `[DECIDED]` — default dither.** `bayer` (ordered, crosshatch but tiny files)
+> **`[XCAT-D]` `[DECIDED]` — default dither.** `bayer` (ordered, crosshatch but tiny files)
 > vs `sierra2_4a` (error-diffusion, smoother but larger, can "shimmer" between
 > frames). DECIDED: default `bayer:bayer_scale=5` (favours small files — the everyday GIF
 > priority); the error-diffusion modes remain available in Advanced.
@@ -349,7 +349,7 @@ to the §1.10 resource pre-flight; §1.10 owns the threshold mechanics):
    per-pixel-per-frame heuristic for GIF). This is cheap (no decode needed — clip
    length + chosen fps/width are known).
 2. **Default duration cap** when no trim is chosen: encode at most **N seconds**
-   (proposal **N = 10 s** — see [OPEN-E] `[DEFER: corpus]`; the cap is *also* the guardrail's main
+   (proposal **N = 10 s** — see [XCAT-E] `[DEFER: corpus]`; the cap is *also* the guardrail's main
    lever). The cap is applied as `-t` in the same single invocation.
 3. **Fail-fast threshold:** if the estimate still exceeds the §1.10 "too big"
    ceiling (e.g. very high width + long allowed window), the item **fails clearly
@@ -361,7 +361,7 @@ to the §1.10 resource pre-flight; §1.10 owns the threshold mechanics):
    the clip, that's a predictable, disclosed outcome (passive note via §2.9
    `video_to_gif`), not a quiet surprise.
 
-> **`[OPEN-F]` `[DEFER: corpus]` — the cap & ceiling numbers.** The default duration cap
+> **`[XCAT-F]` `[DEFER: corpus]` — the cap & ceiling numbers.** The default duration cap
 > (proposed 10 s), the per-pixel heuristic constant, and the absolute "too big" ceiling are
 > **`[DEFER: corpus]`** (finite starting values ship; calibrate against the §6 corpus) and
 > co-owned with §1.10 (resource pre-flight). They must be *some* finite value in v1 —
@@ -457,12 +457,12 @@ the default (MP3) is unchanged — so no platform loses the *operation*, at most
 
 | ID | Decision | Status |
 |----|----------|--------|
-| **[OPEN-A]** | Extract-audio target subset | **`[DECIDED]` minimum guaranteed subset = MP3★ + WAV + FLAC** (always present → C3 for video sources derivable now). **M4A + OGG are `[DEFER: corpus]`** on top (M4A pending §3.4 AAC confirmation; OGG pending §6.6 OGG-keep validation). The floor is fixed; only which deferred targets ship remains empirical. |
-| **[OPEN-B]** | MP3 *Standard/High/Max* preset → `-q:a`/`-b:a` mapping | **`[DECIDED]`** — owned canonically in [audio.md](audio.md) (High V0 / Standard V2 / Small V5 + explicit CBR), reused verbatim here; resolved in Operation 1's *Options / settings + defaults* MP3 row |
-| **[OPEN-C]** | Probe for "no audio track" up front (disable target with reason) vs offer-then-fail — cost vs UX on large recursive batches | `[DEFER: corpus]` — validate in §6.6 |
-| **[OPEN-D]** | Default GIF dither | **`[DECIDED]`** — `bayer:bayer_scale=5` (favours small files, the everyday GIF priority); error-diffusion modes remain available as Advanced |
-| **[OPEN-E]** | to-GIF **trim** scope: hard cap only / Basic start+duration / Advanced (recommend Basic start+duration) | `[DEFER: corpus]` — design leans Basic start+duration; validate in §6.6 |
-| **[OPEN-F]** | to-GIF guardrail numbers: default duration cap (~10 s), per-pixel size heuristic, absolute "too big" ceiling (co-owned §1.10) | `[DEFER: corpus]` — finite starting values ship; calibrate against the §6 corpus |
+| **[XCAT-A]** | Extract-audio target subset | **`[DECIDED]` minimum guaranteed subset = MP3★ + WAV + FLAC** (always present → C3 for video sources derivable now). **M4A + OGG are `[DEFER: corpus]`** on top (M4A pending §3.4 AAC confirmation; OGG pending §6.6 OGG-keep validation). The floor is fixed; only which deferred targets ship remains empirical. |
+| **[XCAT-B]** | MP3 *Standard/High/Max* preset → `-q:a`/`-b:a` mapping | **`[DECIDED]`** — owned canonically in [audio.md](audio.md) (High V0 / Standard V2 / Small V5 + explicit CBR), reused verbatim here; resolved in Operation 1's *Options / settings + defaults* MP3 row |
+| **[XCAT-C]** | Probe for "no audio track" up front (disable target with reason) vs offer-then-fail — cost vs UX on large recursive batches | `[DEFER: corpus]` — validate in §6.6 |
+| **[XCAT-D]** | Default GIF dither | **`[DECIDED]`** — `bayer:bayer_scale=5` (favours small files, the everyday GIF priority); error-diffusion modes remain available as Advanced |
+| **[XCAT-E]** | to-GIF **trim** scope: hard cap only / Basic start+duration / Advanced (recommend Basic start+duration) | `[DEFER: corpus]` — design leans Basic start+duration; validate in §6.6 |
+| **[XCAT-F]** | to-GIF guardrail numbers: default duration cap (~10 s), per-pixel size heuristic, absolute "too big" ceiling (co-owned §1.10) | `[DEFER: corpus]` — finite starting values ship; calibrate against the §6 corpus |
 
 > None of these block enumerating the **pairs**: both operations are **in** for
 > all ten video sources regardless of how A–F resolve; A–F tune *which audio

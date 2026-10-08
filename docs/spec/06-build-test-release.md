@@ -22,10 +22,7 @@
 > - The UI flow under the usability-floor walkthrough is owned by §5; the
 >   instance/run/log model the tests rely on is owned by §7.
 
-Decision tags: `[DECIDED]` (fixed here or by the SSOT), `[OPEN]` (needs an
-owner-level call — fed to the README open-questions log), `[DEFER]` (resolved
-during implementation). Recommended defaults for easy `[OPEN]`s are marked
-**(recommendation)**.
+Decision tags follow the spec [README](README.md) *Tag glossary*.
 
 ---
 
@@ -53,16 +50,15 @@ require admin rights for the user to run.
 
 | Platform | Tauri bundle target(s) | Canonical download (portable-first) | Notes |
 |----------|------------------------|-------------------------------------|-------|
-| **Windows x64** | post-build **zip** (portable) — **`nsis` NOT shipped v1 [DECIDED-6.1a]** | **Portable zip archive (`.zip`)** containing the app `.exe` + the `binaries/` and `resources/` engine trees — the **canonical AND ONLY v1 Windows artifact** ("download, unzip, run"). **NOT** a single `.exe`: the bare `app`/raw-`.exe` target does **not** embed the sidecar engine trees (FFmpeg, LibreOffice, pandoc — §3.3), which must sit **beside** the exe, so the portable artifact is necessarily a folder/zip. It is produced by an **explicit post-build packaging step** (`scripts/stage-engines` + zip), **not** natively by the `nsis` target. | MSI (`wix`) is **not** used — it implies a system install / admin. **`[DECIDED-6.1a]` NSIS is NOT shipped in v1** (resolves the former `[OPEN-6.1a]`): the portable `.zip` is the single canonical artifact, consistent with the SSOT *Portable, no installation* / *no system pollution* posture. NSIS would add a WebView2-bootstrapper wiring burden (§0.3.1) and an installer mode that contradicts portable-first for **no** v1 benefit (the portable zip already runs per-user, no-admin). **NSIS is deferred to a post-v1 convenience** `[DEFER: post-v1]`; if added later it runs **per-user / no-admin** (`installMode: currentUser`) and is the variant where the WebView2 floor/bootstrapper applies (§0.3.1). |
+| **Windows x64** | post-build **zip** (portable) — **`nsis` NOT shipped v1 [DECIDED]** | **Portable zip archive (`.zip`)** containing the app `.exe` + the `binaries/` and `resources/` engine trees — the **canonical AND ONLY v1 Windows artifact** ("download, unzip, run"). **NOT** a single `.exe`: the bare `app`/raw-`.exe` target does **not** embed the sidecar engine trees (FFmpeg, LibreOffice, pandoc — §3.3), which must sit **beside** the exe, so the portable artifact is necessarily a folder/zip. It is produced by an **explicit post-build packaging step** (`scripts/stage-engines` + zip), **not** natively by the `nsis` target. | MSI (`wix`) is **not** used — it implies a system install / admin. **`[DECIDED]` NSIS is NOT shipped in v1**: the portable `.zip` is the single canonical artifact, consistent with the SSOT *Portable, no installation* / *no system pollution* posture. NSIS would add a WebView2-bootstrapper wiring burden (§0.3.1) and an installer mode that contradicts portable-first for **no** v1 benefit (the portable zip already runs per-user, no-admin). **NSIS is deferred to a post-v1 convenience** `[DEFER: post-v1]`; if added later it runs **per-user / no-admin** (`installMode: currentUser`) and is the variant where the WebView2 floor/bootstrapper applies (§0.3.1). |
 | **macOS (universal)** | `app` (inside) → `dmg` | **`.dmg`** containing a **universal** `ConvertIA.app` (arm64 + x86_64 via `--target universal-apple-darwin`). | One universal artifact covers Apple-Silicon and Intel → honours "one product per platform". Unsigned/unnotarized (SSOT *Out of Scope*) → on **Sequoia (15.x)** the first launch is blocked and the Control-click bypass is gone; the user must use **Privacy & Security → "Open Anyway"**, and **each bundled sidecar is independently quarantined** (the first conversion can hit `QuarantinedByOs`, §2.8/§7.2.4). Step-by-step on the download page (§6.2.4) and About (§5.9); the §6.6 macOS walkthrough tests it on Sequoia. |
-| **Linux x64** | `appimage` (**AppImage-only v1**) | **AppImage** — the portable, distro-agnostic, no-install, runs-anywhere artifact (matches SSOT portability best). | `.deb`/`.rpm` are distro-specific *installs* (system pollution). **`[DECIDED-6.1b]` AppImage-only for v1** (resolves the former `[OPEN-6.1b]`): the single canonical Linux artifact is the AppImage, consistent with the portable-first / no-system-pollution posture (same rationale as the Windows portable-zip `[DECIDED-6.1a]`); a `.deb` is **deferred to post-v1, by demand** `[DEFER: post-v1]`. |
+| **Linux x64** | `appimage` (**AppImage-only v1**) | **AppImage** — the portable, distro-agnostic, no-install, runs-anywhere artifact (matches SSOT portability best). | `.deb`/`.rpm` are distro-specific *installs* (system pollution). **`[DECIDED]` AppImage-only for v1**: the single canonical Linux artifact is the AppImage, consistent with the portable-first / no-system-pollution posture (same rationale as the Windows portable-zip `[DECIDED]`); a `.deb` is **deferred to post-v1, by demand** `[DEFER: post-v1]`. |
 
 ARM Windows and ARM Linux are **out of v1** (SSOT platform scope = Win/macOS/Linux
-desktop; no commitment to every CPU arch). **`[DECIDED-6.1c]` Linux arm64 / Windows
-arm64 are out of v1** (`[DEFER: post-v1]`, by demand — low demand; resolves the former
-`[OPEN-6.1c]`). The supported-OS floor (minimum Windows/macOS/distro
-versions, WebView availability) is **owned by §0.3.1** and referenced by the
-release notes; it is not re-decided here.
+desktop; no commitment to every CPU arch). **`[DECIDED]` Linux arm64 / Windows
+arm64 are out of v1** (`[DEFER: post-v1]`, by demand — low demand). The supported-OS
+floor (minimum Windows/macOS/distro versions, WebView availability) is **owned by §0.3.1**
+and referenced by the release notes; it is not re-decided here.
 
 **Compressed-artifact size gate (SSOT Principle 1 "stay light") `[DECIDED]`:** the
 packaging step **measures each platform artifact's compressed size and FAILS the build if
@@ -348,7 +344,7 @@ build-time mechanics that realise them**:
   the per-format option names ConvertIA exposes must actually exist in the staged engine
   builds, so the stage step asserts (and **fails the build** on a miss): (1) the **FFmpeg
   `paletteuse` dither modes** the video→GIF path exposes — the **canonical v1-exposed set is
-  exactly `bayer`, `sierra2_4a`, `floyd_steinberg`, `none`** (cross-category.md [OPEN-D]
+  exactly `bayer`, `sierra2_4a`, `floyd_steinberg`, `none`** (cross-category.md [XCAT-D]
   `[DECIDED]`; `none`/`floyd_steinberg` are valid `paletteuse` values and `floyd_steinberg`
   IS the "error-diffusion" mode — there is no separate generic value) — are **all** present
   in the staged `ffmpeg -h filter=paletteuse`. The assertion checks **this exact enumerated
@@ -614,7 +610,7 @@ normal user isn't surprised:
   flashes and closes, install the WebView2 Runtime or update Windows/Edge)."* — this is
   the "fail clearly" substitute for the portable path (not a runtime dialog). **Since
   the portable `.zip` is the only v1 Windows artifact (NSIS NOT shipped v1, §6.1.2
-  `[DECIDED-6.1a]`), this WebView2 prerequisite note is the sole Windows floor mechanism
+  `[DECIDED]`), this WebView2 prerequisite note is the sole Windows floor mechanism
   in v1** — there is no NSIS bootstrapper enforcing it. (A future post-v1 NSIS variant
   would enforce the floor via its bootstrapper; not applicable to v1.)
 - **Linux AppImage FUSE 2 prerequisite `[DECIDED]`:** an AppImage *mounts* itself via
@@ -641,7 +637,7 @@ engine-currency "best-effort, not a gate" posture). Cheap measures we *do* take:
 pinned toolchains (§0.8), pinned engine versions+checksums (§3.8/§6.1.3),
 `SOURCE_DATE_EPOCH` where the toolchain honours it, and recording the exact
 toolchain/engine versions in the SBOM so a build is at least **auditable** even if
-not bit-reproducible. **`[DECIDED-6.2b]`** how far to pursue determinism — **best-effort,
+not bit-reproducible. **`[DECIDED]`** how far to pursue determinism — **best-effort,
 NOT a release gate** (the cheap measures above ship; deeper bit-reproducibility is
 `[DEFER: post-v1]`, not an owner-level design call).
 
@@ -1548,7 +1544,7 @@ specifically tests whether a *human who didn't build it* succeeds. Protocol:
   walkthrough cannot silently satisfy a new release. (CI checks the *evidence's*
   freshness against the **tag date**, unambiguously; the human does the walkthrough.)
 
-**Tester sourcing `[DECIDED]` (was `[OPEN-6.6a]`; ConvertIA is a solo/hobby project):**
+**Tester sourcing `[DECIDED]` (ConvertIA is a solo/hobby project):**
 the gate is satisfiable by **at least one genuine non-developer walkthrough on at least
 one platform**, with the **owner (developer) permitted to perform the remaining two
 platform walkthroughs where a non-developer tester is not available** — recording in
@@ -1652,7 +1648,7 @@ blocking the next:
 1. **Matrix build (native, §6.1.4):** stage engines per platform (§6.1.3), run
    `tauri build` (+ the Windows post-build zip-packaging step §6.1.2) → per-platform
    artifact (Windows portable `.zip` **only** — NSIS NOT shipped v1, §6.1.2
-   `[DECIDED-6.1a]`; universal `.dmg`; AppImage). **Artifact-size gate `[DECIDED]`:**
+   `[DECIDED]`; universal `.dmg`; AppImage). **Artifact-size gate `[DECIDED]`:**
    immediately measure each platform's
    **compressed** artifact and **fail the release if any exceeds the §3.9.2 ≤ 400 MB
    compressed ceiling** (record the measured sizes as a release-asset line; §6.10 row 22).
@@ -1916,7 +1912,7 @@ five governance docs are a **blocking Phase-3 authoring task owned by the projec
 the key-section grep**, NOT prose quality, so authoring the substantive content is an
 explicit owner deliverable, not something the gate can substitute for.
 
-**`[DECIDED-6.8a]`** (resolves the former `[OPEN-6.8a]`): a `GOVERNANCE.md`/maintainer
+**`[DECIDED]`**: a `GOVERNANCE.md`/maintainer
 model doc is **NOT adopted for v1** — the seven files above satisfy the SSOT mandate; a
 governance doc is added only if the contributor base grows (ConvertIA is a solo/hobby
 project, so no maintainer-model doc is warranted yet). `[DEFER: post-v1]` by demand.
@@ -2010,7 +2006,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 10 | **Name/trademark clearance completed; any rename applied across repo/LICENSE/NOTICE/branding before release** | this file (§6.9) | Clearance-record gate (§6.9.2) + scripted rename propagation + old-name grep gate (§6.9.3) | **in-scope-gate** (the *clearance check + rename*); **out-of-scope-process** (*registering* a mark) |
 | 11 | **Usability floor: ordinary non-tech person completes each named conversion unaided on first try; ≥1 genuine non-dev walkthrough on ≥1 platform (owner may run the remaining two — matches the AMENDED SSOT §9 gate, owner amendment recorded at the SSOT source, implemented in §6.6)** | §5 (UX) · this file (§6.6) | Human walkthrough recorded in `docs/usability-floor.md` (which were non-dev vs owner-run); evidence gate in Lane B (§6.6/§6.7.2) | **in-scope-gate** |
 | 12 | **Published integrity hashes from one canonical source (trust substitute for no-signing)** | this file (§6.2) | SHA-256 + `SHA256SUMS` + **minisign signature (DECIDED, unconditional — Lane-B stage 6)** published to canonical GitHub Releases (§6.2.2/§6.2.3); verify recipe surfaced (§6.2.4) | **in-scope-gate** |
-| 13 | **One artifact per platform (cross-platform, one product)** | §0.2 · this file (§6.1) | Build matrix artifact table (§6.1.2): Windows portable-zip (exe + bundled engines; **NSIS NOT shipped v1, `[DECIDED-6.1a]`**) · universal-dmg · AppImage | **in-scope-gate** |
+| 13 | **One artifact per platform (cross-platform, one product)** | §0.2 · this file (§6.1) | Build matrix artifact table (§6.1.2): Windows portable-zip (exe + bundled engines; **NSIS NOT shipped v1, `[DECIDED]`**) · universal-dmg · AppImage | **in-scope-gate** |
 | 14 | **No-harm / atomicity / fail-clearly hold even across crash/cancel/out-of-disk** | §2.1/§2.6/§2.8/§2.13/§2.14 | Atomicity-under-interruption + out-of-disk + panic-boundary property tests (§6.4.2) | **in-scope-gate** |
 | 15 | **Real-world filename + content fidelity (Unicode/emoji/long-path; CJK/RTL/encodings; CSV delimiters)** | §2.10 · §04 (per-format) | Adversarial-name unit tests (§6.4.1) + CJK/RTL/encoding corpus files (§6.4.5) | **in-scope-gate** |
 | 16 | **Patent per-platform gaps honestly surfaced (exception 1), never silent** | §3.4 (decision) · §5.2 (UI surfacing) | Ledger marks `unavailable-per-§3.4`; release-note item (§6.5.3); UI-unavailable assertion (§6.4.3) | **in-scope-gate** (recording/surfacing); patent **decision** owned by §3.4 |
@@ -2025,34 +2021,3 @@ promises has a technical home" is **verifiable**. Each gate is marked
 
 If a future SSOT clause is added, it must appear here with an owning section and a
 §6 mechanism, or it has no technical home — that is the check this table enforces.
-
----
-
-## Open-questions log contributions (this section)
-
-**Now `[DECIDED]` (this round) — adopted from their recommendations:**
-- **[6.9a] Name/trademark clearance verdict = `clear`** for "ConvertIA" / "Ne-IA"
-  (owner-cleared; §6.9.1). The release gate (record present + current) is retained;
-  the legal *process* stays out of scope.
-- **[6.2a]** Sign `SHA256SUMS` with a **project minisign key** — DECIDED yes (§6.2.3).
-- **[6.1e]** CI runners — **GitHub-hosted for mac/win, self-hosted Linux for Lane A**
-  (§6.1.4; budget note retained).
-- **[6.1d]** CI engine-acquisition — **pinned, checksum-verified asset cache** hosted on
-  **`actions/cache` keyed `<cache_engine>-<cache_version>-<triple>`** with a checksum-verified
-  pinned-upstream-URL populate/fallback; macOS keeps **two per-triple keys per engine**
-  (arm64 + x86_64) for the `lipo` universal build (§6.1.3).
-- **[6.4a]** Corpus storage — **small CC0/synthetic in-repo + LFS `corpus-large` for
-  the full gate** (§6.4.5); exact total size **[DEFER: calibrate as corpus fills]**.
-
-Easy `[OPEN]`s resolved (not owner-level): artifact formats (§6.1.2: Windows
-portable-zip [NSIS NOT shipped v1, **`[DECIDED-6.1a]`**] / universal-dmg / AppImage),
-NSIS-vs-portable (**`[DECIDED-6.1a]`** — portable-zip only, §6.1.2), Linux `.deb`
-(**`[DECIDED-6.1b]`** — AppImage-only v1, `.deb` deferred post-v1, §6.1.2), reproducible-build
-depth (§6.2.5b), `GOVERNANCE.md` (§6.8a), usability
-tester count (§6.6a) — each carries a **(recommendation)** or `[DECIDED]` inline.
-
-**Genuinely still open / deferred (feed the README log):** the macOS automated E2E
-under an unsigned build is **`[DECIDED]` — a defined degraded smoke test** (§6.4.6:
-launch + synthetic-argv conversion + window/output/exit-0 assertions; WebView UX via the
-§6.6 human walkthrough), **not** an open question; the one genuinely deferred number here
-is the exact `corpus-large` total size (`[DEFER: corpus]`).
