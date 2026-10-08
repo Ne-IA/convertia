@@ -31,6 +31,14 @@
 > options-panel shell + progress/cancel + result-actions UI to a first ledger cell over
 > the P4 fixture (the UX-harness leg — P4 is not "done" on the engine side alone).
 >
+> **Scope:** the §3.4 patent-disposition matrix is decided here once, never re-decided
+> downstream; P5/P6 only read its per-codec cell. The §7.2.3 startup verifier (DoD gate 19,
+> the runtime half of the T3 supply-chain threat) turns a missing or corrupt engine into a
+> §2.13 app fault, never a crash. The §3.9 size levers start from an early baseline size
+> measurement that P5–P7 track against the §3.9.2 ceiling; the §6.7.2 release-time size
+> gate is P10's. The §3.5.0/§7.2.6 macOS TCC source staging lives here because the first
+> real engine spawn needs it.
+>
 > Each phase's boxes are audited against the as-built codebase at the preceding phase's
 > sweep (test-strategy §11). P4 does **not** re-implement `crate::fs_guard` (built in
 > P3); it fills the `crate::isolation` + pool shells P3 established. Per-engine SSRF/LFR
@@ -1012,11 +1020,10 @@
 ## Deferred-split completions & cross-phase reconciliation
 
 > The split-off siblings of P4.52/P4.64/P4.70 (each a genuinely disjoint surface that
-> must carry its own dual review, _format.md §3.2 / build-loop §3 step 2). They sit
-> after their parents (document order) and before the
-> proof-of-life exit gate (P4.79/P4.80); each is its own P4 deliverable (the phase is "done" only when every
-> `[ ]` box is `[x]`, README "How this plan is used"), independent of the proof-of-life
-> predicate the exit gate asserts.
+> must carry its own dual review, _format.md §3.2 / build-loop §3 step 2). They sit after
+> their parents (document order) and before the proof-of-life exit gate (P4.79/P4.80);
+> each is its own P4 deliverable (the phase is "done" only when every `[ ]` box is `[x]`),
+> independent of the proof-of-life predicate the exit gate asserts.
 
 - [ ] **P4.74** [UI] Build the AdvancedDrawer collapsed-by-default shell over the OptionsPanel (Advanced-tier reveal) · §1.6 §5.3 §5.10 · G33a
   needs: P4.64, P4.70
@@ -1054,7 +1061,7 @@
 - [ ] **P4.80** [TEST] Verify the P4 proof-of-life exit criterion (imgworker boots + isolated round-trip + populated EngineHealth + first reliability report) · §3.5.5 §2.12 §7.2.3 §6.4.3 · G46 G31
   needs: P4.38, P4.45, P4.60, P4.61, P4.79, P4.95
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P4.95` points at the `[!extern]` owner act appended at the end of the phase that lands the caged §6.4.3a bijection bin this exit gate executes; the loop skips + collects it, and this box already waits on the P4.89 closure through P4.45 / P4.38. Acyclic + valid.
-  > the consolidated P4 exit gate (README P4 proof-of-life): `convertia-imgworker` boots, a round-trip invocation succeeds through the §2.12 isolation boundary (P4.38), the §7.2.3 startup verifier reports a populated `EngineHealth` (P4.45), the §6.4.3 runner + §6.5.2 pair-status ledger + §6.4.3a bijection guard EXECUTE and produce their first report over the P4-era corpus (the P3 CSV↔TSV pairs + the flagged P4.79 harness fixture), every in-force leg green (P4.59–P4.61; the §6.4.3a required-pair-coverage leg runs bootstrap-staged per P4.60's note — its full-§04 green is the P11 release check §6.10 row 3, not this exit gate), AND the UX-harness leg (P4.79) passes — the full P4 "done" predicate.
+  > the consolidated P4 exit gate (the P4 header's proof-of-life exit criterion): `convertia-imgworker` boots, a round-trip invocation succeeds through the §2.12 isolation boundary (P4.38), the §7.2.3 startup verifier reports a populated `EngineHealth` (P4.45), the §6.4.3 runner + §6.5.2 pair-status ledger + §6.4.3a bijection guard EXECUTE and produce their first report over the P4-era corpus (the P3 CSV↔TSV pairs + the flagged P4.79 harness fixture), every in-force leg green (P4.59–P4.61; the §6.4.3a required-pair-coverage leg runs bootstrap-staged per P4.60's note — its full-§04 green is the P11 release check §6.10 row 3, not this exit gate), AND the UX-harness leg (P4.79) passes — the full P4 "done" predicate.
 
 ## The §7.2.5 orphan-reclaim slot body — sweep_stale at startup (deferred from P2.106.5)
 

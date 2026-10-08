@@ -20,7 +20,7 @@
 > notes), [07-app-shell](../spec/07-app-shell.md) (§7.6.2 About→Releases link).
 > Index: [plan/README.md](README.md). Box format: [`_format.md`](_format.md).
 >
-> **Two scopes, marked per box (README P8):** **(i) ship-gating UI** —
+> **Two scopes, marked per box:** **(i) ship-gating UI** —
 > release-blocking surfaces UI alone owns (About+NOTICE+Impressum, About→Releases,
 > settings chrome, cross-cutting error/lossy refinement); a **`P8.<n>` "P8
 > ship-gating done"** sub-gate (P8.21) closes scope (i). **(ii) visual-polish /
@@ -144,7 +144,7 @@
 
 - [ ] **P8.21** [DOC] Record the "P8 ship-gating done" sub-gate (scope (i) complete) · §5.9 · G44
   needs: P8.10, P8.11, P8.12, P8.13, P8.14, P8.15, P8.16, P8.17, P8.18, P8.19, P8.20
-  > scope (i) closure (README P8 fill-pass note: "a clear P8 ship-gating done sub-gate; so 'P8 done for release' is unambiguous"). Record in this plan that every release-blocking scope-(i) surface is built: About + NOTICE attribution (P8.10–P8.13) + Impressum (P8.14), About→Releases (P8.15), settings chrome (P8.16), cross-cutting error/lossy/empty-state refinement (P8.17/P8.19/P8.20) + the keymap (P8.18). This is the line that makes scope (i) (ship) separable from scope (ii) (non-blocking polish). G44 governance-completeness covers the About/NOTICE leg at release.
+  > scope (i) closure (the P8 header's scope-(i) sub-gate, so "P8 done for release" is unambiguous). Record in this plan that every release-blocking scope-(i) surface is built: About + NOTICE attribution (P8.10–P8.13) + Impressum (P8.14), About→Releases (P8.15), settings chrome (P8.16), cross-cutting error/lossy/empty-state refinement (P8.17/P8.19/P8.20) + the keymap (P8.18). This is the line that makes scope (i) (ship) separable from scope (ii) (non-blocking polish). G44 governance-completeness covers the About/NOTICE leg at release.
 
 ### Visual-polish / Ne-IA branding pass — scope (ii) NON-BLOCKING (may trail P11)
 

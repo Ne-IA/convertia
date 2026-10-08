@@ -19,6 +19,11 @@
 > per-pair tests, §6.4.5 corpus, §6.5 reliability ledger).
 > Box format: [`_format.md`](_format.md). Index: [README.md](README.md).
 >
+> **Exit (the §6.5 coverage gate):** for every image pair, on all three available
+> platforms and against every §6.4.5 corpus file of its source format, the §6.4.3 per-pair
+> test passes and the pair is `reliable` in `reliability-report.json`; the gate travels
+> with the format work, category by category (§6.5.2).
+>
 > Each phase's boxes are audited against the as-built codebase at the preceding phase's
 > sweep (test-strategy §11). Pairs are grouped
 > by **engine code-path** (one saver / one load module / one SSRF path = one group),

@@ -20,7 +20,11 @@
 > Built by the loop (P1..P11 range) strictly top to bottom, deps resolved in place
 > (DECISION C).
 >
-> **What P3 builds vs defers (the boundary, decided in plan/README.md):**
+> **Scope:** P3 also bootstraps the §1.2 layered-detection framework (magic sniff +
+> container / text / encoding classification) the walking-skeleton type needs; P5–P7 add
+> only per-format signatures.
+>
+> **What P3 builds vs defers (the boundary):**
 > - **`crate::fs_guard` is BUILT HERE** (the real atomic-publish OS primitives + FAT/exFAT
 >   divert) — it has **no engine dependency** and is exercised by the walking-skeleton
 >   publish; P4's §02 reference covers only the §2.12 isolation wrapper + §2.13 app-fault,
@@ -54,7 +58,7 @@
 > explicit P0→P3 edge; the other activation edges resolve trivially since P0 is `[x]` before
 > the loop reaches P3.
 
-## Boundaries (decided, see plan/README.md)
+## Boundaries (decided)
 
 - **P2 → P3:** P2 declared the pipeline **contracts + domain types** (§0.6 `DroppedItem`/
   `CollectedSet`/`OutputPlan`/`RunResult`/`JobStage`/`JobState`, the §0.4 IPC

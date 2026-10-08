@@ -33,7 +33,7 @@
 > keeps every `needs:` target resolvable on a clean checkout (`plan-lint`
 > needs-targets-exist, [`_format.md`](_format.md) §7).
 
-## Boundaries (decided, see plan/README.md)
+## Boundaries (decided)
 
 - **P0 ↔ P1:** P0 builds the gate *system* + content-independent gates + the
   framework/wiring-points for language gates; **P1** wires the language-specific
@@ -432,9 +432,9 @@ only wires them.
 > adversarial-egress pull-forward") runs **from P6/P7** as egressing engines (FFmpeg/pandoc/
 > LibreOffice) are staged, so a T9b egress regression is caught on the push that introduces it;
 > **(c)** the full per-OS egress-DENY window + the armed-window canary + the **release-confirmation
-> G42/G42b** are **BUILT in P9** (the offline-egress observability gate, §2.11.4/§6.7.3; README P9 /
-> spec §6.7.3 home the release-confirmation gate, so "built in P9" is authoritative for the
-> release-confirmation leg).
+> G42/G42b** are **BUILT in P9** (the offline-egress observability gate, §2.11.4/§6.7.3; the P9
+> header (`P9-hardening.md`) and spec §6.7.3 home the release-confirmation gate, so "built in
+> P9" is authoritative for the release-confirmation leg).
 > G43 (no-system-pollution) is built in **P10** (the Lane-B release pipeline, §6.10 row 21).
 > They are policy-defined together here but built/activated across P4/P6-P7/P9/P10. (Phase-name
 > references, not line numbers, so an insertion above them cannot silently invalidate the

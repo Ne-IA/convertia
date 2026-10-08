@@ -57,10 +57,10 @@ the work at hand always wins over token cost, session speed and pragmatism — s
 not quality, bounds it). A stub is only ever
 a **named, compile-time interface shell** that a **named, scheduled** box fills
 (the P3 `crate::isolation` interface shells P4 expands are the sanctioned example,
-plan/README.md P3) — never a quiet placeholder, never a "Phase 2 / for now / comes
-in P\<n\>" deferral (those phrasings fail G8). The entire gate layer exists
-*precisely* so this priority holds; ranking pragmatism above it undercuts the
-whole protection layer.
+the P3 header in `P3-walking-skeleton.md`) — never a quiet placeholder, never a
+"Phase 2 / for now / comes in P\<n\>" deferral (those phrasings fail G8). The entire
+gate layer exists *precisely* so this priority holds; ranking pragmatism above it
+undercuts the whole protection layer.
 
 ---
 

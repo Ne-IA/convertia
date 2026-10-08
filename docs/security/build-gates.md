@@ -1368,7 +1368,7 @@ Invariant checks (initial set; expanded during P0 review):
   sub-checks (zizmor/G50 covers neither). **G37c** gained a runtime launch-smoke + macOS `minos` analogue
   (it is a static symbol-version proxy only; in r7 BOTH were promoted from a hedged "forward idea"
   parenthetical to REQUIRED G37c sub-assertions with planted-positives, resolving the body-vs-changelog
-  status conflict). The §6.10 row-21 G43 home (README P10) synced; the Windows
+  status conflict). The §6.10 row-21 G43 home (the P10 header, `P10-release.md`) synced; the Windows
   ACL scratch + cleanup-on-kill homed in P0.5; "audit-WORM" → "immutable audit-log row" (P0.6).
 - **Nits.** G29 Semgrep rule packs explicitly invoked via `--config scripts/semgrep-rules/` (never the
   live-fetch `--config p/rust`) + a `--validate` self-test; G29 rule (g) FFI honest-limitation note (it

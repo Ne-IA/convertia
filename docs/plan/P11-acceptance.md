@@ -30,14 +30,17 @@
 > only for **intra-P11 ordering** (a P11 box that must consume another P11 box's
 > output first).
 >
-> **The six §6.6 usability-floor sub-gates are SEPARATELY FAILEABLE.** Per the
-> README P11 scope and §6.6, the usability floor is not one box: it is **six
-> distinct, independently-faileable boxes** — (a) the non-developer conversion
-> walkthrough, (b) the keyboard-only pass, (c) the screen-reader smoke pass, (d) the
-> mandatory macOS Sequoia first-launch + per-sidecar quarantine recovery sub-test,
-> (e) the `docs/usability-floor.md` artifact + its machine-checkable staleness
-> criterion, (f) the single-instance double-extract macOS sub-test — so a failure in
-> any one is attributable and re-walked on its own.
+> **The six §6.6 usability-floor sub-gates are SEPARATELY FAILEABLE.** Per §6.6,
+> the usability floor is not one box: it is **six distinct, independently-faileable
+> boxes** — (a) the non-developer conversion walkthrough, (b) the keyboard-only pass,
+> (c) the screen-reader smoke pass, (d) the mandatory macOS Sequoia first-launch +
+> per-sidecar quarantine recovery sub-test, (e) the `docs/usability-floor.md` artifact +
+> its machine-checkable staleness criterion, (f) the single-instance double-extract
+> macOS sub-test — so a failure in any one is attributable and re-walked on its own.
+>
+> **Scope:** the cross-platform E2E test matrix — the §6.4.6 headed E2E flow runs green on
+> every platform leg of the RC — beside the six sub-gates and the SSOT *v1 DoD*
+> verification below.
 >
 > Each phase's boxes are audited against the as-built codebase at the preceding phase's
 > sweep (test-strategy §11).
@@ -65,7 +68,7 @@
 
 ## Cross-platform E2E test matrix (the automated flow gate)
 
-> The README P11 scope's "cross-platform E2E test matrix": prove the §6.4.6 headed
+> The P11 header's cross-platform E2E test matrix: prove the §6.4.6 headed
 > E2E flow runs green on every platform leg of the RC. The harness is built in P9;
 > P11 confirms it passes against the frozen RC, and proves the macOS degraded-smoke
 > leg is genuinely exercised (not silently skipped).
@@ -119,7 +122,7 @@
 
 ## Definition-of-Done verification against the SSOT
 
-> The README P11 scope: confirm the SSOT *v1 DoD* gates are green on the RC. Each box
+> The P11 header's scope: confirm the SSOT *v1 DoD* gates are green on the RC. Each box
 > below proves one already-built gate passes against the frozen RC — the §6.5
 > reliability gate, the §7.2.3 startup-integrity gate (DoD gate 19), the offline-egress
 > gate, the ≤400 MB size gate (row 22), the no-system-pollution gate (row 21), and the

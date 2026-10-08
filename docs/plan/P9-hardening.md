@@ -21,6 +21,15 @@
 > size budgets). Threat-map: [`00-architecture.md`](../spec/00-architecture.md) §0.11.
 > Box format: [`_format.md`](_format.md). Index: [README.md](README.md).
 >
+> **Scope:** the §1.10 budgets are resource ceilings only: the SSOT and spec set no
+> startup-time or latency budget, so responsiveness stays qualitative (a non-blocking IPC,
+> visible progress). The §2.10 fidelity validation is the adversarial-name unit tests
+> (§6.4.1) and the CJK/RTL/encoding corpus (§6.4.5), not UI localization, which the SSOT
+> defers.
+>
+> **Headed E2E stays in P9** (decided; the §6.5 gate keys on engine-level tests, and P4's
+> jsdom `vitest-axe` leg keeps the UI unit-testable).
+>
 > Each phase's boxes are audited against the as-built codebase at the preceding phase's
 > sweep (test-strategy §11).
 

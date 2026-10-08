@@ -125,7 +125,7 @@ startup spine as far as the foundation allows.
   > `tauri_plugin_single_instance::init` / `tauri_plugin_dialog::init` / `tauri_plugin_store` / `tauri_plugin_log` / `tauri_plugin_opener` registered in the Builder — the crates §1.1/§0.4.1/§7.4/§7.5/§7.7 depend on; their WebView grants are §0.10 (dialog/opener are Rust-side-only, NOT WebView capabilities). Wiring only; the handlers that USE them are P2+.
 - [x] **P1.15** [RUST] Stand up the minimal `setup` closure stages the empty window needs (NOT the §7.2.1 ordering) · §7.2.1 §7.2.2
   needs: P1.14
-  > the minimal `setup` closure the bootable empty window needs as named-but-mostly-empty stages: single-instance guard (real via the plugin), `InstanceId` + base-path resolution via `app.path()`, and the window-create slot. **P1 does NOT own the §7.2.1 step ORDER** — the §7.2.1 ordered startup-sequence spine (steps 1–8, the engine-presence / exec-permission / scratch-orphan-reclaim / launch-intake / WebView-absent-fault slots) is the **app-shell spine homed in P2's startup-sequence-ordering cluster** per the README P2 scope; P1 lands only the compile-and-boot stages, P2 establishes the ordering, later phases fill the bodies. The §7.2.1 ref is read-only context here (the ordered sequence is P2's box).
+  > the minimal `setup` closure the bootable empty window needs as named-but-mostly-empty stages: single-instance guard (real via the plugin), `InstanceId` + base-path resolution via `app.path()`, and the window-create slot. **P1 does NOT own the §7.2.1 step ORDER** — the §7.2.1 ordered startup-sequence spine (steps 1–8, the engine-presence / exec-permission / scratch-orphan-reclaim / launch-intake / WebView-absent-fault slots) is the **app-shell spine homed in P2's startup-sequence-ordering cluster** per the P2 header (`P2-app-shell-contracts.md`); P1 lands only the compile-and-boot stages, P2 establishes the ordering, later phases fill the bodies. The §7.2.1 ref is read-only context here (the ordered sequence is P2's box).
   - [x] **P1.15.1** [RUST] Assert §7.2.2 zero-startup-network as a boot invariant test · §7.2.2 §2.11 · G29
     > a unit/property assertion that the boot path opens no socket (the §7.2.2 observable property + the Lane-A compensating guard for the Lane-B-only egress gate, §6.7.1); pairs with the P0 G29 `std::net` allow-list rule (rule (g)) which is initially empty.
 - [x] **P1.16** [RUST] Lock the §7.3.1 config-declared main-window model (no programmatic builder) + structural model test · §7.3.1 §0.3.1
@@ -247,7 +247,7 @@ the per-push a11y leg (G33a) against real source.
 ## Strings module & a11y module shells
 
 `src/strings/ui.ts` and the `a11y/` shells are established as structural
-scaffolding (not deferred) per the README P1 scope — activating the P0 G57
+scaffolding (not deferred) per the P1 header's scope — activating the P0 G57
 English-only / string-ownership lint against a real `strings/ui.ts`.
 
 - [x] **P1.37** [UI] Stand up `src/strings/ui.ts` — the flat English UI-chrome string table (incl. the `idle_reassurance` §5.7 key) · §5.7 · G57
@@ -258,7 +258,7 @@ English-only / string-ownership lint against a real `strings/ui.ts`.
   > the by-construction half of §5.7: no i18n framework / locale-negotiation / `Accept-Language`-driven selection is a dependency — the P0 G57 lint's "fail on any locale-switch/i18n-runtime import" leg; P1 establishes the no-i18n posture the gate enforces.
 - [x] **P1.39** [UI] Stand up `src/a11y/announcer.ts` — the §5.6 ARIA-live announcement helper shell · §5.6
   needs: P1.31
-  > the `announcer.ts` interface-only helper (an ARIA-live region announcer) the §5.6 screen-reader path + later focus/announce wiring consume — established here as structural scaffolding per the README P1 scope; the per-component wiring is P4/P8.
+  > the `announcer.ts` interface-only helper (an ARIA-live region announcer) the §5.6 screen-reader path + later focus/announce wiring consume — established here as structural scaffolding per the P1 header's scope; the per-component wiring is P4/P8.
 - [x] **P1.40** [UI] Stand up `src/a11y/keymap.ts` — the §5.10 canonical accelerator table shell · §5.10
   needs: P1.31
   > the `keymap.ts` single-source accelerator table (the §5.10 canonical map with `CmdOrCtrl` modifier handling) as a typed, mostly-empty table P5–P10 components reference rather than re-declaring shortcuts — established now so §5.10's "single source" rule holds from the first component.

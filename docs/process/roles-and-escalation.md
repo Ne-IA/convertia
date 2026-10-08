@@ -80,7 +80,7 @@ loop, never escalated**:
 - **Default values** — where the spec leaves a default open and the SSOT inclusion
   test / everyday-person audience (CLAUDE.md §1) makes one sensible.
 - **Phase-cut questions** — "which phase owns this box" is answered from the plan
-  ([README.md](../plan/README.md) phase boundaries), not escalated.
+  (each phase file's header and, where it has one, its Boundaries section), not escalated.
 
 These are **derived assumptions**, not forks. The discipline that keeps them honest
 is the **inline tag**, not an escalation (§3).

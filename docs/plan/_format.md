@@ -494,22 +494,23 @@ The plan is **split per phase**, indexed by a README:
 
 | File | Holds |
 |---|---|
-| [`docs/plan/README.md`](README.md) | **The index.** The phase skeleton (`P0`..`P11`) — each phase's goal, scope, spec home, and a link to its phase file — plus the sequencing philosophy (walking-skeleton-first) and the conflict rule. It carries **no atomic `[ ]` boxes**; it is the map, not the territory. |
+| [`docs/plan/README.md`](README.md) | **The index:** the conflict rule, how the plan is used, the sequencing philosophy and one table row per phase (goal, file, spec homes). No `[ ]` boxes and no scope prose. |
 | [`docs/plan/P0-build-and-security.md`](P0-build-and-security.md) | **P0** — the bootstrap phase (clusters P0.1–P0.7). Built **manually** (DECISION B), not by the loop. |
 | [`docs/plan/residual-ledger.md`](residual-ledger.md) | **The residual ledger** — what boxes and Co-Pilot acts left outside their work at hand (CLAUDE.md §6), one plain bullet each, triaged per phase at the sweep (test-strategy §11.2). No `[ ]` boxes; the loop never builds from it. |
-| `docs/plan/P<n>-<slug>.md` | **One file per later phase** (`P1-foundation-and-scaffolding.md`, …, `P11-final-e2e-and-acceptance.md`). The atomic `[ ]` boxes for that phase live here, added in the fill pass. |
+| `docs/plan/P<n>-<slug>.md` | **One file per later phase** (`P1-foundation.md`, …, `P11-acceptance.md`): the atomic `[ ]` boxes for that phase; its header carries the phase's scope and exit criterion. |
 
-- **File naming:** `P<n>-<kebab-slug>.md`, the slug from the phase title in the
-  index (`P5 — Images` → `P5-images.md`). One phase, one file; the loop's
-  lowest-phase-first scan (§6) is a numeric sort over these file names then document
-  order within each.
+- **File naming:** `P<n>-<kebab-slug>.md` (e.g. `P5-images.md`); the slug is a short
+  name, not the full phase title. One phase, one file; the loop's lowest-phase-first
+  scan (§6) is a numeric sort over these file names then document order within each.
 - **Box-ids are phase-scoped, not file-scoped** — `P5.4` is box 4 of phase 5
   regardless of which file it physically lives in (they coincide by convention: each
   phase = one file). The phase number in the id and in the file name agree;
   `plan-lint` (numbering check) treats each phase's boxes as one contiguous sequence.
-- **The index never carries `[ ]` boxes**, and a phase file never restates the
-  index's scope prose — each fact has **one home** (the doc-consistency discipline
-  in `build-gates.md` §6). A box belongs to **exactly one** phase file.
+- **Granularity:** P2 lands one box per domain type or contract; P5–P7 one box per
+  code-path, with each pair's corpus, test and ledger row a box of its own.
+- A box belongs to **exactly one** phase file (the doc-consistency discipline in
+  `build-gates.md` §6). **The index never carries `[ ]` boxes** and never restates a
+  phase's scope: each fact has **one home**, the phase header.
 
 ---
 
@@ -566,7 +567,7 @@ pass it.
   --phase <n>` (build-gates G7).
 - Project rules (the working model, the anti-patterns): [`CLAUDE.md`](../../CLAUDE.md)
   §2, §5.
-- The plan index + the phase skeleton this format fills: [`README.md`](README.md).
+- The plan index (one row per phase file): [`README.md`](README.md).
 - The P0 box areas that author this file (P0.1) + the gate framework (P0.2):
   [`P0-build-and-security.md`](P0-build-and-security.md).
 - SSOT (what & why): [`docs/SINGLE-SOURCE-OF-TRUTH.md`](../SINGLE-SOURCE-OF-TRUTH.md).
