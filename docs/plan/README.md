@@ -20,9 +20,10 @@
 - A phase is done when every box in its file is `[x]`. Every phase `P2`..`P11` ends with
   the standing `[!extern]` phase-end Co-Pilot hardening-sweep box
   ([test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)):
-  the Co-Pilot session, never the Build-Loop, re-tests the phase's whole delivery, and
-  the next phase's first box (for `P11`, the RC sign-off `P11.33`) `needs:` the sweep,
-  so the loop stops at each phase boundary until the sweep is `[x]`.
+  the Co-Pilot session, never the Build-Loop, re-tests the phase's whole delivery and
+  checks the next phase's readiness, and the next phase's first box (for `P11`, the RC
+  sign-off `P11.33`) `needs:` the sweep, so the loop stops at each phase boundary until
+  the sweep is `[x]`.
 - Each phase file's header carries the phase's scope and exit criterion; the table below
   names the phase and points at its file.
 - What boxes and Co-Pilot acts leave outside their work at hand goes to the

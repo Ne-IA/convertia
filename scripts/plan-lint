@@ -445,7 +445,7 @@ def fmt_l_neg1_annotation(ctx: Ctx) -> list[Finding]:
             elif t.raw_marker not in ("!extern", "x"):
                 out.append(Finding("format:l-neg1-annotation", b.file, b.lineno,
                                    f"{b.box_id}: l-neg1: act {target} is [{t.raw_marker}] (the act is an [!extern] "
-                                   f"owner-act box, or [x] once landed)"))
+                                   f"owner-act box or caged-preconditions act, or [x] once landed)"))
             if target not in b.needs:
                 out.append(Finding("format:l-neg1-annotation", b.file, b.lineno,
                                    f"{b.box_id}: l-neg1: act {target} is not in the box's needs: (the act is a "

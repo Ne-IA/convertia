@@ -60,7 +60,7 @@ other bracketed token at a box position — a stray `[X]`, `[-]`, `[~]`, `[wip]`
 | `[ ]` | **open / buildable** | Not yet built. The unit of work. | The selection target (§6) — built when it is the next one and its `needs:` are all `[x]`. |
 | `[x]` | **done** | Built, tested, dual-reviewed, committed, gates green. | Skipped (already done); may **unlock** a `[!]` box via `unlocked-by:` (§5). |
 | `[!]` | **blocked-with-note** | Cannot be built **and is not a dependency to follow** — it waits on something the loop genuinely cannot produce. **Rare.** | **Skip + report** at the phase end; read the `>`-note under it. May be auto-flipped to `[ ]` by an `unlocked-by:` dep going `[x]` (§5). |
-| `[!extern]` | **needs something external** | Waits on an **owner / external** action the loop cannot take (an off-repo asset, a human decision, an external dependency — plus the **standing per-phase Co-Pilot hardening-sweep box**, [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). **Rare outside the standing sweep boxes** for a fully-offline OSS app. | **Skip + collect** into the phase's owner-act batch (`plan-lint --report owner-acts --phase <n>`). A box whose `needs:` closure reaches it is not selectable until it is `[x]` (§6, computed by `plan-lint --next`). |
+| `[!extern]` | **needs something external** | Waits on an **owner / external** action the loop cannot take (an off-repo asset, a human decision, an external dependency — plus the **standing per-phase Co-Pilot hardening-sweep box**, [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). Each owner act is its own `[!extern]` box; a phase also carries at most one caged-preconditions act (test-strategy §11.4). | **Skip + collect** into the phase's owner-act batch (`plan-lint --report owner-acts --phase <n>`). A box whose `needs:` closure reaches it is not selectable until it is `[x]` (§6, computed by `plan-lint --next`). |
 
 > **`[!]` is the exception, not the tool of first resort.** When the next box needs an
 > unbuilt but buildable box, the loop follows the `needs:` edge and builds it first
@@ -192,11 +192,11 @@ mechanism. A paraphrase is a second copy that drifts — the spec-restatement cl
 `plan-lint` check 30 polices inside the spec is authorial here — and every drift is a
 plan-vs-spec difference the loop must reconcile mid-box (the spec wins,
 roles-and-escalation §4(a)). A reference names a `§` (plus the heading or row name when the
-`§` is long), never a line number: the spec README *Citing the spec* rule. The pre-fill audit (test-strategy §11.4) strips restated
-prose back to references as it passes. A note carries neither a reopen clause nor the
-Co-Pilot ruling tag of the spec's tag glossary ([spec README](../spec/README.md)
-*Tag glossary*): that tag is dated, so it lives in the ruling's spec home, and the note
-cites the ruling as the **Size** paragraph says.
+`§` is long), never a line number: the spec README *Citing the spec* rule. The pre-fill
+readiness check (test-strategy §11.4) deletes restated prose in the boxes it audits. A note
+carries neither a reopen clause nor the Co-Pilot ruling tag of the spec's tag glossary
+([spec README](../spec/README.md) *Tag glossary*): that tag is dated, so it lives in the
+ruling's spec home, and the note cites the ruling as the **Size** paragraph says.
 
 **A delivered box** carries no delivery note: its commit names the box id in the subject,
 and `plan-lint --show <id>` lists that commit. A deviation from the box as written is
@@ -334,7 +334,7 @@ never authors a caged line (G71). The line carries exactly one route:
 | Route | Meaning |
 |---|---|
 | `same-push` | The Loop builds and stages the uncaged part, parks the box and escalates; the Co-Pilot adds the caged part under owner ack and makes the box's final commit (`build-loop.md` Step 7). |
-| `act <box-id>` | A named `[!extern]` owner-act box lands the caged bytes; this box also names it in `needs:`. |
+| `act <box-id>` | A named `[!extern]` act lands the caged bytes — an owner-act box or the phase's caged-preconditions act (test-strategy §11.4); this box also names it in `needs:`. |
 | `sweep-tail` | The caged tail reds nothing without it and lands at the phase-end sweep act. |
 | `none` | The box names a caged file only as a reference. |
 
@@ -342,7 +342,8 @@ never authors a caged line (G71). The line carries exactly one route:
 (`build-loop.md` §5). An `[!extern]` box carries no `l-neg1:`. A box without an
 `l-neg1:` line that meets a caged path takes the `build-loop.md` Step 7 park.
 `plan-lint --report owner-acts --phase <n>` lists the phase's `same-push`, `act` and
-`sweep-tail` boxes.
+`sweep-tail` boxes that are not `[x]`. The tails the phase-end sweep lands belong to `[x]`
+boxes, so the sweep finds them by their `l-neg1:` lines (test-strategy §11.2).
 
 ---
 

@@ -240,11 +240,15 @@ windows-x86_64 = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/dow
 
 # --- cargo-mutants - the G15 scoped mutation-testing sub-leg over the safety kernel
 # (P0.5.10 registration; the P3.72 first informational pass + `max_survived_mutants.toml`
-# ratchet). Release-tier only - never per-push (run cost; gate-status.md row). Upstream
-# ships x86_64-only assets, so the entry declares `missing_platforms = "skip"` (the
-# installer's declared-gap arm): the ci.yml full install on macos-14 (aarch64) SKIPs it
-# visibly; the mutants leg itself runs on linux-x86_64 (release tier) / windows-x86_64
-# (the local first pass). ---
+# ratchet). Run at every phase-end sweep (test-strategy §11.2) - never per-push (run cost;
+# gate-status.md row). Upstream ships x86_64-only assets, so the entry declares
+# `missing_platforms = "skip"` (the installer's declared-gap arm): the ci.yml full install
+# on macos-14 (aarch64) SKIPs it visibly. The sweep's run is on windows-x86_64, the
+# platform of the max_survived_mutants.toml counts (survivor counts are per platform).
+# The linux-x86_64 prebuilt needs glibc >= 2.39: it runs on ubuntu-24.04 and fails on
+# Debian bookworm (2.36) and ubuntu-22.04 (2.35), where
+# `cargo install cargo-mutants --version 27.1.0 --locked` builds the same version from
+# the crates.io source crate the corroboration below records. ---
 [tools.cargo-mutants]
 version           = "27.1.0"
 origin            = "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/"

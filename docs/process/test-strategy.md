@@ -867,16 +867,12 @@ property/integration tests on **G31** / **G15** / **G16**:
   `t11_seam_pin` on that seam's macOS arm; the behavioural burden sits on this G31
   leg.
 
-> **Scoped mutation-testing (owner-decidable, build-gates §8 / homed P0.5):**
-> `cargo-mutants`
-> over `crate::fs_guard` + `crate::detection` + `crate::outcome` (the
-> no-harm/atomicity/no-misroute kernel) as a release-tier informational-then-
-> ratcheted gate — *line* coverage proves a line ran, not that a test would CATCH a
-> regression there. The informational run outputs a survived-mutant report per
-> kernel crate; the ratchet is a tracked `max_survived_mutants.toml` per crate,
-> decrease-only; the owner flips informational→required when the count reaches **0**
-> for `crate::fs_guard` + `crate::detection`. Its status is tracked in the
-> informational→required decision log (gate-status; plan-lint check 23).
+> **Scoped mutation testing (the G15 sub-leg).** `cargo-mutants` over
+> `crate::fs_guard` + `crate::detection` + `crate::outcome` — line coverage proves a
+> line ran, not that a test would CATCH a regression there. It re-runs at every
+> phase-end sweep (§11.2) against the decrease-only per-module
+> `max_survived_mutants.toml` ratchet; its informational→required posture is the
+> gate-status ledger's (plan-lint check 23).
 
 ---
 
@@ -1079,22 +1075,19 @@ build-loop.md), do not improvise a weaker test.
 
 ## 11. The phase-end Co-Pilot hardening sweep
 
-Every phase **`P2`..`P11` closes with one standing box** — the **phase-end
-Co-Pilot hardening sweep** (`[!extern]`, `[TEST]`, the last work box of its
-phase; owner directive, recorded 2026-07-06): once every other box of the phase
-is `[x]`, the **Co-Pilot session — never the Build-Loop — adversarially re-tests
-the phase's whole delivery at the hardest technically-possible level**, with
-whatever tooling that takes — **and then pre-fill-audits the NEXT phase's plan
-boxes against the as-built codebase (§11.4; owner directive, recorded
-2026-07-22)**, so pre-fill escalations are intercepted at the boundary instead
-of stopping the loop once per box mid-phase.
+Every phase `P2`..`P11` closes with one standing box — the phase-end Co-Pilot
+hardening sweep (`[!extern]`, `[TEST]`, the last work box of its phase). Once every
+other box of the phase is `[x]`, the Co-Pilot session — never the Build-Loop — runs
+two legs: **Leg A** re-tests the phase's whole delivery (§11.2); **Leg B** checks the
+next phase's readiness (§11.4). The box flips `[x]` when both legs are done and their
+must-fix findings have landed.
 
 ### 11.1 Why a phase-level pass exists
 
 The per-box bar (DoD item (c), §10) proves each box at its own highest sensible
 level; **nobody owns the phase as a system**. The sweep attacks exactly the
-residue the per-box bar structurally leaves behind (this section motivates the
-delivery leg; the second leg's rationale is §11.4's own):
+residue the per-box bar structurally leaves behind (this section motivates Leg A;
+Leg B's rationale is §11.4's own):
 
 - **cross-box seams** — two boxes each correct, their composition untested;
 - **whole-surface properties** — the accumulated contract surface (every IPC
@@ -1115,64 +1108,72 @@ delivered *system*.
 
 ### 11.2 Mandate
 
-- **Scope: everything the phase delivered** that exists at sweep time — code,
-  contracts, tests, gates the phase authored. A box still `[!]`-blocked at the
-  boundary is outside the sweep's scope; it is swept by the phase whose work
-  unlocks it.
-- **Level: the hardest technically possible** — deliberately **above** the
-  per-box "highest technically sensible" bar. Session tooling is
-  **unrestricted**: Docker, WebDriver/Playwright, property/fuzz/mutation probes
-  (`cargo-mutants`, extended `proptest` runs), real-OS live runs, packet capture
-  — whatever the phase's delivery demands. **Session-local tooling is not repo
-  tooling:** nothing un-pinned enters the repo; a probe that becomes a
-  *permanent* test lands as normal code under the existing gates and the
-  pin-and-verify discipline (security-concept §0).
-- **Findings are fixed, with tests, before the box flips `[x]`** — as normal
-  dual-reviewed commits (the full 8-point DoD + G1 apply; the §8
-  no-green-by-rewrite rule applies unchanged). A finding the sweep cannot fix (a
-  genuine fork, a spec contradiction) escalates on the normal path
-  (roles-and-escalation §4).
-- **Evidence:** what was attacked, with what tooling, what was found, what
-  landed — recorded in the sweep's evidence-commit bodies; the box check-off
-  itself stays a bare marker flip.
-- **G1 spot-audit (the reviewer-family cadence, build-loop.md §3 step 5):** the sweep reads a
-  random ≥1-in-10-box sample of the phase's box commits plus every `GO/GO` commit whose Review
-  record carries no finding on a non-trivial diff, and checks each record against its diff — do
-  the `Review:` lines and the P0/P1 resolutions match what the diff does? A mismatch goes to the
-  owner as reviewer-family evidence (the flip option); the commit is never rewritten.
-- **Re-bless (added 2026-09-09 — the owner's cage-by-direction decision):** the sweep
-  re-blesses the monotone leg-name sets of the tool canaries
-  (`scripts/gate-selftests/_monotone_pin.py --bless <tool>` for `compile-engine-asset`,
-  `fetch-engine-assets`, `record-action-pins`, `stage-engines`), so the `--selftest`
-  legs the phase's boxes added become pinned against removal and rename — one
-  owner-acked act per phase, the replacement for the per-box tally-bump tail those
-  canaries used to demand. Legs
-  added since the last bless are unpinned against removal until the sweep re-blesses —
-  the phase-length window the monotone pin opens; the sweep diffs each canary's
-  unblessed report against the phase's box list before blessing.
-- **Caged tails (added 2026-09-15):** before the box flips, the sweep lands, under
-  owner-ack, every caged tail a box of the phase declared as reds-nothing (the P4.41
-  G38 planted positives, tool pins, gate-row wording).
-- **Residual-ledger triage:** before the box flips, the Co-Pilot copies every `Open P2/P3:` intake line
-  of the phase's commits (found with `git log --grep='^Open P2/P3:'` over the phase range) into the
-  phase's section of the [residual ledger](../plan/residual-ledger.md) and gives each line exactly one
-  outcome: **done** (mechanical and small, at most 10 per phase, the fixing commit's SHA recorded),
-  **boxed** (a successor-phase box, with a `needs:` edge where it binds) or **declined** (a one-line
-  reason). The `[x]` needs every line triaged, not executed. The same pass lists the phase's
-  `Spec-Reconcile:` body lines (`git log --grep='^Spec-Reconcile:'`) for the owner's one-pass bless;
-  the bless is not a precondition of the `[x]`.
-- **Watch health:** the sweep reads the Dependabot job history the way
-  roles-and-escalation §5a does; a failing or silent ecosystem job is a sweep
-  finding.
-- **Pinned action inventory:** the sweep runs `python3 -P scripts/record-action-pins --check`
-  (every committed row still reproduces) and `--resolve-images` for each digest-pinned
-  `docker://` step; a moved release is re-pinned as a Co-Pilot re-land (Dependabot does not
-  bump a `docker://` reference).
-- **Who:** the Co-Pilot session (roles-and-escalation §1); an L(-1) surface
-  touched by a fix follows the normal owner-ack path (G71).
-- **Second leg:** after the delivery re-test, the same sweep runs the
-  **next-phase pre-fill plan audit** (§11.4) — the sweep box is not `[x]` until
-  both legs are done (for the final phase the second leg is vacuous, §11.4).
+**Leg A — the delivery re-test.** Scope: everything the phase delivered that exists at
+sweep time (code, contracts, tests, the gates it authored); a box still `[!]`-blocked at
+the boundary is swept by the phase whose work unlocks it. Time box: one Co-Pilot session
+plus its background jobs.
+
+1. **Mechanical run** on the phase tree:
+   - the full L4 suite;
+   - `cargo-mutants` over the G15 kernel, with the run shape and on the platform the
+     [`max_survived_mutants.toml`](../../max_survived_mutants.toml) header records
+     (survivor counts are platform-specific). A module whose survived count exceeds its
+     ratchet is a finding: in `crate::fs_guard` and `crate::detection` new tests bring it
+     back to the ratchet before the flip; in `crate::outcome` the survivors become a named
+     `[TEST]` box in the next phase. A survivor in code that platform does not compile is
+     no test gap there: the sweep names it, and a ratchet raise it forces is an owner
+     decision. The sweep's owner-acked commit lowers every ratchet whose count fell;
+   - the G48 nightly fuzz results since the last sweep (every finding minimized and
+     committed, §1.5);
+   - flake triage (§7.1);
+   - Dependabot job health, read the way roles-and-escalation §5a (*Watch health*) reads
+     it: every ecosystem in `.github/dependabot.yml` has a green latest update job and none
+     is paused or silent — a failing, paused or silent job is a finding;
+   - the pinned action inventory: `python3 -P scripts/record-action-pins --check` (every
+     committed row still reproduces) and `--resolve-images` for each digest-pinned
+     `docker://` step; a moved release is re-pinned as a Co-Pilot re-land (Dependabot does
+     not bump a `docker://` reference);
+   - the monotone re-bless of the tool canaries, one owner-acked act per phase: after
+     diffing each canary's unblessed report against the phase's box list,
+     `python3 -P scripts/gate-selftests/_monotone_pin.py --bless <tool>` for
+     `compile-engine-asset`, `fetch-engine-assets`, `record-action-pins` and
+     `stage-engines` (a leg added since the last bless is unpinned against removal until
+     then);
+   - the caged tails, landed under owner-ack: the tail of every `[x]` box in scope whose
+     `l-neg1:` line reads `sweep-tail`, found by a grep of the phase files
+     (`plan-lint --report owner-acts` skips `[x]` boxes);
+   - the phase-boundary G1 spot-audit (build-loop.md Step 5, the reviewer-family
+     decision): a random ≥ 1-in-10 sample of the phase's box commits plus every `GO/GO`
+     commit whose Review record carries no finding on a non-trivial diff, each record
+     checked against its diff; a mismatch goes to the owner as reviewer-family evidence
+     (the flip option), and the commit is never rewritten;
+   - the triage of the phase's section of the [residual ledger](../plan/residual-ledger.md):
+     every `Open P2/P3:` line of the phase's commits (`git log --grep='^Open P2/P3:'` over
+     the phase range) is copied there and given one outcome (the ledger defines the three
+     outcomes and the per-phase cap); the flip needs every line triaged, not executed. The
+     same pass lists the phase's `Spec-Reconcile:` body lines
+     (`git log --grep='^Spec-Reconcile:'`) for the owner's one-pass bless, which the flip
+     does not wait on.
+2. **Adversarial gap-hunt** over the whole delivery at the hardest technically possible
+   level, with unrestricted session tooling (Docker, WebDriver/Playwright,
+   property/fuzz/mutation probes, real-OS live runs, packet capture). Boxes that cross two
+   or more §0.7 modules or add an IPC command, event or engine are attacked first.
+   **Session-local tooling is not repo tooling:** nothing un-pinned enters the repo; a probe
+   that becomes a *permanent* test lands as normal code under the existing gates and the
+   pin-and-verify discipline (security-concept §0).
+
+**Findings.** A regression or a broken invariant of a delivered contract is fixed, with
+tests, before the box flips (normal commits: the DoD, G1 and §8 apply). A gap in a
+capability the phase never promised becomes a named successor-phase box with its `needs:`
+edge. A P2/P3 finding goes to the residual ledger. A genuine fork or spec contradiction
+escalates on the normal path (roles-and-escalation §4).
+
+**Evidence.** One findings list per landing commit body — attacked, tooling, found,
+landed — inside the G11 body cap; more findings than the cap holds split the landing
+commits by class. The check-off stays a bare marker flip.
+
+**Who:** the Co-Pilot session (roles-and-escalation §1); an L(-1) surface
+touched by a fix follows the normal owner-ack path (G71).
 
 ### 11.3 The mechanical boundary stop
 
@@ -1190,88 +1191,77 @@ executed, last in its phase, named in `P<n+1>.1`'s `needs:`). A
 DECISION-C early build of a *single* later-phase prerequisite box is **not**
 gated by the boundary stop — that box is swept by its owning phase's sweep.
 
-### 11.4 The next-phase pre-fill plan audit (owner directive, recorded 2026-07-22)
+### 11.4 The next-phase pre-fill readiness check
 
-**Why.** Each phase's plan was authored **before the code it builds on existed**;
-by the time a phase boundary is reached, a real codebase exists that the next
-phase's boxes were never checked against. P3 measured the cost of that gap: a
-large share of its escalations were **pre-fill classes** — a box literal
-contradicted by the delivered code or a spec `[DECIDED]`, a type homed at the
-wrong §0.7 tier, a build-vs-wire decomposition left implicit, a named mechanism
-that is structurally uncallable as described, a missing `needs:` edge for an
-embedded type — each one an avoidable mid-phase loop stop. The audit moves that
-discovery to the boundary, where the Co-Pilot resolves it in batch.
+**Why.** A phase's plan is written before the code it builds on exists. Leg B checks the
+next phase's boxes for the classes that stop the Loop mid-phase — a caged or owner-held
+deliverable inside a Loop box, an unruled fork, a mechanism nobody has run, a mandate with
+no owning box — and resolves them at the boundary. A stale literal, a mis-cite, a wrong
+tier or a missing embedded-type edge is not audited here: the Loop reads a box's `§§` in
+full (build-loop.md Step 3) and reconciles a lower-rank text in the same commit (the
+`Spec-Reconcile:` pre-check, roles-and-escalation §4(a)), and a duplicate box becomes a
+`RECONCILE` when the Loop reaches it (`_format.md` §5a).
 
-**What.** After the delivery re-test (§11.2), the same sweep audits **every box
-of the next phase** against seven surfaces ((e) added 2026-08-27, (f) 2026-09-09, (g) 2026-09-24):
+**Mechanical first**, over the P<n+1> boxes:
 
-- **(a) its cited spec `§§`** — they resolve, and they actually decide what the
-  box claims (the mis-cite class);
-- **(b) the as-built codebase** — the named types / functions / modules /
-  homings exist in the form the box assumes; a box re-authoring something
-  already delivered gets the RECONCILE treatment (the dup-box class);
-- **(c) its dependency edges** — `needs:` / `unlocked-by` present and correct,
-  **including embedded-type edges `plan-lint` cannot see**;
-- **(d) information-completeness** — the box carries enough to build without
-  guessing (named shapes, decided defaults, the build-vs-wire split explicit);
-- **(e) mandate-pair & promise coverage (added 2026-08-27 — the two P4.20 escape
-  classes)** — every spec sentence that mandates TWO halves in one breath (a
-  mechanism + its user-visible signal; a bound + the dispatch site it bounds) has
-  an owning box for EACH half, and every code comment promising "X is P<n>"
-  resolves to a real box in that phase — at P4.20 both halves of §1.10's
-  watermark-pause sentence and the conductor's own §0.9-concurrency promise had
-  no owning box, and the P4 pre-fill audit's surfaces (a)–(d) could not see it
-  (they audit boxes that EXIST; this surface audits mandates/promises for
-  MISSING boxes).
-- **(f) realizability probe (added 2026-09-09 — the P4.34 class)** — every box
-  that names an owner / L(-1) tail, an acquisition mode, a signing anchor or an
-  OS mechanism is RUN before it is ruled on, not read: the binder gate on a scratch
-  root (does the caged half land as a tail, or is it a precondition?), the
-  upstream's release/signing survey (release assets, attestations, the signing
-  KEY — a web-flow-signed commit is not a maintainer signature), the library's
-  build closure from its own build system, the OS probe. The P4.34 ruling was
-  written from the design reading alone and was unsatisfiable on three counts;
-  the measured facts go into the box, and its `needs:` / `[!extern]` shape follows
-  from them. Since 2026-09-24 (the P4.97 class) the probe also RUNS the checker a
-  box names over the live inputs it will scan and records what it read: a tool
-  measured fit on its release assets alone (pinact) was unfit on the inputs (it
-  never reads a referenced remote action's metadata file, and `--no-api` errors
-  on a bare SHA), and the inputs themselves held no nested `uses:` to check but one
-  docker `runs.image` tag the rule never mentioned — a check whose live input set
-  is empty scans nothing, and a box that names an actor (P10.62's verify step)
-  names the script, its home and its semantics.
-- **(g) the gate catalogue's own promises (added 2026-09-24 — the G17 JS-leg
-  class)** — a build-gates row that defers a leg to a box it only describes ("later
-  boxes", "its own acquisition box", "the Lane-B staging box") names the owning box
-  beside the phrase: G17 promised its `osv-scanner`-over-`pnpm-lock.yaml` leg that
-  way from P0.4.1 on, no box owned it, and the JS graph ran unscanned until a
-  Co-Pilot pre-flight found 27 advisories by hand (P4.96 delivered it; the same sweep
-  found the G56 transitive-action-pin half → P4.97, the G37 verify step → P10.62 and
-  the G19 manifest promise, retired as per-build output per P4.41 (5)). Surface (e)
-  reads spec sentences and code comments, not the catalogue; plan-lint check 33
-  refuses the shape in build-gates.md unless a real `P<n>.<m>` box is named within a
-  few words of it, so an unowned promise reds at L1 instead of waiting for a sweep.
+1. `python3 -P scripts/plan-lint` is green, and `plan-lint --report owner-acts --phase
+   <n+1>` lists the phase's `[!extern]` acts and `l-neg1:` routes;
+2. a grep of the boxes and the spec `§§` they cite for `[OPEN` and "before the fill" —
+   each hit is ruled at the boundary (a Co-Pilot ruling or the owner's phase decision
+   session) before the flip;
+3. a grep of every open box's text against the `scripts/l-neg1-files.toml` globs — each
+   hit gets its route: an `l-neg1:` line (`_format.md` §5.3), an item of the
+   caged-preconditions act, or an `[!extern]` box; never a silent Loop deliverable.
 
-**Resolution.** Findings the Co-Pilot can resolve are landed as **normal
-dual-reviewed plan/spec edits before the next phase's build session starts**;
-genuine forks (roles-and-escalation §4) are brought to the **owner at the
-boundary — batched, never one per box mid-phase**. **Owner acts the audit finds are
-consolidated into ONE `[!extern]` owner-act box per phase** (appended at max+1; the
-dependent boxes `needs:` it), which the Co-Pilot executes as one owner-acked act
-while the loop builds every box outside that closure (build-loop.md §3 step 1).
-That box stays separate from a precondition act that already scopes a STOP closure (the
-P4.34 → P4.89 shape), so a ruling never waits on an acquisition act. Caged tails that red
-nothing are not tracked in it; they close with the phase-end sweep box.
-The audit **builds nothing**:
-it edits the plan/spec layer only; an L(-1) surface follows the normal owner-ack
-path (G71). Evidence rides the audit's commit bodies, same as the delivery leg.
+**Targeted audit** of the boxes those greps and these surfaces select (the labels are the
+ones build-gates §6 and `plan-lint` cite):
 
-**Scope notes.** The **final phase's sweep (`P11.34`) has no successor plan** —
-its second leg is vacuous by construction. **Genesis:** `P3.75` closed before
-this directive existed, so the **P4 audit runs immediately after this amendment
-lands, as the catch-up first application** — its evidence rides its own commit
-bodies, same as every later application; from `P4.81` on the leg is part of
-every standing sweep box.
+- **(e) mandate-pair and promise coverage** — every spec sentence that mandates two halves
+  in one breath (a mechanism and its user-visible signal; a bound and the dispatch site it
+  bounds) has an owning box for each half, and every code comment promising "X is
+  P<n+1>" resolves to a real box in that phase. This surface finds MISSING boxes.
+- **(f) realizability probe** — every box that names an owner or L(-1) tail, an
+  acquisition mode, a signing anchor, an OS mechanism or a new dependency is RUN before it
+  is ruled on, not read: the binder gate on a scratch root (does the caged half land as a
+  tail, or is it a precondition?), the upstream's release and signing survey (release
+  assets, attestations, the signing KEY — a web-flow-signed commit is not a maintainer
+  signature), the library's build closure from its own build system, the OS probe, and
+  the checker a box names, run over the live inputs it will scan, with what it read
+  recorded (a check whose live input set is empty scans nothing). A box that names an
+  actor names the script, its home and its semantics. The measured facts go into the
+  owning spec `§` or the box, and its `needs:` / `[!extern]` shape follows from them.
+- **(g) the gate catalogue's own promises** — a build-gates row that defers a leg names its
+  owning `P<n>.<m>` box within a few words of the phrase; `plan-lint` check 33 refuses the
+  unowned shape at L1.
+
+**Resolution — net-negative text.** A finding resolves as a `needs:` edge, a new box, a
+spec edit or a deletion of restated prose; a measured fact goes into the owning spec `§`
+(or one note line within the `_format.md` §3.3 budget), never an explanatory box
+paragraph. Resolvable findings land as normal plan/spec commits before the P<n+1> build
+session; genuine forks go to the owner at the boundary, batched. Leg B builds nothing; an
+L(-1) surface it edits follows the normal owner-ack path (G71).
+
+**Owner acts.** Each owner act is its own `[!extern]` box that its dependents `needs:`
+(`_format.md` §5a). The owner acks the phase's batch — its owner-act boxes and its
+caged-preconditions act, as `plan-lint --report owner-acts --phase <n>` lists them — once,
+at the phase's decision session; the Co-Pilot executes each act as soon as its Loop
+prerequisites are `[x]`, grouping the ready ones, and never parks a ready act until the
+last one is ready. This is the per-phase owner-act batch build-loop.md and
+roles-and-escalation point to.
+
+**The caged-preconditions act.** A phase carries at most one `[!extern]` box titled
+`Land the P<m> caged preconditions …`, appended at max+1 in the P<m> file (`_format.md`
+§5a) and authored at the latest by the P<m-1> sweep's Leg B (a re-cut may author it
+earlier). It holds only caged items that are green on `main` before any dependent Loop box
+runs — `engines.lock` rows, engine-source allow-list entries, tool pins, and CI
+cache-restore steps keyed on those rows — and its dependent Loop boxes `needs:` it. It may
+execute any time after authoring, in parallel with the Loop; until it is `[x]` only its
+`needs:` closure waits (build-loop.md Step 1). Caged wiring that invokes a Loop-built
+artifact is never in it: that is the caged part of the Loop box (build-loop.md Step 7) or
+a sweep tail (§11.2).
+
+**Scope notes.** The final phase's sweep (`P11.34`) has no successor plan; its Leg B is
+vacuous.
 
 ---
 

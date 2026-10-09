@@ -49,7 +49,7 @@ rather than an invisible drift.
 | `cargo-careful` | decided | 2026-10-08 | — | declined for v1: no nightly std-assertion / runtime-UB run of the detect/`fs_guard` path. Accepted residual (T1): UB there that neither the G48 ASAN fuzz (Linux) nor the G4/G14 no-panic denies surface |
 | Kani | decided | 2026-10-08 | — | declined for v1: no bounded proof of the ≤ 100× ratio, `MAX_SVGZ_SNIFF` and the `fs_guard` predicates. Accepted residual (T1): the caps are proven by the G16 bound-firing fixtures and sampled by G48, not exhaustively |
 | `cargo-geiger` | decided | 2026-10-08 | — | declined for v1: no `unsafe` census of third-party crates; the enforced first-party policy is G29 |
-| `cargo-mutants` | informational | 2026-06-19 | P3 (P3.72) | scoped mutation testing over `crate::fs_guard`+`crate::detection`+`crate::outcome` (the no-harm/atomicity/no-misroute kernel), a **G15** sub-leg — line coverage proves a line RAN, not that a test would CATCH a regression there; owner flips `informational`→`required` once survived-mutants reach **0** for `crate::fs_guard`+`crate::detection` (the P3.72 first run + the decrease-only per-crate `max_survived_mutants.toml` ratchet) |
+| `cargo-mutants` | informational | 2026-06-19 | P3 (P3.72) | scoped mutation testing over `crate::fs_guard`+`crate::detection`+`crate::outcome` (the no-harm/atomicity/no-misroute kernel), a **G15** sub-leg — line coverage proves a line RAN, not that a test would CATCH a regression there; re-run at every phase-end sweep (test-strategy §11.2), which lowers the ratchet; owner flips `informational`→`required` once survived-mutants reach **0** for `crate::fs_guard`+`crate::detection` (the P3.72 first run + the decrease-only per-module `max_survived_mutants.toml` ratchet) |
 | **G59** — build-provenance attestation (`actions/attest-build-provenance`) | decided | 2026-06-19 | P10 | a v1 OWNER DECISION (promoted from a post-v1 deferral): the one genuinely-free build-**ORIGIN** signal — binds the artifact to runner+workflow+commit, so a silently re-signed release from a poisoned shared VPS is detectable **even if the minisign key leaked**; additive to minisign, **NOT** binary code-signing; needs only `id-token: write` scoped to the release/attestation job. **VERIFIED, not just generated** — a release step runs `gh attestation verify` (fail-on-non-zero); the **Sigstore bundle + a paired `trusted_root.jsonl`** ship as named release assets for OFFLINE verify; both join the **G58** completeness enumeration. `decided` = a one-time adopt → NOT in the check-23 `_OWNER_DECIDABLE_GATES` posture map; §8/catalogue/box statuses agree (check 17: the §8 entry is PROMOTED, not a live deferral) |
 | **G17b** — bundled-engine CVE awareness (`osv-scanner`/`grype`) | informational | 2026-06-19 | P10 | informational per-push OSV/grype over the **PURL-keyed** `engines.lock` (a planted-positive — a known historical internal-FFmpeg-decoder CVE — guards the empty-report-masquerading-as-clean failure; the FFmpeg CPE `cpe:2.3:a:ffmpeg:ffmpeg:<ver>` is MANDATORY); emits a dated open-CVE report (recording the advisory-DB age) as an owner-signed-off release asset; offline-tolerant (vendored DB, refresh warn-only). Owner flips `informational`→`required` via the **CVSS ≥ 7 on an actively-exercised §04 path → release-blocking escalation** (recorded in `vuln-response.md` / `SECURITY.md`); the release-tier advisory-DB-staleness floor (`MAX_ADVISORY_DB_STALENESS`) is shared with **G17**. A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
 | **G64** — privilege-drop-tier ratchet | informational | 2026-06-19 | P9 | records the achieved §2.12.3 privilege-drop tier **per platform** into a tracked `privilege-drop-coverage.toml`, **decrease-guarded** like the coverage floor / `max_survived_mutants.toml` (a commit lowering an achieved tier fails/escalates; raises are deliberate) — the §2.12.3 runtime containment of the untrusted C/C++ decoders is best-effort and silently degrades (the T1 honest residual), and G31 proves the tier FIRED on the runner but nothing tracked the TREND, so G64 makes a NET regression visible. Owner flips `informational`→`required` once the §2.12.3 tier matrix **stabilises** (informational while it is filled in P4–P9). A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
@@ -164,9 +164,9 @@ owning box change in one owner-acked commit.
 
 ## Scoped mutation testing — `cargo-mutants` (P0.5.10 · §6.4 · G15)
 
-A **release-tier** mutation-testing sub-leg of **G15** over the safety kernel
-`crate::fs_guard` + `crate::detection` + `crate::outcome` (the no-harm / atomicity /
-no-misroute kernel). Line coverage proves a line **executed**; it does **not** prove a
+A mutation-testing sub-leg of **G15**, re-run at every phase-end sweep, over the safety
+kernel `crate::fs_guard` + `crate::detection` + `crate::outcome` (the no-harm /
+atomicity / no-misroute kernel). Line coverage proves a line **executed**; it does **not** prove a
 test would CATCH a regression there — `cargo-mutants` mutates the kernel's code and
 **fails if a mutation survives the test suite** (a gap a coverage percentage hides). It
 is **additive to G48**, not a replacement: G48's fuzz finds crashes on hostile input;
@@ -181,11 +181,14 @@ L(-1) commit (the flip protocol above).
 
 **Activation (the end-of-P3 [GATE] box `P3.72`, `needs: P0.5.10`).** The runnable first
 informational pass lands after the kernel crate bodies exist (the P3.6/P3.8/P3.18/P3.29
-kernel boxes): it emits a per-crate survived-mutant report, and the ratchet is a tracked
-per-crate `max_survived_mutants.toml` initialised at the first-run count, **decrease-only**
+kernel boxes): it emits a per-module survived-mutant report, and the ratchet is a tracked
+per-module `max_survived_mutants.toml` initialised at the first-run count, **decrease-only**
 (authored by P3.72 — this box registers only the gate + its posture, mirroring the P3.67
-fuzz-replay activation pattern). The gate then ratchets decrease-only per crate as
-subsequent phases deepen the kernel test suites.
+fuzz-replay activation pattern). Each phase-end sweep re-runs it and lowers the ratchet,
+decrease-only per module (test-strategy §11.2). A full run takes about an hour on Linux (187
+mutants at tree `96984a4`; sharded runs extrapolate to 45–55 min on a 32-CPU host and about
+1 h on a 4-CPU runner, the suite's fixed waits dominating), so it runs as a background job
+of the sweep session, never per push.
 
 **First informational pass (P3.72, 2026-07-21 — the activation).** Run at tree `7238e62`
 with the pinned `cargo-mutants` 27.1.0 (`scripts/gate-tools.toml`, the 3b4fc5d pin):
@@ -196,8 +199,10 @@ ratchet is initialised at those counts (repo root, **L(-1)** — cage entry + th
 `l-neg1-cage` fingerprint re-blessed in the same owner-acked P3.72 commit, the
 coverage-floors P0.4.8 pattern). Survivor clusters (the full report lives in the run's
 `mutants.out`): the fs_guard publish arms (`publish_noreplace`/`publish_link_fallback`)
-and the `detection::viable_agreement` comparison operators — the concrete targets the
-subsequent phases ratchet down. Baseline byproducts of the activation: the
+and the `detection::viable_agreement` comparison operators. The run was the windows-x86_64
+local first pass, and the publish arms compile only on Linux and macOS, so that run reports
+their mutants missed whatever the tests assert: survivor counts are per platform (the
+`max_survived_mutants.toml` header). Baseline byproducts of the activation: the
 environment-fragile ephemeral-specimen test corrected (`7238e62`, `[Test-Change: P3.72]`)
 and the g24-coverage real-repo specimen re-pointed post-split (`25d96e6`). Posture
 unchanged: `informational`; the owner flips to `required` at **0** for

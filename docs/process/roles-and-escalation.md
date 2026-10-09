@@ -175,8 +175,8 @@ proceed, tagged** (§3).
   prerequisite of a non-extern box), or the plan is an **all-blocked deadlock** with
   nothing open. The escalation is scoped: the loop STOPs for that `needs:` closure only,
   continues with the open boxes outside it, and the Co-Pilot works the collected owner
-  acts per phase (the owner-act box and each precondition box as its own act, the caged
-  tails at the sweep box)
+  acts per phase (each owner-act box and the caged-preconditions act as its own act,
+  test-strategy §11.4; the caged tails at the sweep box)
   ([build-loop.md §3 step 1](build-loop.md#step-1--find-the-next-buildable-box), §9) —
   except the phase-end sweep box, which blocks its WHOLE successor phase
   (test-strategy §11.3). A parked box's `needs:` closure is skipped likewise
@@ -201,11 +201,12 @@ Further blockers route the same way (their mechanics live in build-loop.md, the
   (the gates' own cage, [security-concept §2](../security/security-concept.md#2-working-model--two-sessions-one-branch),
   gate **G71**); the explicit, load-bearing case of (c)'s "any decision a doc reserves as an
   owner decision". A caged **precondition** → a `needs:` on an `[!extern]` precondition box
-  (the P4.89 pattern); a **same-push caged part** → the loop parks the box, and the owner-acked
-  Co-Pilot completes it in one commit
+  — per phase the caged-preconditions act (test-strategy §11.4; P4.89 is the pattern); a
+  **same-push caged part** → the loop parks the box, and the owner-acked Co-Pilot completes
+  it in one commit
   ([build-loop.md Step 7](build-loop.md#step-7--check-off-the-box)); caged text that **reds
   nothing** until it lands (a build-gates row) → pre-declared in the box, closed by the
-  phase-end sweep box (test-strategy §11.4). `L-neg1-ack: owner` is written only in the session
+  phase-end sweep box (test-strategy §11.2). `L-neg1-ack: owner` is written only in the session
   where the owner gave the ack. The trigger stops the caged edit, not the loop, which continues
   outside the blocked closure (except the phase-end sweep box, which blocks its WHOLE successor
   phase, test-strategy §11.3).

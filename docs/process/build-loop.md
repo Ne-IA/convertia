@@ -128,7 +128,8 @@ the batch. A disagreement between `_format.md` §6 and the tool is a `plan-lint`
 §4(g)). The loop adds:
 
 - **An `[!extern]` box in the target's `needs:` closure** → one Co-Pilot line (§8), collect the
-  `[!extern]` box into its phase's owner-act batch, and continue with the next open box outside
+  `[!extern]` box into its phase's owner-act batch (the phase's owner-act boxes and its
+  caged-preconditions act, test-strategy §11.4), and continue with the next open box outside
   that closure (roles-and-escalation §4(d)). An undeclared dependency on it found at Step 2 or 3
   is a §4(d) escalation, never a build against an absent prerequisite. The phase-end sweep box
   blocks the whole successor phase (test-strategy §11.3).
@@ -467,9 +468,10 @@ owner-acked Co-Pilot applies the patch in its clone, adds the caged part, runs S
 whole diff and makes the box commit with `Dual-Review:` and `L-neg1-ack: owner`; its landed commit
 is the park's answer. The loop never writes that trailer, and deletes the patch once the box is
 `[x]` (Step 0).
-The preference for a caged part: a precondition box (`needs:` on an `[!extern]` box), then a
-`caged` park, then a pre-declared sweep tail (§5 (b)). A box's `l-neg1:` line (`_format.md`
-§5.3) pre-declares which of the three it takes.
+The preference for a caged part: a precondition box (`needs:` on an `[!extern]` box; per phase
+the caged-preconditions act, test-strategy §11.4), then a `caged` park, then a pre-declared
+sweep tail (§5 (b)). A box's `l-neg1:` line (`_format.md` §5.3) pre-declares which of the
+three it takes.
 
 ---
 
@@ -642,9 +644,10 @@ consolidated `[!extern]` list for that phase.
 
 **Convergence report** (§6 stop (2)): the boxes completed with their commit SHAs, the parked
 boxes with their patch paths, and the **consolidated `[!extern]` list = the owner/Co-Pilot action
-list**. The Co-Pilot works it per phase — the owner-act box and each precondition box as its own
-owner-acked act, the caged tails at the sweep box (test-strategy §11.4); the phase-end sweep box
-blocks its whole successor phase (test-strategy §11.3). Never loop forever.
+list**. The Co-Pilot works it per phase — each owner-act box and the caged-preconditions act as
+its own owner-acked act (test-strategy §11.4), the caged tails at the sweep box (test-strategy
+§11.2); the phase-end sweep box blocks its whole successor phase (test-strategy §11.3). Never
+loop forever.
 
 **Crash-recovery procedure (a session crash mid-box is recoverable without manual
 surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here):**
