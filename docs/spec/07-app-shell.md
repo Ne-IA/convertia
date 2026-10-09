@@ -741,7 +741,8 @@ When a batch is **Running** (§1.9) and the user tries to close/quit:
    keyboard-operable confirm (§5.2/§5.10): **"A conversion is in progress. Quit
    anyway? Files already finished are kept; the one in progress will be
    discarded."** — mirroring the SSOT cancel semantics exactly.
-2. **Quit confirmed →** the app performs a **cancel** of the in-flight run using
+2. **Quit confirmed →** Quit invokes C15 `confirm_quit` (§0.4.1): the app performs a
+   **cancel** of the in-flight run using
    the §1.7 cancellation/kill mechanism (process-group kill of the live engine),
    then the §2.6 cleanup (discard the in-progress item's temp, keep finished
    outputs, never touch originals), then exits. This is the *same* code path as an
@@ -1327,8 +1328,8 @@ harmless empty drain. A stash over a still-undrained set **APPENDS** to it and k
 FIRST stash's `origin` (the P2.58 no-loss accumulation — a superseding replace would
 silently drop the earlier launch's paths, the exact loss this section's guarantee
 forbids); the next drain consumes the merged set. There is **no
-separate `take_pending_intake` command/accessor**, so the canonical C1–C14 IPC table
-(§0.4.1) stays complete and the codegen/drift check covers the whole drain path; **no
+separate `take_pending_intake` command/accessor**, so the §0.4.1 command table
+stays complete and the codegen/drift check covers the whole drain path; **no
 4th `app://` event** is added (the §0.4.2 three-event invariant holds).
 
 > **Supersede-note `[the 2026-07-06 owner ruling (core-owned paths)]`.** The

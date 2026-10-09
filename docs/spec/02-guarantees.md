@@ -1371,15 +1371,16 @@ otherwise-successful item's `ItemResult.reason` (the `Lossy` shape):
 | Cancelled | **"Stopped. {ok} files were already converted and kept; the rest were not started."** |
 | With residue | append **"Some temporary files may remain — see details."** |
 
-**`OutcomeMsg` — the surfaced per-item string (defined here; §0.6 `ItemResult.reason`
-references it).** The §0.6 `ItemResult.reason: Option<OutcomeMsg>` is a §2.8 failure
-string, a §2.9 lossy note, a §1.1/§1.3 skip line, **or** the §2.6.4 case-1 residue
-annotation on an otherwise-successful item. It is the *resolved, ready-to-show* line (so
+**`OutcomeMsg` — the surfaced per-item string (defined here; §0.6 `ItemResult.reason`,
+`ItemResult.lossy` and `OutputPlanPreview.lossy_notes` reference it).** The §0.6
+`ItemResult.reason: Option<OutcomeMsg>` is a §2.8 failure string, a §1.1/§1.3 skip line,
+**or** the §2.6.4 case-1 residue annotation on an otherwise-successful item (the exact
+lossy note rides `ItemResult.lossy`). It is the *resolved, ready-to-show* line (so
 the summary needs no second lookup), produced by `crate::outcome` from the kind + its
 substitutions:
 
 ```rust
-/// A surfaced one-line outcome for one item (§0.6 ItemResult.reason). Failure/Lossy/
+/// A surfaced one-line outcome for one item (§0.6 ItemResult.reason / .lossy). Failure/Lossy/
 /// Skipped carry a stable discriminant so §5 may re-localise (§2.10); Residue carries
 /// none (§2.8.2 homes exactly one case-1 row — the variant tag IS the key). EVERY
 /// variant carries the resolved English line.
@@ -1447,13 +1448,13 @@ variant. tauri-specta generates `bindings.ts` only from types deriving `specta::
 if these two did not, codegen would fail or fall back to `any` for
 `ItemResult.reason` — violating the platform **no-`any`** rule. Therefore **both
 `OutcomeMsg` and `§2.8.1 ConversionErrorKind` (and `§2.9 LossyKind`) derive
-`specta::Type` and are registered in `collect_types![]`** (alongside the §0.4.3
+`specta::Type` and are registered via `.types()`** (alongside the §0.4.3
 `IpcError`/`ErrorKind`). The §06 bindings-drift check (§0.4.5) **covers these types
 too**, so a change to the §2.8 taxonomy or the lossy catalog regenerates
 `bindings.ts` and fails CI if stale. (`ConversionErrorKind` is the §2.8-owned full
 set; `§0.4.3 ErrorKind` is its byte-identical wire mirror for **all variants** — the
-item-level kinds **and** the run/app-level kinds `MixedDrop`/`EngineMissing`/
-`WebviewFault`/`BundleDamaged` (§2.13) which `§0.4.3 ErrorKind` also carries — both
+item-level kinds, the §2.13 run/app-level kinds **and** the mirror-only `MixedDrop`,
+which `§0.4.3 ErrorKind` also carries — both
 are generated, neither is hand-written.)
 
 **Concrete anti-drift enforcement (not just "a check exists") `[DECIDED]`.** The

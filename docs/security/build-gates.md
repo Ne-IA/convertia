@@ -464,10 +464,8 @@ Invariant checks (initial set; expanded during P0 review):
    frozen snapshot, so the superseded enumeration cannot leak into the parity check.
 9. **Inventory parity (membership checks)** — every IPC command named in prose ∈ the
    §0.4.1 **explicit enumerated set** (treated as a SET, **not** a contiguous
-   range — `C2` is split into **C2a `pick_for_intake` / C2b `pick_destination`** and
-   there is **C13 `cancel_ingest`** / **C14 `get_initial_destination`**, so a range
-   check would miss C2a/C2b; **C15 `confirm_quit`** / **C16
-   `get_run_liveness`** are plan-ruled members (2026-09-15) whose §0.4.1 rows P4.67.1 / P4.50 author); every engine
+   range — `C2` is split into **C2a `pick_for_intake` / C2b `pick_destination`**, so a
+   range check would miss them); every engine
    id in prose ∈ §3.1; the §0.4 error taxonomy (incl. the `QuarantinedByOs` kind) and
    the fixed-set enums (`FormatId`, `EngineProgram`, `PatentDisposition`, the
    lossy-catalog) are internally consistent across the files that reference them.
@@ -492,10 +490,9 @@ Invariant checks (initial set; expanded during P0 review):
     except G1") never claims a numeric span narrower than `max(Gnn)` in this catalogue,
     so a frozen `G2–Gxx` bound can never silently drift below a newly-added gate.
 12. **IPC command-surface drift** *(glob-scoped to `src-tauri/`, L2 pre-push)* — the set
-    of registered `#[tauri::command]` function names equals **exactly** the §0.4
-    enumerated command set (the §0.4.1 table rows as written, incl. C2a/C2b/C13/C14 — an AST/grep diff against
-    the committed golden, which holds exactly those rows; check 9's plan-ruled C15/C16 members
-    join the golden only with their §0.4.1 rows), so a spurious `#[tauri::command]` (a new WebView-reachable
+    of registered `#[tauri::command]` function names equals **exactly** the committed golden of
+    §0.4.1 commands (an AST/grep diff; the golden holds the registered set — a §0.4.1 row may lead
+    its code, and the golden gains the command with the box that registers it), so a spurious `#[tauri::command]` (a new WebView-reachable
     surface) is a deterministic gate failure, not a dual-review-only catch. (G22/G23 are
     format-matrix-scoped, not IPC-surface-scoped, so this closes the IPC drift they miss.)
     **`name` caveat:** Tauri allows a `name` override on
@@ -721,7 +718,7 @@ Invariant checks (initial set; expanded during P0 review):
     prose, not a literal, and is deliberately **not** matched (the §0.4.2 doc-comments use backticks
     throughout); a `format!("app://{}", …)` dynamic name **is** matched (its value is not in the closed
     set → caught). The IN-CORE payload-registration / no-`any` side (each event's §0.4.2 payload authored
-    + in `collect_types![]`) is **P2.41's `cfg(test)` cross-check** — the §0.4.1-command analog of the
+    + registered via `.types()`) is **P2.41's `cfg(test)` cross-check** — the §0.4.1-command analog of the
     Rust golden test check 12 pairs with. Under the loose **G23** completeness-family label the P2.41 box
     uses (like check 12, this is a plan-lint check, not its own `Gnn` row). Stdlib-only; a missing
     `src-tauri/src` is a finding.

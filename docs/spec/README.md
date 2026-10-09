@@ -410,14 +410,14 @@ One glossary for every spec file; per-file headers point here.
 - **§0.10 capability allowlist** — **no `shell:allow-execute`** (engines spawn
   Rust-side §3.3.3); **no `dialog:allow-open`** (both C2 pickers open Rust-side via
   `DialogExt`); **no `opener:*`** (C9/C10 call `OpenerExt` internally); `log:default` +
-  `store:default` only. Own `#[tauri::command]`s C1..C14 (incl. C2a/C2b) need **no per-command
+  `store:default` only. Own §0.4.1 `#[tauri::command]`s need **no per-command
   permission entry** in Tauri v2 — **CAVEAT (verified vs Tauri v2 source
   `webview/mod.rs` + `acl/mod.rs::has_app_manifest`):** a custom command needs ACL validation
   only when (1) it is a plugin command, (2) the app defines its own APP ACL MANIFEST (`__app-acl__`,
   the production-hardening opt-in), or (3) the request is from a REMOTE origin. v1 hits none
   (no app ACL manifest defined = DEFAULT; WebView is local-only). So the no-entry claim is
   correct as the implemented v1 path; **if a future build opts into the app ACL manifest, each
-  C1..C14 needs an `allow-<cmd>` entry or is silently denied.** Owner: §0.10.
+  §0.4.1 command needs an `allow-<cmd>` entry or is silently denied.** Owner: §0.10.
 - **cancel-collect** — command-backed **C13 `cancel_ingest`** (ingest-scoped token);
   the §5.2 Collecting cancel control + §5.10 Esc back it. Owner: §0.4/§1.1/§5.
 - **HEIC/AVIF encode code-path** — standardise on libvips `heifsave` (one AV1 encoder,

@@ -241,7 +241,9 @@ native Rust-side event and stay core-side — the DOM drop carries nothing.
 
 All payloads are the §0.6 domain types (or thin DTOs of them); field naming is
 `camelCase` on the wire (Rust `#[serde(rename_all = "camelCase")]`). Pseudo-Rust
-signatures; the TS side is generated (§0.4.5 codegen).
+signatures; the TS side is generated (§0.4.5 codegen). A row may lead its code: the
+registered set is the committed `src-tauri/ipc-commands.golden`, and a row whose command is
+not in it yet is built by the plan box that cites it.
 
 **Reading the Response column — it lists the success type `T`, not the full return
 type.** Per the §0.4 universal error-shape rule, **every command's handler returns
@@ -259,7 +261,7 @@ status-only command such as C7 is `Result<(), IpcError>`). The `Err` arm is alwa
 | C2a | `pick_for_intake` | `{ kind: PickKind /* files \| folder */ }` | `()` | The **intake picker `[DECIDED]`.** Opens the native files/folder dialog **Rust-side via `DialogExt`** from this command's handler (so there is no `dialog:allow-open` WebView grant — §0.10). The picked paths are routed **core-side through the §7.8.1 funnel exactly like every other intake source** (uniform §7.1.1 refuse-busy → `State<PendingIntake>` with `origin: Picker` → the payload-less `app://intake` nudge, §0.4.2), and the WebView completes the intake with **C1 `drain_intake`** — so **no raw FS path ever reaches the WebView**. A **cancelled dialog is a clean no-op**: nothing is buffered, no nudge is emitted, the command returns `()` and the UI stays Idle (§5.4). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the former shape took `collectingId` + `onScan` and ran the walk/freeze inside this handler, returning the `CollectedSet` directly, with the `CancellationToken` registered before the dialog opened; the walk, the freeze, `collectingId`, `onScan` and the `CollectedSet` return all live on C1 `drain_intake` — during the modal there is no walk, so a C13-during-modal has nothing to cancel.) |
 | C2b | `pick_destination` | `{}` | `Option<DestinationPicked>` | The **destination-folder picker `[DECIDED]`.** Opens the native folder dialog **Rust-side via `DialogExt`** (still no `dialog:allow-open` grant). **The picked folder's `PathBuf` stays core-side `[DECIDED 2026-07-06]`:** the handler mints a `DestinationId`, stores the pair in the **session-scoped picked-roots registry** (§0.4.4), and returns `DestinationPicked { destination: DestinationId, display: String }` — the id the WebView carries into C4/C5/C6 as `DestinationChoice::ChosenRoot(id)` (§5.10 "Change destination") + a lossy **display-only** string for the "will save to …" line (§2.10.1). `None` = the user cancelled (no-op; the held C4/C5 destination is unchanged). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: "This one path DOES transit the WebView — unavoidable, acceptable" is reversed — **no** FS path transits the WebView in either direction; the destination is a core-held picked root the WebView references by id, and the old caveat scoping the "picked paths never transit the WebView" claim to the intake picker only is retired with it — the claim is universal.) |
 | C3 | `get_targets` | `{ collectedSetId: CollectedSetId }` | `TargetOffer` | From the detected source type → the offered `Vec<Target>` + the **one pre-highlighted default** + per-target lossy flags + per-target availability (from §3.4, or a §3.1 degradable startup failure) + the declared options model (§1.6). A function of detection plus the cached §7.2.3 startup result; no engine spawned. |
-| C4 | `plan_output` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `OutputPlanPreview` | Computes the `OutputPlan` (§1.8): resolved destination, beside-source vs chosen-root subtree re-creation, per-location divert preview, **re-run/equivalent-output detection (§2.5)** → may return a `RerunPrompt`. Also returns the §1.10 pre-flight verdict (size/space estimate, any up-front "too big" fail). Drives the "will save to …" line (SSOT *output lands somewhere obvious*) **before** convert. |
+| C4 | `plan_output` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `OutputPlanPreview` | Computes the `OutputPlan` (§1.8): resolved destination, beside-source vs chosen-root subtree re-creation, per-location divert preview, **re-run/equivalent-output detection (§2.5)** → may return a `RerunPrompt`. Also returns the §1.10 pre-flight verdict (size/space estimate, any up-front "too big" fail) and the §2.9 lossy-note set for the chosen target and options (§0.6). Drives the "will save to …" line (SSOT *output lands somewhere obvious*) **before** convert. |
 | C5 | `set_destination` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `DestinationResolved` | User changes the destination before convert; revalidates writability/divert **and re-evaluates the destination-dependent preflight** — the §2.14.4 free-space check on the new volume — returning a refreshed `PreflightVerdict` so the UI's held C4 verdict never goes stale (§1.8 destination-change re-validation). The §2.5 re-run verdict is **destination-INDEPENDENT in v1** (EquivKey has no destination component, §2.5.1) and is **carried through unchanged** from C4 — C5 does **not** recompute `rerun`. |
 | C6 | `start_conversion` | `{ collectedSetId, target, options, destination, rerunDecision: RerunDecision, onProgress: Channel<ConversionEvent> }` | `RunId` | Creates a `RunId`, enqueues the batch (§1.9), spawns workers (§0.9), and **streams `ConversionEvent`s over the Channel** (E-series below). Returns immediately with the `RunId` (the run proceeds async; the Channel carries all telemetry). **C6's `destination` argument is AUTHORITATIVE as the CHOICE `[DECIDED]`:** C4/C5 are plan/preview + revalidation only; the value the UI passes to C6 is what the run uses (the UI carries the last C5-resolved destination into C6) — the `DestinationChoice` names beside-source or **which** picked root (`ChosenRoot(DestinationId)`), and the core resolves that id to its real `PathBuf` against the §0.4.4 picked-roots registry at plan/run time. (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the "no separate server-side destination store" clause — the core now keeps the minimal session-scoped picked-roots registry (§0.4.4). The CHOICE still travels client-side and C6's argument remains authoritative; the PATH never travels.) |
 | C7 | `cancel_run` | `{ runId: RunId }` | `()` | Trips the §0.4 cancellation token for that run. The actual in-flight engine kill is §1.7's mechanism. Already-finished items are kept (SSOT *cancellable*); the in-progress item is discarded cleanly (§2.1/§2.6). |
@@ -270,6 +272,8 @@ status-only command such as C7 is `Result<(), IpcError>`). The `Err` arm is alwa
 | C12 | `get_engine_health` | `{}` | `EngineHealth` | Startup self-check result: which bundled engines are present/runnable, which §3.4 patent-gated targets are available on this platform. Its `unavailable_targets` set mirrors the C3 offer's unavailable targets (§5.2 renders from C3) and it feeds §7.2 (startup faults). Cached from the §7.2 startup probe; cheap to call. |
 | C13 | `cancel_ingest` | `{ collectingId: CollectingId }` | `()` | Cancels an **in-flight** `drain_intake` (C1) — the recursive walk/detection of a thousands-file folder (§1.10) can run long enough that the §5.2 *Collecting* state's cancel-collect control must have a backing command. Trips an **ingest-scoped `CancellationToken`** keyed by the pre-`RunId` `CollectingId` (§0.6) that the **frontend generated and passed to C1** (see note) — so C13 can name the in-flight walk even though C1's own response hasn't returned yet. The §1.1 walkdir/detection loop polls it and stops cooperatively, discarding the partial (un-frozen) set — **no cleanup obligation** (no temp is written during ingest). Keyboard: §5.10. |
 | C14 | `get_initial_destination` | `{}` | `InitialDestination` | The **returning-user destination hand-off `[DECIDED — P3.56]`.** The frontend calls this at the §5.8 Confirm→Targets advance (BEFORE the first C4 `plan_output`) to resolve the persisted §7.4.1 `lastDestinationMode` **CORE-side** into a structural `InitialDestination` (`besideSource` \| `{ chosenRoot: DestinationPicked }` \| `fallback`, §0.6). The handler reads the pref via `crate::prefs::load` + re-validates a stored `ChosenPath` as writable (§2.7.2 `location_status`), registering a valid one in the §0.4.4 `DestinationRegistry` (a `DestinationId` + display); **no FS path crosses the wire** (§2.10.1). The frontend maps the result onto C4's FIRST `destination` argument — an ordinary `ChosenRoot(id)` or `BesideSource`, keeping §0.6's 2-variant `DestinationChoice` (no `Last` variant, no C4 mirror-back). The `fallback` outcome (the stored path failed re-validation) is **STRUCTURALLY distinct** from a plain `besideSource` pref so the §5.8 passive fallback note surfaces even when beside-source is writable. See §5.8's "Persisted `lastDestinationMode`" block. |
+| C15 | `confirm_quit` | `{ runId: RunId }` | `()` | The QuitConfirm (§5.2 state 11) **Quit** action. The handler (a) trips the run's cancellation token exactly as C7 does (an unknown or finished `runId` skips to (c)); (b) waits, bounded by the §1.7 group-kill timeout, for the run to leave the run registry; (c) calls `app.exit(0)` (the §7.3.3 programmatic-exit exemption). Stay/Esc invoke nothing. Needed because the §0.10 capability set grants the WebView no window-close or app-exit permission. |
+| C16 | `get_run_liveness` | `{ runId: RunId }` | `RunLiveness` | A pure read of the §0.4.4 run registry, then the `RunResultStore` (registry first: a finishing run retains its result before it leaves the registry). Answers `running`, `finished` or `unknown`. The §5.8 channel-silence watchdog calls it; no core heartbeat exists (§0.4.2). |
 
 **Notes binding to other owners:**
 
@@ -339,15 +343,17 @@ C6). A `#[serde(tag = "type", content = "data")]` enum, ordered delivery:
 
 | Variant | Payload | Meaning |
 |---|---|---|
-| `RunStarted` | `{ runId, totalItems, willReencode: bool }` | Batch accepted; queue built. **`totalItems` = QUEUED (eligible) items only** (= `CollectedSet::Single.count`, i.e. `CollectedSet::Single.items.len()` — `members` is the INTERNAL §1.3 `Grouping::Single` field, never on the §0.6 wire), **excluding pre-flight-skipped items** (§1.1/§1.3 — they never enter the queue); it is the `BatchProgress.total` denominator, so a skipped item never holds the bar below 100% (skips reconciled only at the §1.12 Summary) `[DECIDED]`. `willReencode` is a **conservative source-container → target-pair worst-case** flag (**re-encode *possible* ⇒ `true`**), **NOT a header/inner-codec inspection** — `RunStarted` is emitted right after C6, **before any `ffprobe`** (§1.7/§1.10 defer `ffprobe` to convert-time), so the inner codecs of MKV/MOV are **unknown** at emission and the flag is decided purely from the (source-container, target) pair (§2.9.2): `true` ⇒ at least one item *may* re-encode → video shows the worst-case lossy note ("may be re-encoded"). A pair whose only possible path is remux-verbatim is `false`; any pair that *could* re-encode is `true`. **Emission rule `[DECIDED]`:** for non-video / non-applicable batches the core emits **`willReencode: false`** (never omitted) so the field always carries a definite value. **The Rust struct field is non-optional `bool` (line below), so the GENERATED `bindings.ts` type is non-optional `willReencode: boolean`** — there is no third `undefined` state. (Hand-written docs/comments elsewhere sometimes show `willReencode?` purely as a decode-tolerance convenience — consumers still treat any absent/`undefined` as `false`, §5.8 — but the generated binding is non-optional.) The exact per-item disposition is resolved at convert-time (§3.5); the summary (§1.12) reflects the actual outcome. |
+| `RunStarted` | `{ runId, totalItems, willReencode: bool }` | Batch accepted; queue built. **`totalItems` = QUEUED (eligible) items only** (= `CollectedSet::Single.count`, i.e. `CollectedSet::Single.items.len()` — `members` is the INTERNAL §1.3 `Grouping::Single` field, never on the §0.6 wire), **excluding pre-flight-skipped items** (§1.1/§1.3 — they never enter the queue); it is the `BatchProgress.total` denominator, so a skipped item never holds the bar below 100% (skips reconciled only at the §1.12 Summary) `[DECIDED]`. `willReencode` is a **conservative source-container → target-pair worst-case** flag (**re-encode *possible* ⇒ `true`**), **NOT a header/inner-codec inspection** — `RunStarted` is emitted right after C6, **before any `ffprobe`** (§1.7/§1.10 defer `ffprobe` to convert-time), so the inner codecs of MKV/MOV are **unknown** at emission and the flag is decided purely from the (source-container, target) pair (§2.9.2): `true` ⇒ at least one item *may* re-encode → video shows the worst-case lossy note ("may be re-encoded"). A pair whose only possible path is remux-verbatim is `false`; any pair that *could* re-encode is `true`. **Emission rule `[DECIDED]`:** for non-video / non-applicable batches the core emits **`willReencode: false`** (never omitted) so the field always carries a definite value. **The Rust struct field is non-optional `bool` (line below), so the GENERATED `bindings.ts` type is non-optional `willReencode: boolean`** — there is no third `undefined` state. The exact per-item disposition is resolved at convert-time (§3.5); the summary (§1.12) reflects the actual outcome. |
 | `ItemStarted` | `{ runId, itemId, sourceDisplay, target }` | An item left `Pending` for `Running` (§1.9). `sourceDisplay` is the core-produced lossy display of the item's source (last-step `to_string_lossy`, §2.10.1) — display-only, never a re-submittable path `[DECIDED 2026-07-06]`. |
 | `ItemProgress` | `{ runId, itemId, fraction: Option<f32> /* 0.0..1.0; None only where truly indeterminate (LibreOffice, §1.11) */, stage: JobStage }` | **Real per-item progress** (SSOT *not an indeterminate spinner*). Denominator is engine-specific (e.g. video = source duration from `ffprobe`, §3.5/video.md). `stage` is the §0.6/§1.11 `JobStage` (`Spawning \| Decoding \| Encoding \| Writing`); for the `None`-fraction LibreOffice case the frontend synthesises a staged determinate-looking bar from `stage` transitions (§1.11/§5.3). |
 | `ItemFinished` | `{ runId, itemId, outcome: ItemOutcome }` | Terminal per item: `Succeeded { outputDisplay } \| Failed { error: IpcError } \| Skipped { reason } \| Cancelled`. **Pre-flight-skip emission policy `[DECIDED]`:** pre-flight-skipped items (§1.1/§1.3 — never entered the queue, §1.9) are **NOT** emitted as live `ItemFinished{Skipped}` Channel events; they appear **only** in the terminal `RunFinished → RunResult.items` projection (§1.12). The `ItemOutcome::Skipped` variant is **reserved for that terminal-projection path** (it is not dead wire code — it carries the projected pre-flight skips and any mid-run cooperative skip), so the orchestrator emits **no live `ItemStarted`/`ItemFinished{Skipped}`** for a freeze-time skip; the ProgressList shows skipped rows only once the run reaches `Summary`. (Chosen over a post-`RunStarted` batch flush: pre-flight skips have no queue presence and no per-item work, so surfacing them once, terminally, is simpler and matches §1.9's "never enter the queue".) |
 | `BatchProgress` | `{ runId, done, total }` | Aggregate queue progress for the batch bar (§1.11). **Denominator = QUEUED (eligible) items only `[DECIDED]`:** `total` counts only items that entered the queue (= `CollectedSet::Single.count`, i.e. `CollectedSet::Single.items.len()` — NOT the internal §1.3 `members`), **excluding** pre-flight-skipped items (§1.1/§1.3 — they never enter the queue, emit no live `ItemStarted`/`ItemFinished`, and §1.11's numerator excludes them). If `total` counted dropped-but-skipped items the bar could never reach 100%. Skips are reconciled **only** at the §1.12 Summary ("N converted, M skipped"). `total == RunStarted.totalItems`. |
+| `LowMemory` | `{ active: bool }` | Run-scoped §1.10 watermark edge: `true` when dispatch of new items pauses, `false` when it resumes; drives the §5.3 `LowMemoryNote`. A Channel variant, not an `app://` event. |
 | `RunFinished` | `RunResult` | Terminal for the run; mirrors C8. Carries the full summary incl. residue warnings (§2.6). |
 
-**The complete enum + payload structs (the concrete type `collect_events![]` (§0.4.5)
-needs).** All derive `Clone, Serialize, specta::Type` (no `any`; in `collect_types!`):
+**The complete enum + payload structs (the Channel payload type `start_conversion` takes).**
+All derive `Clone, Serialize, specta::Type` (no `any`; exported through C6's `onProgress`
+argument, §0.4.5):
 
 ```rust
 #[derive(Clone, Serialize, specta::Type)]
@@ -358,6 +364,7 @@ pub enum ConversionEvent {
     ItemProgress(ItemProgress),
     ItemFinished(ItemFinished),
     BatchProgress(BatchProgress),
+    LowMemory { active: bool },      // §1.10 watermark edge (run-scoped)
     RunFinished(RunResult),          // §0.6 RunResult (mirrors C8)
 }
 
@@ -413,7 +420,7 @@ event — consistent with *offline / no phone-home* (§2.11, §7.6).
 Every command's `Err` and every `ItemOutcome::Failed.error` is one shape:
 
 ```rust
-#[derive(Serialize, specta::Type)]   // generated into bindings.ts; in collect_types![] (§2.8)
+#[derive(Serialize, specta::Type)]   // generated into bindings.ts; registered via .types() (§2.8)
 #[serde(rename_all = "camelCase")]
 pub struct IpcError {
     /// Stable machine code from the §2.8 taxonomy — drives UI branching + i18n.
@@ -431,24 +438,9 @@ pub struct IpcError {
     pub residue_display: Option<String>,
 }
 
-#[derive(Serialize, specta::Type)]   // generated into bindings.ts; in collect_types![] (§2.8)
-#[serde(rename_all = "camelCase")]
-pub enum ErrorKind {
-    // Wire mirror of §2.8 `ConversionErrorKind` — names are byte-identical to the
-    // owner (§06 drift check enforces this). Item-level (§2.8):
-    Corrupt, Empty, Unrecognized, UnsupportedType, UnsupportedPair,
-    Unreadable, Gone, PasswordProtected, NoAudioTrack, TooBig, OutOfDisk,
-    WriteFailed, PathTooLong, TooManyCollisions, UnopenableOutputName,
-    EngineCrash, EngineHang, EngineError,
-    PlatformUnavailable, QuarantinedByOs, CleanupResidue, InternalError,
-    // run/app-level (§2.13); surfaced via app://fault:
-    EngineMissing, WebviewFault, BundleDamaged,
-    // pre-flight (NOT carried as an IpcError; mirror-only for drift-lock — see note below).
-    //   MixedDrop has NO §2.13 producer: it is the CollectedSet::Mixed SUCCESS return from C1
-    //   (§0.6), driving the §5.2 MixedDropRefusal state 9. It lives here ONLY so the wire enum
-    //   stays byte-identical to the §2.8 catalog — do NOT search §2.13 for its producer.
-    MixedDrop,
-}
+pub type ErrorKind = ConversionErrorKind; // [DECIDED] one enum: §2.8.1 owns the variant set
+                                          //   (item-level, the §2.13 run/app-level kinds and the
+                                          //   mirror-only MixedDrop — see the notes below)
 ```
 
 > **Note — `Cancelled` is not an `ErrorKind`.** A cancelled item is the
@@ -463,19 +455,15 @@ pub enum ErrorKind {
 > error — do **not** search §2.13 for a `MixedDrop` producer (there is none); its producer is
 > the `CollectedSet::Mixed` success-return.
 
-- **Both `IpcError` and `ErrorKind` derive `specta::Type` and are registered in
-  `collect_types![]`** (consistent with §2.8 §2.8.2): tauri-specta generates
+- **Both `IpcError` and `ErrorKind` derive `specta::Type` and are registered via
+  `.types()`** (consistent with §2.8 §2.8.2): tauri-specta generates
   `bindings.ts` only from `specta::Type` types, so without the derive `ItemOutcome::
   Failed.error` and every command `Err` would generate as `any` — a no-`any`-rule
   violation. The §06 bindings-drift check (§0.4.5) covers both.
 - The **authoritative enumeration of failure kinds and their exact English
-  strings is owned by §2.8** (the message catalog). `ErrorKind` here is the wire
-  mirror; §06 includes a drift check that the §2.8 catalog and this enum stay in
-  lock-step. **The concrete anti-drift mechanism is owned by §2.8.2 `[DECIDED]`:**
-  preferably **`ErrorKind` is a `type` alias for the §2.8 `ConversionErrorKind`** (one
-  enum, nothing to drift); if a distinct wire type is needed, a `static_assertions`
-  variant-count check + a variant-name round-trip `#[test]` make a missing mirror a
-  **compile/test failure**, with the §06 codegen-drift diff as the third backstop. `message`
+  strings is owned by §2.8** (the message catalog). **`ErrorKind` is a type alias of
+  `ConversionErrorKind` `[DECIDED]`** (the §2.8.2 anti-drift rule): one enum, so there is
+  no second list to drift, and the §06 codegen-drift check (§0.4.5) is the backstop. `message`
   is filled from the §2.8 catalog **in Rust** (strings live
   with their owner; the UI does not assemble outcome strings — §5.7).
 - `kind` is the stable contract the UI branches on (e.g. `PasswordProtected` →
@@ -490,7 +478,7 @@ pub enum ErrorKind {
   invocation layer** wires the token to the engine subprocess so a cancel triggers
   the process-group kill (§1.7 owns the kill mechanism and the ordering that keeps
   §2.6 cleanup and §2.1 no-partial intact). This section owns only the token's
-  *identity and lifecycle* (created in C6, tripped by C7, dropped on `RunFinished`).
+  *identity and lifecycle* (created in C6, tripped by C7 or C15, dropped on `RunFinished`).
 - Cancellation is **cooperative at the orchestrator level, forceful at the engine
   level** (kill the child), reconciled by §1.7.
 
@@ -571,17 +559,22 @@ single source of truth. Options surveyed:
 | **Manual mirroring** | Rejected — guaranteed drift; violates the "no `any` by accident" intent. |
 | **ts-rs** | Generates `.ts` from Rust types via derive, but treats types **individually** (a type and its dependency graph aren't exported together cleanly) and, critically, **does not model Tauri *commands or events*** — we'd still hand-write the `invoke`/Channel wrappers and could drift on argument names. |
 | **specta** (alone) | The introspection layer ts-rs lacks (full type graph), but not Tauri-aware on its own. |
-| **tauri-specta** (specta + Tauri integration) | **Recommended.** Purpose-built for Tauri v2: annotate commands with `#[specta::specta]`, collect via `collect_commands![]` / `collect_events![]`, and it emits a single `bindings.ts` exposing **typed `commands.*` wrappers, typed event/Channel helpers, and all referenced types** — exactly the C1–C14 + E-series surface above, with no `any` and no hand-written invoke glue. |
+| **tauri-specta** (specta + Tauri integration) | **Recommended.** Purpose-built for Tauri v2: annotate commands with `#[specta::specta]`, collect them with `collect_commands![]`, and it emits a single `bindings.ts` exposing **typed `commands.*` wrappers and all referenced types** (the Channel and event payloads included) — exactly the §0.4.1 command and §0.4.2 Channel/event surface above, with no `any` and no hand-written invoke glue. |
 | **JSON-schema** | Heavier toolchain, no first-class Tauri command typing; rejected. |
 
 **Decision `[DECIDED]`:** adopt **tauri-specta** (with specta). The spec already
-leans on it everywhere (the §5.8 generated `commands.*`/`ConversionEvent` examples
-assume it), so this is closed rather than left dangling. Generated output lands at a
+leans on it everywhere (§5.8's typed wrappers consume the generated `commands.*` and
+`ConversionEvent`), so this is closed rather than left dangling. Generated output lands at a
 single tracked path — **`src/lib/ipc/bindings.ts`** (the frontend's only door to the
-backend; §5.1/§5.8 import from here and never call raw `invoke`). Generation runs as
-part of the debug build / a dedicated `cargo` step; **§06 owns a CI drift check**
-that fails if `bindings.ts` is stale vs the Rust source (regenerate +
-`git diff --exit-code`).
+backend; §5.1/§5.8 import from here and never call raw `invoke`). Codegen is
+`cargo run -p xtask -- codegen`; **§06 owns the CI drift check (G19)**, which regenerates and
+fails if the committed `bindings.ts` differs (`git diff --exit-code`).
+
+**Collection `[DECIDED, forced]`.** Commands are collected with `collect_commands![]`.
+`collect_events![]` stays empty: tauri-specta's generated event helpers are `any`-typed, so
+the three `app://` events are raw `app.emit`/`listen`, their payload types registered with
+the builder's `.types()`; the Channel payloads (`ConversionEvent`, `ScanProgress`) are
+exported through the C6/C1 argument types. tauri-specta has no `collect_types!`.
 
 **BigInt-style scalars on the wire `[DECIDED]`.** `specta-typescript` forbids exporting
 BigInt-style Rust scalars (`u64`/`usize`/`i64`/`u128`/`i128`) by default — a JS-f64
@@ -609,7 +602,7 @@ overrides per-field with `#[specta(type = String)]` + a lossless `#[serde(with =
 `e as any`; a custom `typed_error_impl` override only moves the `any` into a generated contract
 assertion), and the generated `bindings.ts` may carry no `any` (the rule is enforced on it — eslint
 `@typescript-eslint/no-explicit-any` + G8). C1 `drain_intake` is the first `Result`-returning command,
-so the mode is fixed here; the §5.8 frontend `await commands.X(…)` examples carry no `{ status }`
+so the mode is fixed here; §5.8's awaited-Promise command model carries no `{ status }`
 assumption, so this is spec-compatible.
 
 **Held-in-reserve fallback (not a v1 open question):** if tauri-specta v2 proves
@@ -659,7 +652,8 @@ both `[DECIDED]`.
 The shared vocabulary. These are **Rust** types (the source of truth); the TS
 mirror is generated (§0.4.5). `RunId`/`InstanceId` are **defined by §7.1** and
 referenced here (this section does not own their identity policy). Fields are
-illustrative-but-concrete; invariants are normative.
+illustrative-but-concrete; invariants are normative. A field or variant may lead its
+code; `bindings.ts` is the delivered wire.
 
 ```rust
 // ─── Identity (defined by §7.1; referenced here) ────────────────────────────
@@ -672,11 +666,11 @@ pub struct DestinationId(Uuid); // a C2b-picked destination root, named BY ID on
 pub struct ItemId(u32);        // stable within a run
 pub type JobId = ItemId;       // §1.7/§1.8 say "JobId"; it IS the ItemId of the job's item
 #[derive(Clone, Copy, Serialize, Deserialize, specta::Type)] // crosses IPC as a C1 arg (frontend-
-                                          // generated, §0.4.1) AND C13 cancel_ingest arg → in
-                                          // collect_types![] or the §0.4.5 drift check emits `any`
+                                          // generated, §0.4.1) AND C13 cancel_ingest arg → registered
+                                          // via .types() or the §0.4.5 drift check emits `any`
 pub struct CollectingId(Uuid); // ingest-scoped cancellation handle, pre-RunId (§0.4 C13)
 #[derive(Clone, Serialize, specta::Type)] // Channel<ScanProgress> payload MUST derive specta::Type
-                                          // (in collect_types![]) or the C1 onScan payload is `any`.
+                                          // (exported through C1's onScan argument) or it is `any`.
                                           // PRECONDITION: typed Channel<T> serialisation requires the
                                           // `specta` feature on the tauri crate (enabled transitively
                                           // by tauri-specta's tauri dependency with features=["specta"]);
@@ -689,8 +683,8 @@ pub enum IntakeOrigin { Drop, Picker, LaunchArg, SecondInstance } // §7.8 — C
                                                      //   §7.8.1 PendingIntake buffer, never on the
                                                      //   wire (app://intake is payload-less, §0.4.2)
 
-// ─── Wire DTOs for the C-commands (derive specta::Type; in collect_types!).
-//     Defined here so every C1–C14 wire shape has one typed home (no
+// ─── Wire DTOs for the C-commands (derive specta::Type; exported through the command
+//     signatures). Defined here so every §0.4.1 wire shape has one typed home (no
 //     inline-comment-only types); the three app:// events carry `()` or the §2.13
 //     AppFault — no path-bearing hand-off shape exists [DECIDED 2026-07-06].
 //     camelCase on the wire. ─────────────
@@ -1107,7 +1101,7 @@ pub enum DivertReason { Unwritable, Ephemeral, NoAtomicPublish }  // §2.7.2 cla
 // §2.14.2). Diverted to a hardlink-capable system-disk target (§2.7.3) so the full §2.1
 // publish chain holds. Windows is unaffected (MoveFileExW create-only works on FAT/exFAT).
 
-// ─── Command return DTOs (the wire shapes C4/C5/C6 return — §0.4.1) ──────────
+// ─── Command return DTOs (the wire shapes the §0.4.1 commands return) ──────────
 pub struct OutputPlanPreview {       // C4 plan_output → drives the "will save to…" line
     pub set: CollectedSetId,
     pub final_dir_display: String,   // display-only lossy form (§2.10.1) of the resolved
@@ -1117,6 +1111,10 @@ pub struct OutputPlanPreview {       // C4 plan_output → drives the "will save
     pub diverted: Option<DivertReason>, // any per-location divert previewed (§2.7)
     pub rerun: Option<RerunPrompt>,  // Some(..) if §2.5 detected an equivalent prior run
     pub preflight: PreflightVerdict, // §1.10 size/space estimate + any up-front "too big" fail
+    pub lossy_notes: Vec<OutcomeMsg>, // the §2.9.1-rendered co-applying lossy-note set
+                                     //   (OutcomeMsg::Lossy) for the chosen target and options,
+                                     //   computed core-side under the §2.9.2 rules; empty when
+                                     //   no lossy kind applies
 }
 
 pub struct RerunPrompt {             // the one batch-level §2.5 prompt's data
@@ -1145,6 +1143,9 @@ pub struct PreflightVerdict {        // §1.10 (owner) summary surfaced before c
                                      //   (§1.10 / §1.11 fast-fail surfacing). So "preferably up
                                      //   front" = the per-volume whole-batch verdict here +
                                      //   per-item enforcement at the §2.1 write.
+    pub up_front_fail_text: Option<String>, // the backend-rendered §2.8.2 batch-scoped line for
+                                     //   the up_front_fail verdict (None when up_front_fail is
+                                     //   None); the §5.3 DestinationBar shows it verbatim
     // v1 SURFACING SCOPE `[DECIDED]`: the check is computed PER-PHYSICAL-VOLUME (above), but
     //   v1 surfaces only the BOOLEAN verdict (up_front_fail Some/None) + the AGGREGATE totals
     //   (est_total_output_bytes / est_total_scratch_bytes) to §5.2 — it does NOT carry a
@@ -1171,6 +1172,12 @@ pub struct DestinationResolved {     // C5 set_destination → revalidated desti
                                      //   (§2.5.1). C5 re-evaluates ONLY `preflight` (the
                                      //   destination-volume free-space check); it never
                                      //   recomputes `rerun`.
+}
+
+pub enum RunLiveness {               // C16 get_run_liveness return (§0.4.1); camelCase on the wire
+    Running,                         // the run is in the §0.4.4 run registry
+    Finished,                        // its RunResult is retained (C8 re-fetches it)
+    Unknown,                         // neither: the §5.8 watchdog enters state 12
 }
 
 pub struct RunResult {               // canonical shape; §1.12 computes & references by name
@@ -1222,7 +1229,7 @@ pub struct ItemResult {              // §1.12
     pub state: JobState,             // terminal per-item state (§1.9 — Succeeded / Failed /
                                      //   Skipped / Cancelled), unchanged by the wire revision
     pub reason: Option<OutcomeMsg>,  // the §2.8-resolved, ready-to-show line (failure string /
-                                     //   §2.9 lossy note on a SUCCEEDED item / skip text /
+                                     //   skip text /
                                      //   the §2.6.4 case-1 RESIDUE annotation on a SUCCEEDED
                                      //   item — `OutcomeMsg::Residue`, the non-failure note
                                      //   the [DECIDED 2026-07-16] P3.59 ruling added; a
@@ -1231,6 +1238,9 @@ pub struct ItemResult {              // §1.12
                                      //   OutcomeMsg's shape + wire rationale are §2.8's
                                      //   `[DECIDED]` and are NOT changed by the path revision
                                      //   (OutcomeMsg carries kind + text, never a path)
+    pub lossy: Option<OutcomeMsg>,   // the item's exact §2.9 lossy note (OutcomeMsg::Lossy), set
+                                     //   after convert and never carried in `reason`; when several
+                                     //   kinds fired, the first in §2.9.1 table order
 }
 // (SUPERSEDED [DECIDED 2026-07-06 owner ruling]: ONLY the two path fields are retired —
 // `source: PathBuf` → `item: ItemId` (display via DroppedItem.display_name; real paths in
@@ -1533,18 +1543,18 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 
 | Layer | Choice | Pin policy |
 |---|---|---|
-| Rust toolchain | stable (recommend a recent stable, e.g. `1.8x` class as of build) via `rust-toolchain.toml` | pinned channel |
+| Rust toolchain | stable — the `rust-toolchain.toml` pin | pinned channel |
 | Tauri | **v2** (`tauri` 2.x, `tauri-build`, `@tauri-apps/api` 2.x, **`@tauri-apps/cli` 2.x** — the devDependency that RUNS `tauri dev`/`tauri build`, matched to the `tauri` 2.x pin; **`@tauri-apps/plugin-log` 2.x** — the §7.5.1 JS-bridge companion to the `tauri-plugin-log` crate below, so WebView errors reach the same local log) | exact, lockfile |
 | Async runtime | **tokio** (multi-thread) — Tauri's async commands run on it; subprocess IO + Channel feed off it | exact |
 | IPC type-gen | **tauri-specta** + **specta** (§0.4.5, `[DECIDED]`) | exact |
 | Cancellation | **tokio-util** (`CancellationToken`) | exact |
-| Error plumbing | **thiserror** (core error enums) → mapped to `IpcError` (§0.4.3); `serde` for wire | exact |
-| Detection | content-sniffing crate(s) — `infer` and/or hand-rolled magic tables; §1.2 owns the strategy | exact |
+| Error plumbing | hand-rolled error enums mapped to `IpcError` (§0.4.3); `serde` for wire | exact |
+| Detection | hand-rolled magic tables (§1.2) | exact |
 | FS guarantees | `tempfile` (owned scratch), `winapi-util`/`dunce` (resolved-identity via the safe `GetFileInformationByHandle` wrapper + Windows path canonicalisation; replaces the earlier `same-file` listing — same-file exposes no Windows identity numbers, §2.3.1 `[CORRECTED 2026-07-07]`), free-space via platform calls (`rustix` `statvfs`/`fstatvfs`, `windows-sys` `GetDiskFreeSpaceExW` — `fs2` is RETIRED and never becomes a dependency), atomic **no-replace** publish via `rustix::fs::renameat_with(NOREPLACE)` (Linux `renameat2` / macOS `renameatx_np`) + `windows-sys` (the `FileRenameInfoEx`-class no-replace move) — NOT plain std `rename`, which replaces (`[CORRECTED 2026-07-08 — the P3.12 hard-stop ruling]`; the earlier "`fs2`/platform calls, atomic rename via std" row text) — + §2.14 cross-volume fallback | exact |
 | Frontend | **React 19**, **TypeScript** (strict, no `any`), **Vite** (per platform CLAUDE.md, current major), **Tailwind CSS** | exact, lockfile |
-| Frontend state | lightweight store (recommend **Zustand**) + the generated `bindings.ts`; §5.1 owns the final choice | §5.1 |
+| Frontend state | **zustand** (§5.1) + the generated `bindings.ts` | exact, lockfile |
 | Package mgr | **pnpm** (`pnpm@10.13.1` class per platform standard) | pinned |
-| Test | **Vitest** (frontend) + **`vitest-axe@0.1.0`** (real npm pkg, Vitest-native `jest-axe` fork; deps `axe-core ^4.4`; Lane-A ARIA/role/focus, §6.4.6a — bump to the `1.0.0-pre` line if it stabilises pre-Phase-3), **cargo test** + corpus harness (§6.4), property tests for guarantees; **E2E = WebdriverIO v9** (W3C-only, `tauri-driver`-aligned) + **`@axe-core/webdriverio`** (Lane-B live-WebView contrast gate, §6.4.6/§6.4.6a) | exact, lockfile |
+| Test | **Vitest** (frontend) + **`vitest-axe@0.1.0`** (real npm pkg, Vitest-native `jest-axe` fork; deps `axe-core ^4.4`; Lane-A ARIA/role/focus, §6.4.6a), **cargo test** + corpus harness (§6.4), property tests for guarantees; **E2E = WebdriverIO v9** (W3C-only, `tauri-driver`-aligned) + **`@axe-core/webdriverio`** (Lane-B live-WebView contrast gate, §6.4.6/§6.4.6a) | exact, lockfile |
 | Engines (bundled) | FFmpeg (GPL-2.0+ build — enables x264, §3.6.1), LibreOffice, poppler, pandoc, ImageMagick (required, permissive), libvips+libheif/libde265+x265-plugin/libaom/dav1d+librsvg+cgif — **all §3.1/§3.3 owned**; versions pinned + in the SBOM (§6.3). Ghostscript **[DECIDED: dropped v1]** (§3.1). | §3.8 best-effort |
 
 **Additional crates / plugins other sections depend on (pinned, in lockfile + SBOM):**
@@ -1787,11 +1797,11 @@ need:
   "windows": ["main"],
   "permissions": [
     "core:default",                       // base webview/window/event/path (incl. Channel)
-    // — our own #[tauri::command]s C1..C14 need NO per-command permission entry: in
+    // — our own §0.4.1 commands need NO per-command permission entry: in
     //   Tauri v2, once a custom command is on the invoke_handler and this capability
     //   covers the "main" window, it is invokable. Per-command permission entries are
-    //   ONLY required for PLUGIN commands (log is the one plugin the WebView is granted). So we add NO C1..C14
-    //   allow-entries here (adding them would be redundant, not load-bearing).
+    //   ONLY required for PLUGIN commands (log is the one plugin the WebView is granted). So we add NO
+    //   allow-entries for them here (adding them would be redundant, not load-bearing).
     // CAVEAT (load-bearing, verified vs Tauri v2 source `webview/mod.rs` +
     //   `acl/mod.rs::has_app_manifest`): a custom (app-own) command requires ACL/capability
     //   validation ONLY when one of: (1) it is a PLUGIN command, (2) the app has defined its
@@ -1799,10 +1809,10 @@ need:
     //   permissions for its own commands, the Tauri-encouraged production-hardening path,
     //   wired via build.rs `tauri_build` app-manifest/commands), or (3) the request comes from
     //   a REMOTE origin. v1 hits NONE: no app ACL manifest is defined (DEFAULT), and the
-    //   WebView is local-only (no remote origin, §0.10 CSP). So C1..C14 need NO per-command
+    //   WebView is local-only (no remote origin, §0.10 CSP). So the §0.4.1 commands need NO per-command
     //   entry HERE as the implemented v1 path. **If a future build opts INTO the app ACL
-    //   manifest, each C1..C14 then needs an `allow-<cmd-name>` entry or it is silently
-    //   DENIED** — do not add the opt-in without adding all C1..C14 allow-entries. (Remote
+    //   manifest, each §0.4.1 command then needs an `allow-<cmd-name>` entry or it is silently
+    //   DENIED** — do not add the opt-in without an allow-entry for every §0.4.1 command. (Remote
     //   origin never applies: ConvertIA serves only the bundled local app.)
     // C2a pick_for_intake / C2b pick_destination: BOTH native pickers are opened
     //   RUST-SIDE via DialogExt from their handlers `[DECIDED]` — so there is **NO

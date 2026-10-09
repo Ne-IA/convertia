@@ -79,7 +79,7 @@ source set** (snapshot; §2.4).
 | Entry point | Mechanism | Where paths materialise |
 |-------------|-----------|-------------------------|
 | **Drag-and-drop** (files or folders) | The core's Rust **`WindowEvent::DragDrop`** handler (§5.4) — **not** HTML5 DnD, which does not expose FS paths in a WebView (§0.4); the WebView's DOM drag events drive the hover affordance only, never a path source *(re-cut 2026-07-21 with P3.81 — this row's pre-revision "Tauri `onDragDropEvent` … WebView event → forwarded to a Rust intake command" wiring was superseded by the 2026-07-06 owner ruling (core-owned paths, the §5.4 supersede-note); the P3.77 code change landed it, this row had stayed described-the-old-way)* | Core-side in the window-event handler → the §7.8.1 funnel (stash → payload-less `app://intake` nudge → C1 `drain_intake`) |
-| **File picker** | **C2a `pick_for_intake`** (§0.4.1): the native files/folder dialog is opened **Rust-side via `DialogExt`** inside the command handler (no JS `open({…})`, no `dialog:allow-open` grant — §0.10) | Picked paths funnel **straight into this funnel Rust-side**; C2a returns the same `CollectedSet` — no path transits the WebView |
+| **File picker** | **C2a `pick_for_intake`** (§0.4.1): the native files/folder dialog is opened **Rust-side via `DialogExt`** inside the command handler (no JS `open({…})`, no `dialog:allow-open` grant — §0.10) | C2a returns `()`; the picked paths go through the §7.8.1 funnel into `PendingIntake`, and C1 drains them — no path transits the WebView |
 | **Keyboard** | Same **C2a `pick_for_intake`**, invoked via the §5.10 accelerator; full parity (SSOT DoD "keyboard reach the same result") | Same as picker |
 | **OS launch entry points** | Open-with / launch args — **macOS** the Tauri v2 **`RunEvent::Opened { urls: Vec<Url> }`** — the **SOLE** macOS file-open mechanism (**NOT** `tauri-plugin-deep-link`'s `on_open_url`, which handles custom-scheme deep links and **never fires** for the Open-With AppleEvent); **Windows** `argv`; **Linux** `%F` desktop-entry field. The macOS payload is **`Vec<Url>` (`file://` URLs), not `Vec<PathBuf>`** — each URL is converted to a path (`Url::to_file_path()` / strip the `file://` scheme) **before** it enters the §1.1 freeze. Each `RunEvent::Opened` (launch AND mid-run Open-With) is routed through the shared `forward_launch_intake` refuse-busy funnel (§7.8.1). Posture (associations: none in v1) owned by §7.8 | Captured at startup / on the macOS `RunEvent::Opened` → url→path → handed to intake |
 | **Second-instance hand-off** | When a single-instance policy (§7.1) routes a second launch's args into the running instance | The running instance's intake funnel |
@@ -100,15 +100,10 @@ fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet;
 // Uncertain variants — a lone unsupported/uncertain drop yields the specific
 // "detected: X" message, not a generic empty report).
 //
-// Who supplies `origin` per entry point `[DECIDED]`: a DROP / launch-arg / second-
-// instance hand-off carries its origin in the C1 request (`Drop` / `LaunchArg` /
-// `SecondInstance`). The C2a `pick_for_intake` request has NO `origin` field (the
-// WebView only triggers the picker, §0.4.1) — the **C2a handler itself sets
-// `origin = IntakeOrigin::Picker`** when it funnels the Rust-opened picked paths into
-// this shared `ingest` function. So the WebView never supplies the picker origin; the
-// core stamps it. (This closes the "C2a has no origin field but the funnel needs one"
-// gap: the funnel always receives a concrete origin — from the request for C1, from the
-// handler for C2a.)
+// Who supplies `origin` `[DECIDED]`: the stashing source stamps it core-side (the native
+// drop `Drop`, the C2a handler `Picker`, a launch or second-instance hand-off `LaunchArg` /
+// `SecondInstance`) into its §7.8.1 `PendingIntake` stash, and C1 drains it (§7.8.1). No IPC
+// request carries an origin, so the WebView never supplies one.
 ```
 
 ### Folder recursion (Rust-side) `[DECIDED]`
@@ -147,31 +142,12 @@ cannot enumerate a directory (§0.4). Recursion:
   (no temp/`*.part` is written during ingest; the freeze and any conversion happen
   after). This is what backs the §5.2 *Collecting*-state cancel-collect control,
   needed because a thousands-file recursive walk (§1.10) can run long.
-  - **C2a native-dialog phase scope `[DECIDED]`:** for **C2a `pick_for_intake`** the
-    Rust-side OS-modal dialog opens **before** any walk begins. **The dialog MUST NOT
-    block a Tokio worker thread `[DECIDED]`:** the native picker is opened via `DialogExt`'s
-    **async/callback** form (`pick_file`/`pick_folder` with a callback, or spawned on a
-    dedicated **blocking** thread via `spawn_blocking`), **never** a synchronous
-    `blocking_pick_file` on a Tokio worker — so the async runtime stays free and **C13
-    `cancel_ingest` remains serviceable while the modal is up** (a C13 command can run,
-    trip the token, and return immediately even though the OS dialog is still on screen).
-    To keep C13 honest, the handler **registers the `CollectingId` token at handler entry —
-    before opening the dialog** — so a C13 arriving during the dialog **cleanly abandons the
-    C2a result** (the handler checks the token after the dialog returns and yields
-    `CollectedSet::Empty` rather than walking the picked paths). The OS dialog box itself is
-    not force-closed by C13 (no portable API to do so), but its result is discarded — so C13
-    is never a silent no-op. **Token drop on EVERY C2a exit branch `[DECIDED]`:** the
-    `CollectingId` ingest-token is **dropped/de-registered in every C2a return path** —
-    the cancelled-dialog→`CollectedSet::Empty` branch, the C13-tripped→`Empty` branch, **and**
-    the normal walk-completes branch — mirroring the **C1 drop-on-return rule** (§0.4.4):
-    the §1.1 walk loop that normally drops the token does not run on a cancelled dialog, so
-    the handler MUST drop it explicitly there too, or the token leaks in the registry. (A
-    drop/launch-arg C1 has no dialog phase; the token covers the whole walk and is dropped
-    on the C1 return.) **Realized via an RAII guard `[DECIDED]`:** the C2a handler binds the
-    registration as an **RAII guard whose `Drop` de-registers the token**, so "drop in every
-    C2a return path" holds **by construction** — every exit (picked-and-funnelled,
-    cancelled-dialog, C13-tripped, or an error early-return) drops the guard, so no branch can
-    leak it (the `IngestRegistry::register_guard` guard, P2.70).
+  - **C2a dialog thread and the ingest token `[DECIDED]`:** the C2a handler opens the
+    native picker on a dedicated blocking thread (`spawn_blocking`), never a synchronous
+    `blocking_pick_*` on a Tokio worker, so the async runtime stays free while the modal is
+    up. C2a walks nothing and registers no ingest token: only the C1 drain registers the
+    `CollectingId` token, bound as an RAII guard whose `Drop` de-registers it on every exit
+    branch (§0.4.1), so C13 cancels only an in-flight C1 walk.
 
 ### Freeze point `[DECIDED]`
 
@@ -497,39 +473,16 @@ dropped paths pointing at one file are one member of one group.
 After a `Single` grouping, the pipeline produces the **collected-summary payload**
 — the backend data the confirm screen renders:
 
-**Wiring `[DECIDED]`.** `CollectedSummary` is **not a separate wire type** — its field
-set **is** the §0.6 `CollectedSet::Single` payload (the two were unified in the
-convergence pass so the mandatory confirm gate has a real IPC path: C1/C2a already
-return `CollectedSet`, and its `Single` variant now carries `total_bytes`, `roots`,
-`encoding_hint`, `delimiter_hint`, `notes` alongside `id`/`format`/`count`/`items`/
-`skipped`). `CollectedSummary` below is therefore the **display/projection name** for
-exactly those `CollectedSet::Single` fields the confirm screen renders — `§0.6 owns the
-struct shape, §1.4 owns the confirm-gate semantics`. No extra `get_collected_summary`
-command exists; the confirm screen renders the `CollectedSet::Single` C1/C2a returned
-(re-fetchable from the §0.4.4 collected-set registry by `collectedSetId` if the WebView
-reloads):
+**Wiring `[DECIDED]`.** `CollectedSummary` is **not a separate wire type**: it is the
+display/projection name for the §0.6 `CollectedSet::Single` payload (referenced, never
+restated here — §0.6 owns the struct shape, §1.4 owns the confirm-gate semantics and the
+`CollectedNote` type below). No extra `get_collected_summary` command exists; the confirm
+screen renders the `CollectedSet::Single` C1 returned (re-fetchable from the §0.4.4
+collected-set registry by `collectedSetId` if the WebView reloads). Its `notes` are
+PRODUCED by §1.2's bounded structural peek (step 4), not invented here (spreadsheets.md /
+images.md own the per-format peek; §1.2 owns running it):
 
 ```rust
-// Projection of §0.6 `CollectedSet::Single` (NOT a redefinition). These ARE the
-// Single-variant fields (§0.6 is the owner); listed here so §1.4 reads standalone.
-struct CollectedSummary {            // == the §0.6 CollectedSet::Single field set
-    collected_set_id: CollectedSetId, // == the §0.6 CollectedSet::Single.id
-    format: UserFacingFormat,    // detected, user-facing (e.g. "JPG") — §0.6 enum
-    count: usize,                // e.g. 48  → "48 JPG files"
-    total_bytes: u64,            // for the size hint / 1.10 pre-flight
-    roots: Vec<PathBuf>,         // dropped root(s) → relative-subtree + open-folder
-    skipped: Vec<SkippedItem>,   // ineligibles, §0.6 type { item, source_display,
-                                 //   detected_display, reason: SkipReason } (the P3.76 wire
-                                 //   rename + the P3.50 detected-display retention)
-    // detection-derived hints surfaced in the summary line (per 04):
-    encoding_hint: Option<String>,   // e.g. CSV detected "Windows-1252"
-    delimiter_hint: Option<String>,  // e.g. CSV/TSV detected ";"
-    notes: Vec<CollectedNote>,   // e.g. ">1 sheet", "animated source present" —
-                                 // PRODUCED by §1.2's bounded structural-peek (step 4),
-                                 // not invented here (spreadsheets.md / images.md own
-                                 // the per-format peek; §1.2 owns running it)
-}
-
 /// A detection-derived informational note surfaced in the confirm summary (§1.4).
 /// Owned here (§1.4). A stable `kind` (so §5 can localise via §2.10) plus an optional
 /// detail value; never a pre-localised sentence. The four `kind` discriminants are
@@ -1553,15 +1506,18 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   the core-side `RunResultStore` the C9 `OpenTarget` resolution reads, §0.4.4 —
   `[DECIDED 2026-07-06]` core-owned paths)
 - `ItemResult { item, output_display: Option<String>, state: JobState, reason:
-  Option<OutcomeMsg> }` (per-item terminal state + the §2.8-resolved display line + the
-  output's display form; `item` keys the output→source mapping against the CollectedSet,
-  and the real output `PathBuf` is `RunResultStore`-side, opened via C9 `Item(ItemId)`).
-  **`reason` is the resolved, ready-to-show line:** a §2.8 failure, a §2.9 lossy note, a
+  Option<OutcomeMsg>, lossy: Option<OutcomeMsg> }` (per-item terminal state + the
+  §2.8-resolved display line + the output's display form; `item` keys the output→source
+  mapping against the CollectedSet, and the real output `PathBuf` is `RunResultStore`-side,
+  opened via C9 `Item(ItemId)`).
+  **`reason` is the resolved, ready-to-show line:** a §2.8 failure, a
   §1.1/§2.5.3 skip line, **or the §2.6.4 case-1 residue annotation** (`OutcomeMsg::Residue`,
   the non-failure note on a succeeded-with-residue item — the `Lossy`-shaped carrier the
-  `[DECIDED 2026-07-16]` P3.59 ruling added); `None` for a plain success with no lossy note,
+  `[DECIDED 2026-07-16]` P3.59 ruling added); `None` for a plain success,
   and for a §2.6.4 case-3 (cancelled-with-residue) item, whose per-item surface is the
-  structural `cleanup_incomplete` entry alone
+  structural `cleanup_incomplete` entry alone. **`lossy` carries the item's exact §2.9 lossy
+  note** (§0.6; set after convert, never in `reason`), so a lossy item that is also
+  residue-annotated shows both
 - `Totals { succeeded, failed, cancelled, skipped }` — the "all failed" condition is
   **derived** (`failed == total && total > 0`), not a stored field.
 - `CleanupResidue { item, residue_display }` (§2.6.4; reveal via C9 `Residue(ItemId)`) — the
