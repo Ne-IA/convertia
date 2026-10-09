@@ -1200,6 +1200,15 @@ One glossary for every spec file; per-file headers point here.
   patent tail (VP6, WMA v1/v2/Pro/Lossless, AMR-NB, Nellymoser, DTS, E-AC-3, ProRes, DV) → the
   §3.4.3 legacy decode-only row. The FFmpeg decoder names live in the §04 decode inventories.
   Owner: §3.4.2 / §3.4.3.
+- **§3.8 from-source anchor — `[DECIDED]`, a closed four-variant `from_source.anchor` enum**
+  (`detached-signature`, `signed-vcs-ref`, `artifact-attestation`, `independent-pin`), each a
+  trust root independent of the download host; a checksum on the download's own origin is
+  never an anchor, and FFmpeg is built from source only. Owner: §3.8.
+- **§3.4.4a codec key, encode-only scope, marked-not-omitted gated cells — `[DECIDED]`.** A
+  row that carries `available` names its `codec`; a codec with no row defaults to available
+  (`aac`, `h264`) or unavailable (`heic_hevc`); the manifest reaches the core as one
+  compile-time embed; decoding is never gated; a gated cell stays in the registry marked
+  unavailable. Owner: §3.4.4a.
 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
 - **§5.2 launch-with-files initial state** — the one live fork, tagged in 05-ui-ux §5.2: a

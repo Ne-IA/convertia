@@ -31,18 +31,20 @@ top-level third-party engines** — libvips (image core, with its linked codec/d
 components 1a–1d, including the **mandatory bundled ImageMagick delegate** for BMP/ICO
 save — §3.5.5), FFmpeg, LibreOffice, poppler, pandoc — plus ConvertIA's own in-core Rust
 text engine. **Ghostscript is `[DECIDED: NOT shipped in v1]`** (poppler-only PDF→TXT, no
-AGPL — §3.6); it is **not** an "optional" component. Counting each separately-licensed
-bundled component (the SBOM granularity, §3.7), the inventory rows below enumerate
-every one; they cluster into four families:
+AGPL — §3.6); it is **not** an "optional" component. This section lists the
+top-level engines and the format-driving components. The full per-triple sub-component
+closure is data in `engines.lock` (`kind = "sub-component"`, §3.7.2 item 4), derived from
+the link and enforced by G35a; the spec does not enumerate it. The rows cluster into four
+families:
 
 | # | Engine (bundled artifact) | Family | Drives (cross-ref) | Licence | Ships as | Patent flag |
 |---|---|---|---|---|---|---|
-| 1 | **libvips** (raster core; built with libheif/libde265, libaom/dav1d, the native **`svgload` SVG load module (librsvg)**, **cgif** for native `gifsave`, and a **REQUIRED ImageMagick** delegate for BMP save, the default ICO-save path (**`[DEFER: build spike]`** §3.5.5; in-core Rust ICO assembler fallback), and GIF fallback) | Images | `04-formats/images.md` (raster↔raster, SVG→raster, HEIC/AVIF **decode**, HEIC↔AVIF via `heifsave`) | **LGPL-2.1+** (libvips); **cgif MIT**; see per-component rows | linked lib **inside the separate image-worker process** (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none for its own codecs |
-| 1a | **libheif + libde265** (HEVC decode) + **x265** (HEVC encode, built as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib`, not statically linked) — used by libvips' HEIC load module via `heifsave compression=hevc` | Images | HEIC decode (vips) / HEIC encode | libheif **LGPL-3.0**, libde265 **LGPL-3.0**, **x265 GPL-2.0-or-later** (verify vs the pinned source's `COPYING`; -or-later is compatible with the LGPL-3.0 libheif host, GPL-2.0-only would not be) | **x265 → dynamically-loaded libheif *plugin*, isolated** (§3.6); libheif/libde265 LGPL link | **HEVC → §3.4** |
-| 1b | **AV1: libaom (enc, via libheif `heifsave compression=av1`) / dav1d (dec, via vips AVIF load module)** — the ONE bundled AV1 encoder is **libaom** (the standalone `libavif`+aom encoder is **not** bundled; encode standardised on `heifsave`, images.md [IMG-1] [DECIDED]) | Images | AVIF decode/encode | libaom **`BSD-2-Clause AND LicenseRef-AOMPL-1.0`** (the row MUST carry **both** the BSD-2-Clause code licence **and** the "Alliance for Open Media Patent License 1.0" from the `PATENTS` file — complete attribution, §3.7. **SPDX id note `[DECIDED]`:** the AOM Patent License has **no registered SPDX short id** — `AOMPL-1.0` is only a pending SPDX request — so it is expressed as the CycloneDX/SPDX **`LicenseRef-AOMPL-1.0`** custom-licence reference with the full AOM Patent License text carried in `THIRD-PARTY-LICENSES.txt`; the §6.3.3 gate's LicenseRef carve-out treats this as a *resolved* id. Switch to the bare `AOMPL-1.0` once SPDX registers it); dav1d **`BSD-2-Clause`** | LGPL/BSD link in the image worker | AV1 royalty-free; **ship-posture → §3.4** |
-| 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | linked load module inside the separate image-worker (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none |
-| 1d | **ImageMagick** (libvips BMP save delegate — **REQUIRED for BMP**; ICO save is the **default** path but **`[DEFER: build spike]`** §3.5.5; plus GIF fallback) | Images | **BMP load+save (`magickload`/`magicksave` — REQUIRED)**; **ICO save (`magicksave`) — default, multi-size/256px unverified, in-core Rust ICO assembler fallback §3.5.5**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | linked delegate (permissive — no isolation); GPL *optional delegates* excluded at build | none |
-| 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **Pin-coupling `[DECIDED]`:** the lovell `libimagequant` v2.4.x fork is **vendored/statically linked inside libvips' `cgif`/`gifsave` path** (the §3.8 floor) — there is **no dynamic soname to resolve at runtime**, so the guard is a **lockfile assertion, not an ABI/soname check**: the **§6.1.3 build assertion verifies the pinned `imagequant`/`libimagequant` ref in `engines.lock` (and any Rust `Cargo.lock` entry) is exactly the `lovell/libimagequant` v2.4.x-fork commit** (NOT upstream 4.x, whose GPLv3 leg would taint the worker), backing the COPYRIGHT-BSD-text check with a provenance check. *(If a future platform build dynamically loads libimagequant, the soname-resolution check is added scoped to that case only.)* | linked/vendored **inside the image-worker process** (BSD fork only) | none |
+| 1 | **libvips** (raster core; built with libheif/libde265, libaom/dav1d, the native **`svgload` SVG load module (librsvg)**, **cgif** for native `gifsave`, and a **REQUIRED ImageMagick** delegate for BMP save, the default ICO-save path (**`[DEFER: build spike]`** §3.5.5; in-core Rust ICO assembler fallback), and GIF fallback) | Images | `04-formats/images.md` (raster↔raster, SVG→raster, HEIC/AVIF **decode**, HEIC↔AVIF via `heifsave`) | **LGPL-2.1+** (libvips); **cgif MIT**; see per-component rows | static, inside the image worker (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none for its own codecs |
+| 1a | **libheif + libde265** (HEVC decode) + **x265** (HEVC encode, built as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib`, not statically linked) — used by libvips' HEIC load module via `heifsave compression=hevc` | Images | HEIC decode (vips) / HEIC encode | libheif **LGPL-3.0**, libde265 **LGPL-3.0**, **x265 GPL-2.0-or-later** (verify vs the pinned source's `COPYING`; -or-later is compatible with the LGPL-3.0 libheif host, GPL-2.0-only would not be) | libheif/libde265: static, inside the image worker (LGPL); **x265 → dynamically-loaded libheif *plugin*, isolated** (§3.6) | **HEVC → §3.4** |
+| 1b | **AV1: libaom (enc, via libheif `heifsave compression=av1`) / dav1d (dec, via vips AVIF load module)** — the ONE bundled AV1 encoder is **libaom** (the standalone `libavif`+aom encoder is **not** bundled; encode standardised on `heifsave`, images.md [IMG-1] [DECIDED]) | Images | AVIF decode/encode | libaom **`BSD-2-Clause AND LicenseRef-AOMPL-1.0`** (the row MUST carry **both** the BSD-2-Clause code licence **and** the "Alliance for Open Media Patent License 1.0" from the `PATENTS` file — complete attribution, §3.7. **SPDX id note `[DECIDED]`:** the AOM Patent License has **no registered SPDX short id** — `AOMPL-1.0` is only a pending SPDX request — so it is expressed as the CycloneDX/SPDX **`LicenseRef-AOMPL-1.0`** custom-licence reference with the full AOM Patent License text carried in `THIRD-PARTY-LICENSES.txt`; the §6.3.3 gate's LicenseRef carve-out treats this as a *resolved* id. Switch to the bare `AOMPL-1.0` once SPDX registers it); dav1d **`BSD-2-Clause`** | static, inside the image worker | AV1 royalty-free; **ship-posture → §3.4** |
+| 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | static, inside the image worker (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none |
+| 1d | **ImageMagick** (libvips BMP save delegate — **REQUIRED for BMP**; ICO save is the **default** path but **`[DEFER: build spike]`** §3.5.5; plus GIF fallback) | Images | **BMP load+save (`magickload`/`magicksave` — REQUIRED)**; **ICO save (`magicksave`) — default, multi-size/256px unverified, in-core Rust ICO assembler fallback §3.5.5**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | static, inside the image worker (permissive — no isolation needed); GPL *optional delegates* excluded at build | none |
+| 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **Pin-coupling `[DECIDED]`:** the lovell `libimagequant` v2.4.x fork is **vendored/statically linked inside libvips' `cgif`/`gifsave` path** (the §3.8 floor) — there is **no dynamic soname to resolve at runtime**, so the guard is a **lockfile assertion, not an ABI/soname check**: the **§6.1.3 build assertion verifies the pinned `imagequant`/`libimagequant` ref in `engines.lock` (and any Rust `Cargo.lock` entry) is exactly the `lovell/libimagequant` v2.4.x-fork commit** (NOT upstream 4.x, whose GPLv3 leg would taint the worker), backing the COPYRIGHT-BSD-text check with a provenance check. *(If a future platform build dynamically loads libimagequant, the soname-resolution check is added scoped to that case only.)* | static, inside the image worker (BSD fork only) | none |
 | 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, **WMA *decoders* (decode-only — the sole FFmpeg WMA encoder `wmav2` is low-quality, 2-channel-max legacy, so `→ WMA` is out of v1 per audio.md and the build never invokes a WMA encoder; WMA is a source-only format)**; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264, HEVC and AV1 decode, and the legacy decode-only set → §3.4.3**; MP3, Vorbis, Opus, FLAC, ALAC, PCM, VP9, VP8, AC-3, MP2, MPEG-1, MJPEG, Cinepak → §3.4.2 |
 | 2a | **FFmpeg external codec libraries** — `libmp3lame` (MP3 enc), `libvorbis` + `libogg` (Vorbis/Ogg), `libopus` (Opus enc), `libvpx` (VP9 enc, WEBM target), `libdav1d` (AV1 decode, video sources). v1 ships these as **separate shared objects staged beside the FFmpeg exe** (§3.9.1 dynamic preference) — each is a distinct staged binary, so **each gets its own §3.7.2 `engines.lock`/SBOM row** | Audio, Video | audio.md (`→ MP3`/`→ OGG`/`→ OPUS`), video.md (`→ WEBM`; AV1 sources) | **libmp3lame `LGPL-2.0-or-later`** (triggers the §6.1.3 carve-out-(i)/§3.6.2 relink+offer obligation); **libvorbis / libogg / libopus / libvpx all `BSD-3-Clause`** (libvpx ALSO carries its `PATENTS` grant in `THIRD-PARTY-LICENSES.txt`, like libaom/x264); **libdav1d `BSD-2-Clause`** | linked into the **GPL FFmpeg binary** (separate invoked process) — never the MIT core; LGPL libmp3lame's §6 subsumed by FFmpeg's GPL corresponding-source, offer honoured (§3.6.2) | none for these codecs (MP3/Vorbis/Opus/VP9/AV1 royalty-free, §3.4.2) |
 | 3 | **LibreOffice** (headless `soffice`, Writer+Calc+Impress + PDF export filters; bundled with a baseline open font set, §3.9) | Documents, Spreadsheets, Presentations | `04-formats/documents.md`, `spreadsheets.md`, `presentations.md` (all office↔office + every `*→PDF`) | **MPL-2.0** (+ many bundled components — full set enumerated by the SBOM, §3.7) | **separate invoked binary** (sidecar process) per §3.6 | none |
@@ -464,9 +466,9 @@ pub enum Direction { Decode, Encode, Both }
 /// platform (§3.4). `Available` = shipped & usable; `Unavailable` = honestly gapped
 /// (the only legitimate `select()` → None, surfaced as §2.8 PlatformUnavailable).
 pub struct PatentDisposition {
-    pub heic_hevc: CodecPosture,   // HEVC encode/decode for HEIC (§3.4)
-    pub aac: CodecPosture,         // AAC (§3.4)
-    pub h264: CodecPosture,        // H.264 (§3.4)
+    pub heic_hevc: CodecPosture,   // HEVC encode, the HEIC target (§3.4.4a: decode is never gated)
+    pub aac: CodecPosture,         // AAC encode (§3.4.4a)
+    pub h264: CodecPosture,        // H.264 encode (§3.4.4a)
     // additional encumbered codecs added here as §3.4 evolves; default royalty-free → Available
 }
 
@@ -492,16 +494,12 @@ pub type TargetFmt = TargetId;             // §0.6
 
 Selection is a **static lookup, not a search** (because the `04` files have
 pre-assigned exactly one owner per pair — there is nothing to "choose" at
-runtime). The registry is built at startup into a `HashMap<(SourceFmt,
-TargetFmt), EngineId>` keyed by the user-facing format pair, populated from each
-engine's `capabilities(...)` filtered by the resolved §3.4 `PatentDisposition`
-for the running platform.
-
-```
-fn select(src: SourceFmt, tgt: TargetFmt, plat: Platform) -> Option<EngineId>
-    = registry.lookup((src, tgt))            // single owner, decided in 04
-        .filter(|e| e.available_on(plat, patents))   // §3.4 may mark unavailable
-```
+runtime). The registry is built once at startup into a `HashMap<(SourceFmt,
+TargetFmt), EngineId>` keyed by the user-facing format pair, from the cells each engine's
+`capabilities(platform, patents)` declares for the running platform and the resolved §3.4
+`PatentDisposition`. A cell whose §3.4 posture is unavailable on the running platform stays
+in the registry marked unavailable, and `select(src, tgt)` refuses it: `select` returns the
+pair's single owner (decided in `04`), or `None` for a marked cell (§3.4.4a).
 
 - A pair returning `None` because §3.4 marked its codec **unavailable** on this
   platform is surfaced as **honestly unavailable** (SSOT *v1 DoD* exception 1) —
@@ -533,7 +531,7 @@ downloaded after the app itself.
 | Mechanism | Used for | Tauri config | Resolved at runtime by |
 |---|---|---|---|
 | **`bundle.externalBin`** (sidecars, target-triple-suffixed) | FFmpeg, ffprobe, soffice launcher, pdftotext, pandoc, **`convertia-imgworker`** (the libvips image-worker process, §3.5.5) — the **standalone invoked binaries** (Ghostscript **[DECIDED: dropped]**; **x265 is NOT a sidecar** — it ships as a dynamically-loaded libheif encoder *plugin* under `resources`, §3.1 row 1a) | `"bundle": { "externalBin": ["binaries/ffmpeg", "binaries/ffprobe", "binaries/soffice", "binaries/pdftotext", "binaries/pandoc", "binaries/convertia-imgworker"] }` | spawned by the Rust core (see 3.3.3) |
-| **`bundle.resources`** (verbatim files/dirs) | the LibreOffice **program tree + profile template + bundled fonts**, the **image-worker stack** (libvips + libheif/libde265 + the **x265 libheif plugin** + libaom/dav1d + librsvg + cgif + the **required ImageMagick** delegate), FFmpeg/pandoc data files if any, the NOTICE/third-party-licenses text (§3.7) | `"bundle": { "resources": { "resources/libreoffice/": "engines/libreoffice/", "resources/image/": "engines/image/", "resources/fonts/": "fonts/", "../THIRD-PARTY-LICENSES.txt": "" } }` `[CORRECTED 2026-07-22 — the P4 pre-fill audit: source-side re-home only (the map's SOURCE keys now live under src-tauri/resources/ per the normative §0.7 physical tree + §6.1.3); the bundle-internal TARGET values are unchanged]` `[CORRECTED 2026-09-06 — P4.31, the wiring step: the licences key gains its ../ prefix. A bundle.resources SOURCE path resolves against the config's OWN directory (src-tauri/), while THIRD-PARTY-LICENSES.txt is the repo-ROOT file P1.48 authored and P2.98 include_str!s — so the un-prefixed literal named src-tauri/THIRD-PARTY-LICENSES.txt, which does not exist, and tauri-build's compile-time copy_resources hard-fails on a source path that is not there (it copies at COMPILE time, so --no-bundle does not hide it). The bundle-internal TARGET stays "" — Tauri's documented map special case for "keep the file name, at the resource root". Same literal→normative reconcile the 2026-07-22 note made on the other three keys; the three engine-tree keys are unaffected, their sources genuinely being under src-tauri/resources/]` | `app.path().resolve(rel, BaseDirectory::Resource)` |
+| **`bundle.resources`** (verbatim files/dirs) | the LibreOffice **program tree + profile template + bundled fonts**, FFmpeg/pandoc data files if any, the NOTICE/third-party-licenses text (§3.7). The image stack (libvips and its codec closure, libheif, librsvg, cgif, libimagequant, MagickCore) links statically into `convertia-imgworker` (`externalBin`); only the bundled fonts, the hardened ImageMagick `policy.xml` of §3.5.5 path (a) and the §3.1 row-1a HEIC encoder plugin (while that row names one) ship as resources for it | `"bundle": { "resources": { "resources/libreoffice/": "engines/libreoffice/", "resources/image/": "engines/image/", "resources/fonts/": "fonts/", "../THIRD-PARTY-LICENSES.txt": "" } }` — `resources/image/` carries only the §3.5.5 path-(a) `policy.xml` (its directory is the bundle policy dir the worker sets `MAGICK_CONFIGURE_PATH` to) and the §3.1 row-1a HEIC-encoder plugin; a source key resolves against `src-tauri/` (hence the `../` on the repo-root licences file), and the `""` target keeps the file name at the resource root | `app.path().resolve(rel, BaseDirectory::Resource)` |
 
 > **Why LibreOffice is `resources`, not `externalBin`.** `externalBin` is for a
 > single self-contained executable that gets the target-triple suffix; LibreOffice
@@ -933,20 +931,33 @@ is concretely:
     artifact (a bundled font, the ImageMagick `policy.xml`, the LibreOffice
     `registrymodifications.xcu`) is ONE row covering several triples rather than N
     copies that could drift. The invariant is **(artifact, triple) ↦ exactly one row**,
-    and **one row = one STAGED-BYTES `sha256`**; the moment an ARTIFACT-identifying field forks
-    across triples, the row
-    splits. §3.7.2 item 4's sub-component rows follow the same law, with the hash
+    and **one row = one `sha256` of the as-acquired (pre-staging) bytes** (the post-staging
+    anchor is the §7.2.3 in-bundle hash manifest); the moment an ARTIFACT-identifying field
+    forks across triples, the row splits. §3.7.2 item 4's sub-component rows follow the same law, with the hash
     anchoring the pinned SOURCE rather than a staged artifact.
+- **Codec key `[DECIDED]`.** A row that carries `available` names the codec it governs:
+  `codec` ∈ {`heic_hevc`, `aac`, `h264`} (the §3.2.2 `PatentDisposition` field names,
+  verbatim). Two validator laws: `available` is present iff `codec` is, and at most one row
+  per (`codec`, triple). A codec with no row on the running triple: `aac` and `h264` →
+  available (both §3.4.3 cells are ship-bundled with no flag); `heic_hevc` → unavailable (its
+  cell is behind the flag, so a missing row is an honest gap). The manifest reaches the
+  running core as one compile-time embed of `src-tauri/engines.lock` — no bundled resource,
+  no runtime read (a flip is edit + rebuild).
+- **Scope `[DECIDED]`:** `heic_hevc` governs HEVC *encode* (the HEIC target) only; decoding
+  any encumbered codec is never gated in v1 (§3.4.3).
+- **Gated cells are marked, never omitted `[DECIDED]`:** `capabilities()` declares every cell
+  with its posture and the registry keeps gated pairs, so the C3 offer marks them
+  `Unavailable { reason }` (SSOT exception 1).
 - **How it propagates to the registry (the parse→map→capabilities flow) `[DECIDED]`:**
-  the startup sequence (§7.2) **parses `engines.lock` once**, reads each codec row's
+  the startup sequence (§7.2) **parses the embedded `engines.lock` once**, reads each codec row's
   `available` boolean on the row(s) for the **running** target triple — the OS-level `Platform` is the
   DERIVED view (§3.4.5 gives macOS two triples) — and **maps** it into a
   `PatentDisposition` value (`available == true → CodecPosture::Available`, `false →
   CodecPosture::Unavailable`) for each of `heic_hevc` / `aac` / `h264`. This resolved
   `PatentDisposition` is built **before** any `Engine::capabilities(platform, patents)`
-  call and is passed into it; an `Unavailable` posture makes `capabilities()` omit (or
-  mark unavailable) the gated capability, so the §3.2.3 `select()` returns `None` for the
-  gated pair (HEIC-encode) → surfaced as `PlatformUnavailable` (§2.8). (So
+  call and is passed into it; an `Unavailable` posture makes `capabilities()` declare the
+  gated capability marked unavailable, so the registry keeps the pair and the §3.2.3
+  `select()` refuses it (HEIC-encode) → surfaced as `PlatformUnavailable` (§2.8). (So
   `engines.lock.available` is the **source** of `PatentDisposition`, not a separate truth:
   the boolean is parsed → mapped → handed to `capabilities()`; there is no second place
   the posture is decided.)
@@ -1402,6 +1413,13 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   the triple suffix on bundle), **never linked into the MIT core**. So `EngineProgram::
   Sidecar(EngineId::ImageCore)` resolves to this artifact; Phase-3 builds it as its own
   binary that statically links the libvips/libheif/libde265/librsvg/ImageMagick stack.
+- **Build shape `[DECIDED]`.** The worker's native C link is a compile-time cfg, never a
+  cargo feature: `crates/imgworker/build.rs` sets `imgworker_native` only when
+  `CONVERTIA_IMGWORKER_PREFIX` names a link-closure prefix whose inputs verified (§3.8
+  link-input output anchor), and finds the closure with `pkg-config --static` restricted to
+  that prefix. Without it `convertia-imgworker` builds and tests its Rust side with no C
+  closure, which is how every host builds it in the local hooks, and `--all-features` never
+  links the closure. The CI compile legs and the release build set the prefix.
 - **Operation map (from `images.md`):** load (by detected type, **not** extension)
   → optional auto-rotate (EXIF orientation baked, tag reset to 1) → optional
   alpha-flatten (white bg for JPG/BMP) → save with the per-target saver and its
@@ -1727,8 +1745,9 @@ gate is **§6.3**. This section produces the *data* those consume.
    is the authoritative input — **not** hand-curated prose, so it can't drift from what
    actually ships.
    - **The §6.1.3 cache-GROUP fields `[DECIDED — owner adjudication 2026-09-01, the (A′)
-     ruling on the P4.28 escalation]`.** A row's `sha256` is of the **STAGED bytes**, which
-     for an archive asset is a file *inside* the download — so it is **not** what the
+     ruling on the P4.28 escalation]`.** A row's `sha256` is of the **as-acquired (pre-staging)
+     bytes** — for an archive asset, a file *inside* the download; the post-staging anchor is
+     the §7.2.3 in-bundle hash manifest — so it is **not** what the
      §6.1.3 populate path can verify a download against, and three artifacts out of one
      archive are three rows but **one** cache entry. Four further fields close that gap — the
      three the ruling names plus the corroboration submode that rides with them:
@@ -1857,19 +1876,32 @@ blocker).
   from-source have different ground truths:
   - **From-source (CI-compiled):** the §3.7.2 binary SHA-256 verifies **our own**
     (non-bit-reproducible, §6.2.5 best-effort) build output — it is a **build-output
-    stability check, NOT a provenance anchor**. The real provenance anchor moves to **(a)**
-    the **source tarball hash**, corroborated against the upstream's **signed release**
-    (GPG/minisign/SHA on the project's own site), recorded beside the pin — with the detached
-    signature's own location recorded there too, as `from_source.signature_url`, because an
-    upstream publishes `.asc` or `.sig` by its own convention and a signature URL *derived* from
-    the tarball's would be an egress target the engine-source allow-list never sees as data
-    (P4.28.1) — **and (b)** the
-    **build toolchain + base image pinned by digest** (otherwise a poisoned toolchain is the
-    unverified input). This is the preferred mode for engines whose upstream publishes a
-    signed source release.
+    stability check, NOT a provenance anchor**. The real provenance anchor is two-part.
+    **(a)** The source tarball, anchored by exactly one variant of the closed
+    `from_source.anchor` enum `[DECIDED]`, each a trust root independent of the download
+    host: `detached-signature` (the upstream's detached signature over the tarball, verified
+    with `gpg`, `sq` or `minisign` against a key pinned in-repo; its location is recorded as
+    `from_source.signature_url`, never derived, so the allow-list sees it as data);
+    `signed-vcs-ref` (`git verify-tag` or `git verify-commit` of the release ref against a
+    pinned key; the source is `git archive` of that ref with generated build files
+    regenerated locally); `artifact-attestation` (`gh attestation verify` of the tarball
+    digest against a pinned signer identity: repository plus workflow); `independent-pin`
+    (the tarball SHA-256 equals the upstream tarball hash recorded by an independent signed
+    channel — preferred: a Debian `.dsc` carrying the tarball verbatim, verified against the
+    pinned Debian keyring; otherwise a Homebrew-core formula at a pinned commit, used only
+    where no signed distro source carries the identical bytes). **Independence rule:** a
+    corroborating record whose host plus first path segment equals the download URL's is not
+    independent (`github.com/<org>` counts as one origin). A checksum published on the
+    download's own origin is never an anchor. Preference among variants:
+    `detached-signature` or `signed-vcs-ref` where the upstream signs, else
+    `artifact-attestation`, else `independent-pin`. The per-row choice is `engines.lock` data
+    (`from_source.anchor`), validated by `lock.rs`. **(b)** The **build toolchain + base image
+    pinned by digest** (otherwise a poisoned toolchain is the unverified input). This is the
+    preferred mode for engines whose upstream publishes a signed source release.
   - **Prebuilt third-party binary:** several upstreams publish **no signature and often no
     checksum** for their prebuilt binaries (notably **FFmpeg** — the common Windows builds
-    from **gyan.dev / BtbN** are unsigned). For these the corroboration MUST be one of the
+    from **gyan.dev / BtbN** are unsigned, one reason FFmpeg is built from source only,
+    below). For these the corroboration MUST be one of the
     **satisfiable** anchors, named per engine: **(i)** cross-check the **same artifact hash
     across ≥ 2 independent mirrors** (an attacker must poison both) — recorded as
     `prebuilt_corroboration = "mirrors"` with ≥ 2 `corroboration_urls` (§3.7.2 item 1;
@@ -1882,18 +1914,23 @@ blocker).
     recording the signed-metadata source URL beside the pin. A bare hash of a single
     unsigned download is **NOT** acceptable corroboration — it just launders an unverified
     download (the failure the rule exists to prevent).
-  - **FFmpeg specifically** (the flagship, worst-case engine): v1 corroboration is **either**
-    a from-source CI build from the GPG-signed `ffmpeg.org` source release (anchor = signed
-    source tarball + digest-pinned build container; the anchor set carries
-    **`from_source.signature_url`** beside the fingerprint, because an upstream publishes `.asc`
-    or `.sig` by its own convention and a DERIVED signature URL would be a guess on the one path
-    whose job is not to guess — its host is allow-list-constrained exactly like `upstream_url`,
-    P4.28.1) **or** a prebuilt cross-checked across ≥ 2
-    independent **mirrors serving the SAME artifact** (reconciled to the mirrors-only reading
-    above in the same act — two build PROVIDERS produce two different binaries, so a
-    provider cross-check cannot corroborate one hash); the chosen mode + corroboration URLs are recorded in `engines.lock`
-    and surfaced to the dual review on any change. build-gates **G37** references this policy
-    and must name a satisfiable corroboration source for every engine, FFmpeg included.
+  - **FFmpeg specifically** (the flagship, worst-case engine): FFmpeg is built from source
+    only — the curated `--disable-network --disable-everything` build is the §3.5.1 SSRF
+    floor, which no prebuilt binary satisfies; its anchor is the signed `ffmpeg.org` source
+    tarball (`detached-signature`) + the digest-pinned build container. The chosen mode and
+    anchor are recorded in `engines.lock` and surfaced to the dual review on any change.
+    build-gates **G37** references this policy and must name a satisfiable corroboration
+    source for every engine, FFmpeg included.
+  - **Link-input output anchor `[DECIDED]`.** A from-source library another build links
+    statically (the image worker's C closure) is consumed as compiled output, so its link
+    inputs carry their own anchor. Realizability probe at the image worker's link-closure
+    acquisition act: two compiles per triple in the digest-pinned build container give
+    byte-identical `.a`/`.lib` and headers. If they do, the sub-component rows carry a
+    per-triple output hash and the consumer re-hashes every link input against it before
+    linking; if not, the consuming job compiles the link inputs itself from the verified
+    source entries and links only that run's compile output (a restored prefix never links),
+    without escalation. No workflow lint polices step order: the consuming script verifies
+    (the `compile-engine-asset` pattern).
 - **Engine-source allow-list (the `[sources]` analogue for engine binaries) `[DECIDED —
   P0 review r3]`.** A committed allow-list of permitted upstream **origins** per engine
   (e.g. `ffmpeg.org` / the FFmpeg GitHub org, `libreoffice.org` / TDF, freedesktop/poppler,

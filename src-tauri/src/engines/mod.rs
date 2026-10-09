@@ -262,11 +262,11 @@ pub enum Direction {
 /// `serde`/`specta`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatentDisposition {
-    /// HEVC encode/decode posture for HEIC on this platform (§3.4).
+    /// HEVC encode posture (the HEIC target) on this platform; decode is never gated (§3.4.4a).
     pub heic_hevc: CodecPosture,
-    /// AAC posture on this platform (§3.4).
+    /// AAC encode posture on this platform (§3.4.4a).
     pub aac: CodecPosture,
-    /// H.264 posture on this platform (§3.4).
+    /// H.264 encode posture on this platform (§3.4.4a).
     pub h264: CodecPosture,
 }
 

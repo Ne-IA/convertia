@@ -14,7 +14,7 @@
 # `cache_version` is exercised on THIS fixture, while the `acquisition` half needs a mixed-mode pair
 # and is exercised on `engines-lock-valid.toml`, where a prebuilt and a from-source row can be
 # forced into one group in either order. What still DIFFERS per row is
-# everything artifact-shaped: `id`, `version`, `licence`, `purl`, and the staged-bytes `sha256`, which
+# everything artifact-shaped: `id`, `version`, `licence`, `purl`, and the as-acquired `sha256`, which
 # is why `asset_sha256` has to be exempt from the duplicate-hash rule (all three carry it identically
 # by construction) while `sha256` stays subject to it.
 #

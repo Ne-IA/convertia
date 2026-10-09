@@ -40,6 +40,17 @@ build each platform on its own native CI runner.** No cross-compile; the matrix 
 three independent native legs that fan in to one release. This is the documented
 Tauri-recommended path (compile per platform on CI).
 
+**Scope of the constraint `[DECIDED]`.** The no-cross-compile decision binds the Tauri app
+(the MIT core builds natively per OS). `convertia-imgworker` and its static C closure are
+cross-built for Windows with mingw-w64 (`x86_64-pc-windows-gnu`) in the digest-pinned Linux
+build container — the libvips `build-win64-mxe` method — and staged under the MSVC-triple
+sidecar name Tauri expects; the worker talks to the core only over argv/stdout, so its ABI
+differs harmlessly. Both macOS slices build on the arm64 macOS runner (the x86_64 closure
+through §6.1.3's declared cross table). Realizability probe at the image worker's
+link-closure acquisition act: the minimal PNG closure links in the container. If it fails,
+the fallbacks apply in order without escalation: MSYS2's signed static packages (the §3.8
+prebuilt anchor (ii)), then MSVC-ABI through a pinned vcpkg on the Windows runner.
+
 ### 6.1.2 The artifact-per-platform table
 
 One product, **one primary artifact per platform** (SSOT *Cross-platform, one
@@ -247,7 +258,7 @@ build-time mechanics that realise them**:
   (P4.28): it downloads the pinned upstream release asset, verifies its SHA-256 against the
   **`engines.lock` `asset_sha256` pin** — the DOWNLOAD's own hash, `[DECIDED — owner
   adjudication 2026-09-01, the (A′) ruling on the P4.28 escalation]`, never the row's `sha256`,
-  which §3.7.2 defines as the hash of the STAGED bytes and so of a file *inside* an archive
+  which §3.7.2 defines as the hash of the as-acquired (pre-staging) bytes and so of a file *inside* an archive
   asset — **before a single byte reaches the cache**, unpacks it, and publishes the entry under
   the same key with one atomic rename, so a failed verify or a crash leaves no partial entry. Its fetch targets are read from the L(-1)-caged `engines.lock` rows and from
   nowhere else — never from argv — so the §3.8 engine-source allow-list constrains WHERE it may

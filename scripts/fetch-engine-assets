@@ -24,7 +24,7 @@ trailing `-<triple>`, and `-<triple>.src` does not satisfy it.
 
 A CACHE ENTRY IS A GROUP, NOT A ROW `[DECIDED - owner adjudication 2026-09-01, the (A') ruling
 on the P4.28 escalation]`. `ffmpeg`, `ffprobe` and `libmp3lame.so` are three §3.7.2 rows with
-three ids, three versions and three staged-byte hashes - and ONE download. So the key is built
+three ids, three versions and three per-artifact hashes - and ONE download. So the key is built
 from the row's `cache_engine`/`cache_version` (defaulting to `id`/`version`), several rows
 collapse into one fetch, and the §3.7.2 invariant "(cache_engine, triple) has exactly one
 (cache_version, upstream_url, asset_sha256)" is what makes that collapse safe (its
@@ -35,7 +35,7 @@ inherits the scoped law, not this sentence). Keying the group on the row's own `
 would report `libmp3lame` 3.100 inside the FFmpeg 7.1 entry as an ambiguous entry - a hard
 failure fired at a correct manifest.
 
-WHAT THE PIN IS A HASH OF. `sha256` is of the STAGED bytes (`RowKind::StagedArtifact`), which
+WHAT THE PIN IS A HASH OF. `sha256` is of the AS-ACQUIRED bytes (`RowKind::StagedArtifact`), which
 for an archive asset is a file INSIDE the download - so verifying the download against it can
 never succeed. The download's own pin is `asset_sha256`, the prebuilt twin of
 `from_source.tarball_sha256`, required iff `acquisition = "prebuilt"`. Where the download IS the
@@ -564,7 +564,7 @@ def source_plans(rows: tuple[LockRow, ...], triple: str, cache_root: Path) -> li
     """The FROM-SOURCE half of §6.1.3: ONE plan per compiled GROUP, holding all of its sources.
 
     Each source is verified against its own row's `from_source.tarball_sha256` - NOT `asset_sha256`,
-    which a from-source row does not carry, and NOT `sha256`, which is of the STAGED bytes. Both
+    which a from-source row does not carry, and NOT `sha256`, which is of the AS-ACQUIRED bytes. Both
     the tarball and its detached signature are published RAW under a `.src` suffix: raw because the
     signature is over the archive as shipped, so unpacking it here would destroy the very bytes
     `compile-engine-asset` has to verify; `.src` because `stage-engines` must never mistake a

@@ -368,8 +368,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   `heic`/`heix`/`heif`/`mif1`/`heis`/`hevc` (bytes `66 74 79 70` then brand).
   Extensions `.heic .heif .hif`. **Patent-encumbered (HEVC) → §3.4.**
 - **Role:** **both**, **subject to §3.4 per-platform availability** — on a
-  platform where §3.4 says HEIC encode/decode is *unavailable* (no redistributable
-  HEVC), the relevant direction is honestly surfaced as unavailable there (SSOT
+  platform where §3.4 gates HEIC encode (the §3.4.4a flag; HEVC decode is never gated),
+  the HEIC target is honestly surfaced as unavailable there (SSOT
   *v1 DoD* exception 1), **never silently dropped**.
 - **As source → targets:** **JPG★** (the overwhelming "open my iPhone photo
   everywhere" need), PNG, WEBP, GIF, BMP, TIFF, AVIF, ICO. HEIC→* (to raster)

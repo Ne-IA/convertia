@@ -623,8 +623,8 @@ fn resolve_targets(src: UserFacingFormat, platform: Platform) -> TargetOffer;
 A target may be `Unavailable` on the current platform per the **§3.4 patent
 disposition matrix** (HEIC/AAC/H.264 × platform). The pipeline **reads** §3.4's
 verdict via the registry and marks the `Target.availability` (§0.6); it never
-re-decides it. A §3.1 degradable startup failure marks its targets the same way. Whether an unavailable target is **omitted vs shown-disabled-with-
-note** is a §5.2 presentation decision sourced from §3.4 (or §3.1). The **default** is
+re-decides it. A §3.1 degradable startup failure marks its targets the same way. An unavailable target is
+**marked, never omitted** (§3.4.4a), and §5.2 shows it disabled with its note, sourced from §3.4 (or §3.1). The **default** is
 guaranteed `Available` on every shipping platform: if a per-source default would
 be gapped, that is a §3.4/category product problem (notably MP4-as-default video
 depends on H.264/AAC shipping everywhere — flagged by video.md and §3.4), not a

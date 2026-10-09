@@ -24,7 +24,8 @@
 //! * **A byte-identical, platform-invariant artifact is ONE row over several triples** — a bundled
 //!   font, the ImageMagick `policy.xml`, the LibreOffice `registrymodifications.xcu` — rather than N
 //!   copies that could drift apart under a hand edit.
-//! * **(artifact, triple) ↦ exactly one row, and one row = one STAGED-BYTES `sha256`.** The moment an
+//! * **(artifact, triple) ↦ exactly one row, and one row = one AS-ACQUIRED `sha256`**, taken before
+//!   staging (the post-staging anchor is the §7.2.3 in-bundle manifest). The moment an
 //!   ARTIFACT-identifying field forks across triples, the row splits. The §6.1.3 cache-GROUP fields
 //!   ([`EngineRow::cache_engine`], [`EngineRow::cache_version`], [`EngineRow::upstream_url`],
 //!   [`EngineRow::asset_sha256`]) are deliberately NOT artifact-identifying: several rows ship out of
@@ -64,8 +65,8 @@
 //!   entry has one origin, and `ffprobe` has no origin of its own.
 //! * **§6.1.3 / P4.28** — `scripts/fetch-engine-assets` populates the cache on a miss, keyed by
 //!   [`EngineRow::cache_key`], and verifies the DOWNLOAD against [`EngineRow::asset_sha256`] — never
-//!   against `sha256`, which is of the STAGED bytes and so a different byte string whenever the asset
-//!   is an archive. `scripts/stage-engines` then reads that entry.
+//!   against `sha256`, which is of one as-acquired member and so a different byte string whenever the
+//!   asset is an archive. `scripts/stage-engines` then reads that entry.
 //!
 //! ## Scope (P4.56.1) — the CONTRACT, not the file
 //! `engines.lock` itself is L(-1)-caged, so the committed manifest is an owner-acked act and the
@@ -273,7 +274,7 @@ pub struct EngineRow {
     /// [`EngineRow::corroboration_urls`], is plural for an unrelated reason — a cross-check needs
     /// two hosts — and neither is a per-platform map.)
     pub triples: Vec<String>,
-    /// Whether the `sha256` below is of staged bytes or anchors a pinned source (§3.7.2 item 4).
+    /// Whether the `sha256` below is of as-acquired bytes or anchors a pinned source (§3.7.2 item 4).
     pub kind: RowKind,
     /// The upstream URL the artifact (or its source) came from. §3.8's allow-list gate (P4.56.3)
     /// constrains WHICH origins are permitted; the schema only requires a usable URL.
@@ -299,7 +300,7 @@ pub struct EngineRow {
     /// tightens this to MANDATORY for a named high-CVE subset; that escalation is G17b's to enforce.)
     #[serde(default)]
     pub cpe: Option<String>,
-    /// The per-row SHA-256, lowercase hex — of the staged bytes or of the pinned source, per
+    /// The per-row SHA-256, lowercase hex — of the as-acquired bytes or of the pinned source, per
     /// [`EngineRow::kind`].
     pub sha256: String,
     /// The §3.7.2 `[DECIDED]` pin-establishment provenance: WHERE the hash was corroborated. Recording
@@ -334,9 +335,9 @@ pub struct EngineRow {
     /// SHA-256 of the DOWNLOADED asset — the twin of [`FromSourceAnchor::tarball_sha256`] on the
     /// prebuilt side, required iff `acquisition = "prebuilt"`.
     ///
-    /// Distinct from [`EngineRow::sha256`], which per [`RowKind`] is of the STAGED bytes: a downloaded
-    /// archive and the file staged out of it are different byte strings, so verifying the download
-    /// against `sha256` can never succeed on an archive row — and would fail as a false
+    /// Distinct from [`EngineRow::sha256`], which per [`RowKind`] is of the as-acquired bytes: a
+    /// downloaded archive and the file staged out of it are different byte strings, so verifying the
+    /// download against `sha256` can never succeed on an archive row — and would fail as a false
     /// poisoned-upstream alarm, whose obvious "fix" destroys G37's staged-byte verify. When the
     /// download IS the staged artifact (a bare binary, no container) the two are equal; that is the
     /// degenerate case, not the rule. EXEMPT from the duplicate-hash rule: every sibling row out of one

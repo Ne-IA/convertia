@@ -260,10 +260,11 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
 - **Patent flag:** ⚠ **AAC is patent-encumbered → disposition decided in §3.4**
   (format × platform × ship/gate/rely-on-OS/unavailable). ConvertIA references
   that matrix; it does **not** re-decide here. *If* §3.4 marks AAC unavailable on
-  a platform, both the **AAC and M4A(AAC) targets** and AAC-related decode on that
-  platform follow that disposition and are honestly surfaced as unavailable there
-  (per SSOT v1-DoD first exception). (Note: FFmpeg's *native* AAC encoder is
-  itself license-clean LGPL; §3.4 owns whether the *patent* situation gates it.)
+  a platform, the **AAC and M4A(AAC) targets** on that platform follow that disposition
+  and are honestly surfaced as unavailable there (per SSOT v1-DoD first exception); the
+  §3.4.4a flag gates the AAC *encoder* only, so AAC and M4A sources always decode.
+  (Note: FFmpeg's *native* AAC encoder is itself license-clean LGPL; §3.4 owns whether
+  the *patent* situation gates it.)
 - **Options/settings:**
   - *Default:* **CBR `-b:a 192k`** (LC-AAC, default profile). 192 kb/s AAC is
     perceptually strong and small; the native encoder's VBR mode (`-q:a` /
@@ -613,8 +614,9 @@ Exact strings live in the **§2.9 message catalog** (home); this file only recor
 3. **AAC patent disposition** is **deferred to §3.4** (not open *here*, but its
    resolution directly sets AAC + M4A(AAC) per-platform availability — flagged so
    this file's coverage is read together with that matrix). If §3.4 rules AAC
-   "unavailable" on, say, Linux, then on Linux the AAC and M4A targets disappear
-   *and* AAC/M4A sources can't be decoded — surfaced honestly per SSOT v1-DoD.
+   "unavailable" on, say, Linux, then on Linux the AAC and M4A targets are marked
+   unavailable — surfaced honestly per SSOT v1-DoD; the §3.4.4a flag gates the AAC
+   *encoder* only, so AAC/M4A sources still decode.
 4. **Down-mix policy for surround→stereo-only contexts. `[DECIDED]` NOT in v1.** v1
    **preserves channels** (no explicit "convert 5.1 to stereo" control); the encoder
    handles the surround-M4A→MP3-for-phone edge case via its standard channel handling
