@@ -1084,6 +1084,22 @@ item** per §2.8 and the batch continues (per §7.2.6 fact 2, the absolute "engi
 never first-touch a protected path" holds; "a TCC chain-break can never block a
 conversion" is a **read-side** claim, not a write-side one).
 
+**T11 verification posture `[DECIDED]`.** Staging happens once, upstream of every spawn, at the
+tier-1 conductor's §3.2.2 `engine_input` seam, and every production spawn runs on the one
+cross-platform §2.12.3 floor, which is never forked per platform to give the G29 Semgrep rule (d) a
+call site. Rule (d) is therefore a deliberately vacuous, mechanically armed tripwire on
+`isolation/macos.rs`, the one module a future macOS-conditional spawn is homed into: rule (c)
+routes every spawn into `crate::isolation`, check-sast's `misplaced_macos_cfg` routes every
+isolation slice spelled with a literal `target_os`/`consts::OS` "macos" into that module, and a
+literal-free OS predicate or an audited `nosemgrep` is the G31 leg's to catch. The live seam is
+pinned by check-sast's `t11_seam_pin`: `isolation/macos.rs` defines `stage_for_tcc` and
+`engine_input`, and the positive macOS-cfg arm of `engine_input` calls the literal standalone
+`stage_for_tcc`. The behavioural proof is the G31 macOS first-accessor leg over a real spawn: a
+real engine driven through the conductor on the macOS runner receives only the staged kind-2
+path, and the core read the source before the spawn. CI cannot raise a TCC prompt, so that leg
+proves the structural half; a §0.11 T11 runtime check covers the rest, and the prompt itself is a
+§6.6 walkthrough item (§6.4.4).
+
 ### 3.5.1 FFmpeg / ffprobe (audio, video, cross-category)
 
 - **Probe first (video only):** `ffprobe -v error -print_format json -show_streams

@@ -258,7 +258,7 @@ pub async fn run_confined(
     // no (d) suppression is needed or present.
     //
     // ADJUDICATED (Co-Pilot ruling, 2026-08-30 — closes the P4.25 obligation-(a) escalation; the full
-    // ruling is recorded on the P4.26 box + the build-gates G29 row): rule (d) keeps its refined form
+    // ruling is recorded in spec §3.5.0 + the build-gates G29 row): rule (d) keeps its refined form
     // UNCHANGED and deliberately has ZERO in-scope production call sites — it is the armed tripwire on
     // the one module any future macOS-conditional spawn is homed into (rule (c) routes every spawn into
     // `crate::isolation`; check-sast's `misplaced_macos_cfg` routes every mac-conditional isolation

@@ -57,8 +57,8 @@ COUPLING, declared so it is planned and never a surprise mid-box hard-stop: this
 L(-1)-caged while compile-engine-asset is not, and it pins the BLESSED leg-name set
 (`g24-compile-engine-asset.legs`, monotone since 2026-09-09: a removed or renamed leg reds, an
 added leg is only reported), the empty-skip inventory, and its OWN leg count. A box that adds a
-`--selftest` leg to the tool (P4.34's pull-forward, the first seam fill per its 2026-09-03
-attribution ruling, and the P5.1.1/P5.5.1/P5.9.1/P6.1.1/P7.17.1 compile boxes filling the
+`--selftest` leg to the tool (the P4.89 act, the first seam fill, and the
+P5.1.1/P5.5.1/P5.9.1/P6.1.1/P7.17.1 compile boxes filling the
 configure seam) owes NO per-box bump any more - the Co-Pilot re-blesses the set at the phase-end
 sweep (`_monotone_pin.py --bless compile-engine-asset`, one owner-acked act per phase); a REMOVED
 or RENAMED leg still needs the owner-acked edit here, by design.

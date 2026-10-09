@@ -42,7 +42,7 @@ and every Mach-O the build installs must carry exactly the entry's own CPU type.
 merge a slice it does not have, and it cannot merge two of the same either.
 
 THE CONFIGURE LINE IS DATA. `src-tauri/engine-configure.toml` declares
-`<cache_engine>.configure.flags` per engine, filled by the named compile boxes (P4.34's pull-forward first, then P5.1.1, P5.5.1,
+`<cache_engine>.configure.flags` per engine, filled by the named compile boxes (the P4.89 act first, then P5.1.1, P5.5.1,
 P5.9.1, P6.1.1, P7.17.1). A group with no table is REFUSED rather than built with a default line:
 "no flags declared" and "these flags" are different situations, and only one of them is safe to
 build from. The flags are passed as an argv LIST, never joined into a shell string, so a value
@@ -897,7 +897,7 @@ def parse_configure(text: str, *, where: str = CONFIGURE_REL) -> dict[str, dict[
     Both tables are keyed on the `engines.lock` row `id` rather than being one value for the
     group, because a compiled group legitimately spans several tarballs (the (A′) mode-scoping
     ruling) and FFmpeg's configure line is not LAME's - nor is FFmpeg's build system libvips's. An
-    empty file is a valid container - the P5-P7 compile boxes fill it - but a table that is present
+    empty file is a valid container - the P4.89 act and the P5-P7 compile boxes fill it - but a table that is present
     and malformed is an error, because "nothing declared" and "this" are different situations and
     only the first is safe to refuse politely. [Build-Session-Entscheidung: P4.28.1]
     """
@@ -1613,7 +1613,7 @@ def run(
     if not targeted:
         note(
             f"{lock_path.name} declares no from-source rows yet - nothing to compile for {triple} "
-            "(each P5-P7 compile box adds its own row and fills its configure seam)"
+            "(the P4.89 act, then each P5-P7 compile box, adds its rows and fills the configure seam)"
         )
         return 0
     if not any(triple in row.triples for row in targeted):

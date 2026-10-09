@@ -35,11 +35,11 @@ only on a cache miss and is the one script at package time permitted to open a s
 SHA-pinned `actions/cache` restore wiring around both is P4.28's L(-1) workflow half, and the
 SHA-256 verify against `engines.lock` that must precede staging is G37's, run by the workflow
 ahead of this script.
-The restored cache legitimately carries entries this script does NOT stage - the P4.34 ruling
-(2026-07-22) restores the imgworker's per-triple LINK INPUTS (headers + static libs) under the
-same key scheme (`<cache_engine>-<cache_version>-<triple>`, defaulted to each lib's own
-id/version), and a header can never ship - so an entry no row
-claims is reported, never an error.
+The restored cache legitimately carries entries this script does NOT stage - the imgworker's
+per-triple LINK INPUTS (the static closure the P4.89 act acquires: headers + static libs, or the
+`.src` entries they compile from) sit under the same key scheme
+(`<cache_engine>-<cache_version>-<triple>`, defaulted to each lib's own id/version), and a header
+can never ship - so an entry no row claims is reported, never an error.
 
 SCOPE (P4.27 - the generic skeleton). `STAGED_ENGINES` is the declarative per-engine row set and
 it is EMPTY here by design: a staging row is inseparable from the version pin and `engines.lock`
@@ -140,11 +140,12 @@ BUNDLE_RES_PREFIX = RESOURCES_REL.removeprefix(_CONF_DIR) + "/"
 # The declared escape hatch to the binder's reverse direction. §3.3.1 lists SIX `externalBin`
 # sidecars; five are third-party engines staged out of the §6.1.3 cache, and `convertia-imgworker`
 # is not one of them - it is the first-party crate `crates/imgworker` (§3.5.5 / §0.7), compiled by
-# cargo and placed beside the others by the build that produced it (P4.34). It can never carry a
-# staging row: a row binds to an `engines.lock` entry (`assert_rows_bound_to_manifest`), and that
-# manifest is the THIRD-PARTY inventory - every row carries an `upstream_url` and a `source_ref`
-# naming an upstream tag/commit, which a first-party build product has none of. Without this,
-# P4.34 would meet a landed guard whose only exits are a fake manifest row or weakening the guard.
+# cargo (P4.34) and placed beside the others by the release build-and-place, which also adds its
+# `externalBin` entry (P10.9). It can never carry a staging row: a row binds to an `engines.lock`
+# entry (`assert_rows_bound_to_manifest`), and that manifest is the THIRD-PARTY inventory - every
+# row carries an `upstream_url` and a `source_ref` naming an upstream tag/commit, which a
+# first-party build product has none of. Without this, P10.9 would meet a landed guard whose only
+# exits are a fake manifest row or weakening the guard.
 # NAMED rather than pattern-matched, so a real typo cannot hide behind the exemption; and a name
 # that appears here AND in a staging row is itself reported, since the exemption exists only for
 # sidecars this script does not produce.
@@ -608,9 +609,9 @@ def unclaimed_cache_entries(
 ) -> list[str]:
     """Cache entries for the RESOLVED triple that no declared row claims - INFORMATIONAL only.
 
-    Deliberately not an error. The P4.34 ruling (2026-07-22) restores the imgworker's per-triple
-    LINK INPUTS (headers + static libs for libheif/libde265/librsvg/cgif/libimagequant) from this
-    same cache under the same key scheme (defaulted to each lib's own id/version); those are compile inputs that
+    Deliberately not an error. The imgworker's per-triple LINK INPUTS (headers + static libs of
+    the closure the P4.89 act acquires, or the `.src` entries they compile from) sit in this same
+    cache under the same key scheme (defaulted to each lib's own id/version); those are compile inputs that
     must never be staged, so "every restored entry has a staging row" is simply false. Surfacing
     them under -v keeps a genuinely forgotten row visible without inventing a rule the plan
     contradicts. Entries for OTHER triples are none of this run's business and are skipped.
@@ -3540,7 +3541,8 @@ def selftest() -> int:
                 "is not a §3.3.1 `bundle.resources` source key",
             ),
         )
-        # An entry no row claims is a build/link input (the P4.34 ruling), NOT a staging error.
+        # An entry no row claims is a build/link input (the P4.34 link-input class), NOT a staging
+        # error.
         stage_all(root, cache, _LINUX, _FIXTURE_ROWS[:2], write=False)
         unclaimed = unclaimed_cache_entries(cache, _FIXTURE_ROWS[:2], _LINUX)
         _record(
@@ -3958,8 +3960,9 @@ def selftest() -> int:
         # `convertia-imgworker`, is a first-party cargo product (P4.34) that can never carry a
         # staging row - a row binds to an `engines.lock` entry, and that manifest requires an
         # `upstream_url` + `source_ref` a first-party build has none of. Without the exemption this
-        # guard would meet P4.34 with no exit but a fake row or a weakened check; without the
-        # collision leg the exemption could quietly shadow a real drift.
+        # guard would meet P10.9 (which adds its `externalBin` entry) with no exit but a fake row or
+        # a weakened check; without the collision leg the exemption could quietly shadow a real
+        # drift.
         _record(
             "bundle binder: a BUILT_SIDECARS entry needs no staging row - the reverse direction's "
             "declared escape hatch, so §3.3.1's own `binaries/convertia-imgworker` does not red a "
