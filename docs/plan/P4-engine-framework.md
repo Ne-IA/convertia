@@ -693,8 +693,9 @@
 
 ## Patent-disposition matrix & availability wiring (§3.4)
 
-- [ ] **P4.39** [DOC] Verify the §3.4 patent-disposition matrix's DECIDED cells against the §04 source-codec set + record the codecs §3.4 leaves unclassified as the owner question (do NOT re-author, do NOT author a cell) · §3.4 §3.4.2 §3.4.3 §3.4.4 · G7
+- [x] **P4.39** [DOC] Verify the §3.4 patent-disposition matrix's DECIDED cells against the §04 source-codec set + record the codecs §3.4 leaves unclassified as the owner question (do NOT re-author, do NOT author a cell) · §3.4 §3.4.2 §3.4.3 §3.4.4 · G7
   needs: P0.1.1
+  > Delivered by the P4.90 ruling commit: every §04 audio and video source codec has one §3.4 home (§3.4.2, §3.4.3; the §04 decode inventories); the §3.4 question for the text-subtitle formats is a P4 residual-ledger line.
   > [Reconcile] the §3.4 single-owner matrix is already fully authored + per-cell [DECIDED] in the spec (§3.4.3 the (codec × platform) table incl. the legacy ship-bundled-decode-only row + the image-vs-video decoder split; §3.4.4 the per-codec rationale + the rely-on-OS re-evaluation gate; §3.4.4a the concrete availability flag) — this box VERIFIES completeness against the §04 codec set and records the P4 confirmation instead of re-authoring: every DECIDED (codec × platform) cell resolved, no P5/P6 box re-decides a cell (they only READ the per-codec cell; P4.40 reads §3.4.4a).
   > **[Pre-fill audit 2026-09-10 — a found gap is an OWNER ruling, never this box's authoring.]** Measured against the §04 source side (the set §6.1.3's required-decoder generator parses), §3.4 classifies these codecs NEITHER way: WMA v1/v2/Pro/Lossless (audio.md asserts a "no patent flag" posture §3.4.2 does not carry), AMR-NB, DTS, AC-3, VP6, Sorenson Spark (H.263-class, but the legacy row's Affects column names only 3GP), MP2, MPEG-1 video, MJPEG, VP8, WMV1/2, Nellymoser, Cinepak. Each is a legal-posture call (roles §1 Owner row, §4(c)) that binds P6. This box records the measured set in its commit body and hands it to **P4.90 (A)**; it authors no cell and no not-in-matrix line, and P4.91 records the ruling. P4.39, P4.40 and P4.45 stay outside the P4.90 closure: §3.4.4a maps `available` for `heic_hevc`/`aac`/`h264` only, and every unclassified codec is source-side decode-only.
 - [ ] **P4.40** [BUILD,RUST] Build the §3.4.4a `engines.lock` `available` boolean → `PatentDisposition` parse→map flow · §3.4.4a §3.2.2 · G35 G37
@@ -1176,13 +1177,14 @@
 > convention. P4.89 stays the separate precondition act of the P4.34 chain, so a ruling never waits on an
 > acquisition act.
 
-- [!extern] **P4.90** [DOC] Rule the owner forks the P4 pre-fill audit found — the §3.4 disposition of the §04 source codecs §3.4 leaves unclassified · §3.4.2 §3.4.3 · G7
+- [x] **P4.90** [DOC] Rule the owner forks the P4 pre-fill audit found — the §3.4 disposition of the §04 source codecs §3.4 leaves unclassified · §3.4.2 §3.4.3 · G7
   > **[!extern] (owner + Co-Pilot):** each item is an owner ruling and names its consumer, which `needs:` this box. The Co-Pilot lands every ruling as one dual-reviewed act, and the box flips `[x]` once they have landed. The P4 caged tails that red nothing are not tracked here: they close with the P4.81 sweep.
   > **(A) The §3.4 disposition of the §04 source codecs (owner — legal posture, roles §1 / §4(c); P4.91 `needs:` this box).** The measured set is P4.39's, recorded as `[OPEN: P4.90]` in §3.4.2. Each codec goes to exactly one of: §3.4.2 not-in-matrix (expired or royalty-free, with the expiry fact) · ship-bundled-decode-only (the §3.4.3 legacy row extended) · gated or unavailable on a platform. **Co-Pilot framing, not the ruling:** every one is decoded, never encoded, inside the bundled GPL FFmpeg (VP8 is also encoded by libwebp for the WEBP target, outside FFmpeg), so the legacy row's decode-only rationale applies verbatim. AC-3, MP2, MPEG-1 video, Cinepak, MJPEG and VP8 are the not-in-matrix candidates, each needing its expiry or royalty-free fact recorded; Sorenson Spark (H.263-class) and WMV1/2 (MPEG-4 Part 2-class) are candidates to fold under the §3.4.3 legacy row; AMR-NB, DTS, VP6, Nellymoser and WMA are the row candidates.
   > **Resumes:** this box `[x]` → P4.91.
 
-- [ ] **P4.91** [DOC] Record the P4.90 (A) per-codec ruling in the spec + re-point the §04 / §3.1 cross-refs at §3.4 · §3.4.2 §3.4.3 §3.4.4 · G7 G68
+- [x] **P4.91** [DOC] Record the P4.90 (A) per-codec ruling in the spec + re-point the §04 / §3.1 cross-refs at §3.4 · §3.4.2 §3.4.3 §3.4.4 · G7 G68
   needs: P4.39, P4.90
+  > Delivered by the P4.90 ruling commit: the spec text, the §04/§3.1 re-points and the §04 decode inventories (§6.1.3 reads them).
   > lands the owner ruling as spec text, one home per codec: the §3.4.2 not-in-matrix list (with the expiry fact) or a §3.4.3 cell with its §3.4.4 rationale line. The legacy row's Affects column gains FLV (Sorenson Spark under H.263) and WMV (WMV1/2 under MPEG-4 Part 2) where the ruling folds them. audio.md's two WMA posture sentences, images.md's VP8 "no patent" line and §3.1's FFmpeg patent column re-POINT at §3.4 (the MP3 mirror pattern). docs/spec is Loop-editable, so this is a Loop box; the RULING is P4.90 (A). The same commit removes the §3.4.2 `[OPEN: P4.90]` bullet and the spec README open-log item (G68). A top-level box, not a P4.39 sub-box, so P4.39 and P4.40 stay outside the P4.90 closure.
 
 ## The registry-driven §1.5 offer and option-declaration registry — the seam the option and lossy-note boxes read (the 2026-09-10 pre-fill audit)

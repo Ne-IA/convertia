@@ -280,9 +280,10 @@ build-time mechanics that realise them**:
     The **external FFmpeg component libs** dynamically linked *beside* the FFmpeg binary
     are verified present as shared objects too. **Only `libmp3lame` is LGPL** (so the §6
     relinkability-beside-the-GPL-exe obligation applies to it); `libvorbis`/`libogg`/
-    `libopus`/`libvpx` are **BSD-3-Clause** (no relink obligation — present-as-shared-object
-    is for SBOM-completeness, not LGPL §6). Each has its own §3.7.2 row (release-blocking if
-    absent); `libvpx` is the VP9/WEBM-target encoder and carries its `PATENTS` text.
+    `libopus`/`libvpx` are **BSD-3-Clause** and `libdav1d` is **BSD-2-Clause** (no relink
+    obligation — present-as-shared-object is for SBOM-completeness, not LGPL §6). Each has
+    its own §3.7.2 row (release-blocking if absent); `libvpx` is the VP9/WEBM-target encoder
+    and carries its `PATENTS` text; `libdav1d` is the AV1 decoder for video sources.
   - **(ii) LGPL inside the separate image-worker (libvips/libheif/libde265/librsvg) →
     static LGPL is acceptable AGGREGATION, but carries the LGPL §6 relink obligation.**
     The image-worker is its **own binary** (a separate process, §3.5.5), so a static LGPL
@@ -302,7 +303,7 @@ build-time mechanics that realise them**:
     alongside the LGPL source, and fails the build if x265's source is missing.
   - **(iii) FFmpeg-internal static LGPL → aggregation, never fails the assertion.** A
     static GPL FFmpeg with `libmp3lame` (LGPL) plus the BSD `libvorbis`/`libogg`/`libopus`/
-    `libvpx` baked in is GPL-clean (GPL permits static LGPL/BSD) and the whole binary is
+    `libvpx`/`libdav1d` baked in is GPL-clean (GPL permits static LGPL/BSD) and the whole binary is
     aggregation (§3.6.1), so it must not fail the assertion for a non-licence reason. v1's
     stated preference is dynamic-beside-the-exe (carve-out i path), so this carve-out covers
     the static-FFmpeg alternative without leaving both implied (§3.7.2). Each component still
@@ -377,25 +378,25 @@ build-time mechanics that realise them**:
   `--disable-everything --enable-…` trimmed to the `04` codec set (size lever, §3.9),
   which risks **silently dropping a decoder a 04 pair needs**. So the stage step runs
   a **build assertion** that the curated `--enable` list covers **every decoder the
-  source matrices reference**. **The required-decoder set is a GENERATED manifest, not
-  a hand-kept list `[DECIDED]`:** a build step parses the `04` matrices (every codec
-  named in `audio.md` / `video.md` / `cross-category.md` / `images.md`, on the source
-  side) into `ffmpeg-required-decoders.lock`, and the assertion runs against **that**
-  generated set — so the named minimum can never drift below the real requirement. The
-  generated set **must include**, among others, the load-bearing **modern** decoders
-  the headline use cases need: **`hevc`, `h264`, `av1`** (iPhone HEVC `.mov`, modern
-  MKV, AV1-in-MKV/WEBM — see §3.4.3's image/video decoder split: these are FFmpeg's
-  *own* `hevc`/`h264`/`av1` decoders, **not** the image-worker's libde265/dav1d),
-  **`mpeg4`, `msmpeg4v2`, `msmpeg4v3`** (DivX/Xvid AVI, WMV1/2), **`mjpeg`**, **`aac`**
-  (every AAC track), **`vorbis`, `opus`** (WEBM/OGG audio decode), plus **`flv1`,
-  `vp6a`/`vp6f`** (FLV), **`mp2`**, **`wmav1`/`wmav2`/`wmapro`/`wmalossless`**, **`vc1`**,
-  **`h263`**, **`amrnb`**, **`mpeg1video`/`mpeg2video`**, **`vp8`/`vp9`**, **`dca`/`ac3`**,
-  **`alac`/`flac`/`pcm`**. (This enumeration is the *expected floor* the generator must
-  meet or exceed, documented here as a sanity check; the **authoritative** set is the
-  generated `ffmpeg-required-decoders.lock`, regenerated from the 04 matrices, never
-  hand-edited.) It runs `ffmpeg -decoders` / `-muxers` on the staged binary and **fails
-  the build** if any decoder/muxer in the generated set is absent; the §6.4.3 per-pair
-  integration tests are the runtime backstop that catches anything the static list missed.
+  §04 decode inventories list**. **The required-decoder set is a GENERATED manifest, not
+  a hand-kept list `[DECIDED]`:** a build step reads the §04 decode-inventory tables
+  (`audio.md`, `video.md`; the `cross-category.md` sources are video containers) into
+  `ffmpeg-required-decoders.lock`, and the assertion runs against **that** generated set —
+  so the named minimum can never drift below the real requirement. The headline decoders —
+  `hevc`, `h264`, `libdav1d` (never FFmpeg's hardware-only `av1`), `aac`, `vorbis`, `opus` —
+  are inventory rows like every other codec; the inventory is the only list, and the
+  assertion maps each configure component to its `ffmpeg -decoders` name through the
+  inventory (the two differ only for `msmpeg4v3`, listed as `msmpeg4`, and the subtitle
+  decoder `movtext`, listed as `mov_text`). It reads the name token of each `-decoders` line,
+  the first token after the flag column, never a substring of the line: the `msmpeg4` line
+  also names `msmpeg4v3` in its `(codec …)` suffix. Four
+  decoders are implied by others through FFmpeg's configure `_select` dependencies — `h263`
+  (by `flv`, `mpeg4`, `msmpeg4v1`–`v3`, `wmv1`, `wmv2`), `vc1` (by `wmv3`), `ac3` (by `eac3`)
+  and `vp6` (by `vp6a`, `vp6f`); each is an inventory row too, so a build enabling exactly the
+  inventory carries no decoder outside it. It runs
+  `ffmpeg -decoders` / `-muxers` on the staged binary and **fails the build** if any
+  decoder/muxer in the generated set is absent; the §6.4.3 per-pair integration tests are
+  the runtime backstop that catches anything the static list missed.
 - **Curated-FFmpeg ENCODER-coverage assertion `[DECIDED]` (same generated-from-04 treatment
   as decoders):** the `--disable-everything --enable-…` trim can **also** silently drop a
   needed native **encoder** (a default-on native encoder excluded by the trim), so the same
@@ -405,10 +406,11 @@ build-time mechanics that realise them**:
   include**, among others, the load-bearing target encoders: **native `aac`** (M4A/AAC
   targets), **`alac`**, **`flac`**, **`pcm_s16le`/`pcm_s16be`/pcm_*** (WAV/AIFF/ALAC),
   **`libmp3lame`** (MP3), **`libvorbis`** (OGG), **`libopus`** (OPUS), **`libx264`** (H.264
-  video), **`libvpx-vp9`** (WEBM/VP9). (As with decoders, this is the *expected floor*; the
-  authoritative set is the generated `ffmpeg-required-encoders.lock`, regenerated from the 04
-  target matrices, never hand-edited.) So a trimmed build can't drop an encoder a 04 target
-  needs without failing CI.
+  video), **`libvpx-vp9`** (WEBM/VP9), **`mov_text`** (configure `movtext`: the text subtitles
+  an MP4 target keeps, `video.md` *Subtitles & embedded tracks*). (This enumeration is the
+  *expected floor*; the authoritative set is the generated `ffmpeg-required-encoders.lock`,
+  regenerated from the 04 target matrices, never hand-edited.) So a trimmed build can't drop an
+  encoder a 04 target needs without failing CI.
 - **Curated-FFmpeg network-protocol + dereferencing-demuxer absence assertion `[DECIDED]`
   (T9b SSRF **and** LFR, §0.11 / §3.5.1):** the FFmpeg build disables networking protocols
   at configure time (no `--enable-protocol=http`/`https`/`tcp`/`tls`/`rtmp`/`hls` family;

@@ -103,6 +103,42 @@ control + generation-loss disclosure; see Format-default decisions item 2 / see
 
 ---
 
+## Decode inventory
+
+One row per FFmpeg decoder the category needs; *Sources* lists the source formats whose
+streams it decodes. With video.md's tables this is the whole decode set: the
+`ffmpeg-required-decoders.lock` generator reads the *Decode inventory* tables and nothing else
+(§6.1.3), so a codec with no row is not in the curated build. The name columns are the three FFmpeg
+namespaces video.md's *Decode inventory* defines. The PCM rows name the concrete decoders for
+the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIFF/AIFC carry.
+
+| Codec | Sources | Configure component | `ffmpeg -decoders` name | `ffprobe` `codec_name` | §3.4 home |
+|---|---|---|---|---|---|
+| MP3 | MP3 | `mp3` | `mp3` | `mp3` | §3.4.2 |
+| AAC | AAC, M4A | `aac` | `aac` | `aac` | §3.4.3 AAC row |
+| ALAC | ALAC | `alac` | `alac` | `alac` | §3.4.2 |
+| FLAC | FLAC | `flac` | `flac` | `flac` | §3.4.2 |
+| Vorbis | OGG | `vorbis` | `vorbis` | `vorbis` | §3.4.2 |
+| Opus | OPUS | `opus` | `opus` | `opus` | §3.4.2 |
+| WMA v1 | WMA | `wmav1` | `wmav1` | `wmav1` | §3.4.3 legacy row |
+| WMA v2 | WMA | `wmav2` | `wmav2` | `wmav2` | §3.4.3 legacy row |
+| WMA Pro | WMA | `wmapro` | `wmapro` | `wmapro` | §3.4.3 legacy row |
+| WMA Lossless | WMA | `wmalossless` | `wmalossless` | `wmalossless` | §3.4.3 legacy row |
+| PCM, unsigned 8-bit | WAV | `pcm_u8` | `pcm_u8` | `pcm_u8` | §3.4.2 |
+| PCM, signed 16-bit LE | WAV, AIFF (AIFC `sowt`) | `pcm_s16le` | `pcm_s16le` | `pcm_s16le` | §3.4.2 |
+| PCM, signed 24-bit LE | WAV | `pcm_s24le` | `pcm_s24le` | `pcm_s24le` | §3.4.2 |
+| PCM, signed 32-bit LE | WAV | `pcm_s32le` | `pcm_s32le` | `pcm_s32le` | §3.4.2 |
+| PCM, 32-bit float LE | WAV | `pcm_f32le` | `pcm_f32le` | `pcm_f32le` | §3.4.2 |
+| PCM, 64-bit float LE | WAV | `pcm_f64le` | `pcm_f64le` | `pcm_f64le` | §3.4.2 |
+| PCM, signed 8-bit | AIFF | `pcm_s8` | `pcm_s8` | `pcm_s8` | §3.4.2 |
+| PCM, signed 16-bit BE | AIFF | `pcm_s16be` | `pcm_s16be` | `pcm_s16be` | §3.4.2 |
+| PCM, signed 24-bit BE | AIFF | `pcm_s24be` | `pcm_s24be` | `pcm_s24be` | §3.4.2 |
+| PCM, signed 32-bit BE | AIFF | `pcm_s32be` | `pcm_s32be` | `pcm_s32be` | §3.4.2 |
+| PCM, 32-bit float BE | AIFF (AIFC `fl32`) | `pcm_f32be` | `pcm_f32be` | `pcm_f32be` | §3.4.2 |
+| PCM, 64-bit float BE | AIFF (AIFC `fl64`) | `pcm_f64be` | `pcm_f64be` | `pcm_f64be` | §3.4.2 |
+
+---
+
 ## Per-format entries
 
 ### `MP3`
@@ -148,7 +184,8 @@ control + generation-loss disclosure; see Format-default decisions item 2 / see
   0, then `57 41 56 45` ("WAVE") at byte 8. Extension `.wav` (`.wave`).
   Sub-format is read from the `fmt ` chunk (PCM `0x0001`, IEEE float `0x0003`,
   WAVE_FORMAT_EXTENSIBLE `0xFFFE`). Note: a `.wav` can technically wrap a non-PCM
-  codec (rare); FFmpeg decodes whatever the `fmt ` chunk declares.
+  codec (rare); FFmpeg decodes it when that codec is a *Decode inventory* row (the curated
+  build, §6.1.3).
 - **Role:** both.
 - **As source → targets:** MP3 ★, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC.
 - **As target ← sources:** every other audio format (the universal **lossless
@@ -351,7 +388,7 @@ control + generation-loss disclosure; see Format-default decisions item 2 / see
   fully survive into AIFF → §2.9 `audio_tags_dropped`** (conditional on the source having
   metadata — routed through the unified LossyKind UI, matching the AAC/WAV pattern, not
   prose-only). AIFC (compressed AIFF) sources are decoded by codec like any
-  container.
+  container, when that codec is a *Decode inventory* row.
 
 ### `ALAC`
 
@@ -393,7 +430,7 @@ control + generation-loss disclosure; see Format-default decisions item 2 / see
   only FFmpeg WMA encoder `wmav2` is low-quality, 2-channel-max legacy). This is an
   explicit, documented exclusion under the SSOT direction rule, not an oversight.
 - **Engine (decode):** FFmpeg decoders `wmav1` / `wmav2` / `wmapro` / `wmalossless`
-  — all decode-capable, all platforms. No patent flag for our use.
+  — all decode-capable, all platforms. Patent posture: the §3.4.3 legacy decode-only row.
 - **Options/settings:** as a source, options are those of the chosen *target*
   (e.g. converting WMA→MP3 uses the MP3 defaults). Nothing WMA-specific.
 - **Lossy?:** WMA sources are usually lossy (v1/v2/Pro); WMA Lossless exists but is
@@ -544,7 +581,8 @@ Exact strings live in the **§2.9 message catalog** (home); this file only recor
 - **AAC patent disposition is *not* an engine-licence issue** (the native encoder
   is LGPL) — it is the **patent** question owned solely by **§3.4**; AAC and
   M4A(AAC) availability per platform flow from that matrix. ALAC, MP3 (expired),
-  Vorbis, Opus, FLAC, PCM, WMA-decode are all patent-clean for our purposes.
+  Vorbis, Opus, FLAC, PCM are all patent-clean for our purposes. WMA decode is on the
+  §3.4.3 legacy decode-only row.
 
 ### Isolation & fail-clearly
 

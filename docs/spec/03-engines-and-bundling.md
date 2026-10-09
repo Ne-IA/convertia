@@ -43,8 +43,8 @@ every one; they cluster into four families:
 | 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | linked load module inside the separate image-worker (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none |
 | 1d | **ImageMagick** (libvips BMP save delegate — **REQUIRED for BMP**; ICO save is the **default** path but **`[DEFER: build spike]`** §3.5.5; plus GIF fallback) | Images | **BMP load+save (`magickload`/`magicksave` — REQUIRED)**; **ICO save (`magicksave`) — default, multi-size/256px unverified, in-core Rust ICO assembler fallback §3.5.5**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | linked delegate (permissive — no isolation); GPL *optional delegates* excluded at build | none |
 | 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **Pin-coupling `[DECIDED]`:** the lovell `libimagequant` v2.4.x fork is **vendored/statically linked inside libvips' `cgif`/`gifsave` path** (the §3.8 floor) — there is **no dynamic soname to resolve at runtime**, so the guard is a **lockfile assertion, not an ABI/soname check**: the **§6.1.3 build assertion verifies the pinned `imagequant`/`libimagequant` ref in `engines.lock` (and any Rust `Cargo.lock` entry) is exactly the `lovell/libimagequant` v2.4.x-fork commit** (NOT upstream 4.x, whose GPLv3 leg would taint the worker), backing the COPYRIGHT-BSD-text check with a provenance check. *(If a future platform build dynamically loads libimagequant, the soname-resolution check is added scoped to that case only.)* | linked/vendored **inside the image-worker process** (BSD fork only) | none |
-| 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, **WMA *decoders* (decode-only — the sole FFmpeg WMA encoder `wmav2` is low-quality, 2-channel-max legacy, so `→ WMA` is out of v1 per audio.md and the build never invokes a WMA encoder; WMA is a source-only format)**; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264 → §3.4**; MP3/Vorbis/Opus/FLAC/ALAC/PCM/VP9 patent-clean |
-| 2a | **FFmpeg external codec libraries** — `libmp3lame` (MP3 enc), `libvorbis` + `libogg` (Vorbis/Ogg), `libopus` (Opus enc), `libvpx` (VP9 enc, WEBM target). v1 ships these as **separate shared objects staged beside the FFmpeg exe** (§3.9.1 dynamic preference) — each is a distinct staged binary, so **each gets its own §3.7.2 `engines.lock`/SBOM row** | Audio, Video | audio.md (`→ MP3`/`→ OGG`/`→ OPUS`), video.md (`→ WEBM`) | **libmp3lame `LGPL-2.0-or-later`** (triggers the §6.1.3 carve-out-(i)/§3.6.2 relink+offer obligation); **libvorbis / libogg / libopus / libvpx all `BSD-3-Clause`** (libvpx ALSO carries its `PATENTS` grant in `THIRD-PARTY-LICENSES.txt`, like libaom/x264) | linked into the **GPL FFmpeg binary** (separate invoked process) — never the MIT core; LGPL libmp3lame's §6 subsumed by FFmpeg's GPL corresponding-source, offer honoured (§3.6.2) | none for these codecs (MP3/Vorbis/Opus/VP9 patent-clean) |
+| 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, **WMA *decoders* (decode-only — the sole FFmpeg WMA encoder `wmav2` is low-quality, 2-channel-max legacy, so `→ WMA` is out of v1 per audio.md and the build never invokes a WMA encoder; WMA is a source-only format)**; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264, HEVC and AV1 decode, and the legacy decode-only set → §3.4.3**; MP3, Vorbis, Opus, FLAC, ALAC, PCM, VP9, VP8, AC-3, MP2, MPEG-1, MJPEG, Cinepak → §3.4.2 |
+| 2a | **FFmpeg external codec libraries** — `libmp3lame` (MP3 enc), `libvorbis` + `libogg` (Vorbis/Ogg), `libopus` (Opus enc), `libvpx` (VP9 enc, WEBM target), `libdav1d` (AV1 decode, video sources). v1 ships these as **separate shared objects staged beside the FFmpeg exe** (§3.9.1 dynamic preference) — each is a distinct staged binary, so **each gets its own §3.7.2 `engines.lock`/SBOM row** | Audio, Video | audio.md (`→ MP3`/`→ OGG`/`→ OPUS`), video.md (`→ WEBM`; AV1 sources) | **libmp3lame `LGPL-2.0-or-later`** (triggers the §6.1.3 carve-out-(i)/§3.6.2 relink+offer obligation); **libvorbis / libogg / libopus / libvpx all `BSD-3-Clause`** (libvpx ALSO carries its `PATENTS` grant in `THIRD-PARTY-LICENSES.txt`, like libaom/x264); **libdav1d `BSD-2-Clause`** | linked into the **GPL FFmpeg binary** (separate invoked process) — never the MIT core; LGPL libmp3lame's §6 subsumed by FFmpeg's GPL corresponding-source, offer honoured (§3.6.2) | none for these codecs (MP3/Vorbis/Opus/VP9/AV1 royalty-free, §3.4.2) |
 | 3 | **LibreOffice** (headless `soffice`, Writer+Calc+Impress + PDF export filters; bundled with a baseline open font set, §3.9) | Documents, Spreadsheets, Presentations | `04-formats/documents.md`, `spreadsheets.md`, `presentations.md` (all office↔office + every `*→PDF`) | **MPL-2.0** (+ many bundled components — full set enumerated by the SBOM, §3.7) | **separate invoked binary** (sidecar process) per §3.6 | none |
 | 4 | **poppler** (`pdftotext`) | Documents | `PDF→TXT` | **`GPL-2.0-only OR GPL-3.0-only`** (a valid SPDX expression — *not* the bare `GPL-2.0/GPL-3.0`, which §6.3.3 would reject as unresolved) | **separate invoked binary** (§3.6) | none |
 | 5 | **Ghostscript** **[DECIDED: NOT shipped v1]** (was a PDF read/repair backstop behind poppler; no user-facing pair) | Documents | (malformed-PDF tolerance — dropped) | **AGPL-3.0** | not shipped (`[DEFER: re-add if §6.5 corpus shows GS-salvageable PDFs]`) | none |
@@ -95,8 +95,9 @@ every one; they cluster into four families:
 Licence-class summary (drives §3.6/§3.7): **MIT** core; **LGPL** (libvips,
 libheif/libde265, librsvg, and the FFmpeg LGPL component lib **`libmp3lame`**); **BSD-3-Clause**
 (the FFmpeg component libs **`libvorbis`/`libogg`/`libopus`/`libvpx`** — `libvpx` also carries
-its `PATENTS` grant) — all the FFmpeg component libs are dynamic-linked beside the exe (§3.1 row
-2a / §3.7.2); **GPL** (the **FFmpeg binary itself** — GPL-2.0+ because it enables x264 —
+its `PATENTS` grant); **BSD-2-Clause** (the FFmpeg AV1 decoder **`libdav1d`**) — all the
+FFmpeg component libs are dynamic-linked beside the exe (§3.1 row 2a / §3.7.2); **GPL** (the
+**FFmpeg binary itself** — GPL-2.0+ because it enables x264 —
 plus x264, the **x265 libheif plugin**, poppler, pandoc) **always invoked or
 dynamically-plugin-loaded, never statically linked into the MIT core**, each carrying
 the written-offer-of-source obligation (§3.6.2); **AGPL** (Ghostscript) **not shipped
@@ -726,10 +727,30 @@ availability (SSOT *v1 DoD* exception 1) flows from here.
   BSD. No patent royalty; the §3.4 entry exists only to record the **build/ship
   posture** (it ships everywhere).
 - **VP9 / Opus / Vorbis / FLAC / ALAC / PCM** — royalty-free; not in this matrix.
-- **`[OPEN: P4.90]`** WMA v1/v2/Pro/Lossless, AMR-NB, DTS, AC-3, VP6, Sorenson
-  Spark, MP2, MPEG-1 video, MJPEG, VP8, WMV1/2, Nellymoser and Cinepak — decoded, never
-  encoded, by the bundled FFmpeg for §04 source formats — are classified neither in this list
-  nor in §3.4.3 (measured 2026-09-10). The ruling lands each in one of the two.
+- **AC-3** — decoded only (FFmpeg `ac3`). The last Dolby AC-3 US patent, US 5,890,106,
+  expired 2017-03-19. Not in this matrix.
+- **MPEG-1 video and MPEG-1 Audio Layer II (MP2)** — decoded only (`mpeg1video`, `mp2`). No
+  unexpired essential patent: US 4,972,484 expired 2007-11-20 and US 4,472,747 in 2003; MPEG-2
+  video, a superset, expired 2018 (§3.4.3). Not in this matrix.
+- **MJPEG and baseline JPEG** — baseline JPEG is licence-free by design; the one asserted
+  patent, US 4,698,672, was invalidated 2006-05-26 and expired 2006-10-27. Not in this matrix.
+- **Cinepak** — decoded only (`cinepak`). US 5,467,413 expired 2013-05-20. Not in this matrix.
+- **VP8** — decoded by FFmpeg (`vp8`, WEBM and MKV sources) and encoded and decoded by libwebp
+  (WEBP). Royalty-free: Google's WebM Specification patent licence is perpetual, no-charge and
+  covers any implementation, the 2013 MPEG LA agreement cross-licenses the pool candidates' VP8
+  patents, and the one litigated third-party claim (EP 1186177) was held not infringed (LG
+  Mannheim, 7 O 201/12, 2013-08-05). Same posture as VP9. libwebp's `PATENTS` grant ships in
+  `THIRD-PARTY-LICENSES.txt` (§3.7.2). Not in this matrix.
+- **The §3.4.3 decode-only additions `[DECIDED]`.** Sorenson Spark is an H.263 variant
+  (FFmpeg's `flv` decoder is its H.263 decoder); WMV1/WMV2 and MS-MPEG-4 v1–v3 derive from
+  MPEG-4 Part 2, whose last US patent expired 2023-11-14 and last patent worldwide 2026-07-19;
+  WMV3 is VC-1 Simple/Main profile. The 2002 WMA Pro/Lossless patent families expired by
+  2026-04-04, and the DTS core (2016) and DTS-HD lossless (2025) families have expired. AMR-NB is
+  the 3GPP 1999 speech codec, whose pool historically licensed decoders in PC products free; no
+  granted Nellymoser patent was found; E-AC-3 is Dolby Digital Plus; no essential-patent list was
+  found for ProRes (SMPTE RDD 36) or DV (IEC 61834). Each is decoded, never encoded, and sits on
+  the §3.4.3 legacy decode-only row, which needs no expiry proof; the live and unestablished
+  patent tails are named there, one home each.
 
 ### 3.4.3 The matrix — recommended disposition per (codec × platform)
 
@@ -741,11 +762,11 @@ platform. Each cell is the **recommended** disposition (read with §3.4.4).
 | **AAC** (encode+decode) | `audio.md` AAC, M4A targets; `cross-category` M4A extract; `video.md` MP4/MOV/M4V audio | **ship-bundled** | **ship-bundled** | **ship-bundled** |
 | **H.264 / AVC** (encode; decode) | `video.md` MP4/MOV/MKV/M4V re-encode (the **default video target**) | **ship-bundled** | **ship-bundled** | **ship-bundled** |
 | **HEVC / H.265 — DECODE (image)** (read HEIC) | `images.md` HEIC source | **ship-bundled** (libheif+libde265, LGPL, decode-only; image-worker) | **ship-bundled** (libheif+libde265) | **ship-bundled** (libheif+libde265) |
-| **HEVC / H.265 — DECODE (video)** (read iPhone HEVC `.mov`, HEVC-in-MKV) | `video.md` MOV/MKV HEVC source | **ship-bundled** (FFmpeg native `hevc` decoder, inside the GPL FFmpeg binary — **never** libde265) | **ship-bundled** (FFmpeg native `hevc`) | **ship-bundled** (FFmpeg native `hevc`) |
+| **HEVC / H.265 — DECODE (video)** (read iPhone HEVC `.mov`, HEVC-in-MKV) | `video.md` MOV/MKV HEVC source (every container: the §04 decode inventory) | **ship-bundled** (FFmpeg native `hevc` decoder, inside the GPL FFmpeg binary — **never** libde265) | **ship-bundled** (FFmpeg native `hevc`) | **ship-bundled** (FFmpeg native `hevc`) |
 | **HEVC / H.265 — ENCODE** (write HEIC) | `images.md` HEIC **target** (never a default) | **ship-bundled (x265, isolated) `[DECIDED]`, behind §3.4 availability flag** | **ship-bundled (x265, isolated) `[DECIDED]`, behind flag** | **ship-bundled (x265, isolated) `[DECIDED]`, behind flag** |
 | **AV1 — image (AVIF)** encode+decode | `images.md` AVIF | **ship-bundled** (libaom enc / dav1d dec via libheif, image-worker) | **ship-bundled** | **ship-bundled** |
-| **AV1 — video** DECODE | `video.md` MKV/WEBM AV1 source (decode-only; AV1 is **not** a v1 WEBM-output codec) | **ship-bundled** (FFmpeg internal `av1`/`libdav1d` decoder, inside the GPL FFmpeg binary — **never** the image-worker's libheif/dav1d module) | **ship-bundled** (FFmpeg `av1`) | **ship-bundled** (FFmpeg `av1`) |
-| **Legacy encumbered codecs — DECODE ONLY** (VC-1, MPEG-2, H.263, MPEG-4 Part 2 / DivX-class) | `video.md` WMV source (VC-1), MPG/MPEG source (MPEG-2), 3GP source (H.263), AVI source (MPEG-4 Part 2) — **read-side only** (these are never v1 encode targets) | **ship-bundled-decode-only** | **ship-bundled-decode-only** | **ship-bundled-decode-only** |
+| **AV1 — video** DECODE | `video.md` MKV/WEBM AV1 source (decode-only; AV1 is **not** a v1 WEBM-output codec; every container: the §04 decode inventory) | **ship-bundled** (FFmpeg's **`libdav1d`** decoder, BSD-2-Clause, linked into the GPL FFmpeg binary — FFmpeg's native `av1` decoder decodes only through a hardware accelerator, which the curated `--disable-everything` build (§6.1.3) does not enable; **never** the image-worker's libheif/dav1d module) | **ship-bundled** (FFmpeg `libdav1d`) | **ship-bundled** (FFmpeg `libdav1d`) |
+| **Legacy and decode-only codecs — DECODE ONLY** (VC-1 incl. WMV3, MPEG-2, H.263 incl. Sorenson Spark, MPEG-4 Part 2 incl. MS-MPEG-4 v1–v3 and WMV1/2, VP6, WMA v1/v2/Pro/Lossless, AMR-NB, Nellymoser, DTS, E-AC-3, ProRes, DV) | `video.md` WMV (VC-1/WMV1–3 video, WMA audio), MPG/MPEG (MPEG-2), 3GP (H.263, MPEG-4 Part 2, AMR-NB), AVI (MPEG-4 Part 2, MS-MPEG-4, DV), FLV (Sorenson Spark, VP6, Nellymoser), MOV (ProRes), MKV (DTS), MP4/MOV/M4V/MKV audio (E-AC-3); `audio.md` WMA source; `cross-category.md` extract-audio from these sources; every container per codec: the §04 decode inventories — **read-side only** (these are never v1 encode targets) | **ship-bundled-decode-only** | **ship-bundled-decode-only** | **ship-bundled-decode-only** |
 
 **Image-decoder vs video-decoder split — never conflate the two engines `[DECIDED]`.**
 HEVC and AV1 each have **two distinct decoders** in the build, in **different
@@ -754,30 +775,40 @@ processes**, and the matrix rows above are split accordingly:
   **libheif → libde265** (HEVC) and **libheif → dav1d** (AV1). These LGPL/BSD modules
   decode *still images only*.
 - **Video path** (`video.md` HEVC-in-MOV/MKV, AV1-in-MKV/WEBM source) decodes inside
-  the **GPL FFmpeg binary** via FFmpeg's **own native `hevc`/`av1` decoders** (FFmpeg
-  does **not** link libde265, and its AV1 decode is its internal `av1`/`libdav1d`, not
+  the **GPL FFmpeg binary** via FFmpeg's native `hevc` decoder and its `libdav1d` AV1
+  decoder (FFmpeg does **not** link libde265, and its `libdav1d` is a separate link from
   the image-worker's libheif/dav1d module).
 A Phase-3 engine/trim/licence decision must read the **right row**: image HEVC/AV1
 decode = libheif+libde265/dav1d (image-worker, §3.5.5); video HEVC/AV1 decode =
-FFmpeg's internal decoders (FFmpeg sidecar, §3.5.1). The §6.1.3 curated-FFmpeg
-decoder-coverage assertion must therefore list **`hevc` and `av1`** as required FFmpeg
+FFmpeg's decoders (FFmpeg sidecar, §3.5.1). The §6.1.3 curated-FFmpeg
+decoder-coverage assertion must therefore list **`hevc` and `libdav1d`** as required FFmpeg
 decoders (they are the video-side decoders, not redundant with the image modules).
 
-**Legacy decode-only codecs — ship-bundled-decode-only everywhere, no gate `[DECIDED]`.**
-The §04 video matrices accept **WMV/MPG/MPEG/3GP/AVI sources**, whose inner bitstreams are
-VC-1 / MPEG-2 / H.263 / MPEG-4 Part 2 — all encumbered, but ConvertIA only **decodes**
-them (it re-encodes to the royalty-free/permitted default target, never *writes* these
-codecs). Disposition: **ship-bundled-decode-only on all three platforms, no §3.4
-availability flag**, because (a) **decode** has a materially lighter patent profile than
-encode — the active pools target *encode/distribution*, not bitstream *decode*; (b)
-**MPEG-2's US essential patents fully expired in 2018** (the last US essential patent,
-US 7,334,248, expired Feb 2018 — verified against the MPEG-LA pool wind-down) and
-VC-1/H.263 are near/past expiry over
-v1's deadline-free lifetime; (c) the whole OSS ecosystem (FFmpeg in every Linux distro)
-ships these decoders. These are inside the **GPL FFmpeg binary** (the §6.1.3 curated-decoder
-assertion already lists `vc1`/`mpeg2video`/`h263`/`mpeg4` as required), so no extra
-licence surface beyond FFmpeg's. This keeps §3.4's "single owner, never re-decided
-elsewhere" claim honest — the legacy decoders now have an explicit disposition row.
+**Legacy and decode-only codecs — ship-bundled-decode-only everywhere, no gate `[DECIDED]`.**
+The §04 sources carry bitstreams ConvertIA only **decodes**: VC-1 (incl. WMV3), MPEG-2, H.263
+(incl. Sorenson Spark), MPEG-4 Part 2 (incl. MS-MPEG-4 v1–v3 and WMV1/2), VP6, WMA
+v1/v2/Pro/Lossless, AMR-NB, Nellymoser, DTS, E-AC-3, ProRes and DV. It re-encodes them to the
+default target and never *writes* them. Disposition: **ship-bundled-decode-only on all three
+platforms, no §3.4 availability flag**, because (a) **decode** has a materially lighter patent
+profile than encode — the active pools target *encode/distribution*, not bitstream *decode*;
+(b) the MPEG-2, MPEG-4 Part 2, VC-1 and H.263 families have expired or are expiring — MPEG-2's
+US essential patents expired in 2018 (the last, US 7,334,248, in February 2018) and MPEG-4
+Visual's last patent worldwide on 2026-07-19, and VC-1 and H.263 are near or past expiry over
+v1's deadline-free lifetime — and the rest carries a named tail: the patents on **VP6** (Google
+US 8,824,553, to 2027-02-25), the **WMA 10 Pro** syntax (US 7,885,819, to 2029-12-08; whether
+FFmpeg's reverse-engineered `wmapro` practises it is not established) and **DTS-XLL**
+(US 8,239,210, to 2030-08-29, an extension FFmpeg's `dca` decodes) are live, and ConvertIA
+knowingly ships a decoder for each of the three; **AMR-NB, Nellymoser, E-AC-3, ProRes and DV**
+have no established last expiry (Apple licenses ProRes implementations and calls FFmpeg's
+decoder unauthorized, but names no patent); (c) Debian's `ffmpeg`, HandBrake and VLC ship all
+of these decoders, and Fedora's legally reviewed `ffmpeg-free` enables all of them except
+`vc1`, `wmv3`, `wmapro`, `wmalossless` and `eac3` — it excludes `h264` and `hevc` too, a bar
+stricter than §3.4's standing H.264, HEVC and VC-1 decode posture. They are
+inside the **GPL FFmpeg binary**, so no extra licence surface beyond FFmpeg's; the decoder
+names are the §04 decode-inventory rows. FFmpeg's `prores_raw` decoder is not built: ProRes
+RAW is no §04 source codec, and the RED compressed-RAW patent family (US 8,174,560) runs to
+2030-08-14. Decode-only has no source-side availability flag (§3.4.4a is target/encoder-keyed);
+withdrawing a decoded codec later needs a new source-side design, not a data flip.
 
 ### 3.4.4 Rationale + what is genuinely still OPEN
 
@@ -806,8 +837,8 @@ while the **video** HEVC-in-MOV/MKV source decodes in the **GPL FFmpeg binary** 
 FFmpeg's **native `hevc` decoder** (FFmpeg does not link libde265). Decode-only HEVC
 has the lighter patent profile and is widely shipped either way. The `images.md`
 `HEIC→JPG★` default-source path (libde265) and the `video.md` HEVC source path
-(FFmpeg `hevc`) must both work everywhere; the §6.1.3 curated-FFmpeg assertion lists
-`hevc` so the video decoder cannot be trimmed out.
+(FFmpeg `hevc`) must both work everywhere; `hevc` is a video.md decode-inventory row, so the
+§6.1.3 curated-FFmpeg assertion keeps the video decoder from being trimmed out.
 
 **HEVC *encode* (writing HEIC) — `[DECIDED]`: ship-bundled-isolated (x265), behind
 the §3.4 availability flag.** This is the highest-risk codec: x265 is **both GPL and
@@ -1560,7 +1591,7 @@ source where required), so the MIT core stays clean.
 | **x265** (HEVC encode) | **GPL-2.0-or-later** | **NO — dynamically-loaded libheif *plugin*** | x265 ships as a **separately-built, dynamically-loaded libheif encoder plugin** (`.so`/`.dll`/`.dylib`, libheif `ENABLE_PLUGIN_LOADING`) that `heifsave compression=hevc` loads at runtime. The GPL code is **never statically linked** into the image-worker's libvips or the MIT core; it lives behind libheif's plugin ABI and runs **inside the §0.7 image-worker process** (already a separate process from the core). **Accurate framing `[DECIDED]`: when x265 is loaded, the running image-worker is a GPL *combined work*** (per the FSF, dynamically loading a GPL plugin into a process makes that process's combination a GPL combined work — it is **not** an "LGPL worker with an isolated GPL plugin"). **The aggregation argument that keeps the MIT CORE clean is the *separate process* boundary** (the core invokes the worker as a child process), and that is sound + load-bearing — but **inside** the worker, both the **LGPL relink obligation** (libvips/libheif stack) **AND** the **x265 GPL corresponding-source obligation** apply to the worker-with-x265-loaded. *(A static x265-in-libvips link would taint — hence the plugin form. This replaces the dropped "standalone heif/x265 sidecar" — no such sidecar exists under the [IMG-1] heifsave-only decision.)* |
 | **x264** (H.264 encode) | **GPL-2.0-or-later** (SPDX `GPL-2.0-or-later` — matches x265's form; x264 is GPL-2.0-**or-later**, not `GPL-2.0-only`) | **NO — inside the GPL FFmpeg binary** | reached only via the **FFmpeg binary** (separate invoked process); never linked into the MIT core |
 | **FFmpeg** build | **GPL-2.0+** (enables GPL x264 via `--enable-gpl` → the *whole* binary is GPL-2.0+, not LGPL) | **NO — separate exe** | invoked as `ffmpeg`/`ffprobe` child processes (§3.3.3); aggregation keeps the MIT core clean. **Static OR dynamic FFmpeg is GPL-clean `[DECIDED]`:** a static GPL FFmpeg with the LGPL component libs (libmp3lame/libvorbis/libopus) baked in is aggregation — the GPL's own corresponding-source subsumes LGPL §6 — so it **never** fails the §6.1.3 assertion (carve-out **iii**). v1 ships them **dynamically linked beside the exe** (§3.9.1) as a deliberate engineering preference (smaller diff to swap a component lib), **not** a licence-mandated build rule; when dynamic, §6.1.3 carve-out **i** verifies those component shared objects are present beside the exe. The LGPL **dynamic-link** assertion applies ONLY to an LGPL lib linked into the **MIT core** (carve-out i), never to the separate FFmpeg binary. Written-offer-of-source obligation honored (§3.6.2). |
-| **FFmpeg component libs** (`libmp3lame` LGPL-2.0-or-later; `libvorbis`/`libogg`/`libopus`/`libvpx` BSD-3-Clause) | per-component (see §3.1 row 2a / §3.7.2) | **NO — linked into the GPL FFmpeg binary** | reached only through the FFmpeg binary (separate invoked process); never linked into the MIT core. **libmp3lame is LGPL**, so its §6 relink obligation rides along — subsumed by FFmpeg's GPL corresponding-source + written offer (§3.6.2), and each ships its own §3.7.2 SBOM row (release-blocking if absent). **libvpx is the VP9/WEBM-target encoder** and carries its `PATENTS` grant alongside the BSD-3 text, mirroring the x264/libaom patent-text rows. |
+| **FFmpeg component libs** (`libmp3lame` LGPL-2.0-or-later; `libvorbis`/`libogg`/`libopus`/`libvpx` BSD-3-Clause; `libdav1d` BSD-2-Clause) | per-component (see §3.1 row 2a / §3.7.2) | **NO — linked into the GPL FFmpeg binary** | reached only through the FFmpeg binary (separate invoked process); never linked into the MIT core. **libmp3lame is LGPL**, so its §6 relink obligation rides along — subsumed by FFmpeg's GPL corresponding-source + written offer (§3.6.2), and each ships its own §3.7.2 SBOM row (release-blocking if absent). **libvpx is the VP9/WEBM-target encoder** and carries its `PATENTS` grant alongside the BSD-3 text, mirroring the x264/libaom patent-text rows. |
 | **LibreOffice** | MPL-2.0 | **NO — separate sidecar** | invoked `soffice` process; MPL is weak/file-level anyway, but isolation is belt-and-suspenders + the SSOT policy |
 | **poppler**, **pandoc** | GPL | **NO — separate exe** | invoked child processes |
 | **Ghostscript** | **AGPL-3.0** | **NOT shipped v1 [DECIDED]** | dropped (§3.1) so no AGPL surface ships; `[DEFER: re-add only if §6.5 corpus shows GS-salvageable PDFs]` |
@@ -1740,6 +1771,8 @@ gate is **§6.3**. This section produces the *data* those consume.
    Patent License has no registered SPDX id, so it ships as a `LicenseRef` custom
    licence with full text in `THIRD-PARTY-LICENSES.txt`, §6.3.3 carve-out),
    **dav1d** (`BSD-2-Clause`),
+   **libwebp** (`BSD-3-Clause` plus its `PATENTS` grant, carried in `THIRD-PARTY-LICENSES.txt`
+   like libvpx's — the libvips WEBP codec, whose VP8 posture is §3.4.2),
    **librsvg** (LGPL-2.1+ — the libvips `svgload` SVG backend), and
    **libimagequant** (the gifsave/cgif palette-quantisation dependency — SPDX
    **`BSD-2-Clause`**, shipped **only** as the frozen `lovell/libimagequant` **v2.4.x**
@@ -1768,6 +1801,8 @@ gate is **§6.3**. This section produces the *data* those consume.
        patent-text treatment): the **VP9 encoder for the WEBM target** (`-c:v libvpx-vp9`,
        §3.5.1 / video.md). libvpx is also added to the §3.1 inventory + §3.6.1 aggregation
        table as the WEBM-target encoder.
+     - **libdav1d** — SPDX **`BSD-2-Clause`**: FFmpeg's AV1 decoder for video sources
+       (`libdav1d`, §3.4.3), a separate link from the image-worker's dav1d row above.
      **If FFmpeg is instead built statically (§6.1.3 carve-out iii)** so these libs are
      subsumed into the single GPL FFmpeg binary, the static build's GPL corresponding-source
      covers them and they need no *separate-staged-binary* row — but their SBOM rows still
@@ -1988,7 +2023,7 @@ dominates, so trimming effort is spent where it matters.
 | Engines spawned by Rust core (not WebView shell); no `shell:allow-execute` to WebView | `[DECIDED — recommended]` | §3.3.3 / →§0.10 | tighter threat surface + full subprocess control |
 | **AAC ship-bundled all 3 platforms** | `[DECIDED — recommended]` | §3.4 | native FFmpeg AAC, LGPL-clean; one-product requires it |
 | **H.264 ship-bundled all 3 platforms** | `[DECIDED — recommended]` | §3.4 | MP4 default-target depends on it; ~2027 expiry |
-| **HEVC *decode* ship-bundled all 3 platforms (two engines)** | `[DECIDED — recommended]` | §3.4 | **image** HEIC source → libheif+libde265 (LGPL, decode-only, image-worker); **video** HEVC-in-MOV/MKV → FFmpeg native `hevc` decoder (GPL FFmpeg binary, **never** libde265). §6.1.3 lists `hevc`+`av1` as required FFmpeg decoders |
+| **HEVC *decode* ship-bundled all 3 platforms (two engines)** | `[DECIDED — recommended]` | §3.4 | **image** HEIC source → libheif+libde265 (LGPL, decode-only, image-worker); **video** HEVC-in-MOV/MKV → FFmpeg native `hevc` decoder (GPL FFmpeg binary, **never** libde265). The video.md decode inventory lists `hevc` and `libdav1d`, so §6.1.3 requires them |
 | **HEVC *encode* (write HEIC) disposition** | **`[DECIDED]`** | §3.4 | ship-bundled-isolated (x265, GPL → separate invoked binary), **behind the §3.4 availability flag** so it can flip to `unavailable` (SSOT exception-1) as a config change. kvazaar (BSD) recorded as the license-clean alternative. |
 | AVIF ship-bundled all 3 platforms | `[DECIDED]` | §3.4 | royalty-free |
 | Drop Ghostscript in v1 | `[DECIDED]` (DEFER re-add to corpus) | §3.1 / §3.6 | poppler-only `PDF→TXT`, no AGPL surface; [DEFER: re-add only if the §6.5 corpus shows poppler failing PDFs GS would salvage] |
@@ -2013,3 +2048,11 @@ dominates, so trimming effort is spent where it matters.
 > ship-bundled-isolated behind the §3.4 availability flag, font set the §3.9.3 baseline
 > (only CJK breadth `[DEFER: size]`) — design-closed, with the patent exposure recorded
 > as an honest grey area rather than an open design question.
+>
+> **Codec sources (the §3.4.2 fact lines and the §3.4.3 legacy row):** patents.google.com for
+> each patent number cited; webmproject.org/license/bitstream and the libwebp `PATENTS` file;
+> the meta.wikimedia.org MPEG-4 Visual expiry page; Apple Support 118584 (ProRes authorized
+> products) and SMPTE RDD 36; the Library of Congress format descriptions fdd000389 (ProRes 422)
+> and fdd000183 (DV); FFmpeg's `libavcodec` sources (`allcodecs.c`, `codec_desc.c`, `av1dec.c`)
+> for the decoder names; distributor precedent: Debian `ffmpeg`, Fedora `ffmpeg-free`
+> `enable_decoders`, HandBrake, VLC.

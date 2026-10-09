@@ -1000,13 +1000,14 @@ One glossary for every spec file; per-file headers point here.
   §7.2.6 / §3.5.0 / §2.14.1.
 - **Video vs image HEVC/AV1 decode are TWO engines** — image HEIC/AVIF decode =
   libheif+libde265/dav1d (image-worker); video HEVC-in-MOV/MKV + AV1-in-MKV/WEBM decode =
-  FFmpeg's **own native `hevc`/`av1` decoders** (GPL FFmpeg binary, never libde265/the
-  image module). §3.4.3 matrix split into per-engine rows; §6.1.3 lists `hevc`+`av1` as
-  required FFmpeg decoders. Owner: §3.4.3 / §3.4.4 / §3.5.1 / §6.1.3.
+  FFmpeg's native `hevc` decoder and its `libdav1d` AV1 decoder (GPL FFmpeg binary, never
+  libde265/the image module). §3.4.3 matrix split into per-engine rows; the video decode
+  inventory lists `hevc` and `libdav1d`, which §6.1.3 requires. Owner: §3.4.3 / §3.4.4 /
+  §3.5.1 / §6.1.3.
 - **Curated-FFmpeg decoder set = generated-from-04 manifest** (`ffmpeg-required-decoders.lock`,
-  never hand-kept); the documented floor now includes the modern decoders
-  `hevc`/`h264`/`av1`/`mpeg4`/`msmpeg4v2`/`msmpeg4v3`/`mjpeg`/`aac`/`vorbis`/`opus` (+ legacy)
-  so a literal build can open iPhone-HEVC/AAC/WEBM/AVI sources. Owner: §6.1.3 / §3.1.
+  never hand-kept); the generator reads the §04 decode-inventory tables — the audio and video
+  codecs, headline and legacy alike, and the text-subtitle decoders — and nothing else. Owner:
+  §6.1.3 / §3.1.
 - **libaom SPDX = `BSD-2-Clause AND LicenseRef-AOMPL-1.0`** (AOM Patent License has no
   registered SPDX id — `AOMPL-1.0` is only a pending request) + a **§6.3.3 `LicenseRef`-with-
   text carve-out** so it satisfies the "resolved id" gate (not a `NOASSERTION` hard fail);
@@ -1161,14 +1162,11 @@ One glossary for every spec file; per-file headers point here.
   the decision (ship-bundled, no revenue) stands. Tracked as honest grey area, not an
   open design call (legal-advice items are out of scope). Owner: §3.4.2.
 - **Curated-FFmpeg decoder coverage** — `[DECIDED]` **generated-from-04 manifest**
-  (`ffmpeg-required-decoders.lock`, never hand-kept): the build parses every codec the
-  04 matrices name on the source side and asserts the curated `--disable-everything
-  --enable-…` build covers it (`ffmpeg -decoders` build assertion + §6.4.3 per-pair
-  tests). The documented floor explicitly includes the modern decoders `hevc`/`h264`/
-  `av1`/`mpeg4`/`msmpeg4v2`/`msmpeg4v3`/`mjpeg`/`aac`/`vorbis`/`opus` (+ legacy set) so
-  a literal build can open the headline iPhone-HEVC/AAC/WEBM/AVI sources. The only
-  remaining `[DEFER: corpus]` part is confirming the generated set is complete against
-  the real corpus, not the design. Owner: §6.1.3 / §3.1.
+  (`ffmpeg-required-decoders.lock`, never hand-kept): the build reads the §04
+  decode-inventory tables and asserts the curated `--disable-everything --enable-…` build
+  covers every decoder they list (`ffmpeg -decoders` build assertion + §6.4.3 per-pair
+  tests). The only remaining `[DEFER: corpus]` part is confirming the inventories are
+  complete against the real corpus, not the design. Owner: §6.1.3 / §3.1.
 
 ### Resolved in the consolidation pass (moved off `[OPEN]`) `[DECIDED]`
 - **Decoder-isolation v1 sandbox depth per OS — `[DECIDED]` (two-tier model, §2.12.3).**
@@ -1196,11 +1194,19 @@ One glossary for every spec file; per-file headers point here.
   links a third-party C/C++ decoder, so none violates the §2.12.4 "no third-party C/C++
   decoder in-core" absolute (which is worded exactly that way for this reason). Owner:
   §2.12.4 (raised by §1.2). *(§2.12.4 already DECIDED this; moved here off `[OPEN]`.)*
+- **§3.4.2/§3.4.3 source codecs — `[DECIDED]`, classified by measured patent status.** Expired
+  or royalty-free → a §3.4.2 fact line (AC-3, MP2, MPEG-1 video, MJPEG, Cinepak, VP8); a variant
+  of a legacy-row family (Sorenson Spark, WMV1–3, MS-MPEG-4 v1–v3) or a live or unestablished
+  patent tail (VP6, WMA v1/v2/Pro/Lossless, AMR-NB, Nellymoser, DTS, E-AC-3, ProRes, DV) → the
+  §3.4.3 legacy decode-only row. The FFmpeg decoder names live in the §04 decode inventories.
+  Owner: §3.4.2 / §3.4.3.
 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
-- **§3.4.2 — the disposition of the §04 source codecs §3.4 classifies neither way** (WMA, AMR-NB, DTS, AC-3, VP6,
-  Sorenson Spark, MP2, MPEG-1 video, MJPEG, VP8, WMV1/2, Nellymoser, Cinepak), found 2026-09-10 by the P4 pre-fill
-  audit; the owner ruling is plan P4.90 (A). Otherwise **none at the owner level after this round.** The items the prior pass's "None open"
+- **§5.2 launch-with-files initial state** — the one live fork, tagged in 05-ui-ux §5.2: a
+  synchronous launch-with-files signal at store init versus mount-drain from `Idle` as the
+  permanent design. Owner: §5.2.
+
+The items the prior pass's "None open"
   claim had actually still left open — **NSIS-vs-portable (`[OPEN-6.1a]`)**, **HEVC/H.265
   MOV→MP4 default**, **§1.6 defaults registry (`[REC]`)** — are `[DECIDED]`; the
   synthesis-fix round additionally resolved **`[OPEN-6.1b]` Linux `.deb`** (→ AppImage-only
@@ -1218,7 +1224,7 @@ One glossary for every spec file; per-file headers point here.
   and **synced the cross-category.md inline body tags `[XCAT-A]/[XCAT-C]/[XCAT-D]/[XCAT-E]/
   [XCAT-F]` to their own §"Open items (honest)" table dispositions** (A/C/E/F `[DEFER: corpus]`;
   D `[DECIDED]`) so no live bare `[OPEN]` remains in the body that the table already settled.
-  So the claim is true rather than aspirational. The remaining unknowns are **empirical calibration
+  So none of them is still open. The remaining unknowns are **empirical calibration
   only** (`[DEFER: corpus/build]` — resource-budget digits, the ≤400 MB compressed ceiling
   vs full-CJK+pandoc upper bound, CJK font breadth, the per-OS privilege-drop profile
   contents, the **bundled libvips/libheif HEVC-path `effort` honour (which also gates whether

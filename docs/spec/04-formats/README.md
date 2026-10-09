@@ -42,6 +42,10 @@ Each format in a category file is documented as:
 Each category file contains: a short intro, a **source→target matrix table**
 (rows = sources, cols = targets, cells = supported/engine/lossy), then one
 templated entry per format, then category-wide edge cases & option defaults.
+`audio.md` and `video.md` follow the matrix with a `## Decode inventory` section, the one
+list of what the category decodes (§6.1.3): a table with one row per FFmpeg decoder — codec |
+sources | configure component | `ffmpeg -decoders` name | `ffprobe` `codec_name` | §3.4 home —
+and, in `video.md`, a text-subtitle table with the same columns except the §3.4 home.
 
 ## Conventions
 - A pair is `v1-required` unless the SSOT exceptions apply (patent per-platform;

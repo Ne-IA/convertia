@@ -88,6 +88,81 @@ Notes on the `R`/`✓~` choice per cell:
   more often **R**: MKV is permissive enough to wrap most legacy codecs verbatim
   (lossless container change) — but the everyday user wants MP4, hence MP4 default.
 
+## Decode inventory
+
+One row per FFmpeg decoder the category needs; *Sources* lists the source formats whose
+streams it decodes (the per-format entries below describe the common case). The first table
+holds the audio and video codecs, each with its §3.4 home; the second holds the text-subtitle
+decoders. With audio.md's table these are the whole decode set: the
+`ffmpeg-required-decoders.lock` generator reads the *Decode inventory* tables and nothing else
+(§6.1.3), so a codec with no row is not in the curated build; the cross-category sources are
+these video containers. FFmpeg names a codec in three namespaces: the configure component
+(`--enable-decoder=`), the decoder name `ffmpeg -decoders` prints, and the codec descriptor
+`ffprobe` reports as `codec_name`, which the §3.5.1 remux-vs-reencode decision reads. Where
+FFmpeg has two decoders for one codec (`ac3`/`ac3_fixed`, `mp2`/`mp2float`, `mp3`/`mp3float`,
+`libdav1d`/`av1`, `subrip`/`srt`), the row names the one the build enables. `prores_raw` has no
+row (§3.4.3).
+
+| Codec | Sources | Configure component | `ffmpeg -decoders` name | `ffprobe` `codec_name` | §3.4 home |
+|---|---|---|---|---|---|
+| H.264 | MP4, MOV, M4V, MKV, FLV, 3GP, AVI | `h264` | `h264` | `h264` | §3.4.3 H.264 row |
+| HEVC | MP4, MOV, M4V, MKV | `hevc` | `hevc` | `hevc` | §3.4.3 HEVC video-decode row |
+| AV1 | MP4, MOV, M4V, MKV, WEBM | `libdav1d` | `libdav1d` | `av1` | §3.4.3 AV1 video-decode row |
+| VP9 | MKV, WEBM | `vp9` | `vp9` | `vp9` | §3.4.2 |
+| VP8 | MKV, WEBM | `vp8` | `vp8` | `vp8` | §3.4.2 |
+| MPEG-4 Part 2 | MP4, MOV, M4V, MKV, AVI, 3GP | `mpeg4` | `mpeg4` | `mpeg4` | §3.4.3 legacy row |
+| MS-MPEG-4 v1 | AVI | `msmpeg4v1` | `msmpeg4v1` | `msmpeg4v1` | §3.4.3 legacy row |
+| MS-MPEG-4 v2 | AVI | `msmpeg4v2` | `msmpeg4v2` | `msmpeg4v2` | §3.4.3 legacy row |
+| MS-MPEG-4 v3 | AVI | `msmpeg4v3` | `msmpeg4` | `msmpeg4v3` | §3.4.3 legacy row |
+| WMV1 (WMV7) | WMV | `wmv1` | `wmv1` | `wmv1` | §3.4.3 legacy row |
+| WMV2 (WMV8) | WMV | `wmv2` | `wmv2` | `wmv2` | §3.4.3 legacy row |
+| WMV3 (WMV9) | WMV | `wmv3` | `wmv3` | `wmv3` | §3.4.3 legacy row |
+| VC-1 | WMV | `vc1` | `vc1` | `vc1` | §3.4.3 legacy row |
+| MPEG-1 video | MPG/MPEG | `mpeg1video` | `mpeg1video` | `mpeg1video` | §3.4.2 |
+| MPEG-2 video | MPG/MPEG, MKV | `mpeg2video` | `mpeg2video` | `mpeg2video` | §3.4.3 legacy row |
+| H.263 | 3GP | `h263` | `h263` | `h263` | §3.4.3 legacy row |
+| Sorenson Spark | FLV | `flv` | `flv` | `flv1` | §3.4.3 legacy row |
+| VP6 | FLV | `vp6` | `vp6` | `vp6` | §3.4.3 legacy row |
+| VP6 Flash | FLV | `vp6f` | `vp6f` | `vp6f` | §3.4.3 legacy row |
+| VP6 with alpha | FLV | `vp6a` | `vp6a` | `vp6a` | §3.4.3 legacy row |
+| MJPEG | AVI, MOV | `mjpeg` | `mjpeg` | `mjpeg` | §3.4.2 |
+| Cinepak | AVI | `cinepak` | `cinepak` | `cinepak` | §3.4.2 |
+| DV | AVI | `dvvideo` | `dvvideo` | `dvvideo` | §3.4.3 legacy row |
+| ProRes | MOV | `prores` | `prores` | `prores` | §3.4.3 legacy row |
+| AAC | MP4, MOV, M4V, MKV, FLV, 3GP | `aac` | `aac` | `aac` | §3.4.3 AAC row |
+| ALAC | MP4, MOV, M4V | `alac` | `alac` | `alac` | §3.4.2 |
+| MP3 | MP4, MOV, M4V, MKV, AVI, FLV, MPG/MPEG | `mp3` | `mp3` | `mp3` | §3.4.2 |
+| MP2 | MPG/MPEG | `mp2` | `mp2` | `mp2` | §3.4.2 |
+| AC-3 | MP4, MOV, M4V, MKV, AVI, MPG/MPEG | `ac3` | `ac3` | `ac3` | §3.4.2 |
+| E-AC-3 | MP4, MOV, M4V, MKV | `eac3` | `eac3` | `eac3` | §3.4.3 legacy row |
+| DTS | MKV | `dca` | `dca` | `dts` | §3.4.3 legacy row |
+| Opus | MKV, WEBM | `opus` | `opus` | `opus` | §3.4.2 |
+| Vorbis | MKV, WEBM | `vorbis` | `vorbis` | `vorbis` | §3.4.2 |
+| FLAC | MKV | `flac` | `flac` | `flac` | §3.4.2 |
+| AMR-NB | 3GP | `amrnb` | `amrnb` | `amr_nb` | §3.4.3 legacy row |
+| WMA v1 | WMV | `wmav1` | `wmav1` | `wmav1` | §3.4.3 legacy row |
+| WMA v2 | WMV | `wmav2` | `wmav2` | `wmav2` | §3.4.3 legacy row |
+| WMA Pro | WMV | `wmapro` | `wmapro` | `wmapro` | §3.4.3 legacy row |
+| WMA Lossless | WMV | `wmalossless` | `wmalossless` | `wmalossless` | §3.4.3 legacy row |
+| Nellymoser | FLV | `nellymoser` | `nellymoser` | `nellymoser` | §3.4.3 legacy row |
+| PCM, unsigned 8-bit | AVI | `pcm_u8` | `pcm_u8` | `pcm_u8` | §3.4.2 |
+| PCM, signed 16-bit LE | AVI, MOV, MKV | `pcm_s16le` | `pcm_s16le` | `pcm_s16le` | §3.4.2 |
+| PCM, signed 16-bit BE | MOV | `pcm_s16be` | `pcm_s16be` | `pcm_s16be` | §3.4.2 |
+| PCM, signed 24-bit LE | AVI, MOV, MKV | `pcm_s24le` | `pcm_s24le` | `pcm_s24le` | §3.4.2 |
+| PCM, signed 24-bit BE | MOV | `pcm_s24be` | `pcm_s24be` | `pcm_s24be` | §3.4.2 |
+| DVD LPCM | MPG/MPEG | `pcm_dvd` | `pcm_dvd` | `pcm_dvd` | §3.4.2 |
+
+The *Subtitles & embedded tracks* policy decodes the text subtitle tracks (SRT, MOV_TEXT,
+WebVTT) to convert them to `mov_text` for an MP4 target; the image and styled subtitles it drops
+(PGS, VobSub, ASS/SSA) need no decoder. Text subtitle formats have no §3.4 line, so this table
+has no §3.4 home column.
+
+| Codec | Sources | Configure component | `ffmpeg -decoders` name | `ffprobe` `codec_name` |
+|---|---|---|---|---|
+| SubRip (SRT) | MKV | `subrip` | `subrip` | `subrip` |
+| WebVTT | MKV, WEBM | `webvtt` | `webvtt` | `webvtt` |
+| 3GPP Timed Text (MOV_TEXT) | MP4, MOV, M4V, 3GP | `movtext` | `mov_text` | `mov_text` |
+
 ## Per-format entries
 
 For every source the **default target is MP4** (`✓★`), so the per-entry
@@ -115,11 +190,10 @@ differ and are spelled out per format.
   (`--enable-gpl` to link libx264 relicenses the whole binary GPL — it is NOT an LGPL
   build, §3.1/§3.6.1) **with the native built-in AAC encoder and libx264 enabled**,
   shipped as a separate invoked binary (aggregation) with the written-offer-of-source
-  obligation — disposition deferred to the **§3.4 patent matrix** (the single owner). This entry does not re-decide it; if
-  §3.4 marks H.264/AAC encode unavailable on a platform, MP4-as-target is honestly
-  surfaced as unavailable there per SSOT *v1 DoD* exception 1. (Practical note: x264
-  + the FFmpeg-native AAC encoder are the long-standing default bundle choice and
-  are expected to be `ship-bundled` on all three platforms; final word = §3.4.)
+  obligation. §3.4 is decided: AAC and H.264 ship bundled on all three platforms (§3.4.3);
+  this entry does not re-decide it. If a §3.4.4a flag flip ever marks H.264/AAC encode
+  unavailable on a platform, MP4-as-target is honestly surfaced as unavailable there per
+  SSOT *v1 DoD* exception 1.
 - **Options/settings:** see *Category-wide → Options*. Defaults: video CRF **23**,
   preset **medium**, audio AAC **128 kbps** — applied **only on the re-encode
   path**; a remux copies streams untouched and ignores quality options.
@@ -146,7 +220,7 @@ differ and are spelled out per format.
   source's default; MP4 is.)*
 - **Engine(s):** FFmpeg. Same encoders/patent disposition as MP4 (H.264/AAC →
   §3.4). **ProRes** (a common MOV video codec from Apple devices/editors) is
-  **decoded** fine; on a **→MP4 re-encode** it becomes H.264 (intended
+  **decoded** fine (decode-only, §3.4.3); on a **→MP4 re-encode** it becomes H.264 (intended
   modernization). ConvertIA does **not** *encode* ProRes as a target (specialist —
   out per inclusion test).
 - **Options/settings:** category defaults (CRF 23 / medium / AAC 128k), re-encode
@@ -241,8 +315,8 @@ differ and are spelled out per format.
 - **Edge cases:** AVI has **no native B-frame timestamps / VFR** support — some AVIs
   use a fixed frame rate that FFmpeg reads cleanly; broken/odd-fps AVIs are handled
   by FFmpeg's `-vsync` defaults (CFR output). Interleaved-but-degraded audio sync is
-  re-aligned on re-encode. PCM/uncompressed-DV AVIs can be huge → §1.10 size
-  pre-flight.
+  re-aligned on re-encode. AVIs with PCM audio or DV video (intraframe, 25 Mbit/s and up)
+  can be huge → §1.10 size pre-flight.
 
 ---
 
@@ -552,9 +626,8 @@ acceleration later. `[DECIDED]` NOT in v1 — software-only (`[DEFER: post-v1]`,
   corpus/usability walkthrough (§9) shows no real demand (everyone wants MP4), MOV-as-target
   is demoted to source-only to shrink the matrix. Validated during the §9 usability floor.
 - **§3.4 dependency.** H.264/AAC encode availability per platform is owned by
-  §3.4. If §3.4 ever marks them unavailable on a platform, **MP4-as-target there
-  must fall back** — but MP4 is *the default for every source*, so a platform
-  without H.264/AAC encode would have **no default target**, which is a product
-  problem, not just a per-format note. This category **depends on §3.4 deciding
-  ship-bundled on all three platforms**; flagged as the category's hardest external
-  dependency.
+  §3.4, and §3.4 is decided: AAC and H.264 ship bundled on all three platforms (§3.4.3).
+  If a §3.4.4a flag flip ever marks them unavailable on a platform, **MP4-as-target there
+  must fall back** — but MP4 is *the default for every source*, so a platform without
+  H.264/AAC encode would have no default target — a product problem, not just a
+  per-format note; it is the category's hardest external dependency.

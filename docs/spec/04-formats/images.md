@@ -237,7 +237,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   **vips** (`webpsave`). WEBP is the **pre-highlighted default** *for JPG and PNG
   sources* (modern, smaller, keeps alpha) per the SSOT tie-breaker that allows a
   modern format when it is clearly the better everyday choice.
-- **Engine(s):** **vips** `webpsave`. No patent (WEBP/VP8 is royalty-free).
+- **Engine(s):** **vips** `webpsave`. No patent flag — VP8 is royalty-free (§3.4.2); libwebp's
+  `PATENTS` grant ships per §3.7.2.
 - **Options/settings:**
   - *Basic:* **Quality `Q` — default `80`** (range 0–100; vips default 75, raised
     to 80 for a clean everyday result). `lossless` toggle — default **off**
