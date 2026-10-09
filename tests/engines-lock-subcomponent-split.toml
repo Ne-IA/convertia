@@ -1,7 +1,7 @@
 # tests/engines-lock-subcomponent-split.toml — the §3.7.2 item-4 sub-component SPLIT shape (P4.56.1).
 #
 # The row law forces this shape and the duplicate-hash rule must not forbid it. A statically absorbed
-# sub-component (here `libimagequant`, the component P4.54 reads) has:
+# sub-component (here `libimagequant`, the component the P5.4 fork-pin assertion reads) has:
 #   * a TRIPLE-INVARIANT source anchor — one pinned commit, so one `sha256` and one `tarball_sha256`;
 #   * a TRIPLE-VARIANT `from_source.toolchain_digest` — one digest-pinned build container per target.
 #

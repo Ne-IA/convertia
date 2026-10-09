@@ -26,7 +26,8 @@
 > [`03-engines-and-bundling`](../spec/03-engines-and-bundling.md) (§3.5.2 LibreOffice
 > disposable-profile + macro/link/Calc-external hardening + output discovery +
 > exit-0-but-wrote-nothing rule, §3.5.3 poppler, §3.5.4 pandoc `--sandbox`, §3.5.6
-> native CSV/TSV, §3.6/§3.7 copyleft isolation + SBOM/NOTICE, §3.9.3 bundled fonts),
+> native CSV/TSV, §3.6/§3.7 copyleft isolation + SBOM/NOTICE, §3.9.1 trim levers, §3.9.3
+> bundled fonts),
 > [`06-build-test-release §6.5`](../spec/06-build-test-release.md) (the reliability
 > gate + the two permissible exceptions + engine-bump re-validation). Index:
 > [plan/README.md](README.md). Box format: [`_format.md`](_format.md).
@@ -91,13 +92,16 @@ clusters and `needs:` their cluster's pair boxes.
 > before any office pair can be built. These boxes execute the per-engine variants
 > of the P0.7-policy / P4-framework gates for LibreOffice specifically.
 
-- [ ] **P7.1** [BUILD] Stage the LibreOffice headless program tree as a `bundle.resources` dir per-OS (cache-keyed) · §3.3.1 §3.3.2 §6.1.3 · G37
-  needs: P4.27, P6.93, P4.63
-  > the workflow restores the `actions/cache`-hosted `libreoffice-<ver>-<triple>` engine-asset cache (`scripts/fetch-engine-assets` populates on a miss — the P4.28 adjudication) and `scripts/stage-engines` places the LibreOffice **directory tree** (`program/soffice.bin` launcher + `program/`, `share/`, type libraries) under `src-tauri/resources/libreoffice/` as a `bundle.resources` map (NOT `externalBin` — it is a tree, not a single self-contained exe, §3.3.1). The one MPL-2.0 binary serves documents/spreadsheets/presentations. → executes the P0.7.3/P0.7.4 acquisition+staging policy for LibreOffice. Declares its §3.9.1 help/l10n/dictionary strip-list row against the P4.63 mechanism.
+- [ ] **P7.1** [BUILD] Stage the LibreOffice headless program tree as a `bundle.resources` dir per-OS (cache-keyed) · §3.3.1 §3.3.2 §6.1.3 §3.9.1 · G37
+  needs: P4.27, P6.93
+  > the workflow restores the `actions/cache`-hosted `libreoffice-<ver>-<triple>` engine-asset cache (`scripts/fetch-engine-assets` populates on a miss — the P4.28 adjudication) and `scripts/stage-engines` places the LibreOffice **directory tree** (`program/soffice.bin` launcher + `program/`, `share/`, type libraries) under `src-tauri/resources/libreoffice/` as a `bundle.resources` map (NOT `externalBin` — it is a tree, not a single self-contained exe, §3.3.1). The one MPL-2.0 binary serves documents/spreadsheets/presentations. → executes the P0.7.3/P0.7.4 acquisition+staging policy for LibreOffice.
+  > Builds the strip-list lever in `scripts/stage-engines` (P4.63 re-homed here): a constant keyed on the `EngineStaging.dest` it trims, applied after placement and before `relocate_all` on the per-arch and universal paths; a rule that binds no staged row is refused. Declares the LibreOffice help/l10n/dictionary row.
+  > The strip-list refusal's planted positive from outside the tool in `g24-stage-engines.py` is a P7 sweep tail.
   > **Carries the P4.42 `soffice` `[DEFER]` discharge:** this commit discharges the §3.3.1 bare-`soffice` `[DEFER]` and sweeps the siblings P4.42's note lists.
 - [ ] **P7.2** [BUILD] Stage the §3.9.3 bundled-font baseline beside the LibreOffice sidecar · §3.9.3 §6.1.3 · G37 G35 G36
-  needs: P7.1, P4.63
-  > stage the `[DECIDED]` baseline font set under `src-tauri/resources/fonts/` as `bundle.resources` — Liberation + Carlito + Caladea (metric-compatible Arial/Calibri/Cambria/Times/Courier) + the curated Noto subset (Sans/Serif CJK-SC/TC/JP/KR Regular + Noto Sans Arabic/Hebrew) so LibreOffice substitution is graceful and non-Latin text never tofus; the single biggest fidelity lever for all three categories; each font is a first-class `engines.lock`/SBOM row (SHA-256 + SPDX OFL-1.1/Apache-2.0 + source URL — the Liberation OFL-1.1 trap, Carlito/Caladea Apache-2.0, Noto CJK OFL-1.1). CJK weight breadth is the `[DEFER: size]` knob, not a design call. Declares its §3.9.3 CJK subset selection row against the P4.63 mechanism.
+  needs: P7.1
+  > stage the `[DECIDED]` baseline font set under `src-tauri/resources/fonts/` as `bundle.resources` — Liberation + Carlito + Caladea (metric-compatible Arial/Calibri/Cambria/Times/Courier) + the curated Noto subset (Sans/Serif CJK-SC/TC/JP/KR Regular + Noto Sans Arabic/Hebrew) so LibreOffice substitution is graceful and non-Latin text never tofus; the single biggest fidelity lever for all three categories; each font is a first-class `engines.lock`/SBOM row (SHA-256 + SPDX OFL-1.1/Apache-2.0 + source URL — the Liberation OFL-1.1 trap, Carlito/Caladea Apache-2.0, Noto CJK OFL-1.1). CJK weight breadth is the `[DEFER: size]` knob, not a design call.
+  > Builds the font-subset selection in `scripts/stage-engines` over the §3.9.3 Noto CJK files only (region × weight; the fixed families are unselectable; P4.63 re-homed here) and declares the CJK row. The refusal's planted positive from outside the tool in `g24-stage-engines.py` is a P7 sweep tail.
 - [ ] **P7.3** [BUILD] Anchor the LibreOffice acquisition + add its `engines.lock` row + SBOM/NOTICE rows · §3.7.2 §3.8 · G37 G35 G36
   needs: P7.1
   > add the LibreOffice `engines.lock` row (`purl` `pkg:generic/libreoffice@<ver>` + SHA-256 + a CPE where one exists) per the P0.7.3 acquisition policy (from-source signed-tarball OR ≥2-mirror/distro-signed prebuilt corroboration); populate the CycloneDX SBOM + `THIRD-PARTY-LICENSES` rows for LibreOffice MPL-2.0 + its many bundled components (Syft cross-check); the bundled security-CONFIG file `registrymodifications.xcu` (P7.5) is itself a first-class `engines.lock` row (SHA-256 + SPDX + source). → executes the P0.7.1/P0.7.3 policy for LibreOffice.

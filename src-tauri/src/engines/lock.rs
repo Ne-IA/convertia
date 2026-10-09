@@ -264,7 +264,8 @@ pub struct EngineRow {
     /// The §3.8 **source ref** the pin is anchored to — the upstream VCS tag or commit. §3.8 pins "an
     /// exact version + source ref", and G37 requires BOTH the signed-tarball SHA and the upstream
     /// tag/commit to be recorded here, because a tarball-only provenance is the xz/liblzma class.
-    /// P4.54 reads it to assert the `libimagequant` pin is exactly the `lovell` v2.4.x-fork commit.
+    /// The P5.4 fork-pin assertion reads it to assert the `libimagequant` pin is exactly the
+    /// `lovell` v2.4.x-fork commit.
     pub source_ref: String,
     /// The §3.4.5 target triples this exact artifact ships on. Plural for ONE reason: several
     /// entries mean the bytes are byte-identical across those targets (a font, a config file), so
@@ -1260,7 +1261,7 @@ mod tests {
         assert_eq!(
             vendored.source_ref.len(),
             40,
-            "P4.54 reads this as the pinned fork COMMIT"
+            "the P5.4 fork-pin assertion reads this as the pinned fork COMMIT"
         );
         let anchor = vendored
             .from_source

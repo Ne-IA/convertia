@@ -57,10 +57,10 @@ Spec files by number: 00-architecture, 01-conversion-pipeline, 02-guarantees,
 | P1 | An empty window boots on Windows, macOS and Linux from a clean checkout, with toolchain and CI | [P1-foundation.md](P1-foundation.md) | 00; 05 (strings, a11y); 06 (§6.7.1, §6.8); 07 (window) |
 | P2 | The app shell and the pipeline contracts, type-shared end to end, with no engine yet | [P2-app-shell-contracts.md](P2-app-shell-contracts.md) | 00; 01 (§1.1); 07 (§7.2, §7.8) |
 | P3 | One conversion (in-core CSV→TSV) through the real stack on all three OS | [P3-walking-skeleton.md](P3-walking-skeleton.md) | 01 (§1.2, §1.7); 02 (§2.1–§2.7); 03 (§3.5.6); 05 |
-| P4 | The engine harness: invocation, bundling, isolation, reliability machinery, generic UX | [P4-engine-framework.md](P4-engine-framework.md) | 01 (§1.7, §1.10); 02 (§2.8, §2.9, §2.12, §2.13); 03 (§3.4, §3.5.0, §3.9); 05; 06 (§6.1.3, §6.4.3, §6.5); 07 (§7.2.3, §7.2.6) |
+| P4 | The engine harness: invocation, bundling, isolation, reliability machinery, generic UX | [P4-engine-framework.md](P4-engine-framework.md) | 01 (§1.7, §1.10); 02 (§2.1, §2.8, §2.9, §2.12, §2.13); 03 (§3.4, §3.5.0, §3.8); 05; 06 (§6.1.3, §6.3.4, §6.4.3, §6.5); 07 (§7.2.3, §7.2.6) |
 | P5 | Every image pair `reliable` in the §6.5 ledger (libvips family) | [P5-images.md](P5-images.md) | 04 images; 03 (§3.5.5); 06 (§6.4, §6.5) |
 | P6 | Every audio, video and cross-category pair `reliable` (FFmpeg family) | [P6-av-crosscat.md](P6-av-crosscat.md) | 04 audio, video, cross-category; 03 (§3.5.1); 06 (§6.5) |
-| P7 | Every document, spreadsheet and presentation pair `reliable` (office family) | [P7-office.md](P7-office.md) | 04 documents, spreadsheets, presentations; 03 (§3.5.2, §3.5.3, §3.5.4, §3.5.6); 06 (§6.5) |
+| P7 | Every document, spreadsheet and presentation pair `reliable` (office family) | [P7-office.md](P7-office.md) | 04 documents, spreadsheets, presentations; 03 (§3.5.2, §3.5.3, §3.5.4, §3.5.6, §3.9); 06 (§6.5) |
 | P8 | The full designed experience: ship-gating UI, then non-blocking polish | [P8-ui-ux.md](P8-ui-ux.md) | 05; 02 (§2.8, §2.9); 07 (§7.6.2) |
 | P9 | The non-functional contracts met and the deferred empirical items validated | [P9-hardening.md](P9-hardening.md) | 01 (§1.10); 02 (§2.10, §2.11.4); 03 (§3.9); 05 (§5.6); 06 (§6.4, §6.4.6, §6.7.3) |
 | P10 | Verified downloads: the release machinery, with no auto-update | [P10-release.md](P10-release.md) | 06 (§6.2, §6.3, §6.7.2, §6.8, §6.9, §6.10); 07 (§7.6) |

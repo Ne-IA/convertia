@@ -207,7 +207,7 @@
 
 - [ ] **P10.36** [RELEASE] Build the ≤400 MB compressed artifact-size gate — measure per platform, fail on exceed, publish sizes · §6.1.2 §3.9.2 §6.7.2 · G41
   needs: P0.7.11, P10.12, P10.11
-  > immediately after stage-1 build, measure each platform's **compressed** artifact and **fail the release if any exceeds the §3.9.2 ≤400 MB ceiling** (DoD row 22); record the measured sizes as a release-asset line (the size *levers* are owned P4; the *gate* is here). Activates G41 / the P0.7.11 budget policy.
+  > immediately after stage-1 build, measure each platform's **compressed** artifact and **fail the release if any exceeds the §3.9.2 ≤400 MB ceiling** (DoD row 22); record the measured sizes as a release-asset line (the size levers are P7.1/P7.2's; the *gate* is here). Activates G41 / the P0.7.11 budget policy.
 - [ ] **P10.37** [RELEASE] Run the pre-publish archive-validity leg — each artifact is an OPENABLE archive · §3.5.4 · G41b
   needs: P10.12, P10.11
   > before publishing, a <30 s leg asserts each artifact is a valid openable archive (not just size-checked): `unzip -t` (Windows `.zip`), `hdiutil verify` (macOS `.dmg`), `--appimage-extract-and-run`/`file`+`sha256sum` (Linux AppImage) — a corrupt artifact passing the size check is otherwise found only by users (G41b, P0.7.4).
