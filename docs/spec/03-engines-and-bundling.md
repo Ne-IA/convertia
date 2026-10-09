@@ -118,7 +118,8 @@ is `QuarantinedByOs` (§7.2.4), and a **degradable** failure is one inside a pre
 only some formats use — today the row 1d ImageMagick BMP delegate (§7.2.3), attributed by the
 smoke probe's record rather than read as a non-runnable worker. A degradable failure marks those
 targets `Unavailable { reason }` in the C3 offer (§0.6 `Target.availability`,
-rendered by §5.2), with a reason distinct from the patent gap. A §3.4
+rendered by §5.2), whose reason is the §2.8.2 `degraded_component` line, distinct from the
+patent gap. A §3.4
 `available = false` posture is not a failure (`PlatformUnavailable`), and a damaged
 bundled resource is `BundleDamaged`.
 
@@ -317,9 +318,9 @@ pub trait Engine: Send + Sync {
     /// Map this engine's exit code + stderr into the §2.8 error taxonomy.
     /// Returns the §2.8-owned `ConversionErrorKind` (NOT a separate "FailureKind" —
     /// that name is dropped; §2.8 is the single owner of the failure-kind set).
-    /// `ErrorKind` (§0.4.3) is the wire projection of `ConversionErrorKind`; the
-    /// §06 drift check keeps the two byte-identical for ALL variants (the item-level
-    /// kinds AND the run/app-level MixedDrop/EngineMissing/WebviewFault/BundleDamaged).
+    /// `ErrorKind` (§0.4.3) is a type alias of `ConversionErrorKind`: one enum for
+    /// ALL variants (the item-level kinds, the §2.13 run/app-level kinds incl.
+    /// `ScratchUnavailable`, and the mirror-only MixedDrop).
     fn classify_failure(&self, exit: ExitStatus, stderr: &str) -> ConversionErrorKind;
 }
 ```

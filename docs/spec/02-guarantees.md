@@ -1287,10 +1287,11 @@ enum ConversionErrorKind {
     QuarantinedByOs,    // macOS Gatekeeper quarantined a bundled engine sidecar so it can't spawn (§7.2.3) — distinct from EngineMissing/BundleDamaged
     CleanupResidue,     // item failed AND its partial couldn't be removed (§2.6.4)
     InternalError,      // catch-all for an unexpected internal fault (§2.13), no trace shown
-    // ── run/app-level (§2.13); surfaced via app://fault, not a per-item row ──
+    // ── run/app-level (§2.13); surfaced per §2.13.5, never a per-item row ──
     EngineMissing,      // a required bundled engine is absent/unrunnable at startup (§7.2)
-    WebviewFault,       // the WebView core disconnected / failed to load (§2.13/§5.8)
+    WebviewFault,       // the web view never reported ready at startup (§7.2.1 watchdog)
     BundleDamaged,      // the app bundle/resources failed their integrity check (§7.2)
+    ScratchUnavailable, // app-level: no writable scratch at startup (§7.2.1 step 5)
     // ── pre-flight (NOT carried as an IpcError; mirror-only for drift-lock) ──
     MixedDrop,          // >1 source format in one drop — pre-flight refusal (§1.3); chrome string §5.
                         //   NO §2.13 producer: it is the CollectedSet::Mixed SUCCESS return from C1
@@ -1308,18 +1309,20 @@ no Rust `Debug` of the underlying error, no engine command line (that goes to th
 local log §7.5 if enabled, never to the user — SSOT "no stack traces").
 
 The **item-level** kinds are reported as a per-item `Failed` row and the batch
-keeps going (§1.9); the **run/app-level** kinds (`EngineMissing`,
-`WebviewFault`, `BundleDamaged`) are not per-item outcomes — they travel over the
-`app://fault` path (§0.4.2, §2.13). **`MixedDrop` is neither item-level nor app://fault** —
+keeps going (§1.9); the **run/app-level** kinds (`EngineMissing`, `BundleDamaged`,
+`ScratchUnavailable`, `WebviewFault`) are not per-item outcomes — each travels on its
+§2.13.5 surface (the `app://fault` path, §0.4.2, or for `WebviewFault` the §7.2.1 native
+dialog). **`MixedDrop` is neither item-level nor app://fault** —
 it has **no IpcError producer at all**: it is the `CollectedSet::Mixed` SUCCESS return from C1
 (§0.6), the pre-flight refusal (§1.3) surfaced with §5 chrome (state 9). It appears in the
 enum only as the byte-identical wire mirror (the catalog below covers the
-item-level kinds; the app-level kinds carry §5/§7.2 chrome strings, not §2.8.2
+item-level kinds; the app-level kinds carry the §2.13.5 lines, not §2.8.2
 rows).
 
 ### 2.8.2 The message catalog `[DECIDED]`
 
-The **exact canonical English strings**. One row per kind. `{x}` are runtime
+The **exact canonical English strings**. One row per kind, plus a marked variant row
+where the text depends on the target operation. `{x}` are runtime
 substitutions filled by `crate::outcome`: in the kind rows below the detected type
 name, the platform, the residue path, the offending constructed output component
 and the blocked sidecar's friendly name; in the residue-annotation row the
@@ -1330,7 +1333,7 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 
 | Kind | Canonical English message | Substitutions | Notes |
 |------|---------------------------|---------------|-------|
-| `Corrupt` | **"This file looks damaged and couldn't be converted."** | — | corrupt/truncated; per-format detail may append, e.g. images "the image data is incomplete". |
+| `Corrupt` | **"This file looks damaged and couldn't be converted."** | — | corrupt/truncated. |
 | `Empty` | **"This file is empty — there's nothing to convert."** | — | 0-byte or no decodable content. |
 | `Unrecognized` | **"ConvertIA couldn't tell what kind of file this is, so it can't convert it."** | — | detection gave no confident type (§1.2 uncertain/conflicting). |
 | `UnsupportedType` | **"ConvertIA can't convert this type of file — it looks like {detected}."** | `{detected}` = friendly type name | the SSOT "detected: X" case; e.g. "it looks like a ZIP archive." |
@@ -1339,7 +1342,8 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 | `Gone` | **"This file is no longer there — it may have been moved, renamed, or its drive removed."** | — | present at freeze, missing at its turn (removable media, etc.). |
 | `PasswordProtected` | **"This file is password-protected or copy-protected, so ConvertIA can't read it."** | — | encrypted PDF, DRM video/audio. ConvertIA never prompts for / cracks passwords. |
 | `NoAudioTrack` | **"This file has no audio to extract."** | — | extract-audio asked of a video/source with no audio stream (cross-category.md / audio.md). |
-| `TooBig` | **"This file is too large for ConvertIA to convert on this computer."** | — | §1.10 ceiling; for to-GIF the friendlier 04 variant ("too long/large to turn into a GIF — try a shorter selection") overrides via detail. |
+| `TooBig` | **"This file is too large for ConvertIA to convert on this computer."** | — | §1.10 ceiling; the to-GIF case uses the row below. |
+| `TooBig` (to-GIF) | **"This clip is too long or too large to turn into a GIF — try a shorter selection."** | — | the per-item to-GIF fail-fast before encoding (cross-category.md), against the §1.10 ceiling. |
 | `OutOfDisk` | **"There isn't enough free disk space to finish this conversion."** | — | batch continues; partial cleaned (§2.6). |
 | `WriteFailed` | **"ConvertIA couldn't save the converted file to that location."** | — | non-space write/publish failure at the destination (permission/IO, §2.1/§2.7); distinct from `OutOfDisk`. |
 | `PathTooLong` | **"The output name would be too long for this system, so this file was skipped. Try a shorter folder or file name."** | — | never truncates (§2.2.3). |
@@ -1360,6 +1364,23 @@ otherwise-successful item's `ItemResult.reason` (the `Lossy` shape):
 | Row | Canonical English | Slots | Notes |
 |-----|-------------------|-------|-------|
 | `residue_annotation` | **"Converted — a temporary file may remain at {path}."** | `{path}` | §2.6.4 case 1: the output published but its temp could not be removed — **the success stands**, and the summary still says residue may remain and *where* (§5.7). Promoted verbatim (modulo catalog capitalization) from §2.6.4's own authored copy `[DECIDED 2026-07-16 — the P3.59 ruling]`; §02 keeps ownership, the UI renders it verbatim. **Case 3** (a *cancelled* item's wedged temp) has **no per-item row** — its surface is the structural `CleanupResidue` annotation (the rendered `residue_display` + the §7.7 reveal) plus the batch-level **With residue** tail below. |
+
+**Batch-scoped pre-flight lines** — keyed by no `ConversionErrorKind`; the §1.10
+`up_front_fail` verdict's text (`PreflightVerdict.up_front_fail_text`), one row per
+verdict kind (`TooBig`, `OutOfDisk`), shown by the §5.3 DestinationBar:
+
+| Row | Canonical English |
+|-----|-------------------|
+| `up_front_too_big` | **"Together these files are too large to convert on this computer — try converting fewer at a time."** |
+| `up_front_out_of_disk` | **"There isn't enough free disk space for this batch — free up space or choose another destination."** |
+
+**Availability reason** — keyed by no `ConversionErrorKind`; the reason a §3.1-degraded
+target carries in the C3 offer's `Target.availability` `Unavailable { reason }` (§0.6),
+distinct from `PlatformUnavailable`:
+
+| Row | Canonical English |
+|-----|-------------------|
+| `degraded_component` | **"This conversion isn't available right now because a part of ConvertIA it needs isn't working. Downloading ConvertIA again may fix this."** |
 
 **Batch-level summary strings** (assembled by §1.12, strings owned here):
 
@@ -1509,7 +1530,8 @@ everywhere — that is the default-target tie-breaker's job, not a lossy note).
 
 The note is a **calm single line**. It appears once, next to the chosen target, the
 moment a lossy target is selected (§5.7) — passive, dismissible-by-ignoring, never
-gating the Convert button.
+gating the Convert button. A row marked `(before convert)` is its kind's worst-case line
+at target choice; the kind's unmarked row is the exact note (§2.9.2).
 
 | `LossyKind` | Triggering pairs (from 04) | Canonical English note |
 |-------------|----------------------------|------------------------|
@@ -1518,7 +1540,8 @@ gating the Convert button.
 | `image_downscale` | `→ ICO` (multi-size icon assembly, images.md) | **"Resized to multiple icon sizes — detail may be lost at smaller sizes."** |
 | `image_alpha_flatten` | alpha source `→ JPG/BMP` (transparency policy) | **"Transparency isn't supported here and will be filled with a background colour."** |
 | `image_animation_flatten` | animated source `→` still target (animation policy) | **"Animated — only the first frame is converted."** |
-| `image_svg_raster` | `SVG → raster` (svg entry) | **"Vector image converted to a fixed-size picture ({w}×{h}) — it won't scale up cleanly afterward."** |
+| `image_svg_raster` | `SVG → raster` after rendering, with the rendered size (§1.12) | **"Vector image converted to a fixed-size picture ({w}×{h}) — it won't scale up cleanly afterward."** |
+| `image_svg_raster` (before convert) | target choice for `SVG → raster` (no in-core size peek, §1.2) | **"Vector image converted to a fixed-size picture — it won't scale up cleanly afterward."** |
 | `doc_pdf_reflow` | `DOCX/DOC/ODT/RTF → PDF` **and `MD → PDF`** (documents.md — LO lays Markdown out with reflow/font-substitution like the word-processor sources); **`XLSX/XLS/ODS → PDF` (spreadsheets.md)** — the same office→PDF reflow kind covers spreadsheet→PDF too | **"Layout may shift slightly when converted to PDF."** |
 | `doc_pdf_to_text` | `PDF → TXT` | **"Text only — layout, tables and images are dropped."** |
 | `doc_html_render` | `HTML → PDF` | **"The result may look different from a web browser."** |
@@ -1535,7 +1558,8 @@ gating the Convert button.
 | `audio_lossy_origin` | lossy source `→` lossless target (e.g. MP3→FLAC) | **"This won't improve quality — the original is already compressed, so the result is just larger."** |
 | `audio_bitdepth` | >16-bit source `→` default 16-bit WAV/AIFF | **"Saved at 16-bit — the source's extra audio precision is reduced."** |
 | `audio_tags_dropped` | `→ AAC` (raw ADTS), partly WAV/AIFF | **"This format can't store song info, so title/artist tags are dropped."** |
-| `video_reencode` | re-encode disposition (video.md / cross-cat) | **"Re-encoded to play widely — some video quality is reduced."** |
+| `video_reencode` | the per-item re-encode disposition after convert (§1.12) | **"Re-encoded to play widely — some video quality is reduced."** |
+| `video_reencode` (before convert) | target choice for every `video_reencode` pair (§2.9.2) | **"May be re-encoded to play widely — some video quality may be reduced."** |
 | `video_alpha_lost` | WEBM(alpha) `→ MP4/H.264` | **"Transparency isn't supported in this format and will be removed."** |
 | `video_subs_dropped` | image/ASS subs `→ MP4` (subtitles policy) | **"Embedded subtitles couldn't be kept and were dropped."** |
 | `video_to_gif` | `video → GIF` (cross-category, unconditional) | **"GIFs reduce colours, smoothness and remove sound — best for short clips."** |
@@ -1543,28 +1567,19 @@ gating the Convert button.
 
 ### 2.9.2 Note behaviour rules `[DECIDED]`
 
-- **Predictable only.** A note appears **only** when loss is *predictable* at the
-  moment of target choice. For **video**, the precise per-item remux-vs-re-encode
-  disposition is **not** known before convert (the full `ffprobe` stream inventory
-  is deferred to convert-time, §1.2/§3.5 — running it on every item of a thousands-
-  file recursive batch up front is too costly). So the `video_reencode` note is an
-  **explicit header-derived best-effort / worst-case** signal computed at target
-  choice from the **container pair** (the static matrix flag in video.md) and any
-  cheap header hint: if the chosen target pair is **always re-encode** (e.g.
-  →WEBM, or a legacy-source container whose inner codecs are known-incompatible) the
-  note shows; if the pair is **commonly a remux** but a given item *might* still
-  re-encode, the note is phrased as the worst-case *"may be re-encoded"* (honest, not
-  a false promise of losslessness). The **precise** per-item disposition is resolved
-  only at convert-time (§3.5 `ffprobe`), and the summary (§1.12) reflects what
-  actually happened. This keeps §1.2 (header-only detection), §2.9.2 (the note) and
-  §0.4.2 (`RunStarted.willReencode`) in agreement: all three are **best-effort
-  worst-case before convert, exact after**.
+- **Three layers `[DECIDED]`.** A kind is *pair-static* (declared per (source, target)
+  in the §3.2 registry's per-pair `LossyKind` set), *source-fact* (known at target
+  choice from detection, e.g. `AnimatedSource` → `image_animation_flatten`), or
+  *per-item-runtime* (known only after convert: the video re-encode disposition, the
+  rendered SVG size, audio bit depth or tags). At target choice ConvertIA shows
+  pair-static and source-fact kinds, and each per-item-runtime kind the pair can
+  trigger as a worst case, using its before-convert row where §2.9.1 has one. After
+  convert, `ItemResult.lossy` (§1.12) carries the exact note. **Render order
+  `[DECIDED]`:** the `Target.lossy` kind first, then the other applicable kinds in
+  §2.9.1 table order, at most three lines.
 - **One note, not a nag.** At most the relevant note(s) for the chosen target are
   shown together as calm inline lines; never a modal, never per-file, never a
   blocking acknowledgement (SSOT explicit).
-- **Multiple kinds can co-apply** (e.g. animated WEBP→JPG = `image_animation_flatten`
-  + `image_alpha_flatten` + `image_lossy_codec`). §5.7 renders the applicable set;
-  *recommended:* de-duplicate to the most-specific 2–3 to avoid clutter.
 - **Compatibility ≠ loss.** "This .opus may not open in older players" is **not** a
   §2.9 note — it is handled by the default-target tie-breaker (never defaulting to a
   modern format that may not open). §2.9 is strictly about **content faithfulness**.
@@ -1987,7 +2002,7 @@ how each surfaces without a trace.
 |-------|----------|-----------------|----------------|
 | **Item-level** | corrupt file, engine crash on one input, too-big, out-of-disk | **one item** fails; batch continues | §2.8 catalog → §1.12 summary |
 | **Run-level** | scratch volume vanished mid-run, the *whole batch* hits out-of-disk up front, every item fails | the **run** can't proceed sensibly | §2.8 batch summary ("None could be converted…") |
-| **App-level** | Rust core **panic**, WebView fails to load, an engine binary **missing/corrupt at startup**, **damaged bundle**, **no disk at all**, an old or broken WebView runtime the core observes (a missing one is the §0.3.1 honest exception) | the **app** can't function | §2.13.3 calm app-level screen + §7.2 startup faults |
+| **App-level** | Rust core **panic**, WebView fails to load, an engine binary **missing/corrupt at startup**, **damaged bundle**, **no writable scratch** (`ScratchUnavailable`), an old or broken WebView runtime the core observes (a missing one is the §0.3.1 honest exception) | the **app** can't function | §2.13.3 presentation of the §2.13.5 lines + §7.2 startup faults |
 
 Item-level is §2.8's domain. Run-level reuses §2.8's batch strings. App-level is
 this section.
@@ -1999,14 +2014,16 @@ processing in a **panic boundary** so a bug-induced panic in *our* orchestration
 code (not the engine — that's a subprocess, §2.12) **isolates to one item** instead
 of poisoning the pool:
 
-- Each item's core-side work runs inside **`std::panic::catch_unwind`** (with the
-  closure made `AssertUnwindSafe` as needed). A caught panic is converted to
-  `ConversionErrorKind::InternalError` (§2.8) for that item — **the batch continues**.
-- The panic payload (message + location) is **logged locally only** (§7.5, if
-  enabled, redacted); the **user sees only** the calm `InternalError` string — **no
-  stack trace** (SSOT). We **do not** `resume_unwind` on the worker (that would kill
-  the pool); we recover at the item boundary, matching the thread-pool pattern
-  (catch at the pool boundary, report to the client).
+- The per-item future is polled inside **`catch_unwind(AssertUnwindSafe(..))`** (a
+  `std::future::poll_fn` over the pinned future): the item is an awaited future, which a
+  closure-form catch cannot contain. A caught payload becomes that item's
+  `ConversionErrorKind::InternalError` (§2.8) — **the batch continues** — and the
+  payload is logged locally only (§7.5.3 redaction: kind, run/item ids and the
+  compile-time location, never the message at the default level).
+- The **user sees only** the calm `InternalError` string — **no stack trace** (SSOT).
+  We **do not** `resume_unwind` on the worker (that would kill the pool); we recover at
+  the item boundary, matching the thread-pool pattern (catch at the pool boundary,
+  report to the client).
 - `panic = "unwind"` (the default) is **required** in `Cargo.toml` for release so
   `catch_unwind` works; `panic = "abort"` is **not** used for the app binary
   (it would turn a recoverable per-item bug into a whole-app crash). Engines are
@@ -2041,37 +2058,33 @@ with a trace:
 - **Startup faults** (engine binary missing/corrupt, damaged bundle, an old or broken
   WebView runtime the core observes (a missing one is the §0.3.1 honest exception), no
   writable scratch at all) are detected by the §7.2 startup
-  sequence **before** the user can drop anything. They render a plain message —
-  e.g. *"ConvertIA can't start because part of the app appears to be missing or
-  damaged. Try downloading it again from the official releases page."* — owned by
-  §7.2 (link to §5.9 About / canonical releases). §2.13 fixes that these are
-  **app-level** and **trace-free**; §7.2 owns the exact sequence and the strings
+  sequence **before** the user can drop anything. Each renders its plain §2.13.5 line
+  (link to §5.9 About / canonical releases). §2.13 fixes that these are
+  **app-level** and **trace-free**; §7.2 owns the exact sequence, §2.13.5 the lines
   shown at the boundary.
 
   > **Presentation channel by WebView health `[DECIDED]` (P2.109).** *Which* surface a
   > **startup** fault renders on is fixed by whether the WebView itself is alive.
-  > **`EngineMissing` / `BundleDamaged`** (a §7.2.1 readiness fault) leave the
-  > WebView healthy → they present over the §0.4.2 `app://fault` event on the §5.8 WebView
-  > screen, replayed through a **`PendingFault`** buffer for the first-frame race (the
+  > **`EngineMissing` / `BundleDamaged` / `ScratchUnavailable`** (a §7.2.1 readiness fault)
+  > leave the WebView healthy → they present over the §0.4.2 `app://fault` event on the §5.8
+  > WebView screen, replayed through a **`PendingFault`** buffer for the first-frame race (the
   > `app://fault` emit + buffer body lands with the P4 readiness verifier bodies).
-  > **`WebviewFault`** *at startup* (§7.2.1 step 6 — `get_webview_window("main")` is `None`:
-  > an old or broken WKWebView / WebKitGTK init the core observes, never a missing library,
-  > §0.3.1) makes an `app://fault`→WebView emit
-  > impossible, so it renders on a **native surface** (not the WebView; the concrete native
-  > mechanism is a P4 decision). Both route through the mechanism-independent
+  > **`WebviewFault`** *at startup* (detected by the `frontend_ready` watchdog, §7.2.1: an
+  > old or broken web view the core observes, never a missing library, §0.3.1) makes an
+  > `app://fault`→WebView emit impossible, so it renders on a native non-blocking message
+  > dialog (§7.2.1). Both route through the mechanism-independent
   > `present_startup_fault` entry (§7.2.1), which records to the local log (§7.5) now; the
-  > two presentation bodies are P4. **P2.109 builds the `WebviewFault` detection + routing
-  > seam.** (A `WebviewFault` *mid-run* — the WebView was alive and lost the IPC channel —
-  > is the separate §5.8 disconnect bullet below, which may still render in the surviving
-  > WebView.)
+  > two presentation bodies are P4. (A WebView that loses the IPC channel *mid-run* is the
+  > state-12 run path of the disconnect bullet below; no `WebviewFault` is raised.)
 - **Mid-run core panic that escapes the item boundary** (should be impossible, but
-  defended): a top-level handler shows *"Something went wrong and ConvertIA needs to
-  recover. Your original files are safe and untouched."* (true by §2.1/§2.12 — no
-  `final` was ever clobbered) and returns to the idle state; the detail is logged
-  locally only.
-- **WebView/backend disconnect** (the UI loses the IPC channel, §5.8) shows a calm
-  "reconnecting / restart" affordance — §5.8 owns the UI handling; §2.13 owns that
-  it is a no-trace app-level class.
+  defended): a panic escaping the run task is caught at the run boundary, logged
+  locally only, releases the run's registry token and emits nothing; the frontend
+  reaches state 12 through the §5.8 watchdog (C16) or an opaque C6/C7 rejection and
+  shows the §5.8 run-path line (its reassurance holds by §2.1/§2.12 — no `final` was
+  ever clobbered).
+- **WebView/backend disconnect** (the UI loses the IPC channel, §5.8): a lost IPC
+  channel is the same state-12 path; there is no reconnect. §5.8 owns the UI handling;
+  §2.13 owns that it is a no-trace app-level class.
 
 ### 2.13.4 Engine `stderr` capture-and-classify feeds §2.8 `[DECIDED]`
 
@@ -2081,6 +2094,20 @@ owns the per-engine stderr quirks; §1.7 owns the exit-code mapping; §2.13 fixe
 (`EngineError`/`EngineCrash`/`PasswordProtected`/`Corrupt`/…). Unclassifiable output
 maps to the generic `EngineError` calm string — the raw text goes only to the local
 log (§7.5). **The user never sees engine stderr.**
+
+### 2.13.5 App-level fault catalog `[DECIDED]`
+
+The canonical English line each §2.13 app-level kind carries in `AppFault.message`; the
+core fills `message` from this table verbatim, and each surface shows it verbatim (§5.7).
+Tone rules as §2.8.2. The state-12 run-path line is §5.8 chrome (no DTO), not a row
+here.
+
+| Kind | Surface | Canonical English |
+|---|---|---|
+| `EngineMissing` | §5.8 fault screen (state 12) via `app://fault` | **"ConvertIA can't start because one of its built-in conversion tools is missing or damaged. Try downloading it again from the official releases page."** |
+| `BundleDamaged` | same | **"ConvertIA can't start because part of the app appears to be missing or damaged. Try downloading it again from the official releases page."** |
+| `ScratchUnavailable` | same | **"ConvertIA can't start because it can't create its working files. Check that your drive has free space and that you can write to your user folder, then start ConvertIA again."** |
+| `WebviewFault` | native message dialog (§7.2.1 step 6) | **"ConvertIA couldn't open its window because your system's web view component is out of date or not working. See the official releases page for the supported systems."** |
 
 ---
 
@@ -2344,5 +2371,5 @@ re-encode estimates feed the same §1.10 per-physical-volume check.
 | i18n (§2.10) | filename/content invariants | per-engine encoding → 04; corpus proof → §6.5 |
 | Privacy/offline (§2.11) | the invariants + cloud-sync caveat statement | CSP/allowlist → §0.10; bundling → §3.3; updater-off → §7.6; cloud-sync wording → §5.9 |
 | Decoder isolation (§2.12) | **per-OS isolation mechanism** | spawn lifecycle → §1.7; args → §3.5; CSP half → §0.10; threat map → §0.11 |
-| App fault (§2.13) | fault classes, panic boundary, no-trace contract | startup faults → §7.2; UI disconnect → §5.8; concurrency → §0.9 |
+| App fault (§2.13) | fault classes, panic boundary, no-trace contract, **app-level fault catalog** (§2.13.5) | startup sequence → §7.2; run-path line + watchdog → §5.8; concurrency → §0.9 |
 | Temp/cross-volume (§2.14) | **scratch volume policy + EXDEV fallback** | RunId/cleanup → §2.6; budgets → §1.10; PathResolver → §0.8/§7 |

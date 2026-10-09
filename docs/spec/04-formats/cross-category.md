@@ -353,10 +353,9 @@ to the §1.10 resource pre-flight; §1.10 owns the threshold mechanics):
    lever). The cap is applied as `-t` in the same single invocation.
 3. **Fail-fast threshold:** if the estimate still exceeds the §1.10 "too big"
    ceiling (e.g. very high width + long allowed window), the item **fails clearly
-   up front** — "this clip is too long/large to turn into a GIF — try a shorter
-   selection or smaller size" — rather than grinding out a giant file (SSOT *fail
-   fast and clearly, preferably up front*; §2.8 named failure kind). The rest of
-   the batch continues.
+   up front** with the §2.8.2 `TooBig` (to-GIF) row rather than grinding out a giant
+   file (SSOT *fail fast and clearly, preferably up front*). The rest of the batch
+   continues.
 4. The estimate + cap are **honest, not silent truncation**: if a cap shortened
    the clip, that's a predictable, disclosed outcome (passive note via §2.9
    `video_to_gif`), not a quiet surprise.

@@ -666,13 +666,14 @@ fn publish_program_roots(app: &AppHandle) -> Result<(), AppFault> {
         .map_err(|_already| bundle_damaged_fault())
 }
 
-/// The §2.13.3 `BundleDamaged` fault — a pre-localised, plain-English, trace-free calm line carrying no path
-/// and no OS error text (§7.5 redaction), mirroring [`webview_init_fault`]'s shape.
+/// The §2.13 app-level `BundleDamaged` fault — its `message` is the §2.13.5 `BundleDamaged` row verbatim: a
+/// pre-localised, plain-English, trace-free calm line carrying no path and no OS error text (§7.5
+/// redaction), mirroring [`webview_init_fault`]'s shape.
 /// [Build-Session-Entscheidung: P4.32]
 fn bundle_damaged_fault() -> AppFault {
     AppFault {
         kind: ConversionErrorKind::BundleDamaged,
-        message: "ConvertIA couldn't find its own program files. The app folder looks incomplete — please extract the download again and run ConvertIA from the extracted folder."
+        message: "ConvertIA can't start because part of the app appears to be missing or damaged. Try downloading it again from the official releases page."
             .to_owned(),
     }
 }
@@ -736,19 +737,18 @@ fn reveal_main_window(app: &AppHandle) {
 }
 
 /// [Build-Session-Entscheidung: P2.109] §7.2.1 step 6 / §0.3.1 — construct the §2.13 app-level `WebviewFault`
-/// for a WebView-init failure (`get_webview_window("main") == None`: the OS WebView runtime — macOS WKWebView
-/// / Linux WebKitGTK — could not create the view). It is an `AppFault` (§2.13.1 "the app can't function"),
+/// for a web view that failed to come up; the step-6 reveal's `None` arm routes it (§7.2.1 makes the
+/// `frontend_ready` watchdog the detection seam). It is an `AppFault` (§2.13.1 "the app can't function"),
 /// NOT a per-item `IpcError`. PURE (no `AppHandle`) so it is unit-tested in isolation and its lines COUNT in
 /// the G28 diff floor — it is NOT the §1.1a boot-glue exemption (only the AppHandle-coupled `reveal_main_window`
 /// caller is). `kind` is the CONCRETE `ConversionErrorKind::WebviewFault`, never the §0.4.3 `ErrorKind` alias
-/// (the P2.39.1 dead-code-expectation/alias reason). `message` is the §2.13.3 pre-localised, plain-English,
-/// trace-free calm line pointing at the releases page (the §2.13.3 "download it again … official releases
-/// page" pattern; §0.3.1 pins the supported-OS/WebView floor); §7.2 owns the app-level startup strings and the
-/// NATIVE presentation of this line is the P4 body (a broken WebView cannot render an `app://fault` screen).
+/// (the P2.39.1 dead-code-expectation/alias reason). `message` is the §2.13.5 `WebviewFault` row verbatim
+/// (§0.3.1 pins the supported-OS/WebView floor); the NATIVE presentation of this line is the P4 body (a
+/// broken WebView cannot render an `app://fault` screen).
 fn webview_init_fault() -> AppFault {
     AppFault {
         kind: ConversionErrorKind::WebviewFault,
-        message: "ConvertIA couldn't start its window because your system's web view component is missing or out of date. See the official releases page for the supported systems."
+        message: "ConvertIA couldn't open its window because your system's web view component is out of date or not working. See the official releases page for the supported systems."
             .to_owned(),
     }
 }

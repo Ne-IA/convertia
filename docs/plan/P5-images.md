@@ -201,7 +201,7 @@
 - [ ] **P5.30** [RUST] Wire the SVG → {PNG★,JPG,WEBP,BMP,TIFF,ICO} target routing (HEIC/AVIF out) · §3.5.5 · G29 G31
   needs: P5.28, P5.29
   > the 6 offered SVG targets routed to the P5.20–P5.26 savers; **SVG→HEIC / SVG→AVIF are `out`** (no everyday demand — matrix and offered set agree, so the bijection guard does not enumerate them); every SVG→raster cell fires `image_svg_raster` (incl. the PNG★ default — never omit it), plus the target-codec LossyKind where additionally lossy.
-  > **SVG size source:** at target choice the `image_svg_raster` `{w}×{h}` is the requested or default render size from `OptionValues` (P4.65 (iii)); no in-core SVG size peek exists (§2.12).
+  > **SVG size source:** at target choice the §2.9.1 before-convert `image_svg_raster` row carries no size (no in-core SVG size peek, §1.2, §2.12; P4.65 (iii)); the `{w}×{h}` row is the after-convert `ItemResult.lossy` note with the size P5.29 resolved, carried back from the worker with the item's result (§2.9.2).
 
 ### Patent-gated encode paths (HEIC / AVIF via heifsave — reads §3.4)
 

@@ -1209,6 +1209,23 @@ One glossary for every spec file; per-file headers point here.
   (`aac`, `h264`) or unavailable (`heic_hevc`); the manifest reaches the core as one
   compile-time embed; decoding is never gated; a gated cell stays in the registry marked
   unavailable. Owner: §3.4.4a.
+- **§2.13.5 app-level fault catalog — `[DECIDED]`.** One canonical line and surface per
+  app-level kind (`EngineMissing`, `BundleDamaged`, `ScratchUnavailable`, `WebviewFault`);
+  `ScratchUnavailable` is the §7.2.1 step-5 writability probe's fault. §2.8.2 gains the
+  to-GIF `TooBig` variant row, the batch-scoped pre-flight lines and the `degraded_component`
+  availability reason; the convert loop's panic catch runs at poll level (§2.13.2).
+  Owner: §2.13 / §2.8.2 / §7.2.1.
+- **Lossy layers, before-convert rows, render order — `[DECIDED]`.** A kind is pair-static,
+  source-fact or per-item-runtime (§2.9.2); a per-item-runtime kind shows its worst case at
+  target choice through a marked `(before convert)` §2.9.1 row (`video_reencode`,
+  `image_svg_raster`), and `ItemResult.lossy` carries the exact note after convert. Render
+  order: the `Target.lossy` kind first, then §2.9.1 table order, at most three lines.
+  Owner: §2.9.
+- **WebView-init detection — `[DECIDED]`, the `frontend_ready` watchdog.** The core arms
+  `FRONTEND_READY_TIMEOUT` (60 s) at the step-6 reveal and the first C1 drain disarms it; on
+  expiry the §2.13.5 `WebviewFault` line shows on a native non-blocking dialog (probe at the
+  building box; fallback: stderr and the §7.5 log). The `get_webview_window` `None` arm is
+  no detection seam. Owner: §7.2.1 / §2.13.3.
 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
 - **§5.2 launch-with-files initial state** — the one live fork, tagged in 05-ui-ux §5.2: a

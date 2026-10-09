@@ -161,8 +161,8 @@ This is the principal portability risk and it interacts hard with *no-network*
 build numbers stay tunable against the §6.4 drift matrix, but the floor is fixed):
 
 - **Windows 10 (1809 / build 17763) and Windows 11**, x86-64, with WebView2
-  present (Evergreen). `minimumWebview2Version` ≈ a recent-but-not-bleeding-edge
-  Chromium (e.g. the `110.x` class) so our CSS/JS baseline is safe.
+  present (Evergreen); `bundle.windows.webviewInstallMode` (type `skip`) realizes
+  "never download a runtime".
 - **macOS 11 Big Sur and later** (covers the WKWebView feature set React 19 + our
   Tailwind build target need; `minimumSystemVersion: "11.0"`). Universal binary
   (Intel + Apple Silicon).
@@ -177,15 +177,18 @@ build numbers stay tunable against the §6.4 drift matrix, but the floor is fixe
 
 Status: the **floor is `[DECIDED]`** (Windows 10 1809+/11; macOS 11+; Ubuntu
 22.04-LTS-class `libwebkit2gtk-4.1`; x86-64). The architecture is indifferent to the
-exact numbers and the *shape* (rely-on-OS WebView, fail clearly at startup if
-absent/old, floor declared in config) was always `[DECIDED]`. The only residual is
+exact numbers, and the *shape* is `[DECIDED]`: rely on the OS WebView; an absent WebView
+fails before the core runs (the §6.2.4 download-page note); an old or broken one the core
+observes is the §2.13.5 `WebviewFault` on a native surface; the floor is declared in
+config. The only residual is
 **[DEFER: validate the precise build numbers against the §6.4 rendering-drift matrix
 and §6.1 packaging]** — a calibration detail, not an open commitment.
 
 **Rendering-drift implication (→ §6.4):** because three different browser engines
 render the same UI, visual/behaviour drift (CSS, font rendering, drag-events) is a
 test concern, not a runtime one. **Startup-time WebView faults (→ §7.2 / §2.13):**
-an absent/old/broken WebView is an *app-level* fault, surfaced once, plainly.
+an absent WebView fails before the core runs (the §6.2.4 download-page note); an old
+or broken one the core observes is the §2.13.5 `WebviewFault` on a native surface.
 
 ---
 
@@ -387,7 +390,7 @@ pub struct ItemFinished { pub run_id: RunId, pub item_id: ItemId, pub outcome: I
 pub struct BatchProgress{ pub run_id: RunId, pub done: u32, pub total: u32 }
 ```
 (`will_reencode` is a plain `bool` on the wire — the core always emits a definite value,
-§2.9.2 emission rule; `JobStage`/`ItemOutcome`/`RunResult` are the §0.6 types.)
+the `RunStarted` emission rule above; `JobStage`/`ItemOutcome`/`RunResult` are the §0.6 types.)
 
 > **Why a Channel, not events, for run telemetry:** ordering (progress monotonic
 > per item), throughput (a 5000-file batch emits a lot), and **scoping** (the
@@ -407,7 +410,7 @@ telemetry (NOT an `app://` event):
 
 | Event | Payload | Meaning |
 |---|---|---|
-| `app://fault` | `AppFault` | An **app-level** fault (§2.13): WebView core disconnect, a startup engine-missing escalation, damaged bundle. The UI shows a plain, no-stack-trace message (§5.8 backend-disconnect handling). |
+| `app://fault` | `AppFault` | An **app-level** fault (§2.13) of a §2.13 app-level kind whose §2.13.5 surface is the §5.8 fault screen — the §7.2.1 readiness faults (a startup engine-missing escalation, a damaged bundle, no writable scratch). The UI shows its plain, no-stack-trace §2.13.5 line (§5.8 fault handling). |
 | `app://intake` | `()` | **The payload-less intake nudge `[DECIDED 2026-07-06]`:** a path set is pending in the core-side §7.8.1 `PendingIntake` buffer — the SINGLE hand-off buffer **every** intake source fills (the Rust `WindowEvent::DragDrop` native drop, the C2a picker, second-instance launch / Open-with / launch-arg — §7.1/§7.8) — and the frontend reacts by calling C1 `drain_intake` (the §1.1 walk + §2.4 freeze run there). The event carries **no paths and no origin**: `origin` travels inside the buffer, core-side, never on the wire. **IDLE-path only `[DECIDED]`:** the refuse-busy check stays **core-side** in the §7.8.1 funnel (uniform §7.1.1) **before** buffering — while a run is in flight the core **refuses-busy and DROPS the paths core-side**, so no nudge fires mid-run (the only mid-run UI surface is `BusyNotice`, §5.3, driven by window re-focus, not this event). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the former `{ paths, origin }` payload — the `IntakePayload` echo the WebView re-submitted to C1, the §0.11 T2b trust-boundary crossing — is retired, as is the "drop & picker never route through this event" carve-out: every source now nudges, and the handler needs no origin branch at all because the event is payload-less.) Cross-ref §1.1. |
 | `app://close-requested` | `()` | The OS window-close was intercepted **while a run is in flight** (§7.3.2): the core called `prevent_close` and asks the frontend to show the quit-while-converting confirm (§5.2/§7.3.3). The emit/intercept mechanism is owned by §7.3; the event name is fixed here. |
 
@@ -1113,8 +1116,8 @@ pub struct OutputPlanPreview {       // C4 plan_output → drives the "will save
     pub preflight: PreflightVerdict, // §1.10 size/space estimate + any up-front "too big" fail
     pub lossy_notes: Vec<OutcomeMsg>, // the §2.9.1-rendered co-applying lossy-note set
                                      //   (OutcomeMsg::Lossy) for the chosen target and options,
-                                     //   computed core-side under the §2.9.2 rules; empty when
-                                     //   no lossy kind applies
+                                     //   computed core-side under the §2.9.2 layers and render
+                                     //   order; empty when no lossy kind applies
 }
 
 pub struct RerunPrompt {             // the one batch-level §2.5 prompt's data

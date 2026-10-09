@@ -156,7 +156,7 @@ These two ids are the entities §0.6 lists as "defined in §7.1". Both are
 | Id | Type | Scope / lifetime | Derivation | Purpose |
 |----|------|------------------|------------|---------|
 | `InstanceId` | `Uuid` (v4) — opaque 128-bit | One running process, created once in `setup` | Random at launch | Names the per-instance scratch root (§2.14) and stamps temp artifacts so startup cleanup (§2.6) can tell *this* instance's residue from a *different* instance's still-running temp |
-| `RunId` | `Uuid` (v4) | One "drop → … → summary" cycle (one `Batch`); a new drop after a summary starts a new `RunId` | Random when **`start_conversion` (C6) accepts the batch** (§0.4.1 C6 / §0.4.4); the §2.4 freeze produces the **`CollectedSetId`** (the pre-run identity), **not** the `RunId` — the `RunId` is minted only when CONVERT begins — the one exception is the scratch-dir identity of the §7.2.3 startup smoke probe: a probe-scoped `run-<RunId>/` minted, locked and reclaimed like any run dir, carrying no `Batch`, event or summary (Co-Pilot 2026-09-15) — so the per-run scratch `run-<RunId>/` (§2.6.1) never exists before a RunId is minted | Owns the per-run temp subdir; cancellation/cleanup (§2.6), progress events (§0.4) and the end-of-batch summary (§1.12) are all keyed by it |
+| `RunId` | `Uuid` (v4) | One "drop → … → summary" cycle (one `Batch`); a new drop after a summary starts a new `RunId` | Random when **`start_conversion` (C6) accepts the batch** (§0.4.1 C6 / §0.4.4); the §2.4 freeze produces the **`CollectedSetId`** (the pre-run identity), **not** the `RunId` — the `RunId` is minted only when CONVERT begins — the one exception is the scratch-dir identity of the §7.2 startup probes (the §7.2.3 smoke probe and the §7.2.1 step-5 writability probe): a probe-scoped `run-<RunId>/` minted, locked and reclaimed like any run dir, carrying no `Batch`, event or summary (Co-Pilot 2026-09-15) — so the per-run scratch `run-<RunId>/` (§2.6.1) never exists before a RunId is minted | Owns the per-run temp subdir; cancellation/cleanup (§2.6), progress events (§0.4) and the end-of-batch summary (§1.12) are all keyed by it |
 
 Pseudo-types (mirrored to TS via the §0.4.5 mechanism — not re-decided here):
 
@@ -213,7 +213,10 @@ section only fixes the *identity* embedded in it.)
 4. **Executable-permission setup** on the engine binaries for the portable build
    (§7.2.4).
 5. **Scratch + log dir creation** with the per-instance root (§7.1.2). Reclaim
-   orphaned scratch roots (§7.2.5, owned by §2.6).
+   orphaned scratch roots (§7.2.5, owned by §2.6), then probe writability: create the
+   per-instance root, write and delete a probe file inside a lock-held probe run dir
+   (§7.1.2); a failure is `ScratchUnavailable` (§2.13.5), while a sweep error stays
+   best-effort.
 6. **WebView window create** and frontend load (the WebView runtime floor is
    §0.3.1). An old or broken WebView is a §7.2/§2.13 startup fault **where the core can
    observe it** (macOS WKWebView / Linux WebKitGTK init failures the Rust core sees);
@@ -234,27 +237,35 @@ single `main` window is config-declared **`visible: false`** in `tauri.conf.json
 (`get_webview_window("main")` → `.show()`) **only on the readiness-gate success path**
 (steps 3–5 `Ok`, plus the §7.2.3 smoke leg off macOS — a required-engine smoke failure takes
 this readiness channel); a readiness fault instead skips this normal reveal and hands the
-app-level `AppFault` to the §2.13.3 presentation. `get_webview_window("main")` returning
-`None` at step 6 is the core-observable WebView-init fault seam (an old or broken WKWebView /
-WebKitGTK init the core observes, never a missing library, §0.3.1) — **P2.109 builds that detection + routing** (the `None` arm constructs a
-`WebviewFault` `AppFault` and routes it to `present_startup_fault`).
+app-level `AppFault` to the §2.13.3 presentation.
+
+**WebView-init detection `[DECIDED]`:** the core arms `FRONTEND_READY_TIMEOUT` (v1 value
+60 s; a cold first launch on the §0.3.1 floor machine with an on-access scan stays far below
+it) at the step-6 reveal; the first C1 call of the root-shell mount drain (§5.8) sets
+`frontend_ready` and disarms it. On expiry the core logs (§7.5) and shows the §2.13.5
+`WebviewFault` line on a native non-blocking message dialog; when the user closes it, the
+app exits unless `frontend_ready` arrived meanwhile. The `get_webview_window` `None` arm is
+no detection seam (the runtime registers the window even when the web view fails).
+Realizability probe at the box that builds it: the dialog shows over a forced web-view init
+failure on macOS and Linux. If it fails, the line goes to stderr and the §7.5 log and the
+app exits at expiry, without escalation.
 
 **Which surface a startup fault renders on is `[DECIDED]` by the WebView's own health
 (P2.109) — the fault channel splits in two:**
 
-- **Readiness faults (steps 3–5 + the §7.2.3 smoke): `EngineMissing` / `BundleDamaged`**
-  leave the WebView itself healthy, so they present over the **built** §0.4.2 `app://fault`
-  event → the §5.8 WebView fault screen. Because such a fault can fire **before** the §5.8
-  listener is registered (the same first-frame race the §7.8.1 launch-intake buffer closes),
-  it is replayed through a **`PendingFault` buffer** on listener-ready. The `app://fault`
-  emit + `PendingFault` buffer body lands with the readiness verifier bodies (**P4**), not
-  P2.109.
-- **The WebView-init fault (step 6): `WebviewFault`** — the OS WebView runtime could not
-  create the view — makes an `app://fault`→WebView emit **impossible** (there is no
-  WebView to render it), so it presents on a **native surface** (not the WebView; the
-  concrete native mechanism is a P4 decision, §2.13.3). The Windows WebView2-*absent*
-  case and the Linux missing-`libwebkit2gtk-4.1` case are **not** this: each fails **before**
-  the core runs (§0.3.1 honest exceptions), so the core never observes them.
+- **Readiness faults (steps 3–5 + the §7.2.3 smoke): `EngineMissing` / `BundleDamaged` /
+  `ScratchUnavailable`** leave the WebView itself healthy, so they present over the **built**
+  §0.4.2 `app://fault` event → the §5.8 WebView fault screen. Because such a fault can fire
+  **before** the §5.8 listener is registered (the same first-frame race the §7.8.1
+  launch-intake buffer closes), it is replayed through a **`PendingFault` buffer** on
+  listener-ready. The `app://fault` emit + `PendingFault` buffer body lands with the
+  readiness verifier bodies (**P4**), not P2.109.
+- **The WebView-init fault (step 6): `WebviewFault`** — the web view never reported ready
+  (the watchdog above) — makes an `app://fault`→WebView emit **impossible** (there is no
+  working WebView to render it), so it presents on that watchdog's native non-blocking
+  message dialog (§2.13.3). The Windows WebView2-*absent* case and the Linux
+  missing-`libwebkit2gtk-4.1` case are **not** this: each fails **before** the core runs
+  (§0.3.1 honest exceptions), so the core never observes them.
 
 `present_startup_fault` is the mechanism-independent §2.13.3 entry point both channels
 route through; it records the fault locally (§7.5) now, and the two presentation bodies
@@ -346,7 +357,7 @@ present and usable:
   re-hash; it does **not** catch same-size in-place corruption (only the full re-hash on
   first-launch / version-change does — an accepted limitation, since runtime is not a
   tamper anchor, §0.11 T3). Owner: §7.2 with §3.3.
-- **Smoke probe `[REC]`:** optionally, a fast `--version`-style invocation per
+- **Smoke probe `[DECIDED]`:** a fast `--version`-style invocation per
   critical engine through the §3.5/§2.12 wrapper to confirm it *runs* on this OS
   (catches a glibc/arch mismatch a hash can't). Kept cheap; gated behind verbose
   mode (§7.5) on warm launches. **Placement `[DECIDED]` (Co-Pilot 2026-09-15):** off macOS the
@@ -374,8 +385,9 @@ surface. Owned by §7.2:
 
 ```rust
 struct EngineHealth {
-    engines: Vec<EngineStatus>,        // one per registry-eligible engine (FFmpeg, LibreOffice,
-                                       //   Poppler, Pandoc, ImageCore, NativeCsvTsv). The non-trait
+    engines: Vec<EngineStatus>,        // one per declared engine (the Build-window roster above:
+                                       //   FFmpeg, LibreOffice, Poppler, Pandoc, ImageCore) plus the
+                                       //   NativeCsvTsv row synthesized below. The non-trait
                                        //   delegate/probe binaries (FFprobe, ImageMagick) get NO
                                        //   standalone row — their presence/integrity (checked via
                                        //   the §7.2.3 out-of-band binary loop) is rolled into the
@@ -435,25 +447,23 @@ struct AppInfo {
     third_party_notice: String,        // the §3.7 THIRD-PARTY-LICENSES.txt contents (bundled)
 }
 ```
-  - **macOS ordering caveat `[REC]`:** on macOS Sequoia a quarantined/Gatekeeper-
+  - **macOS ordering caveat `[DECIDED]`:** on macOS Sequoia a quarantined/Gatekeeper-
     blocked bundled binary (§7.2.4 — builds are unsigned, and **each sidecar is
-    independently quarantined**) makes the spawn itself fail. To ensure that fault
-    surfaces **in a window** (not as a silent pre-window hang), the macOS smoke probe
-    is **deferred until after the WebView window is shown** (step 6), or **downgraded
-    to presence + hash only on first launch** with the runtime-spawn check happening
-    lazily on the first real conversion. Either way the quarantine fault becomes a
-    visible **`QuarantinedByOs`** (§2.8) message guiding the user to Privacy & Security
-    → "Open Anyway", **never** a blank window — and it is distinguished from a genuinely
-    missing/corrupt engine (`EngineMissing`/`BundleDamaged`).
+    independently quarantined**) makes the spawn itself fail. So on macOS the smoke and
+    BMP-delegate checks run after the step-6 reveal and update the health cache C3 reads;
+    a still-quarantined sidecar fails its item with **`QuarantinedByOs`** (§2.8) at
+    conversion time, guiding the user to Privacy & Security → "Open Anyway", **never** a
+    blank window; a quarantine-blocked probe records `runnable = None` (not a degraded
+    target), distinct from a genuinely missing/corrupt engine (`EngineMissing`/`BundleDamaged`).
 
 **Outcome of a failure:** a missing, corrupt, or non-runnable **required** engine
-is an **app-level startup fault** (§2.13) presented in plain language ("A required
-conversion component is missing or damaged — please re-download ConvertIA from the
-official releases page", with the §7.7 user-initiated link), **never** a stack
-trace. A failure of a sub-component inside a present engine that only affects
+is an **app-level startup fault** (§2.13) presented as the §2.13.5 `EngineMissing` line
+(`BundleDamaged` for an integrity mismatch, §3.1), with the §7.7 user-initiated link,
+**never** a stack trace. A failure of a sub-component inside a present engine that only affects
 *some* formats (today the §3.1 row 1d BMP delegate) degrades to "those formats
 unavailable" rather than refusing the whole app: mark the affected targets
-unavailable in the picker with a reason distinct from the §3.4 patent gap (it rides C3
+unavailable in the picker with the §2.8.2 `degraded_component` line as the reason, distinct
+from the §3.4 patent gap (it rides C3
 `Target.availability`, §0.6; §5.2 renders it) and
 keep the rest working. The required-vs-degradable roster is §3.1's **Startup-fault
 classification**, surfaced here.
@@ -525,8 +535,9 @@ fn ensure_executable(p: &Path) -> io::Result<()> {
 
 ### 7.2.5 First temp-dir creation & orphan reclamation
 
-The per-instance scratch root (§7.1.2 naming) and the log dir (§7.5) are created
-on first need. **Startup cleanup** — removing residue from a *previous* crashed/
+The per-instance scratch root (§7.1.2 naming) is probed at startup through a
+probe-scoped run dir (§7.2.1 step 5, which also creates the log dir, §7.5); per-run
+subdirs are created on first need. **Startup cleanup** — removing residue from a *previous* crashed/
 force-quit run (SSOT *Never harm the original*: "cleaned up on next run") — runs
 here but its **mechanism is owned by §2.6** (which roots it must touch, the
 per-instance/PID safety check so it never removes a concurrent instance's live
