@@ -3683,7 +3683,7 @@ mod tests {
     // §6.4.1 unit (G15): the P3.5 native CSV/TSV `Engine::plan()` — Pure, maps a Tsv target to a single-step
     // encode Invocation carrying the InProcessNative program, self-reported InProcessFraction progress, no cwd/
     // env/stdin (an in-core engine spawns nothing), out_tmp None (§1.7 populates at spawn time), and args
-    // [input, "tsv"] (the §3.5.6 transform's two runtime params). A Pure, no-I/O logic test (test-strategy §10.1).
+    // [input, "tsv"] (the §3.5.6 transform's two runtime params). A Pure, no-I/O logic test (test-strategy §10, item 1).
     #[test]
     fn native_engine_plans_a_tsv_target_as_a_single_step_encode() {
         let engine = NativeCsvTsvEngine;

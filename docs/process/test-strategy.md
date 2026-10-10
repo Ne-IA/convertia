@@ -61,7 +61,7 @@ finds the expected structure (spec §6.4.3, enforced by **G31**/**G32**):
 | Raster image | **`vipsheader`** decodes with **nonzero dimensions**, and a "has content" proof (`vips stats` pixel-variance above a threshold — a self-contained non-blank check, **not** PSNR/SSIM against a reference) |
 | PDF (text-bearing source) | **`pdftotext`**/poppler **opens** the PDF and returns **nonzero text** (an image-heavy PDF: `pdfimages -list` reports ≥ 1 image) |
 | OOXML (DOCX/XLSX/PPTX) | **`unzip`**-able **with a well-formed `[Content_Types].xml`** |
-| CSV / TSV | parsed by a **real RFC-4180 reader** (the §3.5.6 native CSV/TSV parser, or the `csv` crate if adopted — spec §6.4.3 / G31) — **not** a bare field-count parity (which passes on mis-quoted / embedded-newline output that is *unparseable*) — **and** the corpus's leading `=`/`+`/`@` cells are asserted **preserved literally as text** (CSV-injection non-execution on the *output* side) |
+| CSV / TSV | parsed by a **real RFC-4180 reader** (the in-workspace `csv` crate, §3.5.6 — spec §6.4.3 / G31) — **not** a bare field-count parity (which passes on mis-quoted / embedded-newline output that is *unparseable*) — **and** the corpus's leading `=`/`+`/`@` cells are asserted **preserved literally as text** (CSV-injection non-execution on the *output* side) |
 
 **Magic re-detect is a pre-screen only, never sufficient.** Re-running the §1.2
 magic-byte detector on the output proves only that the file *starts* with the right
@@ -166,7 +166,8 @@ Each is the §6.4.1 contract made executable:
 > set `clippy::unwrap_used`/`expect_used`/`panic`/`indexing_slicing` to **deny** on
 > that path (allow-listed in `#[cfg(test)]` with a `// PANIC:`-justified escape) —
 > the lint prevents the class, the **G48** fuzz finds the residue. Tests do not
-> have to *find* every panic; they have to *exercise the guards* (§4).
+> have to *find* every panic; they have to *exercise the guards* (§1.5, the
+> bound-firing fixtures).
 
 ### 1.1a Boot-stage / host-glue (AppHandle-coupled launch glue · source-scan + §1.6 E2E · G28 exemption)
 
@@ -286,7 +287,7 @@ The §6.4.2 cases this level owns:
 - **Malformed / adversarial inputs (§2.12/§2.13):** truncated, 0-byte,
   fuzzed-header, encrypted/DRM, and decompression-bomb-shaped inputs each produce
   **one plain message**, no crash, no app wedge, batch continues — backed by
-  **explicit fixtures** (§5), not only a property concept.
+  **explicit fixtures** (§3), not only a property concept.
 - **Cancellation (§1.7/§1.11):** mid-batch cancel keeps finished items, discards
   the in-flight one with no partial leftover, never touches originals.
 
@@ -885,10 +886,16 @@ with retries. The policy is narrow on purpose:
   reproduction is the point.
 - **A libFuzzer OOM/timeout is a FINDING, never a retry** (§1.5) — minimized and
   committed to `fuzz/crashes/`.
-- **Engineer determinism instead of retrying.** Pin **locale** and **timezone**
-  (`TZ`) in the CI environment; turn **animations off**
+- **Engineer determinism instead of retrying.** A test injects the clock, timezone
+  and locale it reads instead of taking the host's (a paused or fake clock for a
+  timing rule, a fixed timezone and locale), and every engine subprocess runs in a
+  minimal environment with a pinned `LC_ALL` (spec §3.5 shared invocation
+  conventions, §2.12.3), so conversion output never depends on the runner's locale. A
+  real subprocess runs on the host's clock, so a test that waits on one arms its
+  assertion off an event it observes and bounds the wait generously, never on a
+  wall-clock guess. Turn **animations off**
   (`prefers-reduced-motion`/`animation-duration: 0`) for the §1.6 / §1.7 / §9
-  levels; pin the CI **seed** (§1.3); freeze any clock the assertion reads. The
+  levels; pin the property-test **seed** (§1.3). The
   **conversion-output determinism** invariant (§2 / G32) is the same principle
   applied to the *product*: a non-deterministic output is a bug (an embedded
   timestamp, a privacy leak), not a tolerance to widen.
@@ -897,20 +904,14 @@ Determinism is also why the §2 round-trip work bans embedded timestamps via the
 `diffoscope` empty-diff check — a flaky *output* and a flaky *test* have the same
 root cause and the same fix: remove the nondeterminism, do not retry around it.
 
-### 7.1 The flake ledger — observed nondeterminism debt (added 2026-08-30)
+### 7.1 Observed flakes become boxes
 
-> The committed record of every observed **non-infra** flake on a NEVER-auto-retry
-> level (unit / property / integration / fuzz). §7 treats such a flake as a
-> determinism bug to engineer out, so an **OPEN** row is debt owed an
-> engineering-out, not a tolerance: a row is added with its evidence when the flake
-> is observed (the observing box's commit records the analysis), and is marked
-> **CLOSED** by the commit that removes the nondeterminism — rows are never deleted
-> (append-only history, the gate-status.md discipline). The ledger was raised as the
-> fourth P4.23 L(-1) hand-off (the Loop may not edit `docs/process/**`, G71).
-
-| Test | Level | First observed | Evidence | Suspected mechanism | Status |
-|---|---|---|---|---|---|
-| `engines::tests::the_watchdog_reap_leaves_no_orphaned_descendant` (P4.12) | integration (real subprocesses) | 2026-08-30, during the P4.23 review | failed once immediately after a `cargo fmt` + full rebuild; passed in isolation and in 8 consecutive full-suite runs; the P4.23 diff removed no executable production line (a `-U0` comments-stripped pass), so that box provably cannot have altered the behaviour under test | a real `Duration::from_secs(10)` wall-clock watchdog trigger under CPU contention (three sibling tests park `spawn_blocking` workers ~150 ms) — the "freeze any clock the assertion reads" debt this §7 names | **OPEN** — owed: re-engineer the trigger onto an injected/frozen clock; falls to the P4.12-owner surface via the §11 phase-end sweep, or immediately on recurrence |
+An observed non-infra flake on a never-auto-retry level (unit / property /
+integration / fuzz) is a determinism bug (§7). The observing session records it as a
+`[TEST]` box in the phase that owns the flaky test (the current phase when that one is
+closed) — appended at max+1 before the phase's sweep box, its note naming the test,
+the observed failure and the suspected mechanism — and that box's commit engineers the
+nondeterminism out. The phase-end sweep triages open flake boxes (§11.2).
 
 ---
 
@@ -1006,9 +1007,9 @@ design call — only a spec `§`-home and an id:
   out in the commit body (a baseline bump is a reviewable diff, never an automatic
   "accept new screenshot"). An accidental visual drift therefore fails; a deliberate
   redesign updates the baseline in the same commit that causes it.
-- **Determinism prerequisites:** the §7 pins (locale, `TZ`, animations off, fixed
-  window size, fonts from the bundled set only) — a screenshot diff is worthless
-  without them.
+- **Determinism prerequisites:** the §7 determinism rules (injected clock, timezone
+  and locale, animations off, fixed window size, fonts from the bundled set only) — a
+  screenshot diff is worthless without them.
 
 **Why no gate in v1 (G34 — VACATED).** A release-blocking gate must have a spec
 `§`-home; §6.4.6 is the WebDriver flow and §6.4.6a is axe — **neither owns
@@ -1050,6 +1051,13 @@ mechanical:
    adversarial output-validity leg + the **G32** determinism floor for its
    output-format categories, and re-run the §6.5 reliability gate before it can ship
    (§6.5.4).
+7. **A build or staging script** (an uncaged `scripts/` Loop tool such as
+   `stage-engines`) → its own `--selftest` legs plus the monotone leg-name pin
+   (`scripts/gate-selftests/_monotone_pin.py`); the planted positive that drives the
+   tool from outside is caged (`scripts/gate-selftests/**`) and lands on the box's
+   `l-neg1:` route (`_format.md` §5.3) — the caged part of the box (build-loop.md
+   Step 7), a named act or a sweep tail (§11.2). **A gate** → its `[GATE]` box ships
+   its positive + negative G24 self-test (`_format.md` §4).
 
 **If a chosen test box's prerequisite is unbuilt, build it first — never leave a
 hole.** A test box often needs an unbuilt support box: the single-source corpus

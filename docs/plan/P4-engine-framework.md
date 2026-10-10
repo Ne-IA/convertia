@@ -983,6 +983,14 @@
   needs: P4.50, P4.64, P4.65, P4.66, P4.67, P4.68, P4.69, P4.70, P4.78
   > for every (state, Msg) arm in `src/state/machine.ts`, assert under jsdom with the IPC façade mocked that its dispatcher still fires the Msg (the P3 dead-button class): a user-action arm against the rendered P4 screen for that state, an event-sourced arm against its `src/lib/ipc/events.ts` dispatcher. The audit includes the §5.2 row-4 option-change cell P4.64's OptionsPanel introduces and the run-fault carrier after P4.50's re-cut.
 
+## The observed watchdog-reap flake — a determinism box
+
+> An observed flake becomes a `[TEST]` box in the phase that owns the flaky test (test-strategy §7.1); max+1 convention.
+
+- [ ] **P4.104** [TEST] Engineer the wall-clock race out of the P4.18.3 watchdog-reap test (the observed flake) · §0.9 §1.7 · G15
+  > Scope: `engines::tests::the_watchdog_reap_leaves_no_orphaned_descendant` failed once, on the run right after a `cargo fmt` + full rebuild, and passed in isolation and in 8 consecutive full-suite runs; the suspected mechanism is its real 10 s wall-clock watchdog trigger under CPU contention (three sibling tests park `spawn_blocking` workers ~150 ms).
+  > In: no wall-clock guess decides the outcome: the trigger runs on an injected clock or is armed off an event the test observes (test-strategy §7). Out: the real-subprocess reap and the no-orphan heartbeat assertions stay; a changed assertion carries the G70 `[Test-Change]` tag (test-strategy §8).
+
 ## The P4.60 caged corpus-coverage gate — the owner act the P4.80 exit gate needs
 
 > Authored by the **Co-Pilot** from the test-strategy §11.4 pre-fill audit: the caged half of P4.60,

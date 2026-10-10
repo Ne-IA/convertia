@@ -5,9 +5,8 @@
 > under — is "done" when the **first push to `main` whose L4 CI run completed green**
 > lands. That proof must **outlive any single commit body** (r7: a commit message is
 > overwritable; a tracked, committed file is an append-only record), so this file IS
-> the record. It is **stubbed now** (P0.6.10) so `plan-lint` check 24 has a committed
-> shape to validate against; the live values are filled in the **P0-exit-recording
-> commit**.
+> the record. `plan-lint` check 24 validates it (P0.6.10 authored the shape; the P0-exit
+> commit filled it).
 >
 > **Conflict order:** SSOT > spec > security/process docs > plan > code > conversation.
 
@@ -27,23 +26,15 @@ This record carries three fields:
 - **`run_url`** — the GitHub Actions run URL of the **first push to `main` whose L4 CI
   run completed green** (the P0 exit criterion). `plan-lint` check 24 asserts it matches
   the immutable Actions-run shape `https://github.com/Ne-IA/convertia/actions/runs/<id>`.
-  Until P0 exits, the field holds the **placeholder run `0`**; the exit-recording commit
-  replaces `0` with the real run id. (A non-URL placeholder marker is **not** an option —
-  check 24 reddens any `run_url` value that is not an Actions-run URL, which is exactly
-  why the placeholder is the pattern-valid run `0`, not a free-text token.)
 - **`date`** — the P0-exit date (ISO 8601), filled at exit.
 - **`box_state_at_exit`** — the box-state summary the [build-loop.md](build-loop.md) §9
   convergence report names — boxes completed + their commit SHAs + the consolidated
   `[!extern]` owner-action list — filled at exit.
 
-**P0-exit obligation.** When the first green L4 run on `main` lands, the exit-recording
-commit MUST (1) replace the placeholder run `0` with the real run id and (2) fill `date`
-and `box_state_at_exit`. check 24 guards the `run_url` **shape if present** — it does not
-assert presence/non-deletion, nor that the placeholder was replaced — so the
-exit-recording is a deliberate fill-all-three step (and the P0-exit box should consider
-extending check 24 to reject a still-`0` run once `box_state_at_exit` is filled). The
-record's non-deletion is held by the L(-1) `docs/process/**` cage + its tracked-file
-status, not by check 24.
+**Integrity.** check 24 reds a missing record, a record without the `run_url` field and a
+`run_url` value that is not an Actions-run URL; any edit to this file needs the owner's
+ack, because `docs/process/**` is in the L(-1) cage (G71). The record is filled with the
+real run id, so check 24 needs no leg against the P0.6.10 stub's placeholder run `0`.
 
 ---
 

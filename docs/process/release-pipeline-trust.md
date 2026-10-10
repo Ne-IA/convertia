@@ -57,8 +57,8 @@ action collected in §5.
 **Policy.** A GitHub **tag-protection ruleset on `v*`** restricts release-tag *creation*
 to the owner / a protected actor, with a **minimal, enumerated bypass-actor list** —
 the **tag-ref sibling** of G56a's branch-ref protection. It is asserted via
-`gh api repos/:owner/:repo/rulesets` on **schedule + on tag**, **fail-soft in the P0
-bootstrap box, then hard** (build-gates **G56b** leg 1).
+`gh api repos/:owner/:repo/rulesets` on **schedule + on tag**, **fail-closed**
+(build-gates **G56b** leg 1).
 
 **Belt-and-suspenders (already authored in P0.2, fail-closed always).** Even with the
 ruleset, the release workflow's **first step** re-checks (G56b leg 2) that the tagged
@@ -78,17 +78,14 @@ gpg.ssh.allowedSignersFile` points at it. Two assertions ride on this one key:
   (`git tag -s`); the release workflow's first step runs `git verify-tag` against the
   committed allowed-signers file and **aborts before any secret is read** on failure —
   so a lightweight/unsigned tag planted by a compromised `GITHUB_TOKEN` cannot trigger
-  a release. The G56b row's **target** posture is **fail-closed always**, but the
-  as-built P0.2.9 assertion is **fail-soft (skip-with-warning) until
-  `.github/allowed_signers` lands** — a clean checkout cannot `git verify-tag` before
-  that file exists — **then fail-closed**. So leg 3 is genuinely *enforced* only once
-  **P0.7.17** is provisioned (the P10.4 `needs: P0.7.17` STOP §5 spells out); until then
-  legs 1 + 2 carry the tag trust.
+  a release. `.github/allowed_signers` is committed (P0.7.17), so leg 3 fail-closes on
+  that file's presence once the release pipeline and a real `v*` tag exist
+  (`scripts/gate-planes.toml` keeps its L5 `[[fail_open]]` row until P10).
 - **Commit authenticity (G56a sub-check (g)).** The **same** key signs the loop's own
   `main` commits (`git config commit.gpgsign true`), so `main`'s ruleset
   **`required_signatures`** knob is *satisfiable* — closing the integrity axis a
-  forged `Dual-Review:` trailer + spoofed author would otherwise open. **Fail-soft in
-  the P0 bootstrap box (commit-signing is wired mid-P0), then hard** (G56a (g)).
+  forged `Dual-Review:` trailer + spoofed author would otherwise open. **Fail-closed**
+  (G56a (g)).
 
 **Distinct from the spec §6.7.1 DCO posture — no conflict.** §6.7.1's
 `Signed-off-by` is *requested-not-required text* on **external contributors' commits**
@@ -114,8 +111,7 @@ action. This turns G56b leg-2's "abort *before reading* the secret" into "secret
 **never injected** without approval" — **strictly additive** to leg 2, not a
 replacement. Asserted via `gh api repos/:owner/:repo/environments/release`
 (`required_reviewers` + the `v*` `deployment_branch_policy` + the `environment:
-release` binding), **fail-soft in the P0 bootstrap box, then hard** (build-gates
-**G56**; the assertion is wired in P0.2).
+release` binding), **fail-closed** (build-gates **G56**).
 
 ### 4.2 The release-job token scope
 
@@ -133,26 +129,19 @@ mode)**, host-isolated from the untrusted-corpus VPS leg — the rationale + the
 self-hosted-label ban live in spec **§6.7.2** + security-concept **§2 / principle 11**
 and the **G56** row; this doc points at them.
 
-## 5. The owner-provisioning — completed (the runbook + the STOP backstop)
+## 5. The owner-provisioning (the re-provisioning runbook + the STOP backstop)
 
-Both boxes **were `[!extern]`** in the plan until provisioned — the policy is authored,
-but the provisioning was an **owner action the loop could not take** (a signing key,
-GitHub repo config, the release secrets); **both are now `[x]`** (provisioned in the
-owner-present P0 bootstrap session — see the P0.7.17/.18 Delivered notes). Both remain
-**STOP-enforced** at the release boundary (the durable backstop, now satisfied), so the
-loop cannot mint a release unless each stays provisioned:
+P0.7.17 and P0.7.18 are provisioned ([p0-completion.md](p0-completion.md) records the
+live chain). The release boxes keep a STOP backstop so no release is minted unless both
+stay provisioned:
 
 - **P0.7.18 — the `release` Environment STOP.** The release box **P10.6** carries
   `needs: P0.7.18`, so per [`../plan/_format.md`](../plan/_format.md) §2/§6 the loop
   **STOPs** rather than minting a release until the `release` Environment is
   provisioned — the secret is structurally unreachable without it.
 - **P0.7.17 — the tag-trust STOP.** The release-workflow box **P10.4** carries
-  `needs: P0.7.17`, so the loop **STOPs** before standing up the release workflow
-  until the SSH signing key is provisioned — because G56b **leg 3** (`verify-tag`) is
-  only **fail-closed** once the committed `.github/allowed_signers` exists (it is
-  **fail-soft / skip-with-warning** in the P0.2.9 bootstrap window until then, §3).
-  Until that STOP releases, **legs 1 + 2** (the `v*` tag-protection ruleset + the
-  ancestry/green-history abort) carry the tag trust.
+  `needs: P0.7.17`, so the release workflow is never stood up without the SSH signing
+  key G56b leg 3 verifies against.
 
 The two STOPs are **symmetric** — together they guarantee no release is minted until
 **both** the signing key (tag trust) and the approval-gated secret (key custody) are
