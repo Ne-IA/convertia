@@ -1224,8 +1224,9 @@ One glossary for every spec file; per-file headers point here.
 - **WebView-init detection — `[DECIDED]`, the `frontend_ready` watchdog.** The core arms
   `FRONTEND_READY_TIMEOUT` (60 s) at the step-6 reveal and the first C1 drain disarms it; on
   expiry the §2.13.5 `WebviewFault` line shows on a native non-blocking dialog (probe at the
-  building box; fallback: stderr and the §7.5 log). The `get_webview_window` `None` arm is
-  no detection seam. Owner: §7.2.1 / §2.13.3.
+  building box; fallback: stderr and the §7.5 log). The watchdog never exits the app while
+  the main window is visible. The `get_webview_window` `None` arm is no detection seam.
+  Owner: §7.2.1 / §2.13.3.
 - **§1.10 enforcement points and v1 ceilings — `[DECIDED]`.** `TooBig` and `OutOfDisk` are
   enforced at four points: the C4/C5 whole-batch verdict (the only `up_front_fail`), a
   per-item check before the engine spawns, the §1.7 mid-run watchdog (byte budget, per-item
@@ -1244,11 +1245,26 @@ One glossary for every spec file; per-file headers point here.
   verified exit, `Writing` with `1.0`; the video probe occupies `0.0..0.05` and the encode is
   rescaled into `0.05..=1.0`; the no-progress threshold applies only to the streaming
   models. Owner: §1.7.
+- **Launch with files and the intake nudge — `[DECIDED]`.** The root-shell mount drain
+  collects a launch set: the machine stays `Idle` while C1 runs and enters `Collecting` on
+  the first `onScan` tick, or goes straight to the result state, and a nudge during that
+  drain takes the non-intake path; an empty `PendingIntake` answers
+  `CollectedSet::NothingPending`. `AppFault` (12) is a fresh-intake state; a
+  non-intake state drains with C1's `discard` flag (no walk, no freeze, so no held set is
+  superseded) and shows `BusyNotice`, which dismisses on the next state transition.
+  Owner: §5.4 / §5.8 / §0.4.1 / §0.6.
+- **UI rulings — `[DECIDED]`.** A structured `IpcError` from a user-initiated command
+  renders in the current screen's CommandError slot and an opaque rejection routes to
+  state 12 (outside the run path as its own entry class, without "the conversion
+  stopped"); the Summary focus order is the fully-failed banner, the first `Failed` row,
+  OpenActions, then "Convert more"; a cancelled progressbar keeps its last value; About
+  renders the §3.7 text verbatim and never opens in states 6 and 11. The header mark is the
+  ConvertIA logo, Ne-IA is credited in About, the palette derives from the logo, the UI
+  font is the system stack, and there is no Impressum. Owner: §5.3 / §5.5 / §5.6 / §5.9 /
+  §5.10.
 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
-- **§5.2 launch-with-files initial state** — the one live fork, tagged in 05-ui-ux §5.2: a
-  synchronous launch-with-files signal at store init versus mount-drain from `Idle` as the
-  permanent design. Owner: §5.2.
+None at the owner level.
 
 The items the prior pass's "None open"
   claim had actually still left open — **NSIS-vs-portable (`[OPEN-6.1a]`)**, **HEVC/H.265

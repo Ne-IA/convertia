@@ -92,8 +92,8 @@ follow in the same Builder chain. `tauri_plugin_dialog::init()` is **required** 
 
 **`[DECIDED]` second-launch hand-off while mid-conversion = refuse-busy (option b).**
 When the primary instance is **mid-conversion**, a second launch's paths are
-**refused** with a calm "ConvertIA is busy — finish or cancel the current batch
-first" note (rather than silently queued as a deferred drop). This keeps the freeze
+**refused**, never silently queued as a deferred drop; the user-visible signal is the
+re-focused window (below). This keeps the freeze
 point (§2.4) and the one-batch-at-a-time model (§1.3) unambiguous and avoids a hidden
 queue the user can't see. (Adopting the standing [REC].) When **idle**, a second
 launch's paths start a fresh drop normally. **The single-instance callback is the
@@ -243,12 +243,16 @@ app-level `AppFault` to the §2.13.3 presentation.
 60 s; a cold first launch on the §0.3.1 floor machine with an on-access scan stays far below
 it) at the step-6 reveal; the first C1 call of the root-shell mount drain (§5.8) sets
 `frontend_ready` and disarms it. On expiry the core logs (§7.5) and shows the §2.13.5
-`WebviewFault` line on a native non-blocking message dialog; when the user closes it, the
-app exits unless `frontend_ready` arrived meanwhile. The `get_webview_window` `None` arm is
-no detection seam (the runtime registers the window even when the web view fails).
-Realizability probe at the box that builds it: the dialog shows over a forced web-view init
-failure on macOS and Linux. If it fails, the line goes to stderr and the §7.5 log and the
-app exits at expiry, without escalation.
+`WebviewFault` line on a native non-blocking message dialog. The watchdog never exits the
+app while `frontend_ready` can still arrive in a visible window: while the main window is
+visible, neither the expiry nor closing the dialog ends the app — a slow launch then
+continues normally — and the user quits by closing the window (§7.3); only with no window
+visible does closing the dialog exit the app. The `get_webview_window` `None` arm is no
+detection seam (the runtime registers the window even when the web view fails).
+Realizability probe at the box that builds it: the dialog shows, and the main window's
+visibility reads back, over a forced web-view init failure on macOS and Linux. If it fails,
+the line goes to stderr and the §7.5 log, and at expiry the app exits only when no window
+is visible, without escalation.
 
 **Which surface a startup fault renders on is `[DECIDED]` by the WebView's own health
 (P2.109) — the fault channel splits in two:**
@@ -1316,14 +1320,16 @@ fn forward_launch_argv(app: &AppHandle, argv: &[String], cwd: &str, origin: Inta
 drop, launch-arg, second-instance, Open-with, the C2a-picked set — lands in the managed
 `State<PendingIntake>` (real `PathBuf`s + the stored `IntakeOrigin`, held core-side; no
 path ever crosses the wire), and `app://intake` carries **nothing** — a pure "come and
-drain" signal. The consumption is **C1 `drain_intake { collectingId, onScan } →
+drain" signal. The consumption is **C1 `drain_intake { collectingId, onScan, discard } →
 CollectedSet`** (§0.4.1): the handler **consumes `PendingIntake` exactly once per call**
 using the stored `origin` (the real one — a first-launch buffered set drains as
 `LaunchArg`, never a hard-coded `SecondInstance`), freezes the buffered set (§1.1/§2.4)
 and returns its `CollectedSet`; a drain that finds **nothing pending** returns
-`CollectedSet::Empty` and the UI stays put — a clean no-op (the ordinary no-files mount
-drain, or a nudge whose stash a concurrent drain already consumed). The frontend issues
-the drain **on every `app://intake` nudge and once on root-shell mount** — the mount
+`CollectedSet::NothingPending` (§0.6) and the UI stays in, or returns to, its pre-drain
+state (the ordinary no-files mount drain, or a nudge whose stash a concurrent drain
+already consumed). The frontend issues
+the drain **on every `app://intake` nudge and once on root-shell mount** (a §5.4
+non-intake state drains with `discard`) — the mount
 drain fires only after the `app://intake` listener registration has **settled**
 (completion, not merely call order) and collects a first-launch / Open-with set that was
 buffered before any listener existed (the documented Tauri first-frame timing pitfall a
@@ -1335,7 +1341,7 @@ lock dance:** the funnel **stashes before it reads the ready flag**, and the dra
 **marks ready before it takes** — so every stash either precedes a take (consumed by
 that drain) or follows the mark (its ready-read sees `true` and emits the nudge that
 triggers its own drain); a nudge that races an already-run drain merely produces a
-harmless empty drain. A stash over a still-undrained set **APPENDS** to it and keeps the
+harmless `NothingPending` drain. A stash over a still-undrained set **APPENDS** to it and keeps the
 FIRST stash's `origin` (the P2.58 no-loss accumulation — a superseding replace would
 silently drop the earlier launch's paths, the exact loss this section's guarantee
 forbids); the next drain consumes the merged set. There is **no
@@ -1401,7 +1407,8 @@ picker + keyboard (§1.1/§5) plus the ad-hoc launch-time intake above (§7.8.1)
 > These are now **resolved** (recorded in the README open-questions log); kept here as a
 > trace of where each was decided, not as open calls.
 - **§7.1.1** — second-launch hand-off while a batch is **running**: `[DECIDED]`
-  **refuse-busy** (UI surface = the `BusyNotice` Banner, §5.3). Owner: §7.1.
+  **refuse-busy** (UI signal = the re-focused window; `BusyNotice`, §5.3, only on a leaked
+  nudge). Owner: §7.1.
 - **§7.2.3** — engine integrity: `[DECIDED]` **hash-on-first-launch + cheap warm-launch
   check**, with the concrete `engine-integrity.json` marker (config dir, keyed on
   `app_version`) above. Owner: §7.2 with §3.3.

@@ -59,9 +59,9 @@ Definition of Done**, which is "everything in *What It Converts*.")*
   (per *Fail clearly*) without wedging the app or compromising the no-harm
   guarantee. The isolation/sandboxing mechanism is a Spec matter; the *intent*
   is stated here so the Spec does not treat it as optional.
-- **Trademark.** The MIT grant covers the **code, not the "ConvertIA" name or the
-  Ne-IA logo.** Forks and redistributions must use a different name and may not
-  use the Ne-IA logo (guidelines in `TRADEMARK.md`).
+- **Trademark.** The MIT grant covers the **code, not the "ConvertIA" name, the
+  ConvertIA logo or the Ne-IA logo.** Forks and redistributions must use a different
+  name and may not use either logo (guidelines in `TRADEMARK.md`).
 - **Naming.** "ConvertIA" follows the Ne-IA family. Trademark / name-collision
   risk for **both** "ConvertIA" and the public use of the "Ne-IA" brand has
   **not** yet been cleared; a clearance check (in the jurisdictions relevant to
@@ -313,11 +313,11 @@ conversion.
 ## 7. Design Intent
 
 - Minimal, modern, a little eye candy — "modern > plain."
-- The **Ne-IA logo** appears as branding; a static in-app **About /
-  legal-notices** screen is present (credits + third-party-licenses). There is no
-  operated service, so no web-style legal-notice obligation applies.
-- Logo, colors and final branding are placeholders for now (owner handles them
-  separately).
+- A static in-app **About / legal-notices** screen is present (credits +
+  third-party-licenses). There is no operated service, so no web-style legal-notice
+  obligation applies.
+- Branding: the ConvertIA logo is the app's mark; the colour palette is derived from
+  it; Ne-IA is credited as the publisher in About.
 
 ## 8. Explicitly Out of Scope
 

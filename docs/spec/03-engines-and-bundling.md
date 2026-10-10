@@ -1716,8 +1716,8 @@ model (SSOT *Distribution & download trust*):
 
 ### 3.6.3 Trademark / name boundary (cross-ref, not owned here)
 
-The MIT grant covers code, **not** the "ConvertIA" name or Ne-IA logo (SSOT
-*Trademark*); §6.8 owns `TRADEMARK.md`. Noted here only so the §3.7 NOTICE does
+The MIT grant covers code, **not** the "ConvertIA" name, the ConvertIA logo or the Ne-IA
+logo (SSOT *Trademark*); §6.8 owns `TRADEMARK.md`. Noted here only so the §3.7 NOTICE does
 not imply a trademark grant.
 
 ---

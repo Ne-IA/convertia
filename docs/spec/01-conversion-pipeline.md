@@ -166,8 +166,8 @@ with the §7.1.1/§7.8.1 refuse-busy decision):
 - **While a RUN IS IN FLIGHT** (mid-`Converting`): the launch-intake is
   **refused-busy** per §7.1.1/§7.8.1 — the shared `forward_launch_intake` funnel both
   launch hooks call performs the busy check **before** the freeze, so the paths are
-  **dropped** (no new set, no merge, no replace) and the `BusyNotice` surface (§5.3) is
-  shown. It is **never** ingested mid-run, on any platform (the earlier "starts a new
+  **dropped** (no new set, no merge, no replace; the re-focused window is the feedback,
+  §7.1.1). It is **never** ingested mid-run, on any platform (the earlier "starts a new
   batch mid-run" reading is corrected — a mid-conversion Open-with is refused, not
   merged).
 
@@ -437,8 +437,9 @@ otherwise (zero items, or 2+ ineligible items of mixed/none kinds) →
 is projected from `EmptyReport.outcomes`**: each ineligible item becomes a `SkippedItem
 { item, source_display, detected_display, reason: SkipReason }` (§0.6), so the per-item skip reasons §5.2 state-10
 shows are **carried on the wire**, not discarded (a 2+ all-ineligible drop no longer
-collapses to a reason-less Empty). The genuinely-zero-items case (cancelled dialog /
-drained-empty `PendingIntake`) is `Empty { skipped: vec![] }`. This is the single
+collapses to a reason-less Empty). The genuinely-zero-items case (every path
+walk-filtered, e.g. an all-hidden drop) is `Empty { skipped: vec![] }`; a drain that
+finds `PendingIntake` empty answers `NothingPending` instead (§0.6). This is the single
 owner of the lone-Unsupported / lone-Uncertain specificity; §5.2 row 2 routes all three
 to the *Unsupported* screen (state 10) with the variant-specific copy.
 
