@@ -57,7 +57,7 @@
 //! defence-in-depth that degrades SILENTLY to the cheap tier where it cannot be enabled without install-time
 //! elevation or breaking the portable build, and is NOT load-bearing (the §0.11 T9b network guarantee rests
 //! on the §3.5 / §6.1.3 argv / build controls). The per-OS profile CONTENTS are a §2.12.3 tuning residual.
-//! **Windows realization `[DECIDED — P4.17, Co-Pilot ruling 2026-08-25]`:** the restricted-token /
+//! **Windows realization (§2.12.3 Windows row; the P4.17 Co-Pilot ruling 2026-08-25):** the restricted-token /
 //! AppContainer leg and the AppContainer / WFP network-deny leg are NOT realizable in v1-portable — stable
 //! `CommandExt` carries no spawn-token / process-creation-attribute path and `tokio::process::Child` cannot be
 //! built from a raw handle, an AppContainer additionally needs `ALL APPLICATION PACKAGES` DACL grants on the
@@ -72,8 +72,8 @@
 //! epoch plus a brokered/staged input model. **Network deny therefore has no Windows privilege-drop leg** —
 //! the load-bearing offline gate is the §2.11.4 packet-monitor regardless of tier, and the §6.7.3 CI egress
 //! gate (an ELEVATED runner firewall, a CI fact) is unaffected. spec §2.12.3 carries the ruling.
-//! **macOS realization `[DECIDED — P4.16, Co-Pilot ruling 2026-07-25]`:** the macOS Seatbelt leg is realized as
-//! the cheap-tier floor ONLY in v1-portable — its sole apply path is a private-libsandbox call in the
+//! **macOS realization (§2.12.3 macOS row; the P4.16 Co-Pilot ruling 2026-07-25):** the macOS Seatbelt leg is
+//! realized as the cheap-tier floor ONLY in v1-portable — its sole apply path is a private-libsandbox call in the
 //! post-fork/pre-exec child, which is neither auditable fork-safe nor silent-skippable at its worst case (a
 //! hang, not an errno), so §2.12.3's never-break floor forbids it (the Linux in-closure admission test the
 //! macOS apply fails). No Seatbelt profile is applied and no private-sandbox FFI enters the core (pinned by the

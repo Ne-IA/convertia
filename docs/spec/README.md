@@ -340,7 +340,7 @@ One glossary for every spec file; per-file headers point here.
 - **FAT/exFAT publish gap closed** — on Unix, FAT/exFAT support **neither**
   `RENAME_NOREPLACE` **nor** hardlinks, so the §2.1.2 `link`+`unlink` fallback itself
   fails (no atomic no-clobber primitive). Added a **third fallback = §2.7.2 DIVERT trigger**
-  (`DivertReason::NoAtomicPublish`, Unix-only — Windows `MoveFileExW` is fine on FAT/exFAT):
+  (`DivertReason::NoAtomicPublish`; the Windows counterpart is the §2.1.2 FAT32/exFAT row):
   divert to a hardlink-capable system-disk target. Owner: §2.1.2 / §2.7.2 / §2.14.2-3 / §0.6.
 - **Engine-layer derivability (4 blockers)** — **(a)** `EngineId::FFprobe` added (non-trait,
   mirrors ImageMagick — sidecar-path + SBOM + health only); **(b)** `Invocation.out_tmp:
@@ -437,14 +437,14 @@ One glossary for every spec file; per-file headers point here.
   like every other engine (resolves the §2.12.4 "all decoders are subprocesses"
   absolute and the T1 isolation). Licence analysis unaffected. Owner: §2.12 / §0.9 /
   §3.5.5 (was [OPEN]).
-- **Windows atomic-publish primitive** — the publish is **always** `MoveFileExW`
-  **without** `MOVEFILE_REPLACE_EXISTING` (create-only, no 0-byte placeholder). **There
+- **Windows atomic-publish primitive** — the publish is **always** the §2.1.2 create-only
+  publish (no 0-byte placeholder). **There
   is NO replacing path:** the §2.5 re-run FreshCopy uses ordinary §2.2 create-only
   numbering (next non-existing name), never replacement, so
   `ReplaceFileW`/`MOVEFILE_REPLACE_EXISTING` have **no caller** (absolute no-clobber
   forbids overwriting an unrelated same-named file). Keeps the §2.1.3 "never a third
   state" invariant true by construction. The §2.2.2 numbering loop uses this **same**
-  primitive (bump-suffix-and-retry on `ERROR_ALREADY_EXISTS`), not a `create_new`-reserve.
+  primitive (bump-suffix-and-retry on `STATUS_OBJECT_NAME_COLLISION`), not a `create_new`-reserve.
   Owner: §2.1.2 / §2.5.2.
 - **SVG rasteriser = librsvg** — libvips' native `svgload` backend is **librsvg**;
   **resvg is NOT a libvips backend at any released version** and is **dropped** (not
@@ -539,7 +539,7 @@ One glossary for every spec file; per-file headers point here.
   RunResult-membership set is not final during `Converting`. Owner: §5.2 / §7.7.
 - **Exclusive create-only rename primitive named per platform** — Linux
   `renameat2(RENAME_NOREPLACE)` / macOS `renameatx_np(RENAME_EXCL)` (macOS has NO
-  `renameat2`/`RENAME_NOREPLACE`) / Windows `MoveFileExW`-without-`REPLACE_EXISTING`. The
+  `renameat2`/`RENAME_NOREPLACE`) / Windows the §2.1.2 create-only publish. The
   single-call no-replace primitive is chosen **at runtime per destination** (Linux
   `EINVAL` / macOS filesystem lacking `VOL_CAP_INT_RENAME_EXCL` → fall back to
   `link`+`unlink` for that destination; not a static kernel switch); the residual
@@ -653,7 +653,7 @@ One glossary for every spec file; per-file headers point here.
   bullets removed; "exclusive create" everywhere = the no-placeholder exclusive-rename.
   Owner: §2.1.2.
 - **No replacing publish path / `ReplaceFileW` has no caller** — FreshCopy uses ordinary
-  §2.2 create-only numbering; Windows publish is always `MoveFileExW`-without-`REPLACE`.
+  §2.2 create-only numbering; Windows publish is always the §2.1.2 create-only publish.
   Owner: §2.1.2 / §2.5.2.
 - **§2.3.3 parent-swap race closed by dir-handle-relative publish** — Windows
   `NtSetInformationFile(…, FileRenameInformationEx)` with a `FILE_RENAME_INFORMATION_EX`
@@ -843,8 +843,8 @@ One glossary for every spec file; per-file headers point here.
   `run-<RunId>/.lock` is created + OS-locked BEFORE the run writes its first `.part`, so a
   live in-progress `.part` can never coexist with an absent lock. Owner: §2.14.1 / §2.6.3.
 - **Windows publish primitive = §2.3.3 dir-handle-relative `NtSetInformationFile`** for
-  every publish incl. the §2.2.2 numbering loop (the bare path-string `MoveFileExW` is only
-  the conceptual shape). Owner: §2.2.2 / §2.3.3.
+  every publish incl. the §2.2.2 numbering loop (the §2.1.2 create-only publish). Owner:
+  §2.2.2 / §2.3.3.
 - **Late divert re-checks free-space + path-limit** on the divert volume (not just
   link-safety) before its §2.1 publish — fails the item clearly, never assumes it fits.
   Owner: §2.7.2 / §2.14.4 / §2.10.
@@ -910,8 +910,8 @@ One glossary for every spec file; per-file headers point here.
   carries the C5-resolved destination (C4 never changes the destination away from the C5
   value — destination authority lives with C5). Owner: §0.4.1 / §5.8.
 - **Exclusive-rename primitive named per platform** — Linux `renameat2(RENAME_NOREPLACE)`
-  / macOS `renameatx_np(RENAME_EXCL)` (macOS has NO renameat2) / Windows
-  `MoveFileExW`-without-`REPLACE`; common `link`+`unlink` fallback; residual `.part`
+  / macOS `renameatx_np(RENAME_EXCL)` (macOS has NO renameat2) / Windows the §2.1.2
+  create-only publish; common `link`+`unlink` fallback; residual `.part`
   sub-state (§2.1.3) is the fallback case on EITHER Unix OS. Owner: §2.1.2 / §2.3.3.
 - **Mid-run launch-intake = refuse-busy on ALL platforms** — a macOS `RunEvent::Opened` /
   argv / second-instance arriving while a run is in flight is refused-busy (paths dropped)

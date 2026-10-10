@@ -994,9 +994,10 @@ export type DivertReason =
  */
 "ephemeral" |
 /**
- *  The destination filesystem accepts a create but offers NO atomic create-only no-clobber publish primitive
- *  (FAT/exFAT-class: neither `RENAME_NOREPLACE`-class no-replace rename NOR hardlinks). Unix-only — Windows'
- *  `MoveFileExW` is create-only on FAT/exFAT (§2.7.2 / §2.14.2).
+ *  The destination is on a filesystem without an atomic create-only publish (§2.1.2 table), FAT/exFAT-class:
+ *  neither a `RENAME_NOREPLACE`-class no-replace rename NOR hardlinks. Set by the §2.7.2 up-front
+ *  classification on Unix; a Windows FAT32/exFAT volume that refuses the create-only rename diverts at
+ *  publish time instead (§2.7.2 / §2.14.2).
  */
 "noAtomicPublish";
 

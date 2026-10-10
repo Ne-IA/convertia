@@ -1094,15 +1094,17 @@ pub struct OutputPlan {              // computed by §1.8, consumed by §2.1/§2
     // be created) — but that placement is owned by §2.14.3 at run time, not stored as a
     // plan field. So "not pre-planned" = no plan field, NOT "no pre-engine decision".
     // NOTE: no `final_path`/`temp_path` — the numbered final name is produced at
-    // write time (§2.1 exclusive create_new loop), never stored in the plan.
+    // write time (the §2.2.2 numbering loop over the §2.1.2 create-only publish), never
+    // stored in the plan.
 }
 
 pub enum DivertReason { Unwritable, Ephemeral, NoAtomicPublish }  // §2.7.2 classification
-// NoAtomicPublish (Unix-only): destination filesystem accepts a create but offers NO
-// create-only/atomic no-clobber publish primitive — neither RENAME_NOREPLACE-class
-// no-replace rename NOR hardlinks (FAT/exFAT-class, the canonical portable-USB case,
-// §2.14.2). Diverted to a hardlink-capable system-disk target (§2.7.3) so the full §2.1
-// publish chain holds. Windows is unaffected (MoveFileExW create-only works on FAT/exFAT).
+// NoAtomicPublish: the destination filesystem has no atomic create-only publish (§2.1.2
+// table) — FAT/exFAT-class, the canonical portable-USB case (§2.14.2): neither a
+// RENAME_NOREPLACE-class rename nor hardlinks. Set by the §2.7.2 up-front classification on
+// Unix and diverted to a hardlink-capable system-disk target (§2.7.3) so the full §2.1
+// publish chain holds; a Windows FAT32/exFAT volume that refuses the create-only rename
+// diverts at publish time instead (§2.1.2 FAT32/exFAT row).
 
 // ─── Command return DTOs (the wire shapes the §0.4.1 commands return) ──────────
 pub struct OutputPlanPreview {       // C4 plan_output → drives the "will save to…" line

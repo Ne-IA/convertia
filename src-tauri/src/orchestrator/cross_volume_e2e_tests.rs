@@ -108,12 +108,13 @@ fn part_files(dir: &Path) -> Vec<OsString> {
 // real exclusive publish — output present and byte-exact, the source untouched (G32(a)), no residue, the
 // outcome flagged `diverted`.
 //
-// Run on EVERY platform, deliberately: §2.7.2 makes the PRODUCTION of this verdict Unix-only (Windows' NT
-// create-only rename is a true no-clobber publish on FAT/exFAT too — the sibling Windows test below pins
-// that), but everything the verdict FEEDS — the §2.7.3 target resolution, the §2.2 naming, the §2.3.3
-// link-safety re-check, the §2.1 exclusive publish, the §2.6.2 cleanup — is OS-independent and rests on a
-// DIFFERENT publish primitive per OS. Gating this to Unix would leave the Windows and macOS legs of that chain
-// unexercised and the case unverifiable on a Windows workstation. [Build-Session-Entscheidung: P3.65]
+// Run on EVERY platform, deliberately: §2.7.2 makes the UP-FRONT production of this verdict Unix-only (a
+// Windows `location_status` never classifies the filesystem — the sibling Windows test below pins that; the
+// §2.1.2 Windows FAT32/exFAT row diverts at publish time instead), but everything the verdict FEEDS — the
+// §2.7.3 target resolution, the §2.2 naming, the §2.3.3 link-safety re-check, the §2.1 exclusive publish, the
+// §2.6.2 cleanup — is OS-independent and rests on a DIFFERENT publish primitive per OS. Gating this to Unix
+// would leave the Windows and macOS legs of that chain unexercised and the case unverifiable on a Windows
+// workstation. [Build-Session-Entscheidung: P3.65]
 #[test]
 fn a_no_atomic_publish_destination_diverts_and_the_full_chain_holds_at_the_divert_target() {
     let Some(mut f) = Fixture::new(b"a,b\n1,2\n") else {
@@ -514,14 +515,14 @@ fn the_write_sequence_publishes_across_a_real_volume_boundary_and_cleans_the_cro
     );
 }
 
-// §2.1.2/§2.7.2 (G31) WINDOWS KEEPS THE GUARANTEE BY CONSTRUCTION — a Windows destination is NEVER diverted for
-// `NoAtomicPublish`, because the create-only NT rename is a true no-clobber publish on every Windows
-// filesystem, so the §2.7.2 detector is a constant `false` there. Asserted through the COMPOSED
-// `location_status` verdict on a real writable dir in its falsifiable form (`Writable`, not merely "anything
-// but NoAtomicPublish"), so a Windows leg that ever started diverting would red here.
+// §2.1.2/§2.7.2 (G31) NO UP-FRONT NoAtomicPublish ON WINDOWS — the §2.7.2 detector is a constant `false` there,
+// so `location_status` never diverts a Windows destination for `NoAtomicPublish`; a FAT32/exFAT volume that
+// refuses the create-only rename is the §2.1.2 publish-time arm's, not this classifier's. Asserted through the
+// COMPOSED `location_status` verdict on a real writable dir in its falsifiable form (`Writable`, not merely
+// "anything but NoAtomicPublish"), so a Windows classifier that ever started diverting would red here.
 #[cfg(windows)]
 #[test]
-fn a_windows_destination_is_never_diverted_for_no_atomic_publish() {
+fn a_windows_destination_is_never_classified_no_atomic_publish_up_front() {
     let Some(dest) = non_ephemeral_source_dir() else {
         return; // the crate root is itself ephemeral (see the first test's note).
     };
@@ -529,7 +530,7 @@ fn a_windows_destination_is_never_diverted_for_no_atomic_publish() {
     assert_eq!(
         location_status(dest.path(), &probe_name),
         LocationStatus::Writable,
-        "§2.7.2: a writable non-ephemeral Windows destination classifies Writable — the §2.1.2 create-only NT \
-         rename is a true no-clobber publish on every Windows filesystem, so NoAtomicPublish never fires"
+        "§2.7.2: a writable non-ephemeral Windows destination classifies Writable — the Windows detector \
+         never classifies NoAtomicPublish up front (the §2.1.2 FAT32/exFAT row acts at publish time)"
     );
 }

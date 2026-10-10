@@ -4165,7 +4165,7 @@ mod tests {
         let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
         // A ~1 s no-output subprocess (CoarseSpawnDone, the seam default): emits NO progress ticks.
         // [Test-Change: P4.17 — old-obsolete+new-correct, §2.12.3] the Windows quiet-sleep helper was
-        // `ping.exe -n 2 127.0.0.1 >nul`. (1) OBSOLETE: the §2.12.3 `[DECIDED — P4.17]` Windows tier now
+        // `ping.exe -n 2 127.0.0.1 >nul`. (1) OBSOLETE: the §2.12.3 Windows tier (the P4.17 ruling) now
         // confines every engine child below Medium, and a child at that level is refused the Medium-labelled
         // device objects a SOCKET needs — so `ping` exits non-zero and the helper no longer models a quiet
         // conversion. (2) CORRECT: `waitfor.exe` is a System32 sleep that opens no socket (measured under the
@@ -4236,7 +4236,7 @@ mod tests {
     // silently passing.
     //
     // Windows uses `waitfor.exe` rather than `ping.exe` for the sleeps for the reason the no-tick test above
-    // records: under the §2.12.3 `[DECIDED — P4.17]` tier the engine's children run below Medium and are
+    // records: under the §2.12.3 Windows tier the engine's children run below Medium and are
     // refused the device objects a socket needs, so a `ping` sleep would return instantly and the heartbeat
     // would spin at full speed. `.\` on the script path is likewise load-bearing (a bare name is not
     // resolved from the current directory on a host with `NoDefaultCurrentDirectoryInExePath` set).

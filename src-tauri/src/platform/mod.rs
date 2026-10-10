@@ -726,10 +726,10 @@ pub(crate) fn available_memory_bytes() -> Option<u64> {
 ///    is classified by `is_fat_class_name` (plain code-span, not an intra-doc link — that classifier is
 ///    `#[cfg(target_os = "macos")]`, absent from this Linux-gated doc's compilation) against { `"msdos"`
 ///    (uniform for FAT12/16/32), `"exfat"` } — read THROUGH the rustix `StatFs` alias, so `libc` is never named.
-///  - **Windows (and any other target): `Ok(false)`** — `MoveFileExW`-without-`MOVEFILE_REPLACE_EXISTING`
-///    (§2.1.2) is a true create-only move on FAT/exFAT too, so a Windows FAT/exFAT destination keeps the §2.1
-///    guarantee and is NEVER diverted for this reason (§2.7.2). The leg exists (mirroring [`ensure_executable`])
-///    only so `location_status` can call this unconditionally without a per-OS `cfg`.
+///  - **Windows (and any other target): `Ok(false)`** — this probe covers the POSIX no-atomic-rename
+///    filesystems; the Windows FAT/exFAT case is §2.1.2's (its FAT32/exFAT row diverts at publish time, not
+///    here). The leg exists (mirroring [`ensure_executable`]) only so `location_status` can call this
+///    unconditionally without a per-OS `cfg`.
 ///
 /// `Err` = the `statfs` read itself failed (a missing / vanished directory). The §2.7.2 caller (P3.33) treats
 /// an `Err` as "heuristic indeterminate → do NOT proactively divert" (logged, §7.5), because the REACTIVE
@@ -795,10 +795,10 @@ pub(crate) fn lacks_atomic_publish_primitive(dir: &Path) -> io::Result<bool> {
 }
 
 /// Windows (and any non-Linux/macOS target) leg of [`lacks_atomic_publish_primitive`]: always `Ok(false)`.
-/// Windows' `MoveFileExW`-without-`MOVEFILE_REPLACE_EXISTING` (§2.1.2) is a true create-only move on FAT/exFAT,
-/// so a Windows FAT/exFAT destination keeps the §2.1 guarantee and is NEVER diverted for `NoAtomicPublish`
-/// (§2.7.2). Present (the [`ensure_executable`] precedent) only so `location_status` (P3.33) can call this
-/// unconditionally without a per-OS `cfg`. [Build-Session-Entscheidung: P3.18]
+/// This probe covers the POSIX no-atomic-rename filesystems; the Windows FAT/exFAT case is §2.1.2's (its
+/// FAT32/exFAT row diverts at publish time, not up front). Present (the [`ensure_executable`] precedent)
+/// only so `location_status` (P3.33) can call this unconditionally without a per-OS `cfg`.
+/// [Build-Session-Entscheidung: P3.18]
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 // [Test-Change: P3.33 — old-obsolete+new-correct, §2.7.2] `expect`→`allow`: P3.33's `location_status` now
 // calls this detector, so the P3.18 dead-code EXPECTATION is obsolete; `allow` (permissive) is correct — a
@@ -1553,8 +1553,8 @@ pub(crate) fn spawn_leg_verdicts(pid: Option<u32>) -> SpawnTier {
 
 // ============================================================================
 // §2.12.3 best-effort WINDOWS privilege-drop tier (P4.17) — the two mechanisms that ARE
-// realizable in the v1-portable build (spec §2.12.3 `[DECIDED — P4.17, Co-Pilot ruling
-// 2026-08-25]`): **Leg A**, an intermediate-integrity WRITE confinement (label-then-lower), and
+// realizable in the v1-portable build (spec §2.12.3 Windows row, the P4.17 Co-Pilot ruling
+// 2026-08-25): **Leg A**, an intermediate-integrity WRITE confinement (label-then-lower), and
 // **Leg B**, an own Job Object carrying the `JOB_OBJECT_LIMIT` caps + kill-on-job-close.
 // Restricted-token / AppContainer and the AppContainer/WFP net-deny are DECIDED unrealizable on
 // this stack, so NO FFI for them enters the core — pinned by the cross-platform
@@ -1604,7 +1604,7 @@ pub(crate) fn spawn_leg_verdicts(pid: Option<u32>) -> SpawnTier {
 
 /// The ConvertIA-private mandatory integrity level the Leg-A confinement uses — `S-1-16-6144`
 /// (`0x1800`), STRICTLY between Low (`0x1000`) and Medium (`0x2000`) (spec §2.12.3
-/// `[DECIDED — P4.17]`). The intermediate level, NOT the well-known Low, is deliberate: a Low
+/// Windows row). The intermediate level, NOT the well-known Low, is deliberate: a Low
 /// (4096) co-tenant — an Acrobat renderer, Office Protected View, a browser content process,
 /// i.e. exactly the sandboxes a hostile document compromises — is denied write-UP to a 6144
 /// object by the MIC total order (`NO_WRITE_UP`), while the engine at 6144 still cannot write
@@ -2122,8 +2122,8 @@ pub(crate) enum LabelStrip {
 }
 
 /// Remove the explicit §2.12.3 mandatory label from the `.part` before the §2.1.2 create-only
-/// move, so `final` carries the destination's implicit level. The label TRAVELS with
-/// `MoveFileEx`, so without this strip a published output would keep ConvertIA's private
+/// move, so `final` carries the destination's implicit level. The label TRAVELS with that
+/// move (`NtSetInformationFile`), so without this strip a published output would keep ConvertIA's private
 /// `0x1800` level for the rest of its life. Called after the engine exit and the §1.7 non-empty
 /// verification, before the publish — ONE site covering every engine and both publish shapes (the
 /// same-volume rename and the §2.14.3 cross-volume `std::fs::copy`, which both consume this
@@ -3525,13 +3525,13 @@ mod privilege_drop_record_tests {
         assert_eq!(
             scalar(&row, "tier").expect("the macOS row's tier"),
             TIER_CHEAP,
-            "§2.12.3 [DECIDED — P4.16]: v1-portable macOS runs the cheap-tier floor"
+            "§2.12.3 macOS row: v1-portable macOS runs the cheap-tier floor"
         );
         assert!(
             array(&row, "legs")
                 .expect("the macOS row's legs")
                 .is_empty(),
-            "§2.12.3 [DECIDED — P4.16]: no Seatbelt profile is applied, so macOS attaches no leg"
+            "§2.12.3 macOS row: no Seatbelt profile is applied, so macOS attaches no leg"
         );
     }
 }

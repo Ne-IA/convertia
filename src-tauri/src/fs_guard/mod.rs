@@ -709,8 +709,7 @@ fn os_str_units(s: &std::ffi::OsStr) -> usize {
 /// returns [`PathTooLong`] (which the §2.1.1 caller maps to §2.8) — **truncation is NEVER the escape hatch**
 /// (§2.2.3 / SSOT). Because it runs on the fully-resolved path INCLUDING any §2.7 divert, the divert path
 /// enjoys the identical guarantee. On Windows the input is the **user-facing** (non-`\\?\`) resolved form
-/// (the `dunce`-normalised §2.3.1 path) — the `\\?\` prefix is ConvertIA's internal syscall mitigation, not
-/// what the user/Explorer must open (§2.2.3).
+/// (the `dunce`-normalised §2.3.1 path) — the form the user/Explorer must be able to open (§2.2.3).
 ///
 /// PURE (no FS access): it only MEASURES the path — `Path::components` and the per-OS unit count are pure, so
 /// there is no panic surface here beyond arithmetic, which is `checked_add`-bounded (G4/G14). It appends
@@ -1058,7 +1057,8 @@ enum SinglePublish {
     NameTaken,
     /// The destination filesystem supports NEITHER the no-replace rename NOR hardlinks (FAT/exFAT-class, Unix
     /// only) — no mechanised atomic no-clobber publish here (§2.1.2 third fallback); the §2.7.2 divert trigger
-    /// (P3.18). Windows never produces it (`MoveFileExW`-without-`REPLACE` is create-only on FAT/exFAT too).
+    /// (P3.18). On Windows the arm is unreachable until P4.103 maps the §2.1.2 FAT32/exFAT row's refusal
+    /// status here.
     // Unix-only: only the `any(linux, macos)` publish_once statically constructs this arm, so on the Windows
     // `cfg(test)` leg (where the enum-level `not(test)` allow is inactive) it is never constructed — a variant
     // `allow(dead_code)` covers that platform-conditional dead-ness (harmless/no-op on the Unix legs, where the
@@ -1112,10 +1112,11 @@ fn publish_once(
 }
 
 /// §2.1.2 one create-only publish attempt at `leaf`, rooted at the P3.9-verified parent dir handle (Windows):
-/// the `FileRenameInformationEx` no-replace move + its bounded AV-retry ([`publish_rename_windows`]). Windows
-/// has NO FAT/exFAT divert (`MoveFileExW`-without-`REPLACE` is create-only there too, §2.1.2), so it yields only
-/// `Published` / `NameTaken` (or a §2.8 `io::Error`), NEVER [`SinglePublish::NoAtomicPublishSupport`]. The
-/// Windows seed of the module-doc `atomic_publish` composite. No panic (G4/G14). [Build-Session-Entscheidung: P3.15]
+/// the §2.1.2 Windows create-only publish (`NtSetInformationFile`, `FileRenameInformationEx`) + its bounded
+/// AV-retry ([`publish_rename_windows`]). It yields `Published` / `NameTaken` (or a §2.8 `io::Error`); the
+/// [`SinglePublish::NoAtomicPublishSupport`] arm is unreachable here until P4.103 maps the §2.1.2 FAT32/exFAT
+/// row's refusal status to it. The Windows seed of the module-doc `atomic_publish` composite. No panic
+/// (G4/G14). [Build-Session-Entscheidung: P3.15]
 #[cfg(windows)]
 fn publish_once(
     parent: &VerifiedParentDir,
@@ -1147,7 +1148,8 @@ pub enum PublishOutcome {
     /// only) — no mechanised atomic no-clobber publish here (§2.1.2 third fallback). §2.7.2 detects this UP
     /// FRONT at `location_status` time and diverts BEFORE publish, so this is a defensive fall-through the
     /// §2.1.1 caller (P3.38) maps to a §2.7.2 `DivertReason::NoAtomicPublish` re-divert — the guarantee is
-    /// never silently weakened. Windows never returns it (§2.1.2).
+    /// never silently weakened. On Windows it is unreachable until P4.103 maps the §2.1.2 FAT32/exFAT row's
+    /// refusal status here.
     NoAtomicPublishSupport,
 }
 
@@ -1347,11 +1349,10 @@ fn fsync_parent_dir(parent: &VerifiedParentDir) -> io::Result<()> {
     parent.dir_handle().sync_all()
 }
 
-/// §2.1.1 step 6 durability (Windows): a NO-OP. On Windows the new dentry's durability rests on NTFS metadata
-/// journaling, not an explicit directory flush; `MOVEFILE_WRITE_THROUGH` on the create-only move is a
-/// best-effort metadata flush (its documented effect is for the cross-volume copy-and-delete form), and the
-/// §2.1.3 atomicity invariant does NOT depend on it (§2.1.1). The file bytes are still made durable by the
-/// step-3 [`sync_tmp_bytes`] `FlushFileBuffers` as on Unix. [Build-Session-Entscheidung: P3.16]
+/// §2.1.1 step 6 durability (Windows): a NO-OP. Windows directory-entry durability is NTFS journaling (no
+/// flush call), and the §2.1.3 atomicity invariant rests on the §2.1.2 create-only publish alone (§2.1.1).
+/// The file bytes are still made durable by the step-3 [`sync_tmp_bytes`] `FlushFileBuffers` as on Unix.
+/// [Build-Session-Entscheidung: P3.16]
 #[cfg(windows)]
 fn fsync_parent_dir(_parent: &VerifiedParentDir) -> io::Result<()> {
     Ok(())
@@ -1574,8 +1575,9 @@ pub enum LocationStatus {
 /// 3. **No atomic publish** (§2.7.2, Unix-only, `crate::platform::lacks_atomic_publish_primitive`): a
 ///    FAT/exFAT-class FS that accepts a create yet offers no atomic no-clobber publish → `Divert(NoAtomicPublish)`.
 ///    A `statfs` read error is treated as NOT FAT-class (the reactive §2.1.2 publish-time backstop catches a
-///    missed one — the P3.18 "list-miss honesty"), never an error. Windows FAT is a true create-only move
-///    (§2.1.2), so its detector is a no-op → never diverted here.
+///    missed one — the P3.18 "list-miss honesty"), never an error. On Windows the detector is a no-op, so a
+///    Windows destination is never diverted here; a FAT32/exFAT volume that refuses the create-only rename
+///    is the §2.1.2 publish-time arm's.
 ///
 /// **Infallible** — every failure maps to a `LocationStatus`, never an `Err`: the caller reads a definitive
 /// verdict. Panic-free (the crate no-panic deny, G4/G14) — the probe create/remove and the `statfs` are all

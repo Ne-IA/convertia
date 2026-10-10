@@ -833,14 +833,15 @@ property/integration tests on **G31** / **G15** / **G16**:
   (symlink + target dropped together convert **once**), and a resolved
   non-convertible target fails clearly per §2.8.
 - **Windows AV-retry (§2.1.2 · G31):** a fault-injection thread holding a handle on
-  the publish target asserts the bounded `MoveFileExW` / `ERROR_ACCESS_DENIED`
-  retry fires and recovers or fails to a clean `WriteFailed` — never a panic/silent
-  discard.
+  the publish target asserts the bounded §2.1.2 Windows publish retry on a
+  sharing-violation or access-denied status fires and recovers or fails to a clean
+  `WriteFailed` — never a panic/silent discard.
 - **Privilege-drop-tier-applied regression (§2.12.3 · G31):** a positive
-  per-platform assertion that the §2.12.3 tier actually **FIRED** (a denied
-  syscall/socket/exec is refused inside the engine's own sandbox profile) so the
-  silent-by-design degrade can't disable seccomp/Landlock/AppContainer on every run
-  unnoticed (the §6.4.2 probe asserts *availability*; this asserts *application*) —
+  per-platform assertion that the §2.12.3 realized tier actually **FIRED** (a denied
+  syscall, socket or out-of-sandbox access is refused inside the engine's own
+  confinement) so the silent-by-design degrade can't disable the §2.12.3 realized tier
+  on every run unnoticed (the §6.4.2 probe asserts *availability*; this asserts
+  *application*) —
   recording "tier applied vs degraded" per platform in the release evidence. The
   tier **ratchet/trend** itself (G64, the decrease-guarded
   `privilege-drop-coverage.toml`) is the release-tier policy homed in P0.7.
