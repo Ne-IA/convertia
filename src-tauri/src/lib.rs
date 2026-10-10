@@ -13,7 +13,7 @@
 //!
 //! P1.13 stands up the Tauri v2 `Builder` entrypoint on Tauri's managed multi-threaded tokio async
 //! runtime (§0.4.0/§0.8/§0.9): the §0.4.5 tauri-specta codegen seam — `collect_commands!` carries the
-//! C1..C14 §0.4.1 command surface (C1..C13 from P2.21 interface shells; C14 `get_initial_destination` P3.56;
+//! registered §0.4.1 command set (C1..C13 from P2.21 interface shells; C14 `get_initial_destination` P3.56;
 //! `collect_events!` stays empty BY DECISION —
 //! the §0.4.2 app:// events are RAW `app.emit`/`listen` events whose payloads register via `.types()` at
 //! P2.39, and the P2.37 `ConversionEvent` Channel payload joins via C6/P2.29, neither via `collect_events!`),
@@ -237,7 +237,7 @@ fn register_ipc_event_types(types: specta::Types) -> specta::Types {
 /// generated `src/lib/ipc/bindings.ts` is produced from (the `bindings_codegen` export test, driven by
 /// `cargo run -p xtask -- codegen`, §0.4.5) AND the runtime invoke/event registry (`main`). Sharing one
 /// constructor is what guarantees the generated TS surface can never drift from the registered Rust
-/// surface. The C1..C14 §0.4.1 command set is registered from P2.21 (C1..C13 interface shells, each filled by its
+/// surface. The registered §0.4.1 command set lives here from P2.21 on (C1..C13 interface shells, each filled by its
 /// per-command fill-box). [Reconcile: P2.39] `collect_events![]` (below) stays EMPTY BY DECISION: the §0.4.2
 /// app:// events (`app://fault`/`intake`/`close-requested`) are RAW `app.emit` / TS `listen` events whose
 /// payload types register via `register_ipc_event_types` (`.types()`), NOT tauri-specta typed events — a
@@ -255,10 +255,10 @@ fn register_ipc_event_types(types: specta::Types) -> specta::Types {
 /// from the first `bindings.ts` commit (the C1–C13 args that USE them arrive with the per-command fill-boxes).
 fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new()
-        // §0.4.1 command surface (P2.21): the C1–C13 handlers, one-file-per-command-group (§0.7),
-        // registered as interface shells — each command's full request/response contract + orchestrator
-        // delegation is authored by its named fill-box (see `crate::ipc`); the closed-set completeness +
-        // drift gate over this list is P2.36 (G23). `collect_events![]` (below) stays empty BY DECISION
+        // §0.4.1 command surface (from P2.21): every registered handler, one-file-per-command-group (§0.7);
+        // P2.21 registered C1–C13 as interface shells — each command's full request/response contract +
+        // orchestrator delegation is authored by its named fill-box (see `crate::ipc`); the closed-set
+        // completeness + drift gate over this list is P2.36 (G23). `collect_events![]` (below) stays empty BY DECISION
         // (P2.39): the §0.4.2 app:// events are RAW `app.emit`/TS `listen` events whose payload types register
         // via `register_ipc_event_types` (a `collect_events!` entry would force an `any`-bearing `makeEvent`
         // helper into bindings.ts). The C6 run-telemetry `ConversionEvent` (P2.37) is a Channel payload joining
@@ -755,12 +755,12 @@ fn webview_init_fault() -> AppFault {
 
 /// [Build-Session-Entscheidung: P2.106.3/P2.109] §2.13.3 the app-level startup-fault presentation — the
 /// mechanism-INDEPENDENT entry point every startup fault routes through. It records the fault to the local log
-/// (§7.5; the §2.13 app-level fault is trace-free — the §2.13.3 `AppFault.message` is a pre-localised,
-/// trace-free calm line and `kind` is an enum, so this log line is redaction-safe) — a real action, never a
+/// (§7.5; the §2.13 app-level fault is trace-free — `AppFault.message` is its kind's §2.13.5 line, pre-localised
+/// and trace-free, and `kind` is an enum, so this log line is redaction-safe) — a real action, never a
 /// silent drop.
 ///
 /// [Build-Session-Entscheidung: P2.109] **How the fault is PRESENTED splits by the WebView's own health
-/// (§7.2.1 / §2.13.3 design-of-record):** a readiness fault (steps 3–5) — `EngineMissing` / `BundleDamaged` —
+/// (§7.2.1 / §2.13.3 design-of-record):** a readiness fault (steps 3–5; the §2.13.3 readiness kinds)
 /// leaves the WebView healthy, so it is emitted over the §0.4.2 `app://fault` event to the §5.8 WebView screen,
 /// with a `PendingFault` buffer closing the first-frame race (emitting before the §5.8 listener is registered
 /// would lose it); a `WebviewFault` (step 6, the WebView itself failed to init) makes an `app://fault`→WebView
@@ -1751,8 +1751,8 @@ pub(crate) mod launch_intake {
 #[cfg(not(fuzzing))]
 pub fn run() -> tauri::Result<()> {
     // §0.4.5 IPC seam: the shared `ipc_specta_builder()` is BOTH the runtime invoke/event registry and
-    // the single source the generated `bindings.ts` is produced from (no drift between them). The C1..C14
-    // §0.4.1 command surface is registered from P2.21 (interface shells); the run-telemetry `ConversionEvent`
+    // the single source the generated `bindings.ts` is produced from (no drift between them). The registered
+    // §0.4.1 command set lives there from P2.21 on (interface shells); the run-telemetry `ConversionEvent`
     // (P2.37) joins `bindings.ts` via C6's Channel arg (P2.29); the §0.4.2 app:// event payload (`AppFault`)
     // registers via `register_ipc_event_types` (`.types()`) at P2.39, as a RAW `app.emit`/`listen` event —
     // `collect_events![]` stays empty (a typed event would force an `any` into bindings.ts). `app://intake` /
@@ -2458,13 +2458,13 @@ mod bindings_codegen {
         );
     }
 
-    // §6.4.1 unit (G15): the §0.4.1 command SURFACE registered at P2.21. The C1–C14 handlers are registered
+    // §6.4.1 unit (G15): the §0.4.1 command SURFACE registered at P2.21. Every registered handler lives
     // on the shared `ipc_specta_builder()`, so the committed bindings.ts (the frontend's
-    // only IPC door, §0.7) must expose all 15 commands. Read the committed artifact back (the §0.2
+    // only IPC door, §0.7) must expose every one of them. Read the committed artifact back (the §0.2
     // read-the-output-back discipline applied to the IPC surface) and assert the `commands` export plus each
     // canonical Tauri command id — so a dropped/renamed registration reddens L2 BEFORE the P2.36 closed-set
-    // drift gate (G23) sees it at push. (C1–C14 = 15 commands: §0.4.1's C2 splits into C2a `pick_for_intake`
-    // + C2b `pick_destination`, so 14 numbered rows C1..C14 → 15 fns; C14 `get_initial_destination` = P3.56.)
+    // drift gate (G23) sees it at push. (§0.4.1's C2 splits into C2a `pick_for_intake` + C2b `pick_destination`,
+    // so the pin lists one fn more than the numbered rows it covers; C14 `get_initial_destination` = P3.56.)
     // PINNED BY NAME (not a bare count) so a drop/rename gives a legible diff.
     #[test]
     fn committed_bindings_expose_the_c1_c14_command_surface() {
@@ -2476,7 +2476,7 @@ mod bindings_codegen {
             "the committed bindings.ts must expose the `commands` IPC surface (§0.4.1 / P2.21)"
         );
         // The canonical Tauri command ids = the snake_case `invoke(...)` names = the registered Rust fn
-        // names, one per §0.4.1 row C1..C14. The double-quoted form matches only the generated `invoke`
+        // names, one per registered §0.4.1 command. The double-quoted form matches only the generated `invoke`
         // call, never the back-ticked command name inside a doc comment.
         for cmd in [
             "drain_intake",            // C1
@@ -2506,11 +2506,11 @@ mod bindings_codegen {
     // (the L2 `doc12_ipc_surface_drift`) diffs the registered `#[tauri::command]` fn set in `src-tauri/src`
     // against the committed `src-tauri/ipc-commands.golden`, flagging any SPURIOUS WebView-reachable command
     // (a registered fn absent from the golden — the `names - want` direction). This test pins the OTHER
-    // direction at the core level: the golden lists EXACTLY the §0.4.1 C1–C14 command set (the same 15 fn names
+    // direction at the core level: the golden lists EXACTLY the registered §0.4.1 command set (the same fn names
     // the surface test above pins in the bindings + `collect_commands!` registers), so a golden that silently
     // drifts (a missing entry — which would drop a real command from check 12's `want` set — or an extra /
     // typo'd entry) reddens L1/L2 here. Together with check 12 (registered ⊆ golden) + the surface test
-    // (bindings ⊇ C1–C14), the IPC surface is asserted complete + drift-free (no extra, no missing).
+    // (bindings ⊇ the pinned names), the IPC surface is asserted complete + drift-free (no extra, no missing).
     // [Build-Session-Entscheidung: P2.36]
     #[test]
     fn golden_lists_exactly_the_c1_c14_command_surface() {

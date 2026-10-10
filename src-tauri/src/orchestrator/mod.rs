@@ -1008,7 +1008,7 @@ fn item_base_reason(job: &ConversionJob, name_arg: Option<&str>) -> Option<Outco
         // §2.8.2: `name_arg` fills the slot of whichever row carries one, so the terminal reason names its
         // subject exactly as the live message does; `None` is correct only for a slot-free row (a slotted row
         // rendered with `None` shows a blank where its subject belongs). §2.8 / §1.12 (P3.75 sweep): a
-        // mis-homed app-level kind ({EngineMissing, WebviewFault, BundleDamaged, MixedDrop}) has no §2.8.2 row →
+        // mis-homed kind (a §2.13 app-level kind or `MixedDrop`) has no §2.8.2 row →
         // `conversion_failure` returns `None`; the same `InternalError` fallback the live `failure_message` /
         // `project_outcome` siblings carry keeps this TERMINAL projection never-message-less too (a failed item
         // is never message-less — the two projections of one item must agree).
@@ -6792,7 +6792,7 @@ mod tests {
 
     // §2.8 / §1.12 (P3.75 sweep): the TERMINAL `item_base_reason` projection mirrors the live
     // `project_outcome` / `failure_message` InternalError fallback — a per-item `Failed` carrying a mis-homed
-    // app-level kind ({EngineMissing, WebviewFault, BundleDamaged, MixedDrop}, none of which has a §2.8.2 row)
+    // kind (a §2.13 app-level kind or `MixedDrop`, none of which has a §2.8.2 row)
     // is NEVER message-less in the summary either, so the live `ItemFinished` message and the terminal
     // `RunResult` reason of one item always agree. Before the fix the terminal arm had no fallback → `None`.
     #[test]

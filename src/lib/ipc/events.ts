@@ -164,7 +164,7 @@ export async function consumeIntakeNudge(): Promise<void> {
  * is the seam {@link AppEventHandlers.onFault} reserved and the ONLY runtime entry into state 12 in P3 (the
  * DTO-less run-path entry is P4.50's, per the 2026-07-16 P3.60 ruling).
  *
- * The `AppFault` is passed through UNTOUCHED — its `message` is the §2.13.3/§7.2-owned calm line the
+ * The `AppFault` is passed through UNTOUCHED — its `message` is the kind's §2.13.5 line the
  * `AppFaultNotice` renders verbatim (§5.7), so nothing is re-authored, re-classified or dropped on the way.
  * Homed here beside {@link consumeIntakeNudge}/{@link consumeMountDrain}: every §5.8 event consumption dispatches
  * from this façade, so the store write stays inside `src/lib/ipc/**` (the §5.1 one-IPC-consumer discipline).
@@ -318,7 +318,7 @@ export async function pickForIntake(kind: PickKind): Promise<void> {
  * the core panicked, the IPC channel dropped), NOT a per-item `ItemFinished{Failed}` — so the UI can route to
  * the AppFault surface (state 12) and stop the run **without fabricating outcomes for items it never heard back
  * about** (§5.8). It is a DISTINCT fault from the `app://fault` `AppFault` DTO ({@link AppEventHandlers.onFault}),
- * whose kinds ({EngineMissing, WebviewFault, BundleDamaged}) are the §7.2 STARTUP faults.
+ * whose kinds are the §7.2 STARTUP faults (the §7.2.1 readiness faults, §0.4.2).
  *
  * [Build-Session-Entscheidung: P3.60] **SUPPLIER = P4.50** (re-cut from "the P3.53 FSM" per the 2026-07-16 P3.60
  * ruling, which assigns the state-12 run-path leg to P4.50): P4.50 supplies `onRunFault` and adds the §5.8 mid-run
@@ -493,8 +493,8 @@ export async function openResultTarget(target: OpenTarget): Promise<void> {
  * registration seam with named fillers on record (typed optional props, G8-clean).
  *
  * [Build-Session-Entscheidung: P3.60] `onFault` is now SUPPLIED: App passes {@link consumeAppFault}, which
- * dispatches the §5.2 `appFault` wildcard → state 12, whose `AppFaultNotice` renders the DTO's §2.13.3/§7.2-owned
- * `message` verbatim (the P3.60 slice → P8.19.1 chrome copy). The `app://fault` EMIT + `PendingFault` buffer that
+ * dispatches the §5.2 `appFault` wildcard → state 12, whose `AppFaultNotice` renders the DTO's §2.13.5
+ * `message` line verbatim (the P3.60 slice → P8.19.1 chrome copy). The `app://fault` EMIT + `PendingFault` buffer that
  * lights this path up in production is the P4 readiness body (`main.rs present_startup_fault`: both presentation
  * bodies are P4); the DTO-less mid-run channel-death SOURCE is P2.124's, whose handler is P4.50's
  * ({@link ConversionRunHandlers}). `onCloseRequested`'s → QuitConfirm (state 11) body remains P4.67.1.

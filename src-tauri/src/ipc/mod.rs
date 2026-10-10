@@ -112,15 +112,17 @@ mod c_surface_scan {
         production_prefix(include_str!("system.rs"))
     }
 
-    /// The complete §0.4.1 C1–C13 command surface — every handler name paired with its file's
-    /// production-prefix reader (14 handlers: C2 splits into C2a/C2b). The single table every structural
-    /// leg iterates; a new command must join this table to be covered by the legs (the registration-side
-    /// closed set is the P2.36/G23 gate's job).
-    pub(super) const HANDLERS: [(&str, SrcFn); 14] = [
+    /// The registered §0.4.1 command surface — every handler name paired with its file's
+    /// production-prefix reader (C2 splits into two rows, C2a and C2b). The single table every structural
+    /// leg iterates; a new command joins it in the commit that registers it, and
+    /// `handler_table_lists_exactly_the_golden_command_set` below holds it to the committed golden (the
+    /// registration-side closed set is the P2.36/G23 gate's job).
+    pub(super) const HANDLERS: [(&str, SrcFn); 15] = [
         ("get_targets", planning_src),
         ("plan_output", planning_src),
         ("set_destination", planning_src),
         ("pick_destination", planning_src),
+        ("get_initial_destination", planning_src),
         ("drain_intake", intake_src),
         ("pick_for_intake", intake_src),
         ("cancel_ingest", intake_src),
@@ -147,13 +149,30 @@ mod c_surface_scan {
             .expect("a handler signature terminates at its body's opening brace");
         sig_rest
     }
+
+    // §6.4.1 unit (G15): the table lists exactly the committed golden, the registered command set that
+    // `plan-lint` check 12 holds against the registered command fns and `bindings_codegen` pins by name. A
+    // registered command without its row would escape every leg that iterates the table, the G16
+    // inbound-arg completeness bind of `ipc_boundary_proptest` included.
+    #[test]
+    fn handler_table_lists_exactly_the_golden_command_set() {
+        let golden = include_str!("../../ipc-commands.golden");
+        let registered: std::collections::BTreeSet<&str> = golden.split_whitespace().collect();
+        let table: std::collections::BTreeSet<&str> =
+            HANDLERS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            table, registered,
+            "§0.4.1: c_surface_scan::HANDLERS must list exactly the commands of src-tauri/ipc-commands.golden — \
+             a registered command without its row escapes the structural legs and the G16 inbound-arg bind"
+        );
+    }
 }
 
 #[cfg(test)]
 mod responsiveness_contract {
     //! §6.4.1 unit (G15): the §0.4/§1.11 C-command-surface RESPONSIVENESS CONTRACT — the WebView-side analogue
     //! of the per-engine watchdog (which is P3.44/P4.12). A STRUCTURAL (source-scan) assertion that no
-    //! synchronous C-command can wedge the WebView, in three parts: (1) UNIVERSAL-ASYNC — every §0.4.1 C1–C13
+    //! synchronous C-command can wedge the WebView, in three parts: (1) UNIVERSAL-ASYNC — every registered §0.4.1
     //! handler is `pub async fn`, so its dispatch yields to the Tokio runtime rather than the WebView thread;
     //! (2) STREAMING-SEAM on the long-running commands — C1 `drain_intake` carries `on_scan: Channel<ScanProgress>`
     //! (the sole `onScan` carrier since P3.78 — C2a walks nothing) and C6 carries
@@ -171,7 +190,7 @@ mod responsiveness_contract {
     //! signature invariant pinned here is present + stable now, so a sync/blocking regression on the C-surface
     //! reddens the moment it is introduced — the early guard the assert-now half exists to give.
 
-    // The per-file production-prefix readers + the 14-handler table live in the shared `c_surface_scan`
+    // The per-file production-prefix readers + the handler table live in the shared `c_surface_scan`
     // support module (hoisted verbatim at P2.137 for the sibling structural legs — `error_shape_contract`,
     // `camel_case_wire_contract`, the `ipc_boundary_proptest` completeness bind; assertions unchanged).
     use super::c_surface_scan::{conversion_src, intake_src, HANDLERS};
@@ -216,7 +235,7 @@ mod responsiveness_contract {
         );
     }
 
-    // P2.125.2 — the UNIVERSAL-ASYNC leg. Every §0.4.1 C1–C13 handler is `pub async fn` (never a synchronous
+    // P2.125.2 — the UNIVERSAL-ASYNC leg. Every registered §0.4.1 handler is `pub async fn` (never a synchronous
     // `pub fn`), so no command can block the WebView thread — the §0.4 C6 "respond immediately" model applied
     // to the whole surface (§1.11). Names the planning commands C3 `get_targets` / C4 `plan_output` / C5
     // `set_destination` explicitly (the re-scoped Reading-B structural residuum of the bounded-budget leg) and
@@ -244,7 +263,7 @@ mod error_shape_contract {
     //! §6.4.1 unit (G15): the §0.4 UNIVERSAL ERROR SHAPE over the whole C-surface — "every command returns
     //! `Result<T, IpcError>`" (§0.4 "Error shape"; the §0.4.1 table's Response column lists only the
     //! success `T`). A STRUCTURAL (source-scan) leg beside `responsiveness_contract`, over the SAME
-    //! `c_surface_scan` 14-handler table + per-file production-prefix sources: each handler's signature
+    //! `c_surface_scan` handler table + per-file production-prefix sources: each handler's signature
     //! carries `-> Result<` and its return type terminates in `IpcError>`. This class ALREADY SHIPPED once
     //! — C2b `pick_destination` landed returning a bare `Option<PathBuf>` (no `Result`, no `IpcError`; both
     //! G1 reviewers missed it) and was fixed at fb685df — so the universal shape is pinned structurally: a
@@ -253,7 +272,7 @@ mod error_shape_contract {
 
     use super::c_surface_scan::{signature_rest_of, HANDLERS};
 
-    // §6.4.1 unit (G15): every §0.4.1 C1–C13 handler signature carries the `-> Result<` opener AND ends in
+    // §6.4.1 unit (G15): every registered §0.4.1 handler signature carries the `-> Result<` opener AND ends in
     // `IpcError>` — the two needles that together pin `-> Result<T, IpcError>` (the §0.4.3 error arm is the
     // fixed tail; `T` varies per the §0.4.1 Response column). The signature slice runs to the body's
     // opening brace, so the tail check sees the full return type and nothing of the body.
@@ -352,7 +371,7 @@ mod camel_case_wire_contract {
                  d832698 incident class)"
             );
         }
-        // The scan must actually bite: the surface carries 8 snake-arg handlers (C1/C13, C3/C4/C5, C6/C7/C8) —
+        // The scan must actually bite (its floor: the 8 snake-arg handlers C1/C13, C3/C4/C5, C6/C7/C8 at P3.78) —
         // a parser regression that silently matched none would leave the invariant unasserted. [Test-Change:
         // P3.78 — old-obsolete+new-correct, §0.4.1] was 9 incl. C2a; C2a `pick_for_intake` shed its multi-word
         // args (only single-word `kind` remains — no snake_case wire key), so it no longer carries a renamed arg.
@@ -376,7 +395,7 @@ mod ipc_boundary_proptest {
     //! test suite, NOT a `fuzz/` libFuzzer target; this module IS that proptest.
     //!
     //! Leg (a) `ipc_serde` (test-strategy §1.5 pt.5): tauri deserializes each non-runtime command arg via
-    //! `serde_json::from_value`, so feeding arbitrary / malformed JSON to EVERY C1–C13 inbound arg type must
+    //! `serde_json::from_value`, so feeding arbitrary / malformed JSON to EVERY registered §0.4.1 inbound arg type must
     //! yield a structured `Result`, never a panic across the Tauri boundary (§0.4.3 `IpcError` is the `Err`
     //! arm). The runtime-injected `AppHandle` / `Channel<T>` args are not deserialized and are excluded.
     //!
@@ -446,7 +465,7 @@ mod ipc_boundary_proptest {
         })
     }
 
-    /// The CLOSED SET of §0.4.1 wire-DESERIALIZED inbound arg types across the C1–C13 surface
+    /// The CLOSED SET of §0.4.1 wire-DESERIALIZED inbound arg types across the registered command surface
     /// (whitespace-normalized; the runtime-supplied `AppHandle` / `Channel<T>` args are never deserialized
     /// and are excluded, per the leg-(a) module docs). This single pinned list is what BOTH
     /// `feed_every_ipc_input_type_*` legs enumerate. Rust generics are monomorphized at compile time, so
@@ -474,7 +493,7 @@ mod ipc_boundary_proptest {
         "TargetId",
     ];
 
-    /// Deserialize the given JSON `Value` into EVERY §0.4.1 C1–C13 inbound argument type — the exact per-arg
+    /// Deserialize the given JSON `Value` into EVERY registered §0.4.1 inbound argument type — the exact per-arg
     /// `serde_json::from_value` step tauri runs at the command boundary. The runtime-injected `AppHandle` /
     /// `Channel<T>` args are supplied by tauri, never deserialized, so they are absent here. Each result is
     /// discarded — the property under exercise is that none of these calls PANICS. Enumerates exactly the
@@ -499,7 +518,7 @@ mod ipc_boundary_proptest {
     }
 
     /// The `from_str` twin of `feed_every_ipc_input_type_from_value` — exercises the raw-parse path (an
-    /// arbitrary, possibly syntactically-malformed string) into every C1–C13 inbound arg type. Same property:
+    /// arbitrary, possibly syntactically-malformed string) into every registered §0.4.1 inbound arg type. Same property:
     /// a structured `Result`, never a panic. Enumerates exactly the pinned `INBOUND_WIRE_ARG_TYPES` (the
     /// P2.137 completeness bind holds it to that list).
     fn feed_every_ipc_input_type_from_str(s: &str) {

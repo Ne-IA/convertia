@@ -472,8 +472,8 @@ export const commands = {
 /* Types */
 /**
  *  The `app://fault` event payload (§0.4.2 / §2.13.1 / §2.13.3) — the **app-level** fault the §2.13.3
- *  single calm screen renders: a startup engine-missing escalation, a WebView core disconnect (§5.8), a
- *  damaged bundle. It is categorically distinct from a per-item `IpcError`: an app-level fault means the
+ *  single calm screen renders: a §2.13 app-level kind whose §2.13.5 surface is that §5.8 fault screen (the
+ *  §7.2.1 readiness faults). It is categorically distinct from a per-item `IpcError`: an app-level fault means the
  *  WHOLE APP can't function (the §2.13.1 "App-level" class), not one item failing — so it is surfaced via
  *  the §0.4.2 `app://fault` `app.emit` event (a Rust→WebView signal the §2.13.3 / §5.8 screen listens for),
  *  NEVER as a §1.12 per-item summary row.
@@ -490,11 +490,9 @@ export const commands = {
  *  dead-code-EXPECTATION/alias interaction this module's `not(test)` forward-declaration dead-code
  *  suppression relies on (the identical P2.19 `IpcError.kind` decision; specta resolves the alias to the
  *  same wire type
- *  regardless). Only the three §2.13 app-level variants {`EngineMissing`, `WebviewFault`, `BundleDamaged`}
- *  ever travel on this event — a §2.13 RUNTIME invariant, NOT a type constraint. `message` is the §2.13.3
- *  pre-localised, plain-English, trace-free calm line (NEVER a
- *  stack trace / raw engine stderr, SSOT *no stack traces*); the §2.13.3 / §7.2 strings that fill it are a
- *  later box.
+ *  regardless). Only a §2.13 app-level kind ever travels on this event — a §2.13 RUNTIME invariant, NOT a
+ *  type constraint. `message` is that kind's §2.13.5 line: pre-localised, plain-English and trace-free (NEVER a
+ *  stack trace / raw engine stderr, SSOT *no stack traces*).
  *
  *  [Build-Session-Entscheidung: P2.39.1] Homed in `crate::outcome` (tier 2), NOT `crate::domain` (the
  *  tier-3 leaf): it references `ConversionErrorKind`, which lives here, and a leaf type cannot depend on a
@@ -514,11 +512,11 @@ export const commands = {
  */
 export type AppFault = {
 	/**
-	 *  The app-level fault kind — only {`EngineMissing`, `WebviewFault`, `BundleDamaged`} per §2.13 (a
-	 *  RUNTIME invariant; the field type is the full mirror enum, see the struct doc).
+	 *  The app-level fault kind — only a §2.13 app-level kind (a RUNTIME invariant; the field type is the
+	 *  full mirror enum, see the struct doc).
 	 */
 	kind: ConversionErrorKind,
-	/**  The §2.13.3 pre-localised, plain-English, trace-free calm message. */
+	/**  The kind's §2.13.5 line: pre-localised, plain-English, trace-free. */
 	message: string,
 };
 
@@ -805,7 +803,7 @@ export type ConversionErrorKind =
 "internalError" |
 /**  A required bundled engine is absent / unrunnable at startup (§7.2). */
 "engineMissing" |
-/**  The WebView core disconnected / failed to load (§2.13/§5.8). */
+/**  The web view failed to come up at startup (§7.2.1). */
 "webviewFault" |
 /**  The app bundle / resources failed their integrity check (§7.2). */
 "bundleDamaged" |

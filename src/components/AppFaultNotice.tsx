@@ -4,13 +4,13 @@
 // per-item outcomes for items it never heard back about (§5.2 row 12 / §5.8).
 //
 // THE BODY IS THE WIRE `AppFault.message`, RENDERED VERBATIM — the load-bearing contract of this component
-// (the 2026-07-16 P3.60 ruling, option A). §7.2/§2.13.3 own those WORDS: `message` is the "§2.13.3
-// pre-localised, plain-English, trace-free calm message" (§0.4.3), and `crate::outcome` deliberately refuses
-// §2.8.2 homing for the three app-level kinds ({`EngineMissing`, `WebviewFault`, `BundleDamaged`}) precisely
-// because they "render via the §2.13.3 `app://fault` catalog" — one string, one home. So this component
-// authors NO body copy: a chrome line here would leave the §7.2 strings with no renderer anywhere (the
-// orphaned-string class) and would show a damaged-bundle user the factually wrong "the conversion stopped".
-// Only the heading + the Start-over label are chrome (§5.7: §02/§7.2 own the words, the UI owns the frame).
+// (the 2026-07-16 P3.60 ruling, option A). The §2.13.5 catalog owns those WORDS: `message` is the kind's
+// §2.13.5 line, pre-localised, plain-English and trace-free (§0.4.2), and `crate::outcome` deliberately refuses
+// §2.8.2 homing for the §2.13 app-level kinds precisely because their lines live in that catalog — one string,
+// one home. So this component authors NO body copy: a chrome line here would leave the §2.13.5 lines with no
+// renderer anywhere (the orphaned-string class) and would show a damaged-bundle user the factually wrong
+// "the conversion stopped".
+// Only the heading + the Start-over label are chrome (§5.7: §2.13.5 owns the words, the UI owns the frame).
 //
 // NO kind-switch, NO fallback line: the machine's state-12 payload is a non-null `AppFault` (P3.53), and in P3
 // every entry into state 12 carries a real DTO — the `app://fault` wildcard is the only runtime entry (its
@@ -36,7 +36,7 @@ import { ui } from "../strings/ui";
 export interface AppFaultNoticeProps {
   /** The §2.13 app-level fault from the machine's state-12 payload. Its `message` is rendered VERBATIM (see the
    *  module header); its `kind` is NOT switched on — the core already resolved the kind to its calm line, so a
-   *  per-kind branch here would re-implement the §2.13.3 catalog it deliberately does not home in §2.8.2. */
+   *  per-kind branch here would re-implement the §2.13.5 catalog it deliberately does not home in §2.8.2. */
   readonly fault: AppFault;
   /** §5.2 row 12: the single Start-over action (button, Esc, or the §5.10 Ctrl/⌘+N chord) → `Idle`. A CALLBACK,
    *  not an internal dispatch, per the §5.3 prop contract — this component is presentational (the
@@ -75,7 +75,7 @@ export function AppFaultNotice({ fault, onStartOver }: AppFaultNoticeProps) {
       <h2 aria-live="assertive" className="text-xl font-semibold text-text">
         {ui.appfault_heading}
       </h2>
-      {/* The §2.13.3/§7.2-owned calm line, VERBATIM — no stack trace, no chrome path line, no paraphrase. */}
+      {/* The kind's §2.13.5 line, VERBATIM — no stack trace, no chrome path line, no paraphrase. */}
       <p className="text-base text-text">{fault.message}</p>
       <button
         ref={startOverRef}

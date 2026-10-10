@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { render, cleanup, fireEvent } from "@testing-library/react";
 
 // §6.4.6 unit (G15): the §5.3 AppFaultNotice — the §2.13.3 app-level fault screen (state 12). The load-bearing
-// leg is the VERBATIM-render contract (the 2026-07-16 P3.60 ruling): the §2.13.3/§7.2-owned `AppFault.message`
+// leg is the VERBATIM-render contract (the 2026-07-16 P3.60 ruling): the §2.13.5 `AppFault.message` line
 // reaches the user unmodified, per kind, with no chrome body of its own — the orphaned-string defect that
 // ruling exists to prevent. Plus the trace-free promise, the Start-over exit (the P3 screen-box wiring model),
 // and the §5.10 keyboard contract. [Build-Session-Entscheidung: P3.60]
@@ -10,7 +10,7 @@ import { AppFaultNotice } from "./AppFaultNotice";
 import { useAppStore } from "../state/store";
 import type { AppFault } from "../lib/ipc/commands";
 
-// The §7.2-owned BundleDamaged line — the §2.13.3 "download it again … official releases page" pattern. It is
+// The §2.13.5 BundleDamaged line — the "download it again … official releases page" pattern. It is
 // the concrete reason state 12 must render `message`: a chrome-only screen would tell this user "the
 // conversion stopped" (factually wrong — nothing was converting) and drop the actionable half entirely.
 const bundleDamaged: AppFault = {
@@ -40,28 +40,28 @@ afterEach(() => {
 });
 
 describe("AppFaultNotice — §5.2 AppFault (state 12)", () => {
-  it("renders the wire AppFault.message VERBATIM (the §2.13.3/§7.2-owned line, P3.60 ruling)", () => {
+  it("renders the wire AppFault.message VERBATIM (the §2.13.5 line, P3.60 ruling)", () => {
     const { getByText } = render(<AppFaultNotice fault={bundleDamaged} onStartOver={startOver} />);
     expect(getByText(bundleDamaged.message)).not.toBeNull();
   });
 
   it("renders a DIFFERENT kind's message verbatim too — no per-kind chrome branch (one string, one home)", () => {
-    // §2.8.2 deliberately homes NO row for the three app-level kinds ("render via the §2.13.3 app://fault
-    // catalog"), so the screen must pass whatever the core resolved straight through.
+    // §2.8.2 deliberately homes NO row for the §2.13 app-level kinds (their lines are the §2.13.5 catalog's),
+    // so the screen must pass whatever the core resolved straight through.
     const { getByText } = render(<AppFaultNotice fault={engineMissing} onStartOver={startOver} />);
     expect(getByText(engineMissing.message)).not.toBeNull();
   });
 
   it("does NOT paraphrase or substitute the run-path chrome literal for a DTO-carrying fault", () => {
     // The §5.8 run-path line ("…the conversion stopped") belongs to P4.50's DTO-less class; rendering it here
-    // would drop the §7.2 copy — the exact orphaned-string failure the P3.60 ruling rejected as option B.
+    // would drop the §2.13.5 line — the exact orphaned-string failure the P3.60 ruling rejected as option B.
     const { queryByText } = render(
       <AppFaultNotice fault={bundleDamaged} onStartOver={startOver} />,
     );
     expect(queryByText(/the conversion stopped/)).toBeNull();
   });
 
-  it("shows a calm chrome heading beside the verbatim body (§5.7: the UI owns the frame, §02/§7.2 the words)", () => {
+  it("shows a calm chrome heading beside the verbatim body (§5.7: the UI owns the frame, §2.13.5 the words)", () => {
     const { getByRole } = render(<AppFaultNotice fault={bundleDamaged} onStartOver={startOver} />);
     const heading = getByRole("heading", { name: "Something went wrong" });
     expect(heading.getAttribute("aria-live")).toBe("assertive");

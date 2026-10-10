@@ -141,10 +141,10 @@ pub enum ConversionErrorKind {
     CleanupResidue,
     /// Catch-all for an unexpected internal fault (§2.13); no trace shown.
     InternalError,
-    // ── run/app-level (§2.13); surfaced via `app://fault`, not a per-item row ──
+    // ── run/app-level (§2.13); surfaced per §2.13.5, never a per-item row ──
     /// A required bundled engine is absent / unrunnable at startup (§7.2).
     EngineMissing,
-    /// The WebView core disconnected / failed to load (§2.13/§5.8).
+    /// The web view failed to come up at startup (§7.2.1).
     WebviewFault,
     /// The app bundle / resources failed their integrity check (§7.2).
     BundleDamaged,
@@ -212,8 +212,8 @@ pub struct IpcError {
 
 // ─── §0.4.2 AppFault — the app://fault event payload (§2.13 app-level fault) (P2.39.1) ──
 /// The `app://fault` event payload (§0.4.2 / §2.13.1 / §2.13.3) — the **app-level** fault the §2.13.3
-/// single calm screen renders: a startup engine-missing escalation, a WebView core disconnect (§5.8), a
-/// damaged bundle. It is categorically distinct from a per-item `IpcError`: an app-level fault means the
+/// single calm screen renders: a §2.13 app-level kind whose §2.13.5 surface is that §5.8 fault screen (the
+/// §7.2.1 readiness faults). It is categorically distinct from a per-item `IpcError`: an app-level fault means the
 /// WHOLE APP can't function (the §2.13.1 "App-level" class), not one item failing — so it is surfaced via
 /// the §0.4.2 `app://fault` `app.emit` event (a Rust→WebView signal the §2.13.3 / §5.8 screen listens for),
 /// NEVER as a §1.12 per-item summary row.
@@ -230,11 +230,9 @@ pub struct IpcError {
 /// dead-code-EXPECTATION/alias interaction this module's `not(test)` forward-declaration dead-code
 /// suppression relies on (the identical P2.19 `IpcError.kind` decision; specta resolves the alias to the
 /// same wire type
-/// regardless). Only the three §2.13 app-level variants {`EngineMissing`, `WebviewFault`, `BundleDamaged`}
-/// ever travel on this event — a §2.13 RUNTIME invariant, NOT a type constraint. `message` is the §2.13.3
-/// pre-localised, plain-English, trace-free calm line (NEVER a
-/// stack trace / raw engine stderr, SSOT *no stack traces*); the §2.13.3 / §7.2 strings that fill it are a
-/// later box.
+/// regardless). Only a §2.13 app-level kind ever travels on this event — a §2.13 RUNTIME invariant, NOT a
+/// type constraint. `message` is that kind's §2.13.5 line: pre-localised, plain-English and trace-free (NEVER a
+/// stack trace / raw engine stderr, SSOT *no stack traces*).
 ///
 /// [Build-Session-Entscheidung: P2.39.1] Homed in `crate::outcome` (tier 2), NOT `crate::domain` (the
 /// tier-3 leaf): it references `ConversionErrorKind`, which lives here, and a leaf type cannot depend on a
@@ -254,10 +252,10 @@ pub struct IpcError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppFault {
-    /// The app-level fault kind — only {`EngineMissing`, `WebviewFault`, `BundleDamaged`} per §2.13 (a
-    /// RUNTIME invariant; the field type is the full mirror enum, see the struct doc).
+    /// The app-level fault kind — only a §2.13 app-level kind (a RUNTIME invariant; the field type is the
+    /// full mirror enum, see the struct doc).
     pub kind: ConversionErrorKind,
-    /// The §2.13.3 pre-localised, plain-English, trace-free calm message.
+    /// The kind's §2.13.5 line: pre-localised, plain-English, trace-free.
     pub message: String,
 }
 
@@ -404,9 +402,9 @@ pub fn read_failure_to_error_kind(failure: ReadFailure) -> ConversionErrorKind {
 /// render the resolved text verbatim — no consumer ever re-authors a string. Tone: plain, calm, never blaming,
 /// never technical (SSOT *Fail clearly*); English-only (G57).
 ///
-/// Returns `None` for the four `ConversionErrorKind` variants §2.8.2 does NOT home: the three §2.13 app-level
-/// faults (`EngineMissing` / `WebviewFault` / `BundleDamaged`) render via the §2.13.3 `app://fault` catalog,
-/// and `MixedDrop` is the §1.3 pre-flight refusal surfaced by the §5.2 UI — each a different home, so this
+/// Returns `None` for the `ConversionErrorKind` variants §2.8.2 does NOT home: the §2.13 app-level faults
+/// carry their §2.13.5 catalog lines, and `MixedDrop` is the §1.3 pre-flight refusal surfaced by the §5.2
+/// UI — each a different home, so this
 /// per-item conversion-outcome table returns `None` rather than duplicating them (one string, one home). The
 /// match is EXHAUSTIVE (G4/G14): a new `ConversionErrorKind` variant forces a compile-time decision here.
 /// [Build-Session-Entscheidung: P3.68]
@@ -468,9 +466,9 @@ pub fn conversion_message_template(kind: ConversionErrorKind) -> Option<&'static
         ConversionErrorKind::InternalError => {
             "Something unexpected went wrong, so this file was skipped. The rest of your files will continue."
         }
-        // Homed elsewhere — not a §2.8.2 per-item conversion-outcome string (one string, one home):
-        // {EngineMissing, WebviewFault, BundleDamaged} render via the §2.13.3 app://fault catalog, MixedDrop
-        // via the §5.2 pre-flight UI. This per-item table returns None rather than duplicating them.
+        // Homed elsewhere — not a §2.8.2 per-item conversion-outcome string (one string, one home): the
+        // §2.13 app-level kinds carry their §2.13.5 catalog lines, MixedDrop renders via the §5.2 pre-flight
+        // UI. This per-item table returns None rather than duplicating them.
         ConversionErrorKind::EngineMissing
         | ConversionErrorKind::WebviewFault
         | ConversionErrorKind::BundleDamaged
@@ -1048,9 +1046,9 @@ mod tests {
 
     // §6.4.1 unit (G15): the §0.4.2 / §2.13 `AppFault` wire shape (P2.39.1) — the app://fault event payload,
     // camelCase `{ kind, message }`. OUTBOUND-ONLY (no `Deserialize`), so a SERIALIZE pin, not a round-trip.
-    // Iterates the THREE §2.13 app-level `kind` variants the event ever carries ({EngineMissing, WebviewFault,
-    // BundleDamaged}) so each one's camelCase wire string is locked inside the AppFault envelope (a rename of
-    // an app-level variant changes a pin) — the runtime "only these three" invariant made checkable here.
+    // Iterates the §2.13 app-level `kind` variants the enum defines, so each one's camelCase wire string is
+    // locked inside the AppFault envelope (a rename of an app-level variant changes a pin) — the struct doc's
+    // app-level-only runtime invariant made checkable here.
     #[test]
     fn app_fault_wire_form_is_camelcase() {
         for (kind, wire_kind) in [
@@ -1104,16 +1102,16 @@ mod tests {
             CleanupResidue,
             InternalError,
         ],
-        // The four kinds §2.8.2 homes elsewhere ({EngineMissing, WebviewFault, BundleDamaged} → §2.13.3
-        // app-fault; MixedDrop → §5.2 pre-flight): declared, so the split is a spelled decision.
+        // The kinds §2.8.2 homes elsewhere (the §2.13 app-level kinds → their §2.13.5 lines; MixedDrop → §5.2
+        // pre-flight): declared, so the split is a spelled decision.
         elsewhere KINDS_HOMED_ELSEWHERE = [EngineMissing, WebviewFault, BundleDamaged, MixedDrop],
     );
 
     // §6.4.1 unit (G15) / §2.8.2 / G23 completeness: EVERY ConversionErrorKind is homed — the 22 §2.8.2
-    // conversion-outcome kinds each carry a non-empty catalog row, and the 4 non-conversion kinds
-    // ({EngineMissing, WebviewFault, BundleDamaged} → §2.13.3 app-fault; MixedDrop → §5.2 pre-flight) return
+    // conversion-outcome kinds each carry a non-empty catalog row, and the non-conversion kinds
+    // (the §2.13 app-level kinds → their §2.13.5 lines; MixedDrop → §5.2 pre-flight) return
     // None (homed elsewhere — one string, one home), NOT an unhomed kind. The exhaustive match in
-    // conversion_message_template is the compile-time guard; this asserts the current 26 are correctly split.
+    // conversion_message_template is the compile-time guard; this asserts every current kind is correctly split.
     #[test]
     fn every_conversion_kind_is_homed() {
         let conversion = CONVERSION_CATALOG_KINDS;
@@ -1133,7 +1131,7 @@ mod tests {
             assert_eq!(
                 conversion_message_template(kind),
                 None,
-                "§2.8.2: {kind:?} is homed elsewhere (§2.13.3 / §5.2), not in this per-item catalog"
+                "§2.8.2: {kind:?} is homed elsewhere (§2.13.5 / §5.2), not in this per-item catalog"
             );
         }
     }

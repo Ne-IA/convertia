@@ -229,8 +229,8 @@ describe("subscribeAppEvents (P2.120 §5.8 three app:// listeners)", () => {
 
 // §6.4.6 unit (G15): the §5.8 `app://fault` consumption (P3.60) — the handler App supplies into the P2.120
 // seam. It is the ONLY runtime entry into state 12 in P3 (the DTO-less run-path entry is P4.50's), and its
-// contract is that the §2.13.3/§7.2-owned DTO reaches the machine UNTOUCHED — nothing re-authored, re-classified
-// or dropped on the way. [Build-Session-Entscheidung: P3.60]
+// contract is that the DTO, its §2.13.5 `message` line included, reaches the machine UNTOUCHED — nothing
+// re-authored, re-classified or dropped on the way. [Build-Session-Entscheidung: P3.60]
 describe("consumeAppFault (§5.8 app://fault consumption, P3.60)", () => {
   beforeEach(() => {
     useAppStore.setState({ machine: { tag: "idle" } });

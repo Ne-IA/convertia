@@ -221,9 +221,9 @@ export const ui = {
   unsupported_dismiss: "Dismiss",
 
   // The section 5.2 AppFaultNotice (state 12) — the CHROME ONLY. The screen's BODY is the wire AppFault.message,
-  // rendered VERBATIM: it is the section 2.13.3 pre-localised, plain-English, trace-free calm line and section
-  // 7.2/section 2.13.3 own those WORDS (the 2026-07-16 P3.60 ruling; crate::outcome deliberately refuses section
-  // 2.8.2 homing for the three app-level kinds — "render via the section 2.13.3 app://fault catalog", one string
+  // rendered VERBATIM: it is the kind's section 2.13.5 line (pre-localised, plain-English, trace-free), and the
+  // section 2.13.5 catalog owns those WORDS (the 2026-07-16 P3.60 ruling; crate::outcome deliberately refuses
+  // section 2.8.2 homing for the section 2.13 app-level kinds, whose lines live in that catalog — one string
   // one home). So NO body/message key lives here: authoring one would fork a section 02-owned catalog (the
   // section 5.7 doctrine, the P3.56-item-1 / P3.59 rejected class). The run-path fault line (the section
   // 5.8 chrome literal, whose core is dead and can author nothing) is P4.50's leg, not this box's.
