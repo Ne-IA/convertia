@@ -140,10 +140,10 @@
   > FLAC encode `-c:a flac -compression_level 5` (level changes size/speed only, never the audio); lossless-as-target; lossy-ORIGIN flagged `audio_lossy_origin` (no quality gain). Vorbis comments + PICTURE block round-trip. The "FLAC compression" UI option DECLARATION is the top-level box P6.86.
 - [ ] **P6.21** [RUST] Wire the AAC target — native `aac -b:a 192k` CBR + adts muxer, reading §3.4 availability · §3.5.1 §3.4 · G31
   needs: P6.9, P6.16
-  > AAC encode native `-c:a aac -b:a 192k` CBR (native-encoder VBR is unstable) + muxer `adts` (raw `.aac`); always-lossy; raw ADTS has NO tag container → cover art + tags DROPPED (`audio_tags_dropped`). READS the §3.4 AAC per-platform cell (P4 matrix) — if AAC is unavailable on a platform, the AAC target is honestly disabled there (never re-decided here). The "AAC quality" UI option DECLARATION is the top-level box P6.87.
+  > AAC encode native `-c:a aac -b:a 192k` CBR (native-encoder VBR is unstable) + muxer `adts` (raw `.aac`); lossy from every source but M4A, whose stream is copied (the AAC ↔ M4A rewrap, §3.5.1); raw ADTS has NO tag container → cover art + tags DROPPED (`audio_tags_dropped`). READS the §3.4 AAC per-platform cell (P4 matrix) — if AAC is unavailable on a platform, the AAC target is honestly disabled there (never re-decided here). The "AAC quality" UI option DECLARATION is the top-level box P6.87.
 - [ ] **P6.22** [RUST] Wire the M4A target — native `aac` + `ipod` muxer + faststart, reading §3.4 (inherits AAC) · §3.5.1 §3.4 · G31
   needs: P6.21
-  > M4A encode native `-c:a aac -b:a 192k` + muxer `ipod` (`.m4a`) + `-movflags +faststart`; identical quality knobs to AAC; KEEPS metadata (iTunes `ilst` atoms + cover art) — M4A's advantage over raw `.aac`. INHERITS AAC's §3.4 disposition (the codec is AAC); M4A-holding-ALAC is the separate ALAC target. The "M4A quality" UI option DECLARATION is the top-level box P6.88.
+  > M4A encode native `-c:a aac -b:a 192k` + muxer `ipod` (`.m4a`) + `-movflags +faststart`; identical quality knobs to AAC; an AAC source is copied instead, with no knobs (the AAC ↔ M4A rewrap, §3.5.1); KEEPS metadata (iTunes `ilst` atoms + cover art) — M4A's advantage over raw `.aac`. INHERITS AAC's §3.4 disposition (the codec is AAC); M4A-holding-ALAC is the separate ALAC target. The "M4A quality" UI option DECLARATION is the top-level box P6.88.
 - [ ] **P6.23** [RUST] Wire the OGG (Vorbis) target — `libvorbis -q:a 3` VBR + ogg muxer · §3.5.1 · G31
   needs: P6.9, P6.16
   > OGG encode `-c:a libvorbis -q:a 3` (≈112k) muxer `ogg` — DISTINCT from OPUS (the OGG target is always Vorbis, never Opus); always-lossy; Vorbis comments + cover-art-as-PICTURE-block. No patent flag (royalty-free). The "OGG quality" UI option DECLARATION is the top-level box P6.89.
@@ -164,7 +164,7 @@
   > the pre-highlighted default = MP3 for every audio source EXCEPT MP3 itself (→ WAV, since MP3→MP3 is excluded); this box wires the per-CATEGORY default-target table for audio, and its §04-offered audio pairs + their `OptionDecl` defaults FEED the §1.6 consolidated defaults registry the **P4.60.2 G61 guard** (the single machine-checkable home of the SSOT "no required choices" gate) merges + checks across ALL options of ALL offered pairs — `needs: P4.60.2` so the per-category default table is registered against the guard, not asserted ad-hoc here. (DECIDED: MP3-source default is WAV over FLAC.)
 - [ ] **P6.29** [TEST] Wire the audio lossy-disclosure trigger map (the `✓~` matrix cells ↔ §2.9 kinds) · §2.9 · G31 G32
   needs: P6.18, P6.19, P6.20, P6.21, P6.22, P6.23, P6.24, P6.25, P6.26
-  > assert each §2.9 audio kind fires IFF the §04 matrix flags the pair: `audio_lossy_target` (any → MP3/AAC/M4A/OGG/OPUS), `audio_transcode` (lossy → lossy), `audio_lossy_origin` (lossy → FLAC/ALAC ONLY — deliberately NOT WAV/AIFF), `audio_bitdepth` (>16-bit → default 16-bit WAV/AIFF), `audio_tags_dropped` (→ raw AAC / WAV / AIFF when source had tags), `audio_downmix` (forced codec downmix). The G32 lossy-disclosure property holds over the `FormatId×FormatId` product.
+  > assert each §2.9 audio kind fires IFF the §04 matrix flags the pair (audio.md *Lossy kinds*): `audio_lossy_target` (any → MP3/AAC/M4A/OGG/OPUS but the AAC ↔ M4A rewrap, §3.5.1), `audio_transcode` (lossy → lossy but the rewrap), `audio_lossy_origin` (lossy → FLAC/ALAC ONLY — deliberately NOT WAV/AIFF), `audio_bitdepth` (>16-bit → default 16-bit WAV/AIFF), `audio_tags_dropped` (→ raw AAC / WAV / AIFF when source had tags), `audio_downmix` (forced codec downmix). The G32 lossy-disclosure property holds over the `FormatId×FormatId` product.
   > **Pessimistic-outcome wiring-consequence (reciprocal of P9.43):** if the P9.43 OGG/OPUS embedded-picture round-trip corpus spike FAILS, OGG/OPUS move to the tag-poor list and `audio_tags_dropped` now fires for them — this trigger map is EDITED accordingly, so the P9.43 backward amendment is auditable from this end too.
 
 ---
@@ -204,10 +204,10 @@
   > each `* → FLAC` pair: completes, `ffprobe` reports `flac` + stream>0, source-unchanged, lossless (no quality change at any level), `audio_lossy_origin` fires for a lossy source (no quality gain), Vorbis-comment + PICTURE round-trip, channels (up to 8) preserved.
 - [ ] **P6.35** [TEST] Per-pair audio tests: → AAC (native `aac` + adts muxer, reads §3.4) · §6.4.3 §6.5 · G31 G32
   needs: P6.30, P6.31, P6.29, P4.59
-  > each `* → AAC` pair on platforms where §3.4 marks AAC **available**: completes, `ffprobe` reports `aac` (ADTS) + stream>0, source-unchanged, `audio_lossy_target` fires, raw-ADTS → `audio_tags_dropped` (no tag container); on a platform where §3.4 marks AAC **unavailable** the target is asserted absent/disabled (not attempted) — honest unavailability per §3.4.
+  > each `* → AAC` pair on platforms where §3.4 marks AAC **available**: completes, `ffprobe` reports `aac` (ADTS) + stream>0, source-unchanged, `audio_lossy_target` fires from every source but M4A (M4A → AAC is the §3.5.1 rewrap: the stream is copied, no options, no codec note), raw-ADTS → `audio_tags_dropped` (no tag container); on a platform where §3.4 marks AAC **unavailable** the target is asserted absent/disabled (not attempted) — honest unavailability per §3.4.
 - [ ] **P6.36** [TEST] Per-pair audio tests: → M4A (native `aac` + ipod muxer + faststart, reads §3.4) · §6.4.3 §6.5 · G31 G32
   needs: P6.30, P6.31, P6.29, P4.59
-  > each `* → M4A` pair on AAC-available platforms: completes, `ffprobe` reports `aac` in an MP4/ipod container + faststart (moov front-loaded) + stream>0, source-unchanged, `audio_lossy_target` fires, iTunes `ilst` tag + cover-art content-fidelity (M4A's advantage over raw AAC); §3.4-unavailable → target absent/disabled.
+  > each `* → M4A` pair on AAC-available platforms: completes, `ffprobe` reports `aac` in an MP4/ipod container + faststart (moov front-loaded) + stream>0, source-unchanged, `audio_lossy_target` fires from every source but AAC (AAC → M4A is the §3.5.1 rewrap: the stream is copied and no lossy kind fires), iTunes `ilst` tag + cover-art content-fidelity (M4A's advantage over raw AAC); §3.4-unavailable → target absent/disabled.
 - [ ] **P6.37** [TEST] Per-pair audio tests: → OGG (Vorbis, all sources) · §6.4.3 §6.5 · G31 G32
   needs: P6.30, P6.31, P6.29, P4.59
   > each `* → OGG` pair: completes, `ffprobe` reports `vorbis` (NEVER opus) in an ogg container + stream>0, source-unchanged, `audio_lossy_target` fires, Vorbis-comment + cover-art-as-PICTURE round-trip, channels preserved.
@@ -456,10 +456,10 @@
   > exposed cap is 8 (libFLAC native max; FFmpeg 9–12 are non-standard — do NOT surface); validation range `0..=8`.
 - [ ] **P6.87** [UI] Register the "AAC quality" advanced-option DECLARATION (128/192/256 CBR) · §1.6 · G47
   needs: P6.21
-  > no VBR exposed (encoder limitation); 192k [default].
+  > no VBR exposed (encoder limitation); 192k [default]; M4A → AAC declares none (the AAC ↔ M4A rewrap, §3.5.1).
 - [ ] **P6.88** [UI] Register the M4A quality advanced-option DECLARATION (shares the AAC preset set) · §1.6 · G47
   needs: P6.22
-  > 128/192/256 CBR; container difference (`.m4a` iTunes atoms) chosen automatically, not a user setting.
+  > 128/192/256 CBR; container difference (`.m4a` iTunes atoms) chosen automatically, not a user setting; AAC → M4A declares none (the AAC ↔ M4A rewrap, §3.5.1).
 - [ ] **P6.89** [UI] Register the "OGG quality" advanced-option DECLARATION (q3/q5/q7) · §1.6 · G47
   needs: P6.23
   > Vorbis quality scale −1..10; expose the useful middle; q3 [default].

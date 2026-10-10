@@ -18,16 +18,10 @@
 
 ## Source → target matrix
 
-Rows = **source** format, columns = **target** format. Cell legend:
-
-- `✓ <eng>` — supported (engine short-name; see *Engines* below)
-- `✓★ <eng>` — supported **and the pre-highlighted DEFAULT target** for that source
-- `✓~ <eng>` — supported but **predictably lossy** (→ §2.9 disclosure)
-- `✓★~ <eng>` — default **and** lossy
-- `—` — same format as source on the diagonal (re-encode handled, see note)
-- `out: <reason>` — fails the inclusion test / direction rule; not offered
-
-Engine short-names: **vips** = libvips raster core (incl. `heifsave` for ALL
+Rows = **source** format, columns = **target** format; cells follow the
+[README](README.md) *Matrix cell grammar*. One engine serves every pair, so the cells
+carry no tag: the image worker (`img`, §3.5.5). Inside it, **vips** = libvips raster
+core (incl. `heifsave` for ALL
 HEIC/AVIF *encode* — `compression=hevc` via the x265 libheif plugin, `compression=av1`
 via libaom — and `magicksave` via the **required** ImageMagick delegate for BMP, and the
 default ICO-save path (ICO save **`[DEFER: build spike]`** §3.5.5; in-core Rust ICO
@@ -39,20 +33,20 @@ the pair; resvg is NOT a libvips backend and is **not shipped** [DECIDED] §3.1 
 dropped; all HEIC/AVIF encode is `vips heifsave`, [IMG-1] [DECIDED].) See *Engines*
 for the binding.
 
-| src ＼ tgt | JPG | PNG | WEBP | GIF | BMP | TIFF | HEIC | AVIF | ICO |
-|-----------|-----|-----|------|-----|-----|------|------|------|-----|
-| **JPG**   | —          | ✓ vips      | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **PNG**   | ✓~ vips    | —           | ✓★~ vips     | ✓~ vips      | ✓~ vips     | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **WEBP**  | ✓★~ vips   | ✓ vips      | —            | ✓~ vips      | ✓~ vips     | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **GIF**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | —            | ✓~ vips     | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **BMP**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | —           | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **TIFF**  | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓~ vips     | —           | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **HEIC**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips     | ✓ vips      | —          | ✓~ vips      | ✓~ vips |
-| **AVIF**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips     | ✓ vips      | ✓~ vips    | —            | ✓~ vips |
-| **ICO**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓~ vips     | ✓ vips      | ✓~ vips      | ✓~ vips      | —      |
-| **SVG**†  | ✓~ svg     | ✓★~ svg     | ✓~ svg       | ✓~ svg       | ✓~ svg      | ✓~ svg      | out*         | out*         | ✓~ svg |
+| Source ↓ \ Target → | JPG | PNG | WEBP | GIF | BMP | TIFF | HEIC | AVIF | ICO |
+|---|---|---|---|---|---|---|---|---|---|
+| **JPG** | — | ✓ | ✓★~ | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **PNG** | ✓~ | — | ✓★~ | ✓~ | ✓~ | ✓ | ✓~ | ✓~ | ✓~ |
+| **WEBP** | ✓★~ | ✓ | — | ✓~ | ✓~ | ✓ | ✓~ | ✓~ | ✓~ |
+| **GIF** | ✓~ | ✓★ | ✓~ | — | ✓~ | ✓ | ✓~ | ✓~ | ✓~ |
+| **BMP** | ✓~ | ✓★ | ✓~ | ✓~ | — | ✓ | ✓~ | ✓~ | ✓~ |
+| **TIFF** | ✓~ | ✓★ | ✓~ | ✓~ | ✓~ | — | ✓~ | ✓~ | ✓~ |
+| **HEIC** | ✓★~ | ✓ | ✓~ | ✓~ | ✓~ | ✓ | — | ✓~ | ✓~ |
+| **AVIF** | ✓★~ | ✓ | ✓~ | ✓~ | ✓~ | ✓ | ✓~ | — | ✓~ |
+| **ICO** | ✓~ | ✓★ | ✓~ | ✓~ | ✓~ | ✓ | ✓~ | ✓~ | — |
+| **SVG**¹ | ✓~ | ✓★~ | ✓~ | ✓~ | ✓~ | ✓~ | · | · | ✓~ |
 
-† **SVG is source-only, and EVERY SVG→raster cell is `~` (lossy).** It is rasterised
+¹ **SVG is source-only, and EVERY SVG→raster cell is `~` (lossy).** It is rasterised
 once (vector → pixels) and that bitmap is saved to the target; the rasterise step is
 inherently lossy *to a fixed pixel grid* (you lose infinite scalability) **regardless
 of the target codec**, so **all** SVG→raster pairs — including the SVG→PNG ★ default —
@@ -60,10 +54,10 @@ fire the §2.9 **`image_svg_raster`** LossyKind (this is why every cell in the S
 not just SVG→JPG/GIF, is marked `✓~`). Cells whose target codec is *additionally* lossy
 **also** fire that target-codec-specific LossyKind on top of `image_svg_raster` — e.g.
 SVG→GIF adds **`image_palette`** (≤256-colour palette), SVG→JPG adds JPEG compression
-loss, SVG→WEBP/HEIC/AVIF add their lossy-codec note. The disclosure derivation MUST emit
+loss, SVG→WEBP adds its lossy-codec note. The disclosure derivation MUST emit
 `image_svg_raster` for every SVG→raster pair (never omit it for the `★` PNG default).
 
-\* SVG→HEIC / SVG→AVIF are **`out`** (matrix and offered set agree — see *Pairs
+SVG→HEIC / SVG→AVIF are `·` (not offered; matrix and offered set agree — see *Pairs
 deliberately out* and the SVG entry): no everyday demand to rasterise a vector to
 HEIC/AVIF. They are **not** in the offered set (SVG offers PNG/JPG/WEBP/BMP/TIFF/ICO),
 so the §6.4.3a corpus↔pair bijection guard does not enumerate them. (Technically the
@@ -97,6 +91,19 @@ dedicated "re-compress / optimise" action is **parked** (not in v1). Marked `—
 | `* → GIF` for **non-animated** still images as a *quality* choice | GIF is offered (256-colour still / animation passthrough) but is **never the default** for a still — it is a strictly worse still codec than PNG/WEBP. Included only because a normal person does sometimes specifically want a `.gif`. |
 | animated GIF / WEBP / APNG **→ video** (mp4/webm) | Cross-category; the **only** sanctioned cross-category image output is none — image→video is **not** in the closed cross-category set (that set is extract-audio + to-GIF, both *from video*). Out. |
 | any image → **multi-frame fan-out** (e.g. animated GIF → one PNG per frame) | One-to-many fan-out, parked (SSOT). |
+
+---
+
+## Lossy kinds
+
+| Kind | Pairs | Layer | Condition |
+|---|---|---|---|
+| `image_lossy_codec` | `* → JPG`, `* → WEBP`, `* → HEIC`, `* → AVIF` | pair-static | WEBP, HEIC and AVIF only while their `lossless` option is off (the default) |
+| `image_palette` | `* → GIF` | pair-static | — |
+| `image_downscale` | `* → ICO` | pair-static | — |
+| `image_alpha_flatten` | an alpha-capable source (PNG, WEBP, GIF, TIFF, HEIC, AVIF, ICO, SVG) `→ JPG` or `→ BMP` | pair-static | keyed on the source format's alpha capability, not a pixel scan (*Transparency policy*) |
+| `image_animation_flatten` | an animated GIF, WEBP, APNG or AVIF sequence `→` a still target | source-fact | the §1.4 `AnimatedSource` note (*Animation policy*) |
+| `image_svg_raster` | `SVG → *` | per-item-runtime | always; before convert it shows its §2.9.1 before-convert row, after convert the note names the rendered size |
 
 ---
 
@@ -183,7 +190,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   - *Advanced:* `chroma subsampling` — default **auto** (vips disables subsampling
     at `Q ≥ 90` automatically; we keep auto); `progressive` — default **on**
     (smaller + nicer progressive load); `optimize_coding` (Huffman) — default
-    **on**; background colour for flatten — default **white**.
+    **on**; **background** — a `Color`, default **white** (the alpha-flatten colour,
+    *Transparency policy*).
 - **Lossy?:** **JPEG is always lossy on save** (DCT). `→ JPG` lossy → §2.9. From
   a lossless source (PNG/BMP/TIFF) it is lossy; JPG→JPG re-encode (not offered,
   diagonal) would be generational loss.
@@ -284,11 +292,11 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   §6.1.3/§6.3.3 COPYRIGHT-and-soname assertions).
 - **Options/settings:**
   - *Basic:* none required. Palette is generated automatically.
-  - *Advanced:* `dither` — **a single float AMOUNT (0–1) `[DECIDED]`**, default **on**
-    (libvips `gifsave`'s `dither` parameter is an *amount*, NOT a mode selector). The cgif/
-    libimagequant save path applies an **ordered dither** and exposes **NO Floyd–Steinberg /
-    error-diffusion MODE** — the only control is the dither *strength*. So the v1 UI exposes a
-    dither on/off (or 0–1 strength) toggle, **not** a mode dropdown — there is no
+  - *Advanced:* **dither** — a `Toggle` `[DECIDED]`, default **on**: on passes libvips
+    `gifsave`'s default dither amount, off passes 0. libvips' `dither` parameter is an
+    *amount*, NOT a mode selector: the cgif/libimagequant save path applies an **ordered
+    dither** and exposes **NO Floyd–Steinberg / error-diffusion MODE**, so v1 exposes the
+    on/off toggle — no strength slider and no mode dropdown. There is no
     `bayer`-vs-`sierra2_4a` choice on this path (that choice exists only on the FFmpeg
     video→GIF path, below). This parallels the video→GIF default (cross-category.md [XCAT-D]
     `[DECIDED]`) only in spirit; the cgif path has no `bayer_scale`-style parameter at all.
@@ -325,8 +333,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   (`magickload`) and BMP **save** (`magicksave`) go through the **required** ImageMagick
   delegate; still one vips process. ImageMagick is permissive, not GPL, §3.1 row 1d.)*
   No patent.
-- **Options/settings:** none required (BMP is uncompressed). *Advanced:* none
-  meaningful for v1 (no RLE toggle exposed).
+- **Options/settings:** **none** — an empty option set (BMP is uncompressed; no RLE
+  toggle); alpha always flattens onto white (*Transparency policy*).
 - **Lossy?:** BMP's codec is uncompressed/lossless, so a no-alpha source `→ BMP` is
   **not lossy** (the source's bit depth is written out). **But a source WITH alpha →
   BMP is lossy by alpha-flatten** (v1 writes 24-bit BMP, §edge-cases) →
@@ -472,13 +480,14 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   so this removes ImageMagick from the ICO path entirely while keeping vips as the per-frame
   encoder. Either way: one vips process for the frames. No patent.
 - **Options/settings:**
-  - *Basic:* **Icon sizes — default a standard multi-resolution set
-    `[16, 32, 48, 256]`** (covers favicons + Windows app icons in one file). The
-    source is downscaled to each (high-quality Lanczos); upscaling beyond the
-    source is **skipped** (never invents detail) with a note if the source is
-    smaller than a requested size.
-  - *Advanced:* custom size list; `single size` mode; 256-px stored as **embedded
-    PNG** (default on — required for the 256 entry to be valid/small).
+  - *Basic:* **Icon sizes** — an `Enum` preset `[DECIDED]`: **standard**
+    `[16, 32, 48, 256]` (default — favicons and Windows app icons in one file),
+    **favicon** `[16, 32, 48]` or **single 256** `[256]`; no custom list. The source is
+    downscaled to each size (high-quality Lanczos); upscaling beyond the source is
+    **skipped** (never invents detail) with a note if the source is smaller than a
+    requested size.
+  - No other option: the 256 px entry is always stored as an **embedded PNG**
+    (required for a valid, small 256 entry).
 - **Lossy?:** **`→ ICO` is lossy by downscaling** (multiple reduced copies) →
   **`image_downscale`** (§2.9 — NOT `image_palette`; ICO stores full-colour PNG/32-bit
   BMP entries, so there is no colour-depth reduction) — though each stored copy is
@@ -514,14 +523,17 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   *absence* of a base URL). **librsvg is pinned ≥ 2.56.3** as a belt-and-suspenders floor,
   not load-bearing for v1 (§3.5.5 / §6.1.3 version + API + corpus assertions). No patent.
 - **Options/settings:**
-  - *Basic:* **Output size.** Default render at the SVG's **intrinsic size** if it
-    has explicit `width`/`height`; if it only has a `viewBox`, default to a sane
-    **96 DPI** rasterisation of the viewBox (librsvg default DPI = 96).
-    Common everyday control exposed: **target width in pixels** (height auto from
-    aspect) — default = intrinsic; an "export at 2× / 3×" scale shortcut is offered.
-  - *Advanced:* `scale`/`zoom` factor — default **1.0**; explicit `width`×`height`;
-    `background` — default **transparent** (white when the target is JPG/BMP which
-    have no alpha); `dpi` — default **96**.
+  - *Basic:* **Width** — a `Size` of 0–32 767 px `[DECIDED]`. **0**, the default, is
+    the SVG's **intrinsic** width: its explicit `width`/`height` when it has them, else
+    its `viewBox` rasterised at **96 DPI** (librsvg's default), resolved for each file as
+    it renders, so the one batch value (§1.6) still renders every SVG at its own size;
+    1–32 767 sets one width for every file (32 767 px is the cairo image-surface limit).
+    The height follows the aspect ratio. **Scale** — an `Enum` {1×, 2×, 3×}, default
+    **1×**, multiplying the width (the "export at 2× / 3×" shortcut); a rendered width
+    past the limit fails that item clearly (*Huge/zero intrinsic size*, Edge cases).
+  - *Advanced:* **Background** — a `Color`: default **transparent**, or **white** on a
+    JPG or BMP target (no alpha); on SVG → JPG it is the pair's one background option
+    (the JPG target adds none).
 - **Lossy?:** Rasterising is **inherently a one-way loss of vector scalability**
   (you bake to a pixel grid). We surface a calm note for SVG→raster ("vector →
   fixed-size image — picked size: WxH") → §2.9. On top of that, SVG→JPG/WEBP/GIF
@@ -576,10 +588,11 @@ open contradicts "it just works").
   This is the one metadata field we normalise rather than passthrough.
 - **`[DECIDED]` — GPS/privacy:** ConvertIA **preserves all** descriptive metadata
   (incl. GPS/location EXIF) by default, with an **Advanced "remove location/metadata"
-  toggle**. It is a *local* tool (nothing uploaded), so stripping is not required for the
-  offline guarantee, and silent metadata loss is the bigger surprise for archival; a user
-  sharing a photo who wants GPS gone uses the explicit toggle. (See *Format-default
-  decisions* item 4.)
+  toggle** (a `Toggle`, default off; images only — video.md keeps a video's metadata
+  with no such option). It is a *local* tool (nothing uploaded), so stripping is not
+  required for the offline guarantee, and silent metadata loss is the bigger surprise
+  for archival; a user sharing a photo who wants GPS gone uses the explicit toggle.
+  (See *Format-default decisions* item 4.)
 
 ### Colour-profile (ICC) policy
 - **Default: preserve/embed** the source ICC profile into the output whenever the
@@ -598,7 +611,8 @@ open contradicts "it just works").
 - Alpha is **preserved** across alpha-capable targets (PNG, WEBP, GIF[1-bit],
   TIFF, HEIC, AVIF, ICO).
 - For alpha-incapable targets (**JPG, BMP**) alpha is **flattened onto a
-  background** — default **white** (Advanced: choose background colour). This is a
+  background** — default **white**; JPG exposes it as its Advanced background `Color`,
+  BMP always uses white (an empty option set). This is a
   predictable, calm inline note, not a blocker → **§2.9 `image_alpha_flatten`** (the
   canonical LossyKind that owns this disclosure; the JPG and BMP *As target* entries
   carry the matching `lossy: image_alpha_flatten` hook so the §6.7.1 Lane-A guard and

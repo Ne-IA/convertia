@@ -1211,6 +1211,9 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   - FLAC `-c:a flac -compression_level 5`; WAV `-c:a pcm_s16le`; AIFF
     `-c:a pcm_s16be`; OGG `-c:a libvorbis -q:a 3`; OPUS `-c:a libopus -b:a 128k`;
     ALAC `-c:a alac` + `ipod`. `-map_metadata 0` for tag carry (audio.md policy).
+  - **AAC ↔ M4A rewrap `[DECIDED]`:** AAC → M4A and M4A → AAC copy the stream
+    (`-c:a copy`; `-bsf:a aac_adtstoasc` for ADTS → MP4) — no re-encode, so no codec-loss
+    note (M4A → AAC still drops the M4A's tags, audio.md).
   - **Cover-art passthrough:** mechanism differs by container.
     - **MP3 / M4A / FLAC** store cover art as an **attached-picture *video* stream** →
       add `-map 0:v? -c:v copy` (the `?` makes the attached-picture stream optional so

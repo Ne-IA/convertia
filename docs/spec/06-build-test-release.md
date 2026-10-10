@@ -1023,8 +1023,8 @@ matrices and the corpus `manifest.toml`:
 
 1. **Enumerate every v1-required `(source → target)` pair** from the §04 matrices
    (images/audio/video/documents/spreadsheets/presentations + the two cross-category
-   ops), excluding diagonals/`out`/`—` cells and pairs §3.4 marks `unavailable` on
-   *all* platforms.
+   ops), excluding diagonal cells, the `·`, `—` and `out` cells (the §04 README *Matrix
+   cell grammar*) and pairs §3.4 marks `unavailable` on *all* platforms.
 2. **Union the `covers` lists** from every corpus `manifest.toml` entry.
 3. **Fail CI if any required pair has zero backing corpus files** (a pair with no
    `covers` entry) — *and* fail if any `covers` entry names a pair that does **not**
@@ -1489,9 +1489,7 @@ specifically tests whether a *human who didn't build it* succeeds. Protocol:
 - **Who:** ideally one non-developer per platform (Windows, macOS, Linux), but the
   binding requirement is the **"Tester sourcing" [DECIDED] block below** — **≥1 genuine
   non-dev walkthrough on ≥1 platform**, with the owner permitted to run the remaining two
-  (solo-project reading, recorded by the SSOT owner). The SSOT usability walkthrough is
-  also the natural place to validate the genuinely-debatable per-source defaults flagged
-  in §04 (XLSX→CSV vs →PDF; MP3-source→WAV vs FLAC; MOV-as-target demand).
+  (solo-project reading, recorded by the SSOT owner).
 - **What they must complete unaided (the named conversions) `[DECIDED — representative
   samples, not an exhaustive set]`:** `mov→mp4`, `png→webp`, `heic→jpg`, `mp3` source →
   its default, `docx→pdf`, `xlsx→csv`, `pptx→pdf`, plus the two cross-category ops

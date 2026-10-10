@@ -1221,10 +1221,9 @@ native menu is added) are app-window scoped.
 | **Patent-gapped target: disabled-tile-with-note vs omit** | **`[DECIDED]` disabled-tile-with-note** (honest — surfaces *why* a target is unavailable rather than silently omitting it, per SSOT *Fail clearly* first exception). The §3.4 disposition supplies the per-platform availability data; the §9 usability walkthrough is a `[DEFER: corpus]` confirmation of the affordance, not a re-open of the design. | rendering here, **availability data §3.4** |
 | **Theme persistence** | **`[DECIDED]`** — §7.4 ships the 3-key prefs blob (`theme` + `lastDestinationMode` + `verboseLog`), so the chosen theme persists; a minimal Light/Dark/System toggle is provided (sets the `theme` key through the core-owned prefs door, §7.4.2). Default `system`. (No longer open.) | §7.4 / §5.5 |
 
-> The two **inherited** UI-adjacent items from 04-formats — the **to-GIF option
-> scope** (`[XCAT-E]` `[DEFER: corpus]`, trim leans Basic start+duration) and the
-> **extract-audio target subset** (`[XCAT-A]` `[DEFER: corpus]`) — are **owned by
-> 04-formats/cross-category**, not here;
-> this section will render whatever option descriptors §1.6/04 declare
-> (OptionsPanel is descriptor-driven), so neither blocks the UI build. Listed here
-> only to record the cross-reference, not to claim ownership.
+> The two **inherited** UI-adjacent items from 04-formats — the **to-GIF trim** options
+> (`[XCAT-E]` `[DECIDED]`: Basic start + duration) and the **extract-audio targets**
+> (`[XCAT-A]` `[DECIDED]`: one target tile per format) — are **owned by
+> 04-formats/cross-category**, not here; this section renders whatever option
+> descriptors §1.6/04 declare (OptionsPanel is descriptor-driven). Listed here only to
+> record the cross-reference, not to claim ownership.

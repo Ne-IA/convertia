@@ -49,18 +49,19 @@ single-engine-per-pair). The same engine instance/profile is shared with
 
 ## Source → target matrix
 
-Rows = source (detected) format, cols = target. Legend:
-**✓** supported · **✓★** supported **and the pre-highlighted DEFAULT** for that
-source · **✓~** supported but **predictably lossy** (see §2.9) · **★~** default
-**and** lossy · **—** not offered · **out** degenerate / reverse / parked (with
-reason). Engine short-name **LO** = LibreOffice headless.
+Rows = source (detected) format, cols = target; cells follow the [README](README.md)
+*Matrix cell grammar*. One engine serves every pair, so the cells carry no tag:
+LibreOffice headless (`lo`, *Engine* above).
 
 | Source ↓ \ Target → | PDF | PPTX | PPT | ODP |
 |---|---|---|---|---|
-| **PPTX** | ★~ LO | — *(same format)* | ✓~ LO | ✓~ LO |
-| **PPT**  | ★~ LO | ✓ LO | — *(same format)* | ✓~ LO |
-| **ODP**  | ★~ LO | ✓~ LO | ✓~ LO | — *(same format)* |
-| **PDF**  | — *(canonical home: `documents.md`)* | out — reverse/reconstructive (parked) | out — reverse/reconstructive (parked) | out — reverse/reconstructive (parked) |
+| **PPTX** | ✓★~ | — | ✓~ | ✓~ |
+| **PPT** | ✓★~ | ✓ | — | ✓~ |
+| **ODP** | ✓★~ | ✓~ | ✓~ | — |
+| **PDF**¹ | — | out¹ | out¹ | out¹ |
+
+¹ **PDF is not a presentation source.** `PDF → PPTX/PPT/ODP` is reverse/reconstructive and
+parked (SSOT direction rule); PDF→PDF and PDF's real targets live in `documents.md`.
 
 Notes on the cells:
 
@@ -87,8 +88,16 @@ Notes on the cells:
   a target (unlike images, there is no "re-compress" use case here). The no-harm
   re-encode-in-place machinery (SSOT Principle 5) is irrelevant because the pair
   is never offered.
-- **PDF row is all `—`/out.** PDF→PDF lives in `documents.md`; PDF→PPTX/PPT/ODP
-  are reverse/reconstructive and parked (SSOT direction rule).
+
+## Lossy kinds
+
+| Kind | Pairs | Layer | Condition |
+|---|---|---|---|
+| `slides_to_pdf_flatten` | `PPTX/PPT/ODP → PDF` | pair-static | — |
+| `office_roundtrip_approx` | `ODP → PPTX/PPT`, `PPTX/PPT → ODP` | pair-static | — |
+| `pptx_to_ppt_legacy` | `PPTX → PPT` | pair-static | — |
+
+`PPT → PPTX` carries no kind (`[PRES-1]`, *Lossy disclosure*).
 
 ## Per-format entries
 

@@ -872,10 +872,13 @@ pub struct SkippedItem {
 // ─── Targets & options ──────────────────────────────────────────────────────
 pub enum TargetId {                  // the offered-target identity (§1.5 TargetKind)
     Format(FormatId),                // a format target (e.g. Webp)
-    Op(CrossCatOp),                  // a cross-category operation (ExtractAudio | ToGif)
+    Op(CrossCatOp),                  // a cross-category operation (ExtractAudio(Mp3) | ToGif)
 }
 pub type FormatId = UserFacingFormat; // a format target IS a user-facing format
-pub enum CrossCatOp { ExtractAudio, ToGif } // closed set (cross-category.md)
+pub enum CrossCatOp {                // closed set (cross-category.md) [DECIDED]
+    ExtractAudio(FormatId),          // one target per extract format: Mp3 | Wav | Flac | M4a | Ogg
+    ToGif,
+}
 
 pub enum Availability {              // from §3.4 patent disposition (resolved per platform) or a §3.1 degradable failure
     Available,
@@ -883,7 +886,7 @@ pub enum Availability {              // from §3.4 patent disposition (resolved 
 }
 
 pub struct Target {                  // an offered output choice for a source
-    pub id: TargetId,                // e.g. Format(Webp) | Op(ExtractAudio) | Op(ToGif)
+    pub id: TargetId,                // e.g. Format(Webp) | Op(ExtractAudio(Mp3)) | Op(ToGif)
     pub label: String,
     pub lossy: Option<LossyKind>,    // §2.9 catalog key (string lives in §2.9; the ONE canonical name)
     pub availability: Availability,  // from §3.4 or a §3.1 degradable failure (Available | Unavailable { reason })

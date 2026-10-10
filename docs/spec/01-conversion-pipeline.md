@@ -248,9 +248,11 @@ batch grouping (§1.3).
    recognised, ConvertIA may read a **small, bounded** structural fact needed for the
    confirm-gate summary line, **without** a full decode:
    - **`>1 sheet`** (spreadsheets) — a bounded ZIP-member read of `xl/workbook.xml`
-     (XLSX) / the ODS `content.xml` sheet count / OLE2 directory (XLS); cross-ref
-     spreadsheets.md (its multi-sheet `[DECIDED]` — picker defaulting to active sheet).
-     Drives the "only one sheet is exported" note (§2.9 `sheet_to_delimited`).
+     (XLSX) / the ODS `content.xml` sheet count / OLE2 directory (XLS); the peek also
+     reads the workbook's active sheet and its name. Cross-ref spreadsheets.md (its
+     multi-sheet `[DECIDED]`: the active sheet is exported, no picker). Drives the
+     `MultipleSheets` note, whose `detail` names the exported sheet when the set holds
+     one workbook.
    - **`animated source present`** (images) — a bounded descriptor-count peek: GIF
      image-descriptor count, WEBP `VP8X` animation flag / `ANMF` chunks, APNG `acTL`
      chunk, AVIF `avis` brand; cross-ref images.md animation policy. Drives the
@@ -488,11 +490,11 @@ images.md own the per-format peek; §1.2 owns running it):
 /// Owned here (§1.4). A stable `kind` (so §5 can localise via §2.10) plus an optional
 /// detail value; never a pre-localised sentence. The four `kind` discriminants are
 /// MultipleSheets, AnimatedSource, MultiSizeIcon, EmbeddedCoverArt — each a BARE variant
-/// (no inline payload); any value (sheet count, icon size list, …) rides the `detail:
+/// (no inline payload); any value (sheet name, icon size list, …) rides the `detail:
 /// Option<String>` field below, NOT the enum variant.
 struct CollectedNote {
     kind: CollectedNoteKind,     // stable discriminant → §5 label catalogue (§2.10)
-    detail: Option<String>,      // optional value (e.g. "3 sheets", "Windows-1252")
+    detail: Option<String>,      // optional value (e.g. "Sheet2", "Windows-1252")
 }
 
 enum CollectedNoteKind {
@@ -655,8 +657,11 @@ struct EnumChoice {
 }
 
 /// Display unit for an IntRange (purely for the §5 label; not semantic).
-enum Unit { Percent, Kbps, Px, Dpi, Fps }
+enum Unit { Percent, Kbps, Px, Dpi, Fps, Seconds }
 ```
+
+**One value set per batch `[DECIDED]`:** a batch has one `OptionValues` (§0.6), so no
+option takes per-file values.
 
 ### Basic vs Advanced `[DECIDED]`
 

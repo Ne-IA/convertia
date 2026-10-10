@@ -18,7 +18,7 @@
 | The video **source** formats (MP4, MOV, MKV, WEBM, AVI, WMV, FLV, MPG/MPEG, M4V, 3GP) — detection, codecs-inside-container | [video.md](video.md) |
 | The audio **target** formats (MP3, WAV, FLAC, M4A, …) — detection, codecs, tag handling | [audio.md](audio.md) |
 | The **GIF** target format — palette/animation/transparency | [images.md](images.md) |
-| AAC patent disposition (if AAC is an extract-audio target) | §3.4 patent matrix |
+| AAC patent disposition (the M4A extract target is AAC-encoded) | §3.4 patent matrix |
 | Generic option-declaration model / no-decision defaulting | §1.6 |
 | Lossy disclosure strings | §2.9 (this file only links, never restates) |
 | Target resolution (these appear as extra targets of one video source) | §1.5 |
@@ -29,7 +29,7 @@
 These operations are **additional targets of a video source**, not a second
 source format. The SSOT batch rule keys **only on the video source type**: drop
 48 `.mov` files → one batch → the offered target set is the video targets (mp4,
-mkv, …) **plus** "extract audio (→ …)" **plus** "to animated GIF". One chosen
+mkv, …) **plus** the five "extract audio → …" targets **plus** "to animated GIF". One chosen
 target applies to the whole same-source batch (per-file target is out of v1).
 
 ---
@@ -39,46 +39,69 @@ target applies to the whole same-source batch (per-file target is out of v1).
 All ten v1 video sources support **both** operations: every common video carries
 (or can carry) an audio track, and any video can be turned into a short GIF. The
 matrix is therefore uniform across sources; the variation lives in **how**
-extract-audio runs (stream-copy vs re-encode, decided per source by the *codec
-inside the container*, not by the container name).
+extract-audio runs (stream-copy vs re-encode, decided per item by the *codec
+inside the container*, not by the container name). Cells follow the
+[README](README.md) *Matrix cell grammar*; one engine serves every cell, so they carry no
+tag: FFmpeg (`ff`).
 
-| Video source ＼ operation | Extract audio | To animated GIF |
-|---------------------------|:-------------:|:---------------:|
-| MP4  (`.mp4`)             | ✓ FFmpeg      | ✓ FFmpeg        |
-| MOV  (`.mov`)             | ✓ FFmpeg      | ✓ FFmpeg        |
-| MKV  (`.mkv`)             | ✓ FFmpeg      | ✓ FFmpeg        |
-| WEBM (`.webm`)            | ✓ FFmpeg      | ✓ FFmpeg        |
-| AVI  (`.avi`)             | ✓ FFmpeg      | ✓ FFmpeg        |
-| WMV  (`.wmv`)             | ✓ FFmpeg      | ✓ FFmpeg        |
-| FLV  (`.flv`)             | ✓ FFmpeg      | ✓ FFmpeg        |
-| MPG/MPEG (`.mpg`,`.mpeg`) | ✓ FFmpeg      | ✓ FFmpeg        |
-| M4V  (`.m4v`)             | ✓ FFmpeg      | ✓ FFmpeg        |
-| 3GP  (`.3gp`)             | ✓ FFmpeg      | ✓ FFmpeg        |
+**`ExtractAudio(FormatId)` `[DECIDED]`.** Each column is one §0.6 `TargetId`: the five
+extract columns are `CrossCatOp::ExtractAudio(<format>)`, the format being MP3, WAV,
+FLAC, M4A or OGG, and the GIF column is `CrossCatOp::ToGif`. Each is its own target
+tile beside the video targets (§5.3 FormatPicker), carries its own options (*Options /
+settings + defaults* below), and maps 1:1 onto a corpus `covers` 2-tuple —
+`["<SOURCE>", "<FORMAT>"]` for an extract column, `["<SOURCE>", "GIF"]` for to-GIF
+(§6.4.5) — and onto the target component of the §2.5.1 equivalence key.
 
-Legend: ✓ = supported by FFmpeg. There is **no lossy flag at the source-row
-level** because lossiness depends on the chosen *audio target* (extract-audio) or
-is intrinsic to the operation (to-GIF) — see each operation's entry below.
+| Source ↓ \ Target → | Extract audio → MP3 ★ | → WAV | → FLAC | → M4A | → OGG | To animated GIF |
+|---|---|---|---|---|---|---|
+| **MP4** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **MOV** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **MKV** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **WEBM** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **AVI** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **WMV** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **FLV** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **MPG/MPEG** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **M4V** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **3GP** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+
+The `★` on the MP3 column marks MP3 as the everyday extract target (`[XCAT-A]`); a
+video source's default target stays its video.md `★` (MP4). The extract `~` cells are the
+re-encode worst case: a track already in the target's codec is stream-copied bit-exact
+(*Stream-copy vs re-encode*).
 
 > **Single-engine rule (§3.2).** Both operations are satisfied end-to-end by the
 > **one** FFmpeg invocation — no chaining. extract-audio = demux (+ optional
 > re-encode) in one process; to-GIF = decode → filtergraph (palettegen +
 > paletteuse) → GIF mux in one process.
 
-> **No degenerate pairs.** "Extract audio from a video that has no audio track"
-> is not a pair we offer-and-fail silently — it is detected and surfaced (see
-> edge cases). "To GIF from a video" always passes the SSOT inclusion test
-> (sharing a short clip as a GIF is a normal-person want). No cross-category
-> output is marked *out* — the set is exactly these two by SSOT fiat.
+> **No degenerate pairs.** Extract audio is offered on every video source, including
+> one that turns out to carry no audio track: that item fails clearly with
+> `NoAudioTrack` at run time, never silently (`[XCAT-C]`, edge cases). "To GIF from a
+> video" always passes the SSOT inclusion test (sharing a short clip as a GIF is a
+> normal-person want). No cross-category output is marked `out` — the set is exactly
+> these two operations by SSOT fiat.
 
 ---
 
-## Operation 1 — Extract audio (video → MP3 / WAV / M4A / FLAC / …)
+## Lossy kinds
+
+| Kind | Pairs | Layer | Condition |
+|---|---|---|---|
+| `audio_lossy_target` | `video → MP3`, `→ M4A`, `→ OGG` (extract audio) | per-item-runtime | the track is re-encoded; a stream copy (an MP3, AAC or Vorbis track into its own container) keeps it bit-exact |
+| `audio_transcode` | `video → MP3`, `→ M4A`, `→ OGG` (extract audio) | per-item-runtime | a lossy track is re-encoded |
+| `audio_downmix` | `video → MP3`, `→ OGG` (extract audio) | per-item-runtime | a surround track whose encoder forces a downmix (rare, *Edge cases*) |
+| `video_to_gif` | `video → GIF` | pair-static | — |
+
+---
+
+## Operation 1 — Extract audio (video → MP3 / WAV / FLAC / M4A / OGG)
 
 Pull the audio track out of a video and save it as a standalone audio file.
 
-- **Role:** operation. **Source side:** any v1 video format. **Target side:** a
-  **subset of the audio category** (chosen below; exact subset is **[XCAT-A] `[DEFER: corpus]`** —
-  subset shape decided, only the OGG-keep call awaits §6.6 validation; see the table).
+- **Role:** operation. **Source side:** any v1 video format. **Target side:** five
+  audio formats, one target each — MP3, WAV, FLAC, M4A, OGG (**[XCAT-A] `[DECIDED]`**,
+  below).
 - **Engine:** **FFmpeg** (the shared **GPL-2.0+** binary — enables libx264, §3.6.1;
   copyleft-isolated separate binary per §3.6, invoked via §3.5/§1.7, through the §2.12
   isolation wrapper). Single process per item. Same engine on Windows / macOS / Linux.
@@ -87,20 +110,20 @@ Pull the audio track out of a video and save it as a standalone audio file.
   the output file's own signature is the target audio format's (owned by
   [audio.md](audio.md)).
 
-### Target subset offered — `[XCAT-A]`: floor `[DECIDED]`, M4A/OGG `[DEFER: corpus]`
+### Target subset offered — `[XCAT-A]` `[DECIDED]`
 
 The audio category has ten formats (MP3, WAV, FLAC, AAC, M4A, OGG, OPUS, WMA,
 AIFF, ALAC). Offering **all ten** as extract-audio targets fails the SSOT
 inclusion test (a normal person does not extract a video's soundtrack to **WMA**
-or **AIFF**). The proposed v1 subset, by everyday demand:
+or **AIFF**). The v1 subset, by everyday demand:
 
-| Target | Why offered | Stream-copy possible? | Default? |
-|--------|-------------|-----------------------|----------|
-| **MP3**  | The universal "rip the audio" target; opens everywhere | only if source track is already MP3 (rare: FLV/AVI) | **★ DEFAULT** |
-| **M4A**  | Native, lossy, smaller-than-MP3 at equal quality; the AAC-in-MP4 case is a **free, lossless copy** | yes, when source track is AAC (MP4/MOV/M4V/3GP — the common case) | — |
-| **WAV**  | Uncompressed PCM — the "edit it in an audio editor" target | no (always decode → PCM) | — |
-| **FLAC** | Lossless + compressed — "keep full quality, smaller than WAV" | no (re-encode), but **lossless** | — |
-| **OGG** (Vorbis) | Open lossy target; the natural copy when source is WebM/OGG-Vorbis | only if source track is Vorbis (WebM) | — |
+| Target | Why offered | Stream-copy possible? |
+|--------|-------------|-----------------------|
+| **MP3** ★ | The universal "rip the audio" target; opens everywhere | only if source track is already MP3 (rare: FLV/AVI) |
+| **M4A**  | Native, lossy, smaller-than-MP3 at equal quality; the AAC-in-MP4 case is a **free, lossless copy** | yes, when source track is AAC (MP4/MOV/M4V/3GP — the common case) |
+| **WAV**  | Uncompressed PCM — the "edit it in an audio editor" target | no (always decode → PCM) |
+| **FLAC** | Lossless + compressed — "keep full quality, smaller than WAV" | no (re-encode), but **lossless** |
+| **OGG** (Vorbis) | Open lossy target; the natural copy when source is WebM/OGG-Vorbis | only if source track is Vorbis (WebM) |
 
 Excluded from the subset (still full formats in [audio.md](audio.md), just not
 offered *as extract-audio targets*): **AAC** (raw `.aac` — M4A covers the AAC use
@@ -112,24 +135,17 @@ patent one),
 (Windows-legacy, declining), **AIFF** (Apple-uncompressed — WAV covers the
 uncompressed want), **ALAC** (Apple-lossless — FLAC covers the lossless want).
 
-> **`[XCAT-A]` — extract-audio target subset.** **Minimum GUARANTEED subset `[DECIDED]` =
-> MP3★ + WAV + FLAC** (the always-present v1 extract-audio targets, so **C3 for a video source
-> is derivable now** — the SSOT mov→mp3 case is in scope and MP3★ is the default). **M4A and
-> OGG are `[DEFER: corpus]`** additions on top of that floor (M4A pending the §3.4 AAC
-> disposition confirmation + corpus; OGG pending the §6.6 OGG-keep validation). So the subset
-> is **{MP3★, WAV, FLAC} guaranteed, + {M4A, OGG} corpus-validated**; the residual is which of
-> the two deferred targets ship, not the floor. Two sub-points:
+> **`[XCAT-A]` `[DECIDED]` — extract-audio targets.** All five — MP3, WAV, FLAC, M4A and
+> OGG — are offered on every video source, one `CrossCatOp::ExtractAudio(FormatId)` target
+> each (§0.6); MP3 is the everyday one (the SSOT mov→mp3 case, the `★` above). Two notes:
 > 1. **AAC/M4A patent flag.** M4A output is AAC-encoded → an encoder choice with
->    patent implications. If the bundled FFmpeg uses the **native FFmpeg AAC
->    encoder** (built-in, no external libfdk-aac), the disposition still routes
->    through the §3.4 matrix exactly like the audio category's AAC/M4A row — this
->    file does **not** re-decide it, it **references §3.4**. If §3.4 gates AAC
->    encoding on some platform, the M4A extract-target is honestly **unavailable
->    there** (per SSOT first exception) and the default falls back to MP3
->    (already the default, so no UX disruption).
-> 2. **OGG inclusion.** OGG-Vorbis is borderline on everyday demand; keep it for
->    the free copy-from-WebM case, or drop to a 4-target set (MP3/M4A/WAV/FLAC)?
->    Tracked in the open-questions log.
+>    patent implications. The bundled FFmpeg uses the **native FFmpeg AAC encoder**
+>    (built-in, no external libfdk-aac), so the disposition routes through the §3.4
+>    matrix exactly like the audio category's AAC/M4A row — this file does **not**
+>    re-decide it, it **references §3.4**. If §3.4 gates AAC encoding on some platform,
+>    the M4A extract target is honestly **unavailable there** (per SSOT first
+>    exception); the other four are unaffected.
+> 2. **OGG stays** for the free stream copy of a WebM/Vorbis track.
 
 ### Stream-copy vs re-encode (decided per item, automatically)
 
@@ -220,17 +236,15 @@ lossy compression — the disclosure should not imply WAV/FLAC *improves* qualit
 
 ### Edge cases
 
-- **No audio track** (silent screen-capture, GoPro clip with audio disabled): the
-  operation is offered (we can't always know pre-flight without probing), but on
-  run it **fails that one item clearly** — the §2.8 `NoAudioTrack` kind ("This
-  file has no audio to extract.") — and the rest of the batch continues (§1.9
-  mid-run skip, §2.8 error taxonomy; this is a *named* failure kind, not a generic
-  engine error). **Better
-  if cheaply knowable:** probe during detection/collected-summary so the
-  extract-audio target is shown disabled-with-reason rather than offered-then-
-  failed — feasibility flagged **[XCAT-C] `[DEFER: corpus]`** (a full `ffprobe` of every
-  item in a large recursive batch has a cost; header-level stream-count is cheap; validate
-  the cost/UX trade in §6.6 — see the table). Never writes a 0-byte audio file.
+- **No audio track** (silent screen-capture, GoPro clip with audio disabled) —
+  **[XCAT-C] `[DECIDED]`: offer, then fail.** The extract-audio targets are offered on
+  every video source; on run, a video without an audio stream **fails that one item
+  clearly** — the §2.8 `NoAudioTrack` kind ("This file has no audio to extract.") —
+  and the rest of the batch continues (§1.9 mid-run skip, §2.8 error taxonomy; this is
+  a *named* failure kind, not a generic engine error). Never writes a 0-byte audio
+  file. Rejected: an up-front per-item probe that disables the targets with a reason —
+  it probes every item of a large recursive batch before the targets can show (§1.10
+  runs no up-front `ffprobe`).
 - **Multiple audio tracks** (multilingual MKV, commentary track): **first track
   only** in v1 (deterministic). Per-track / all-tracks extraction is **parked**
   (would be a one-to-many fan-out → out of v1 by SSOT). The lossy/summary text
@@ -296,33 +310,28 @@ banding (**[XCAT-D] `[DECIDED]`** — default `bayer:bayer_scale=5`; see the tab
 > call for an everyday converter. A second analysis pass is **not** worth the
 > temp-file + double-decode cost for v1.
 
-### Options / settings + defaults — scope is `[XCAT-E]` `[DEFER: corpus]`
+### Options / settings + defaults — `[XCAT-E]` `[DECIDED]`
 
-The honest open decision is **how many knobs to expose**. SSOT says expose only
-settings that materially change a normal user's result; for to-GIF, **fps**,
-**width**, and **trim** are the three that plausibly do. Proposal:
+SSOT says expose only settings that materially change a normal user's result; for
+to-GIF those are **fps**, **width** and **trim**, the Basic options:
 
 | Option | Where | Values | **Default (no-decision)** |
 |--------|-------|--------|---------------------------|
 | **FPS** | Basic (it visibly changes smoothness vs size) | presets *Smooth 15 / Standard 12 / Small 10* (or a 5–20 range, Advanced) | **12 fps** |
 | **Width** | Basic | presets *Large 640 / Medium 480 / Small 320* px (height auto, aspect kept, `-1`) | **480 px** |
-| **Trim (start + duration)** | **[XCAT-E] `[DEFER: corpus]`** — leans Basic start+duration (validate §6.6) | start `-ss`, duration `-t` | **whole clip, capped** (see guardrail) |
+| **Trim start** | Basic | an `IntRange` of 0–86 400 s, step 1 (`Unit::Seconds`), applied as `-ss` | **0** (the clip's start) |
+| **Trim duration** | Basic | an `IntRange` of 1 s up to `GIF_DURATION_CAP` (§1.10), step 1 (`Unit::Seconds`), applied as `-t` | **`GIF_DURATION_CAP`** |
 | Dither | Advanced (rarely touched) | `bayer` / `sierra2_4a` / `floyd_steinberg` / `none` (the **v1-exposed subset**; FFmpeg `paletteuse` additionally supports `sierra2` and `heckbert`, not exposed in v1 — note this is FFmpeg, NOT the cgif `gifsave` path, so error-diffusion IS available here) | **`bayer:bayer_scale=5`** ([XCAT-D] `[DECIDED]`) |
 | Loop | (none) | — | **infinite loop** (`-loop 0`, the GIF norm) |
 | Max colours | (not exposed) | — | **256** (full palette) |
 
-> **`[XCAT-E]` `[DEFER: corpus]` — trim scope.** A GIF of a 90-minute film is absurd; some
-> way to pick a short window is arguably essential to the operation's everyday value.
-> Three candidate v1 positions:
-> 1. **No trim UI, hard duration cap** (simplest): always GIF-ify from the start
->    up to the guardrail cap (below), e.g. first **10 s**. Predictable, zero
->    choice, but can't grab a moment from the middle.
-> 2. **Start + duration in Basic** (most useful): two number fields ("from
->    00:15, for 6 s"). One screenful, still "it just works" if left at defaults.
-> 3. **Start + duration in Advanced**, default = whole clip up to cap.
-> This is a **real product decision**, not a fake-resolvable one — flagged for
-> the owner. *Recommendation leaning option 2* (a trim window is most of why
-> people make GIFs), but explicitly deferred. Tracked in open-questions log.
+> **`[XCAT-E]` `[DECIDED]` — trim.** Start + duration in Basic: a trim window is most of
+> why people make GIFs, and left at its defaults it takes the clip's first
+> `GIF_DURATION_CAP` seconds. One window applies to the whole batch (§1.6: one
+> `OptionValues` per batch). The window never runs past a clip's end: a start at or after
+> the end moves the window to the clip's last *duration* seconds (the whole clip when it
+> is shorter), so every clip still yields a GIF, like the single-frame case below.
+> Rejected: a hard duration cap with no trim — it cannot grab a moment from the middle.
 
 > **`[XCAT-D]` `[DECIDED]` — default dither.** `bayer` (ordered, crosshatch but tiny files)
 > vs `sierra2_4a` (error-diffusion, smoother but larger, can "shimmer" between
@@ -348,10 +357,9 @@ to the §1.10 resource pre-flight; §1.10 owns the threshold mechanics):
    trim_or_cap)) × out_w × out_h × ~1 byte/px` (a deliberately conservative
    per-pixel-per-frame heuristic for GIF). This is cheap (no decode needed — clip
    length + chosen fps/width are known).
-2. **Duration cap:** encode at most `GIF_DURATION_CAP` (§1.10) — the default when no trim
-   is chosen and the maximum of any trim window ([XCAT-E] decides whether one exists); the
-   cap is *also* the guardrail's main lever. It is applied as `-t` in the same single
-   invocation.
+2. **Duration cap:** encode at most `GIF_DURATION_CAP` (§1.10) — the trim duration's
+   default and maximum ([XCAT-E]); the cap is *also* the guardrail's main lever. It is
+   applied as `-t` in the same single invocation.
 3. **Fail-fast threshold:** if the estimate still exceeds `GIF_ESTIMATE_CEILING` (e.g. very
    high width + long allowed window), the item **fails clearly before its encode** at
    §1.10 point 2 with the §2.8.2 `TooBig` (to-GIF) row rather than grinding out a giant
@@ -407,23 +415,22 @@ for short clips, calmly, once, not per-conversion.
 
 Cross-category outputs are **not** the pre-highlighted default of any video
 source — a video's pre-highlighted default is a **video** target (owned by
-[video.md](video.md), e.g. MOV→MP4). The cross-category operations sit alongside
-that default in the offered target list. **Within each operation**, the
-no-decision sub-defaults are:
+[video.md](video.md), e.g. MOV→MP4). The cross-category targets sit alongside that
+default in the offered target list, each with its no-decision options:
 
-| Operation | Offered on | Sub-default (the no-choice path) |
-|-----------|-----------|----------------------------------|
-| Extract audio | every v1 video source | **MP3, Standard quality (~190 kbps VBR)**, first audio track, source rate/channels preserved |
-| To animated GIF | every v1 video source | **12 fps, 480 px wide, whole clip up to the duration cap, bayer dither, infinite loop** |
+| Target | Offered on | The no-choice path |
+|--------|-----------|--------------------|
+| Extract audio → MP3 (WAV, FLAC, M4A and OGG likewise, each with its own defaults) | every v1 video source | **Standard quality (~190 kbps VBR)**, first audio track, source rate/channels preserved |
+| To animated GIF | every v1 video source | **12 fps, 480 px wide, the clip's first `GIF_DURATION_CAP` seconds, bayer dither, infinite loop** |
 
-So a user who never opens Advanced gets: *drop video → "Extract audio" → MP3* or
+So a user who never opens Advanced gets: *drop video → "Extract audio → MP3"* or
 *drop video → "To GIF"* → done, two clicks.
 
 ### Batch interaction (restating the SSOT rule for this file)
 
 - These are **targets of one video source**, never a second source format. The
-  batch grouping key is the **video source type only** (§1.3); choosing
-  "Extract audio" or "To GIF" applies that one target to the **whole same-source
+  batch grouping key is the **video source type only** (§1.3); choosing an
+  extract-audio target or "To GIF" applies that one target to the **whole same-source
   batch** (e.g. 48 `.mov` → 48 MP3s, or 48 GIFs). Per-file target is out of v1.
 - Output naming, no-clobber, atomic write, beside-source destination + per-
   location divert, free-space/path-limit guarantees apply **identically** to
@@ -447,24 +454,21 @@ So a user who never opens Advanced gets: *drop video → "Extract audio" → MP3
 
 One engine — **FFmpeg** — covers both operations on all three platforms; the
 only platform-conditional element is the potential **AAC/M4A** patent gate, which
-**references §3.4** and never re-decides it here. If M4A extract is gated on a
-platform, extract-audio still ships everywhere (MP3/WAV/FLAC/OGG unaffected) and
-the default (MP3) is unchanged — so no platform loses the *operation*, at most one
-*target sub-option* (honest per-platform availability per SSOT first exception).
+**references §3.4** and never re-decides it here. If the M4A extract target is gated
+on a platform, extract-audio still ships everywhere (MP3/WAV/FLAC/OGG unaffected) — so
+no platform loses the *operation*, at most the M4A target (honest per-platform
+availability per SSOT first exception).
 
 ### Open items (honest)
 
 | ID | Decision | Status |
 |----|----------|--------|
-| **[XCAT-A]** | Extract-audio target subset | **`[DECIDED]` minimum guaranteed subset = MP3★ + WAV + FLAC** (always present → C3 for video sources derivable now). **M4A + OGG are `[DEFER: corpus]`** on top (M4A pending §3.4 AAC confirmation; OGG pending §6.6 OGG-keep validation). The floor is fixed; only which deferred targets ship remains empirical. |
+| **[XCAT-A]** | Extract-audio targets | **`[DECIDED]`** MP3★, WAV, FLAC, M4A and OGG, one `ExtractAudio(FormatId)` target each (§0.6); M4A follows the §3.4 AAC disposition |
 | **[XCAT-B]** | MP3 *Standard/High/Max* preset → `-q:a`/`-b:a` mapping | **`[DECIDED]`** — owned canonically in [audio.md](audio.md) (High V0 / Standard V2 / Small V5 + explicit CBR), reused verbatim here; resolved in Operation 1's *Options / settings + defaults* MP3 row |
-| **[XCAT-C]** | Probe for "no audio track" up front (disable target with reason) vs offer-then-fail — cost vs UX on large recursive batches | `[DEFER: corpus]` — validate in §6.6 |
+| **[XCAT-C]** | "No audio track": probe up front or offer, then fail | **`[DECIDED]`** offer-then-fail with `NoAudioTrack` (*Edge cases*) |
 | **[XCAT-D]** | Default GIF dither | **`[DECIDED]`** — `bayer:bayer_scale=5` (favours small files, the everyday GIF priority); error-diffusion modes remain available as Advanced |
-| **[XCAT-E]** | to-GIF **trim** scope: hard cap only / Basic start+duration / Advanced (recommend Basic start+duration) | `[DEFER: corpus]` — design leans Basic start+duration; validate in §6.6 |
+| **[XCAT-E]** | to-GIF **trim** | **`[DECIDED]`** Basic start + duration, each an `IntRange` in seconds; the duration's default and maximum is `GIF_DURATION_CAP` |
 | **[XCAT-F]** | to-GIF guardrail numbers: duration cap, size ceiling, per-pixel size heuristic (co-owned §1.10) | cap and ceiling **`[DECIDED]`** — the §1.10 constants `GIF_DURATION_CAP` and `GIF_ESTIMATE_CEILING`; the per-pixel heuristic `[DEFER: corpus]` — a finite starting value ships; calibrate against the §6 corpus |
 
-> None of these block enumerating the **pairs**: both operations are **in** for
-> all ten video sources regardless of how A–F resolve; A–F tune *which audio
-> targets* and *how the GIF guardrail/options* behave, not *whether* the
-> operations ship. Phase 3 can begin the FFmpeg invocation work (§3.5) against the
-> proposed defaults and revisit A–F as they're decided.
+> Every item is decided; only [XCAT-F]'s per-pixel heuristic is calibrated against the
+> §6 corpus (a finite starting value ships).

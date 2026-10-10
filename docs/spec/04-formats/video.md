@@ -40,30 +40,30 @@ MPG/MPEG, 3GP) are **valid sources but not offered as targets** — nobody needs
 
 ## Source → target matrix
 
-Rows = source format, cols = target format. Legend: **✓** supported (FFmpeg) ·
-**✓★** the one pre-highlighted default target · **✓~** supported but predictably
-**lossy** (re-encode; loss flag → §2.9) · **R** = usually a lossless **remux**
-(stream-copy) when inner codecs already fit, else re-encode · **—** not offered
-(degenerate / no everyday demand — fails the SSOT inclusion test) · **self** =
-same-format (see *Category-wide → Same-container*). All conversions are one
-source → one target, satisfied by the **single** engine FFmpeg (§3.2).
+Rows = source format, cols = target format; cells follow the [README](README.md)
+*Matrix cell grammar*. All conversions are one source → one target, satisfied by the
+**single** engine FFmpeg (`ff`, §3.2), so the cells carry no tag. Every video pair may
+re-encode (the per-item `video_reencode` kind), so every cell is `~`; `R` marks the pairs
+where a lossless **remux** (stream-copy) is the common case and re-encoding only the
+worst case. The diagonal is offered: it is the normalize self-target (*Category-wide →
+Same-container*). The legacy containers (AVI, WMV, FLV, MPG/MPEG, 3GP) are sources only
+and have no column.
 
-The two cross-category targets (rightmost) are owned by
-[cross-category.md](cross-category.md); shown here only so each source's full
-offered set is visible.
+Every video source also offers the two cross-category operations (extract audio, to
+animated GIF); their matrix is [cross-category.md](cross-category.md)'s.
 
-| Source ↓ \ Target → | MP4 | MOV | MKV | WEBM | M4V | →audio | →GIF |
-|---|---|---|---|---|---|---|---|
-| **MP4**  | ✓★ self R | ✓ R | ✓ R | ✓~ | ✓ R | ✓ (x-cat) | ✓~ (x-cat) |
-| **MOV**  | ✓★ R | self R | ✓ R | ✓~ | ✓ R | ✓ (x-cat) | ✓~ (x-cat) |
-| **MKV**  | ✓★ R | ✓ R | self R | ✓~ | ✓ R | ✓ (x-cat) | ✓~ (x-cat) |
-| **WEBM** | ✓★~ | ✓~ | ✓ R | self R | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
-| **AVI**  | ✓★~ | ✓~ | ✓ R | ✓~ | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
-| **WMV**  | ✓★~ | ✓~ | ✓ R | ✓~ | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
-| **FLV**  | ✓★ R | ✓ R | ✓ R | ✓~ | ✓ R | ✓ (x-cat) | ✓~ (x-cat) |
-| **MPG/MPEG** | ✓★~ | ✓~ | ✓ R | ✓~ | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
-| **M4V**  | ✓★ R | ✓ R | ✓ R | ✓~ | self R | ✓ (x-cat) | ✓~ (x-cat) |
-| **3GP**  | ✓★~ | ✓~ | ✓ R | ✓~ | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
+| Source ↓ \ Target → | MP4 | MOV | MKV | WEBM | M4V |
+|---|---|---|---|---|---|
+| **MP4** | ✓★~R | ✓~R | ✓~R | ✓~ | ✓~R |
+| **MOV** | ✓★~R | ✓~R | ✓~R | ✓~ | ✓~R |
+| **MKV** | ✓★~R | ✓~R | ✓~R | ✓~ | ✓~R |
+| **WEBM** | ✓★~ | ✓~ | ✓~R | ✓~R | ✓~ |
+| **AVI** | ✓★~ | ✓~ | ✓~R | ✓~ | ✓~ |
+| **WMV** | ✓★~ | ✓~ | ✓~R | ✓~ | ✓~ |
+| **FLV** | ✓★~R | ✓~R | ✓~R | ✓~ | ✓~R |
+| **MPG/MPEG** | ✓★~ | ✓~ | ✓~R | ✓~ | ✓~ |
+| **M4V** | ✓★~R | ✓~R | ✓~R | ✓~ | ✓~R |
+| **3GP** | ✓★~ | ✓~ | ✓~R | ✓~ | ✓~ |
 
 Notes on the `R`/`✓~` choice per cell:
 - **MP4 / MOV / MKV / M4V / FLV → MP4 / MOV / MKV / M4V** are marked **R** because
@@ -163,9 +163,17 @@ has no §3.4 home column.
 | WebVTT | MKV, WEBM | `webvtt` | `webvtt` | `webvtt` |
 | 3GPP Timed Text (MOV_TEXT) | MP4, MOV, M4V, 3GP | `movtext` | `mov_text` | `mov_text` |
 
+## Lossy kinds
+
+| Kind | Pairs | Layer | Condition |
+|---|---|---|---|
+| `video_reencode` | every video pair | per-item-runtime | the §3.5.1 per-item disposition re-encoded a stream: always on a `~` cell without `R`, as the worst case on an `R` cell (*Re-encode vs remux*) |
+| `video_alpha_lost` | `WEBM → MP4`, `→ MOV`, `→ M4V` | per-item-runtime | the WEBM carries alpha (VP8/VP9 `yuva420p`), which the H.264 re-encode cannot keep |
+| `video_subs_dropped` | a source with subtitles `→ MP4` | per-item-runtime | image (PGS, VobSub) or styled ASS/SSA subtitles, which `mov_text` cannot carry (*Subtitles & embedded tracks*) |
+
 ## Per-format entries
 
-For every source the **default target is MP4** (`✓★`), so the per-entry
+For every source the **default target is MP4** (`★`), so the per-entry
 *As-source → targets* lists repeat the same offered set; the **detection signature,
 typical inner codecs, remux-vs-reencode disposition, and edge cases** are what
 differ and are spelled out per format.
@@ -215,9 +223,9 @@ differ and are spelled out per format.
 - **Role:** both.
 - **As source → targets:** **MP4★** (R), MOV (self R), MKV (R), WEBM (✓~), M4V (R)
   · + extract-audio, to-GIF.
-- **As target ← sources:** MP4, MOV, MKV, AVI, WMV, FLV, MPG/MPEG, M4V, 3GP.
-  *(MOV is offered as a target — Apple users sometimes want it — but it is never a
-  source's default; MP4 is.)*
+- **As target ← sources:** MP4, MOV, MKV, WEBM, AVI, WMV, FLV, MPG/MPEG, M4V, 3GP —
+  every video source. *(MOV is offered as a target — Apple users sometimes want
+  it — but it is never a source's default; MP4 is.)*
 - **Engine(s):** FFmpeg. Same encoders/patent disposition as MP4 (H.264/AAC →
   §3.4). **ProRes** (a common MOV video codec from Apple devices/editors) is
   **decoded** fine (decode-only, §3.4.3); on a **→MP4 re-encode** it becomes H.264 (intended
@@ -326,7 +334,7 @@ differ and are spelled out per format.
   by `.wma` (audio-only) — the presence of a video stream (probed) tells WMV from
   WMA. Extension `.wmv` (`.asf`).
 - **Role:** both (legacy source; **not** a target).
-- **As source → targets:** **MP4★** (✓~), MOV (✓~), **MKV (✓ R — usually lossless,
+- **As source → targets:** **MP4★** (✓~), MOV (✓~), **MKV (✓~R — usually lossless,
   see below)**, WEBM (✓~), M4V (✓~) · + extract-audio, to-GIF.
 - **As target ← sources:** **none** — Windows-only legacy delivery format, no
   everyday demand to *produce*. Out as target.
@@ -547,9 +555,10 @@ defaults.
 ### Metadata / color
 
 - **Metadata** (title, creation time, GPS/maker tags) is **copied** where the target
-  supports it (`-map_metadata 0`). Privacy note: ConvertIA is offline and does not
-  strip metadata by default — a "strip location/metadata" toggle is `[DECIDED]` NOT in v1
-  (`[DEFER: post-v1]`; see *Format-default decisions*).
+  supports it (`-map_metadata 0`). Video has no "strip location/metadata" toggle in v1
+  `[DECIDED]` (`[DEFER: post-v1]`): the v1 strip toggle is images-only (images.md
+  *Metadata policy*), so a video's metadata is always preserved (see *Format-default
+  decisions*).
 - **Color** primaries / transfer / matrix and HDR (BT.2020/PQ/HLG) tags are
   **preserved on remux**. On an **HDR→H.264 re-encode** the tags are kept but x264
   does not tone-map → `[DECIDED]`: HDR→SDR tone-mapping is *not* done in v1
@@ -620,11 +629,11 @@ acceleration later. `[DECIDED]` NOT in v1 — software-only (`[DEFER: post-v1]`,
   v1 WEBM path.
 - **Metadata/location stripping toggle — `[DECIDED]`: preserve.** Default = **preserve
   metadata** (`-map_metadata 0`); a privacy "strip location & metadata" Advanced toggle is
-  **NOT in v1** (`[DEFER: post-v1]`) — consistent with the images.md GPS decision.
-- **MOV as an offered target — `[DEFER: corpus]`.** MOV-as-target is included on the
-  assumption Mac users occasionally want it; the residual is empirical — if the
-  corpus/usability walkthrough (§9) shows no real demand (everyone wants MP4), MOV-as-target
-  is demoted to source-only to shrink the matrix. Validated during the §9 usability floor.
+  **NOT in v1** for video (`[DEFER: post-v1]`). The v1 strip toggle is images-only
+  (images.md *Metadata policy*), where location metadata is the everyday privacy case;
+  a video option would be a scope addition.
+- **MOV as an offered target — `[DECIDED]`: offered.** Every video source converts to MOV
+  (Apple users want it); MP4 stays every source's default.
 - **§3.4 dependency.** H.264/AAC encode availability per platform is owned by
   §3.4, and §3.4 is decided: AAC and H.264 ship bundled on all three platforms (§3.4.3).
   If a §3.4.4a flag flip ever marks them unavailable on a platform, **MP4-as-target there

@@ -41,45 +41,52 @@ satisfied by **one** engine (§3.2) — no chaining.
 
 ## Source → target matrix
 
-Rows = source, cols = target. Cell legend:
+Rows = source, cols = target; cells follow the [README](README.md) *Matrix cell
+grammar*. Engine tags: `lo` = LibreOffice headless (`soffice`); `csv` = ConvertIA's
+built-in Rust CSV/TSV text engine (no LO process). See [Engines](#engines).
 
-- `✓` supported · `✓★` supported **and the pre-highlighted default** target for
-  that source · `✓~` supported but **predictably lossy** (see §2.9) · `—` not
-  offered (degenerate / out of scope, reason in notes) · short engine tag in
-  parentheses.
-- Engine tags: **LO** = LibreOffice headless (`soffice`); **native** = ConvertIA's
-  built-in Rust CSV/TSV text engine (no LO process). See [Engines](#engines).
+| Source ↓ \ Target → | XLSX | XLS | ODS | CSV | TSV | PDF |
+|---|---|---|---|---|---|---|
+| **XLSX** | — | ✓~ lo | ✓ lo | ✓★~ lo | ✓~ lo | ✓~ lo |
+| **XLS** | ✓★ lo | — | ✓ lo | ✓~ lo | ✓~ lo | ✓~ lo |
+| **ODS** | ✓★ lo | ✓~ lo | — | ✓~ lo | ✓~ lo | ✓~ lo |
+| **CSV** | ✓★ lo | ✓~ lo | ✓ lo | — | ✓ csv | out¹ |
+| **TSV** | ✓★ lo | ✓~ lo | ✓ lo | ✓ csv | — | out¹ |
 
-| src ＼ tgt | XLSX | XLS | ODS | CSV | TSV | PDF |
-|-----------|------|-----|-----|-----|-----|-----|
-| **XLSX**  | —¹   | ✓ (LO) | ✓ (LO) | ✓~★ (LO) | ✓~ (LO) | ✓~ (LO) |
-| **XLS**   | ✓★ (LO) | —¹ | ✓ (LO) | ✓~ (LO) | ✓~ (LO) | ✓~ (LO) |
-| **ODS**   | ✓★ (LO) | ✓ (LO) | —¹ | ✓~ (LO) | ✓~ (LO) | ✓~ (LO) |
-| **CSV**   | ✓★ (LO) | ✓ (LO) | ✓ (LO) | —¹ | ✓ (native) | —² |
-| **TSV**   | ✓★ (LO) | ✓ (LO) | ✓ (LO) | ✓ (native) | —¹ | —² |
-
-¹ **Same-format identity cell** — not a conversion the user picks. Re-saving a
-file as its own format is not offered as a target (it would only ever be used to
-re-encode, which is not an everyday spreadsheet ask). *(Re-delimiting CSV↔TSV is
-the genuine "same-ish text" case and **is** offered, as separate formats.)*
-
-² **CSV/TSV → PDF is out.** A raw delimited text file has no page layout,
+¹ **CSV/TSV → PDF is parked.** A raw delimited text file has no page layout,
 column widths, or styling; "printing" it to PDF produces a monospaced text dump
 that is not what a normal person wants and is better served by `CSV → XLSX →`
 (user then prints). One-source→one-target + no-chaining rule means we would have
 to route CSV→PDF through LO's *Calc* import anyway; the everyday-demand payoff is
-too low. Marked **out** (parked candidate if demand appears). If a user wants a
-PDF of tabular text, the in-app default path is `CSV → XLSX` first.
+too low (a parked candidate if demand appears). If a user wants a PDF of tabular
+text, the in-app default path is `CSV → XLSX` first.
 
-**Lossy cells (`✓~`)** are every `* → CSV/TSV` (formatting/formulas/multi-sheet
-dropped) and every `* → PDF` (live workbook → frozen page; possible reflow/font
-substitution). All link to §2.9 — see [Lossy](#lossy-disclosure).
+**Diagonal (`—`):** re-saving a file as its own format is not offered as a target (it
+would only ever be used to re-encode, which is not an everyday spreadsheet ask).
+*(Re-delimiting CSV↔TSV is the genuine "same-ish text" case and **is** offered, as
+separate formats.)*
+
+**Lossy cells (`~`)** are every workbook `→ CSV/TSV` (formatting/formulas/other sheets
+dropped), every `* → PDF` (live workbook → frozen page; possible reflow/font
+substitution) and every `* → XLS` (the legacy row/column limits). All link to §2.9 —
+see [Lossy kinds](#lossy-kinds).
 
 **PDF column:** the PDF *target* itself (detection, page options, full
 as-target source list) lives in **[documents.md](documents.md)**; the three
 producer rows above (XLSX/XLS/ODS → PDF) are declared there as part of PDF's
 canonical as-target enumeration. This file only owns the spreadsheet-side
 options for the producer (page orientation, fit-to-width, sheet selection).
+
+---
+
+## Lossy kinds
+
+| Kind | Pairs | Layer | Condition |
+|---|---|---|---|
+| `sheet_to_delimited` | `XLSX/XLS/ODS → CSV/TSV` | pair-static | — |
+| `doc_pdf_reflow` | `XLSX/XLS/ODS → PDF` | pair-static | — |
+| `xls_legacy_limits` | `XLSX/ODS/CSV/TSV → XLS` | pair-static | — |
+| `text_encoding_narrowed` | `XLSX/XLS/ODS → CSV/TSV` | pair-static | only while the output encoding (*CSV / TSV export options*) is a non-Unicode encoding |
 
 ---
 
@@ -229,8 +236,8 @@ items — see §1.7 / §2.6).
     Windows-1252, ISO-8859-1, ISO-8859-15. The chosen/detected encoding is
     passed verbatim into LO's import `FilterOptions` (token 3) so the import is
     deterministic, not re-sniffed by LO.
-  - **Delimiter (input)** — *Advanced*. Default **Auto-detect**. Override: comma
-    / semicolon / tab / pipe / custom single char.
+  - **Delimiter (input)** — *Advanced*, an `Enum` `[DECIDED]`: **auto** (default: the
+    sniffed delimiter), comma, semicolon, tab, pipe; no custom character.
   - **Quoted fields are text** — *Advanced*, default **off** (let numbers be
     numbers). When **on**, quoted fields stay literal text — the fix for
     "`0123` lost its leading zero" / "`3/4` became a date" (LO import token
@@ -243,7 +250,8 @@ items — see §1.7 / §2.6).
   to UTF-8, and — per the blank-line edge case below — genuinely-empty record-lines,
   which carry no cell data, are dropped per RFC-4180 / universal CSV convention).
   Producing CSV *from* a workbook is the lossy direction (recorded on the
-  workbook entries), not these.
+  workbook entries), not these. `CSV → XLS` is lossy only by the legacy caps
+  (`xls_legacy_limits`, XLS entry).
 - **Edge cases:** mixed line endings (CRLF/LF/CR) normalised on read; embedded
   newlines inside quoted fields preserved (RFC-4180); a stray BOM is consumed,
   not emitted as a phantom first cell; ragged rows (uneven field counts) are
@@ -273,7 +281,8 @@ items — see §1.7 / §2.6).
   by definition. As a target, see shared export options (TSV forces field
   separator = tab, ASCII 9).
 - **Lossy?** Same as CSV: workbook/`→CSV` outputs from TSV are not lossy in the
-  text-content sense. Producing TSV from a workbook is the lossy direction
+  text-content sense, except `→ XLS` (the legacy caps, `xls_legacy_limits`).
+  Producing TSV from a workbook is the lossy direction
   (recorded on workbook entries).
 - **Edge cases:** because the tab is the separator, a field that itself contains
   a tab **must** be quoted on export — the native engine quotes per RFC-4180
@@ -312,8 +321,10 @@ token string (see §3.5 for exact assembly).
 | **Output encoding** | *Advanced* | **UTF-8** (token 3 = **76**) | Override: UTF-8, UTF-16, **Windows-1252** (token 3 = 1), ISO-8859-1/-15. |
 | **Byte-order mark (BOM)** | *Advanced* | **off** for UTF-8 | On request only (token 14). UTF-8 without BOM is the portable default; a BOM is offered for users feeding Excel-on-Windows that mis-reads UTF-8. |
 | **Cell content** | *Advanced* | **values as shown** (token 9 *Save cell contents as shown* = true; token 10 *Export cell formulae* = false) | The everyday default: a CSV of **results**, not `=A1+B1` strings. Optional **"export formulas instead of values"** flips tokens 9/10 — niche, *Advanced* only. |
-| **Which sheet (multi-sheet)** | basic (only shown if >1 sheet) | **picker, default = active sheet** | See the multi-sheet decision below — `[DECIDED]` (picker defaulting to active sheet; §6.6-validated). |
 | Quote all text fields | *(not exposed v1)* | off | LO default; numbers unquoted. Adding it is a scope change. |
+
+No option chooses the sheet: a multi-sheet workbook exports its active sheet, which the
+§1.4 `MultipleSheets` note names (*Multi-sheet handling*).
 
 ### CSV / TSV **import** options (CSV/TSV → workbook)
 
@@ -322,7 +333,7 @@ Maps to the import `FilterOptions` of the same filter.
 | Setting | Surface | Default | Values / notes |
 |---------|---------|---------|----------------|
 | Input encoding | *Advanced* | **Auto-detect** → UTF-8 → Windows-1252 | Detected value passed as token 3 so LO does not re-sniff. |
-| Input delimiter | *Advanced* | **Auto-detect** | Detected value passed as token 1. |
+| Input delimiter | *Advanced* | **auto** | An `Enum`: auto, comma, semicolon, tab, pipe (no custom character); the detected or chosen value is passed as token 1. |
 | Quoted fields as text | *Advanced* | **off** | On = leading-zero / date-string safe (token "quoted field as text" = true, *detect special numbers* = false). |
 | First-row-is-header | *(not exposed v1)* | n/a | LO imports all rows as data; "header" is a downstream concern, not a conversion setting. |
 
@@ -352,7 +363,7 @@ The PDF *page* options (PDF/A, quality) belong to the canonical PDF entry; the
 | **TSV**  | **XLSX** | Same as CSV. |
 
 Each source has **exactly one** fixed default (per §1.5 / README convention).
-The XLSX→CSV default is the one debatable call — `[DEFER: corpus]`, see Open items below.
+The XLSX→CSV default is `[DECIDED]` (Open items below).
 
 ### CSV / TSV encoding policy (SSOT *Content fidelity*)
 
@@ -411,24 +422,19 @@ The XLSX→CSV default is the one debatable call — `[DEFER: corpus]`, see Open
   even where it works, produces multiple files — which we do not want. So the
   engine behaviour *aligns* with the one-target rule by default.
 - **Therefore the v1 behaviour is: a multi-sheet workbook → CSV/TSV exports ONE
-  sheet**, and ConvertIA tells the user this is happening (a passive note when
-  the source has >1 sheet: *"only one sheet is exported to CSV"*) rather than
-  silently dropping data. The remaining detail — purely *which* sheet and how
-  it is chosen — is resolved below:
+  sheet**, and ConvertIA tells the user which one rather than silently dropping data:
 
-  - **A — which single sheet. `[DECIDED]` → (c) picker defaulting to active sheet
-    (`[DEFER: corpus]` validate in §6.6).** Options were: (a) the workbook's **active
-    sheet** as saved (LO's natural headless behaviour); (b) always the **first physical
-    sheet** (predictable); (c) **let the user pick** the sheet from a dropdown when
-    >1 sheet is detected, **defaulting to the active sheet** (most honest, one extra
-    optional click — does **not** violate "no required choices" since it defaults).
-    **DECIDED: (c) with default = active sheet**, because silently exporting a sheet the
-    user did not mean is the data-surprise the SSOT *Fail clearly* spirit dislikes; the
-    only residual is a §6.6 usability confirmation of the picker affordance (empirical).
+  - **A — which single sheet. `[DECIDED]` → the active sheet, no picker in v1.** The
+    workbook's active sheet as saved is exported, and the §1.4 `MultipleSheets` note in
+    the confirm summary names it (when the set holds one workbook; a set of several
+    workbooks gets the note without a name), so the user sees what the CSV will hold
+    before converting; the §2.9 `sheet_to_delimited` note shows at target choice. A
+    batch has one `OptionValues` (§1.6), so a per-workbook sheet choice has no home.
+    Rejected: a sheet picker — a per-file choice inside a batch-wide option set.
 
   - **B — single-sheet fast path. `[DECIDED]`** When the workbook has exactly **one**
-    sheet, no note and no picker — it just converts (the overwhelming common
-    case). Only multi-sheet workbooks trigger the note/picker. *(Settled.)*
+    sheet there is no note — it just converts (the overwhelming common case). Only
+    multi-sheet workbooks trigger the note.
 
 - **What is NOT open:** the no-fan-out rule (multiple-CSV output stays parked),
   and the → PDF case (PDF *can* be multi-page, so → PDF keeps all sheets — no
@@ -449,27 +455,25 @@ The XLSX→CSV default is the one debatable call — `[DEFER: corpus]`, see Open
 
 ### Lossy disclosure
 
-The lossy pairs in this category, each cross-referenced to the §2.9 string
-catalog (this file records *which* pairs; §2.9 owns the exact note text):
+What each lossy pair loses, by §2.9 kind (`## Lossy kinds` maps the pairs; §2.9 owns
+the exact note text):
 
 | Pair(s) | Loss | §2.9 `LossyKind` |
 |---------|------|-----------|
 | `XLSX/XLS/ODS → CSV` and `→ TSV` | one sheet only; all formatting, formulas-as-text, charts, colours, multi-sheet structure dropped — values only | `sheet_to_delimited` |
 | `XLSX/XLS/ODS → PDF` | live workbook → fixed page; formulas frozen, wide tables may scale/clip, fonts may substitute | `doc_pdf_reflow` *(shared office→PDF kind)* |
 | `* → XLS` | legacy limits: 65 536 rows / 256 columns max; post-2003 features dropped | `xls_legacy_limits` |
-| `CSV/TSV → workbook` with a non-Unicode chosen output encoding (rare) | un-representable characters would be lost — flagged, not silently dropped | `text_encoding_narrowed` |
+| `XLSX/XLS/ODS → CSV/TSV` with a non-Unicode chosen output encoding (rare) | un-representable characters would be lost — flagged, not silently dropped | `text_encoding_narrowed` |
 
-`CSV ↔ TSV` and `CSV/TSV → workbook` (UTF-8) are **not lossy** and carry no note.
+`CSV ↔ TSV` and `CSV/TSV → XLSX/ODS` are **not lossy** and carry no note.
 
 ### Open items (resolved)
 
-- **XLSX default target = CSV vs XLSX-staying-put — `[DEFER: corpus]`.** XLSX's default
-  is **CSV** (most common "get the data out" want); the counter-argument (drop `.xlsx` →
-  more often want `→ PDF` to share a frozen copy) is defensible, so **CSV is the v1
-  starting default** and the only residual is an empirical confirmation against the SSOT
-  usability walkthrough (§6.6) — a measured call, not an open design question.
-- **Multi-sheet → CSV sheet selection — `[DECIDED]`** (picker defaulting to active sheet;
-  §6.6-validated) — see *Multi-sheet handling* item A above.
+- **XLSX default target — `[DECIDED]` CSV.** "Get the data out" for an upload or an import
+  is the most common want from a finished workbook; `→ PDF` stays offered for a frozen
+  copy.
+- **Multi-sheet → CSV sheet selection — `[DECIDED]`** the active sheet, named in the
+  `MultipleSheets` note; no picker (*Multi-sheet handling* item A).
 - **Pipe-delimited (`.psv`) as a first-class TSV-sibling target — `[DECIDED]` NOT in v1.**
   `.psv` is only auto-*detected* as a CSV input variant, never offered as a target; it
   stays out (niche), `[DEFER: post-v1]` unless demand appears.

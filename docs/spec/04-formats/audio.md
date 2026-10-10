@@ -10,8 +10,9 @@
 > invoked binary. The *audio* encoders it uses here are all LGPL/BSD; the GPL class
 > comes from x264 in the shared binary.) Every audio
 > source→target pair is satisfied by a single FFmpeg invocation (decode source →
-> re-encode target), so the §3.2 single-engine-per-pair rule holds trivially and
-> no pair is ever chained. The "extract audio from video" outputs (video →
+> re-encode target; the AAC ↔ M4A rewrap copies the stream instead, §3.5.1), so the
+> §3.2 single-engine-per-pair rule holds trivially and no pair is ever chained. The
+> "extract audio from video" outputs (video →
 > MP3/WAV/…) are **not** owned here — they live in
 > [cross-category.md](cross-category.md) as an *operation* on a video source.
 > This file covers **audio-file → audio-file** only.
@@ -27,9 +28,10 @@ Two everyday-invisible distinctions decide most of the matrix and the defaults:
    are **lossy** (audio is permanently discarded to save space). A
    lossy→lossless conversion (e.g. MP3→FLAC) **cannot recover** what the lossy
    step already threw away — the output is larger but **not** higher quality than
-   its source. A lossy→lossy conversion (e.g. MP3→AAC) **decodes then re-encodes**
-   and adds a *second* round of loss (transcoding/generation loss). Both of these
-   are flagged in the matrix and disclosed per §2.9.
+   its source. A lossy→lossy conversion (e.g. MP3→AAC; the AAC ↔ M4A rewrap of
+   point 2 aside) **decodes then re-encodes** and adds a *second* round of loss
+   (transcoding/generation loss). Both of these are flagged in the matrix and
+   disclosed per §2.9.
 
 2. **Codec vs container.** A user picks a *format*, but a file is a **container**
    (the wrapper, e.g. M4A / OGG / WAV) holding an **audio codec** (the actual
@@ -39,51 +41,47 @@ Two everyday-invisible distinctions decide most of the matrix and the defaults:
    - **M4A** — a *container* (MP4/iTunes flavour) that can hold **AAC** *or*
      **ALAC**. As a ConvertIA target, "M4A" means **M4A holding AAC** (the
      everyday meaning). M4A-holding-ALAC is offered under the **ALAC** target.
+     Between AAC and M4A only the container differs, so that pair **rewraps** the
+     AAC stream with no re-encode (§3.5.1).
    - **ALAC** — a lossless *codec* that, as a file, lives **inside an M4A/MP4
      container** (`.m4a`). Picking "ALAC" produces an `.m4a` whose codec is ALAC.
 
 ConvertIA never asks the user about containers/codecs; the target name fixes both
 (table below). The distinction only shows up in detection (an `.m4a` can be AAC
-or ALAC inside) and in the per-format notes.
+or ALAC inside), in the AAC ↔ M4A rewrap and in the per-format notes.
 
 ---
 
 ## Source → target matrix
 
-Rows = detected **source**, columns = chosen **target**. Cell legend:
+Rows = detected **source**, columns = chosen **target**; cells follow the
+[README](README.md) *Matrix cell grammar*. One engine serves every pair, so the cells
+carry no tag: FFmpeg (`ff`, the shared GPL-2.0+ binary, §3.6.1).
 
-- `✓` supported (FFmpeg) · `✓★` supported **and the pre-highlighted default
-  target** for that source · `✓~` supported **but predictably lossy** (note via
-  §2.9) · `✓★~` default **and** lossy · `—` not offered (see footnote) · self
-  cell (diagonal) = re-encode same format, offered only where it has everyday
-  meaning (re-compress), else `—`.
+| Source ↓ \ Target → | MP3 | WAV | FLAC | AAC | M4A | OGG | OPUS | AIFF | ALAC | WMA |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **MP3** | — | ✓★~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | out¹ |
+| **WAV** | ✓★~ | — | ✓ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓ | out¹ |
+| **FLAC** | ✓★~ | ✓~ | — | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓ | out¹ |
+| **AAC** | ✓★~ | ✓ | ✓~ | — | ✓ | ✓~ | ✓~ | ✓ | ✓~ | out¹ |
+| **M4A** | ✓★~ | ✓~ | ✓~ | ✓~ | — | ✓~ | ✓~ | ✓~ | ✓~ | out¹ |
+| **OGG** | ✓★~ | ✓~ | ✓~ | ✓~ | ✓~ | — | ✓~ | ✓~ | ✓~ | out¹ |
+| **OPUS** | ✓★~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | — | ✓~ | ✓~ | out¹ |
+| **AIFF** | ✓★~ | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ | — | ✓ | out¹ |
+| **ALAC** | ✓★~ | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | — | out¹ |
+| **WMA** | ✓★~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓~ | — |
 
-All cells are FFmpeg (the shared GPL-2.0+ binary; §3.6.1) — the engine column is omitted from the grid to
-keep it readable and stated once per entry instead.
-
-| src ＼ tgt | MP3 | WAV | FLAC | AAC | M4A | OGG | OPUS | AIFF | ALAC | WMA |
-|-----------|-----|-----|------|-----|-----|-----|------|------|------|-----|
-| **MP3**   | —   | ✓★  | ✓~   | ✓~  | ✓~  | ✓~  | ✓~   | ✓    | ✓~   | —   |
-| **WAV**   | ✓★~ | —   | ✓    | ✓~  | ✓~  | ✓~  | ✓~   | ✓    | ✓    | —   |
-| **FLAC**  | ✓★~ | ✓   | —    | ✓~  | ✓~  | ✓~  | ✓~   | ✓    | ✓    | —   |
-| **AAC**   | ✓★~ | ✓   | ✓~   | —   | ✓   | ✓~  | ✓~   | ✓    | ✓~   | —   |
-| **M4A**   | ✓★~ | ✓   | ✓~   | ✓   | —   | ✓~  | ✓~   | ✓    | ✓~   | —   |
-| **OGG**   | ✓★~ | ✓   | ✓~   | ✓~  | ✓~  | —   | ✓~   | ✓    | ✓~   | —   |
-| **OPUS**  | ✓★~ | ✓   | ✓~   | ✓~  | ✓~  | ✓~  | —    | ✓    | ✓~   | —   |
-| **AIFF**  | ✓★~ | ✓   | ✓    | ✓~  | ✓~  | ✓~  | ✓~   | —    | ✓    | —   |
-| **ALAC**  | ✓★~ | ✓   | ✓    | ✓~  | ✓~  | ✓~  | ✓~   | ✓    | —    | —   |
-| **WMA**   | ✓★~ | ✓   | ✓~*  | ✓~  | ✓~  | ✓~  | ✓~   | ✓    | ✓~*  | —   |
+¹ **`→ WMA` is parked (out of v1).** FFmpeg's only usable WMA encoder is `wmav2` (low
+quality, max 2 channels, effectively legacy); no normal person asks to convert *into*
+WMA — WMA is a format people convert *away from*. Per the SSOT inclusion test and the
+forward/derivative-direction rule, WMA is source-only; WMA-as-source is fully supported
+(decode is solid).
 
 Notes on the matrix:
 
-- **WMA is source-only** (whole column `—`). FFmpeg's only usable WMA encoder is
-  `wmav2` (low quality, max 2 channels, effectively legacy); no normal person
-  asks to convert *into* WMA — WMA is a format people convert *away from*. Per the
-  SSOT inclusion test and the forward/derivative-direction rule, `→ WMA` is **out
-  of v1** (parked). WMA-as-source is fully supported (decode is solid).
-- **WMA → FLAC / → ALAC** (`✓~*`): the source WMA is lossy, so the lossless target
-  is honest storage but carries **no quality benefit** over the source — flagged
-  lossy-origin (same §2.9 note as any lossy→lossless).
+- **WMA → FLAC / → ALAC**: the source WMA is lossy, so the lossless target is honest
+  storage but carries **no quality benefit** over the source — flagged lossy-origin
+  (the same §2.9 note as any lossy→lossless pair).
 - **Diagonal (same→same) is `—`** for v1. "Re-compress an MP3 to a smaller MP3"
   has everyday demand in theory, but in v1 it is **parked**: it requires exposing
   a target bitrate as a *required* choice to be meaningful (otherwise it silently
@@ -96,7 +94,14 @@ control + generation-loss disclosure; see Format-default decisions item 2 / see
   genuinely want them (archival, importing into a lossless library, feeding a
   tool that only accepts FLAC), but they are flagged `✓~` and disclosed: the
   result is bigger, not better.
-- Every non-`—` cell passes the SSOT inclusion test: each is a plausible everyday
+- **WAV/AIFF-column `~`** comes from the per-item-runtime `audio_bitdepth` and
+  `audio_tags_dropped` worst cases — a >16-bit or tagged source (`## Lossy kinds`) —
+  never from `audio_lossy_origin` (*Lossless ↔ lossy disclosure*). `AAC → WAV/AIFF`
+  stays plain `✓`: raw ADTS carries no tags and no extra bit depth.
+- **AAC ↔ M4A** rewraps the stream with no re-encode (§3.5.1), so the pair declares no
+  options and carries no codec note; `M4A → AAC` is still `~`, because raw ADTS keeps
+  none of the M4A's tags (`audio_tags_dropped`).
+- Every `✓` cell passes the SSOT inclusion test: each is a plausible everyday
   audio interchange (shrink for a phone, get a universally-playable MP3/WAV,
   archive losslessly, produce an Apple-friendly M4A/ALAC, get a small
   modern OPUS).
@@ -136,6 +141,19 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
 | PCM, signed 32-bit BE | AIFF | `pcm_s32be` | `pcm_s32be` | `pcm_s32be` | §3.4.2 |
 | PCM, 32-bit float BE | AIFF (AIFC `fl32`) | `pcm_f32be` | `pcm_f32be` | `pcm_f32be` | §3.4.2 |
 | PCM, 64-bit float BE | AIFF (AIFC `fl64`) | `pcm_f64be` | `pcm_f64be` | `pcm_f64be` | §3.4.2 |
+
+---
+
+## Lossy kinds
+
+| Kind | Pairs | Layer | Condition |
+|---|---|---|---|
+| `audio_lossy_target` | `* → MP3`, `→ AAC`, `→ M4A`, `→ OGG`, `→ OPUS` | pair-static | not on the AAC ↔ M4A rewrap (§3.5.1) |
+| `audio_transcode` | a lossy source (MP3, AAC, M4A, OGG, OPUS, WMA) `→` a lossy target | pair-static | not on the AAC ↔ M4A rewrap |
+| `audio_lossy_origin` | a lossy source `→ FLAC` or `→ ALAC` | pair-static | never on `→ WAV/AIFF` (*Lossless ↔ lossy disclosure*) |
+| `audio_bitdepth` | `WAV/FLAC/AIFF/ALAC/WMA → WAV` or `→ AIFF` | per-item-runtime | a >16-bit source while the target keeps its 16-bit default |
+| `audio_tags_dropped` | a tagged source (every format but AAC) `→ AAC`, `→ WAV` or `→ AIFF` | per-item-runtime | the source carries tags the target cannot store (raw ADTS stores none; WAV and AIFF keep only the common text tags) |
+| `audio_downmix` | a surround source `→` a target whose encoder forces stereo | per-item-runtime | only where the encoder forces the downmix (*Format-default decisions* 4) |
 
 ---
 
@@ -203,8 +221,9 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
   - Sample rate / channels preserved; no resample/down-mix by default.
 - **Lossy?:** **Lossless as a target** (PCM). *Caveat:* a 24-bit or float source
   → default **16-bit** WAV is a **bit-depth reduction = lossy** in the strict
-  sense; flagged only in that specific case (§2.9), not for the common
-  16-bit→16-bit path.
+  sense; the exact note fires only in that case (§2.9), not on the common
+  16-bit→16-bit path, and at target choice it shows as the pair's worst case
+  (§2.9.2).
 - **Edge cases:** WAV has weak native metadata (LIST/INFO chunk) — FFmpeg maps the
   common tags it can; **rich tags from a tagged source may not survive into WAV → §2.9
   `audio_tags_dropped`** (conditional on the source actually having metadata — disclosed
@@ -252,11 +271,13 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
   probe resolves ADTS-vs-MP3 by parsing the header fields.
 - **Role:** both.
 - **As source → targets:** MP3 ★, WAV, FLAC, M4A, OGG, OPUS, AIFF, ALAC.
+  (→ "M4A" rewraps the same AAC stream into the MP4 container, §3.5.1.)
 - **As target ← sources:** every other audio format (the small, modern, widely
   playable lossy choice when MP3 isn't specifically wanted).
 - **Engine:** FFmpeg, **native `aac` encoder** (FFmpeg's built-in encoder —
   **license-clean, no `--enable-nonfree`/libfdk_aac**). Muxer = **`adts`**
-  (writes raw `.aac`). All platforms.
+  (writes raw `.aac`). All platforms. An M4A source is stream-copied, not encoded
+  (the rewrap, §3.5.1).
 - **Patent flag:** ⚠ **AAC is patent-encumbered → disposition decided in §3.4**
   (format × platform × ship/gate/rely-on-OS/unavailable). ConvertIA references
   that matrix; it does **not** re-decide here. *If* §3.4 marks AAC unavailable on
@@ -273,7 +294,11 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
   - *Advanced — "AAC quality":* CBR presets `128k` · `192k [default]` · `256k`.
     No VBR exposed (encoder limitation).
   - Sample rate / channels preserved.
-- **Lossy?:** **Always lossy as a target.** Disclosure → §2.9.
+  - An **M4A** source declares none of these: M4A → AAC is the rewrap (§3.5.1).
+- **Lossy?:** **Lossy as a target** (an AAC encode) from every source but M4A.
+  M4A → AAC rewraps the same AAC stream (§3.5.1), so it adds no codec loss and loses
+  only the M4A's tags and cover art (`audio_tags_dropped`, *Edge cases*). Disclosure
+  → §2.9.
 - **Edge cases:** raw ADTS `.aac` carries **no metadata container** — tags from
   the source are **dropped** (ADTS has no tag frames); this is itself a predictable
   loss noted at the AAC target (§2.9 `audio_tags_dropped`). Users who want AAC *with*
@@ -291,20 +316,22 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
   flag are correct).
 - **Role:** both.
 - **As source → targets:** MP3 ★, WAV, FLAC, AAC, OGG, OPUS, AIFF, ALAC.
-  (An M4A-holding-AAC source → "AAC" target = same codec, re-wrapped to raw ADTS;
-  → "ALAC" target = transcode AAC→ALAC, lossy-origin.)
+  (An M4A-holding-AAC source → "AAC" target = same codec, rewrapped to raw ADTS
+  with no re-encode, §3.5.1; → "ALAC" target = transcode AAC→ALAC, lossy-origin.)
 - **As target ← sources:** every other audio format. **"M4A" target = M4A
   container holding AAC** (the Apple-ecosystem-friendly lossy choice that *keeps
   tags*, unlike raw `.aac`).
 - **Engine:** FFmpeg, encoder **native `aac`**, muxer **`ipod`** (writes `.m4a`).
-  All platforms.
+  All platforms. An AAC source is stream-copied, not encoded (the rewrap, §3.5.1).
 - **Patent flag:** ⚠ **inherits AAC's §3.4 disposition** (the codec is AAC). M4A
   target availability per platform = AAC's availability per §3.4. *(An M4A holding
   ALAC is offered as the ALAC target, which is patent-free.)*
 - **Options/settings:** identical to AAC (CBR `-b:a 192k` default; Advanced
-  `128k/192k/256k`). The only difference from the AAC target is the **container**
+  `128k/192k/256k`) for every source but AAC; an AAC source declares none (AAC → M4A
+  is the rewrap, §3.5.1). The only difference from the AAC target is the **container**
   (`.m4a` with iTunes metadata atoms) — chosen automatically, not a user setting.
-- **Lossy?:** **Always lossy as a target** (AAC re-encode). Disclosure → §2.9.
+- **Lossy?:** **Lossy as a target** (an AAC encode) from every source but AAC. AAC →
+  M4A rewraps the same AAC stream (§3.5.1) and is not flagged. Disclosure → §2.9.
 - **Edge cases:** M4A **keeps metadata** (iTunes `ilst` atoms: title/artist/album/
   cover art) — this is M4A's advantage over raw AAC. Cover art round-trips from
   FLAC/MP3/OGG. Faststart (`-movflags +faststart`) is applied so the moov atom is
@@ -494,6 +521,9 @@ default.
 | ALAC | — (no knob) | lossless | — |
 | WMA  | n/a (target out of v1) | — | — |
 
+The AAC ↔ M4A rewrap (§3.5.1) copies the stream and takes none of the AAC or M4A
+settings.
+
 Defaulting principle: **lossy targets use VBR where the encoder supports it well**
 (MP3, Vorbis, Opus) for best size/quality, and **CBR only where VBR is unsafe**
 (native AAC). **Lossless targets preserve everything** and only expose
@@ -544,9 +574,10 @@ Three predictably-lossy situations are flagged in the matrix and disclosed as a
 calm inline note at target choice (per SSOT *Fail clearly* / §2.9 catalog):
 
 1. **lossy → lossy** (e.g. MP3→AAC, OGG→OPUS): a *second* round of compression
-   loss (transcoding/generation loss). → §2.9 `audio_transcode`.
-2. **lossless/lossy → lossy** as a target (any `→ MP3/AAC/M4A/OGG/OPUS`): the
-   target is lossy. → §2.9 `audio_lossy_target`.
+   loss (transcoding/generation loss). → §2.9 `audio_transcode`. Not on the AAC ↔
+   M4A rewrap, which copies the stream (§3.5.1).
+2. **lossless/lossy → lossy** as a target (any `→ MP3/AAC/M4A/OGG/OPUS` but the
+   AAC ↔ M4A rewrap): the target is lossy. → §2.9 `audio_lossy_target`.
 3. **lossy → lossless** (e.g. MP3→FLAC, WMA→ALAC): **no quality gain** — bigger
    file, the discarded detail is gone forever. → §2.9 `audio_lossy_origin` (so
    users aren't misled into thinking they "upgraded" their audio).
@@ -557,12 +588,14 @@ calm inline note at target choice (per SSOT *Fail clearly* / §2.9 catalog):
      archive-quality claim — firing the note on every MP3→WAV would be alarming noise;
      FLAC/ALAC are the **archive-quality** targets users *do* reach for to "preserve
      quality", so the no-gain disclosure is meaningful there. The asymmetry is a
-     deliberate UX call, not an oversight (the matrix `✓~` cells reflect it).
+     deliberate UX call, not an oversight (`## Lossy kinds` reflects it: a WAV or AIFF
+     cell's `~` comes from `audio_bitdepth` or `audio_tags_dropped`, never from this
+     kind).
 4. **bit-depth reduction** (>16-bit source → default 16-bit WAV/AIFF): a narrow
    lossy case, flagged only for that path. → §2.9 `audio_bitdepth`.
 
 Exact strings live in the **§2.9 message catalog** (home); this file only records
-*which* pairs trigger them (the `✓~` cells).
+*which* pairs trigger them (`## Lossy kinds` and the matrix `~` flags).
 
 ### Engine, licensing, offline
 

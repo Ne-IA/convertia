@@ -1111,29 +1111,28 @@ One glossary for every spec file; per-file headers point here.
   (markup↔markup, `*→HTML --embed-resources`) run under `--sandbox` without needing a
   blocked on-disk data file; if one does, bundle it and pass it explicitly on argv (never
   drop `--sandbox`). Owner: §3.5.4.
-- **extract-audio target subset `[DECIDED floor]`** — **minimum GUARANTEED subset = MP3★ +
-  WAV + FLAC** (always present → C3 for video sources derivable now; SSOT mov→mp3 in scope),
-  with **M4A + OGG as `[DEFER: corpus]`** on top (M4A pending §3.4 AAC confirmation; OGG
-  pending §6.6 OGG-keep). The floor is fixed; only which deferred targets ship is empirical.
-  **"no audio track" up-front probe** (disable-with-reason vs offer-then-fail) stays
-  `[DEFER: corpus]`. Owner: cross-category [XCAT-A]/[XCAT-C].
-- **to-GIF option scope** (trim: hard-cap / Basic start+duration / Advanced) stays
-  `[DEFER: corpus]`. **Default dither `[DECIDED]`:** video→GIF (FFmpeg) = `bayer:bayer_scale=5`
-  (a real mode choice exists on that path); image→GIF (cgif) = a single dither AMOUNT (no
-  mode selector — corrected this pass, libvips `gifsave` `dither` is a float, not a
-  bayer-vs-sierra2_4a choice). Owner: cross-category [XCAT-D]/[XCAT-E] / images.md.
+- **extract-audio targets `[DECIDED]`** — MP3★, WAV, FLAC, M4A and OGG, one
+  `ExtractAudio(FormatId)` target each (M4A follows the §3.4 AAC disposition); a video
+  without audio is offered them and fails with `NoAudioTrack` (offer-then-fail). Owner:
+  cross-category [XCAT-A]/[XCAT-C].
+- **to-GIF options `[DECIDED]`** — trim is Basic start + duration, each an `IntRange` in
+  seconds, the duration's default and maximum `GIF_DURATION_CAP`. **Default dither
+  `[DECIDED]`:** video→GIF (FFmpeg) = `bayer:bayer_scale=5` (a real mode choice exists on
+  that path); image→GIF (cgif) = a dither `Toggle` (libvips `gifsave` `dither` is an
+  amount, not a bayer-vs-sierra2_4a choice). Owner: cross-category [XCAT-D]/[XCAT-E] /
+  images.md.
 - **Video HEVC-source default `[DECIDED]`** — re-encode HEVC→H.264 by default (honours
   the SSOT mov→mp4 "plays everywhere" usability-floor; the §6.10 row-7 no-required-choices
   gate can verify it), with verbatim remux offered as an Advanced "keep original quality
   (H.265)" toggle; same disposition for AV1-in-MP4. Newly DECIDED on video.md:
-  **metadata-strip toggle NOT v1** (preserve; `[DEFER: post-v1]`), **WEBM two-pass &
-  AV1-as-WEBM-target NOT v1** (single-pass VP9; `[DEFER: post-v1]`), **HW-encode NOT v1**.
-  Still `[DEFER: corpus]` (empirical only): **auto-deinterlace default** (design = yadif
-  on for flagged-interlaced) and **MOV-as-target demand** — validate in §6.6. Owner: video.md.
-- **Spreadsheets multi-sheet → CSV sheet selection `[DECIDED]`** — **picker defaulting to
-  active sheet** (§6.6 confirms the affordance, `[DEFER: corpus]`); **PSV target NOT v1**
-  `[DECIDED]`. **XLSX default CSV-vs-PDF `[DEFER: corpus]`** (CSV is the v1 default; validate
-  in §6.6). Owner: spreadsheets.md.
+  **metadata-strip toggle images-only** (video preserves, no toggle; `[DEFER: post-v1]`),
+  **WEBM two-pass & AV1-as-WEBM-target NOT v1** (single-pass VP9; `[DEFER: post-v1]`),
+  **HW-encode NOT v1**, **MOV-as-target offered**. Still `[DEFER: corpus]` (empirical
+  only): **auto-deinterlace default** (design = yadif on for flagged-interlaced) —
+  validate in §6.6. Owner: video.md.
+- **Spreadsheets multi-sheet → CSV sheet selection `[DECIDED]`** — the **active sheet** is
+  exported and the `MultipleSheets` note names it, no picker; **PSV target NOT v1**
+  `[DECIDED]`; **XLSX default CSV `[DECIDED]`**. Owner: spreadsheets.md.
 - **Audio MP3-source default `[DECIDED]` = WAV** (over FLAC — FLAC-of-MP3 is the misleading
   no-gain case); **MP3→MP3 same-format & surround force-stereo NOT v1** `[DECIDED]`
   (`[DEFER: post-v1]`). Owner: audio.md.

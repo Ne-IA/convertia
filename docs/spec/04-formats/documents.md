@@ -23,26 +23,24 @@ engine** (no chaining, §3.2). Documents carry no patent-encumbered formats, so 
 
 ## Source → target matrix
 
-Rows = source, cols = target. Cell legend:
-`✓` supported · `✓★` supported **and the pre-highlighted default** for that source ·
-`✓~` supported but **predictably lossy** (→ §2.9) · `✓★~` default **and** lossy ·
-`—` out (degenerate / no everyday demand / reverse-reconstructive) ·
-`·` identity (same format, not offered as a conversion).
+Rows = source, cols = target; cells follow the [README](README.md) *Matrix cell
+grammar*. Engine tags: `lo` = LibreOffice headless · `pd` = pandoc · `pp` = poppler
+`pdftotext`. (Ghostscript is **[DECIDED: NOT shipped v1]** — poppler-only PDF→TXT, no
+AGPL surface; see *Engines* / §3.1.)
 
-Engine short-names: **LO** = LibreOffice headless · **pp** = poppler `pdftotext` ·
-**pd** = pandoc. (Ghostscript is **[DECIDED: NOT shipped v1]** — poppler-only PDF→TXT,
-no AGPL surface; see *Engines* / §3.1.)
+| Source ↓ \ Target → | PDF | DOCX | DOC | ODT | RTF | TXT | MD | HTML |
+|---|---|---|---|---|---|---|---|---|
+| **PDF** | — | out¹ | out¹ | out¹ | out¹ | ✓★~ pp | out¹ | out¹ |
+| **DOCX** | ✓★~ lo | — | ✓ lo | ✓ lo | ✓~ lo | ✓~ pd | ✓~ pd | ✓~ pd |
+| **DOC** | ✓★~ lo | ✓ lo | — | ✓ lo | ✓~ lo | ✓~ lo² | ✓~ lo² | ✓~ lo² |
+| **ODT** | ✓★~ lo | ✓ lo | ✓ lo | — | ✓~ lo | ✓~ pd | ✓~ pd | ✓~ pd |
+| **RTF** | ✓★~ lo | ✓ lo | ✓ lo | ✓ lo | — | ✓~ pd | ✓~ pd | ✓~ pd |
+| **TXT** | ✓★ lo | ✓ pd | · | ✓ pd | ✓ pd | — | ✓ pd | ✓ pd |
+| **MD** | ✓★~ lo | ✓ pd | · | ✓ pd | ✓ pd | ✓~ pd | — | ✓ pd |
+| **HTML** | ✓★~ lo | ✓ pd | · | ✓ pd | ✓~ pd | ✓~ pd | ✓~ pd | — |
 
-| src ＼ tgt | PDF | DOCX | DOC | ODT | RTF | TXT | MD | HTML |
-|-----------|-----|------|-----|-----|-----|-----|----|------|
-| **PDF**   | ·   | —    | —   | —   | —   | ✓★~ pp | — | —   |
-| **DOCX**  | ✓★~ LO | ·  | ✓ LO | ✓ LO | ✓ LO | ✓~ pd | ✓~ pd | ✓~ pd |
-| **DOC**   | ✓★~ LO | ✓ LO | · | ✓ LO | ✓ LO | ✓~ LO† | ✓~ LO† | ✓~ LO† |
-| **ODT**   | ✓★~ LO | ✓ LO | ✓ LO | ·  | ✓ LO | ✓~ pd | ✓~ pd | ✓~ pd |
-| **RTF**   | ✓★~ LO | ✓ LO | ✓ LO | ✓ LO | ·  | ✓~ pd | ✓~ pd | ✓~ pd |
-| **TXT**   | ✓★ LO | ✓ pd | — | ✓ pd | ✓ pd | · | ✓ pd | ✓ pd |
-| **MD**    | ✓★~ LO | ✓ pd | — | ✓ pd | ✓ pd | ✓~ pd | · | ✓ pd |
-| **HTML**  | ✓★~ LO | ✓ pd | — | ✓ pd | ✓ pd | ✓~ pd | ✓~ pd | · |
+¹ **Reverse/reconstructive — parked.** `PDF → DOCX/DOC/ODT/RTF/MD/HTML` would rebuild an
+editable document from a flat page format (SSOT *Direction & shape rule*).
 
 **Reading the matrix.**
 - **Everything → PDF** is the headline everyday job; PDF is the **default target
@@ -58,9 +56,9 @@ no AGPL surface; see *Engines* / §3.1.)
   `DOCX/DOC/ODT/RTF → TXT/MD/HTML`) use **pandoc**.
 - **`*→DOC`** (legacy binary Word 97-2003) is offered **only** from office sources,
   not from `TXT/MD/HTML` — nobody plausibly wants `markdown→.doc`; the modern
-  `.docx` is the sole everyday Word target for those, so `TXT/MD/HTML→DOC` is `—`.
+  `.docx` is the sole everyday Word target for those, so `TXT/MD/HTML→DOC` is `·`.
 
-> **† `DOC → TXT/MD/HTML` is LibreOffice, NOT pandoc.** pandoc **cannot read legacy
+> **² `DOC → TXT/MD/HTML` is LibreOffice, NOT pandoc.** pandoc **cannot read legacy
 > binary `.doc`** (and the engine notes + §3.2 + §3.5.4 say so), so these
 > down-conversions are owned by **LibreOffice's** markup export filters (`Text`,
 > `Markdown`, `HTML (StarWriter)`) — keeping every pair single-engine, no chaining.
@@ -68,6 +66,18 @@ no AGPL surface; see *Engines* / §3.1.)
 > reads them natively). LibreOffice's Markdown export is new in 26.2 → its
 > reliability is the `[DEFER: corpus]` flag in *Category-wide* (design fixed, reliability
 > empirical; `MD→PDF` parks if the gate fails — no chain-free fallback).
+
+---
+
+## Lossy kinds
+
+| Kind | Pairs | Layer | Condition |
+|---|---|---|---|
+| `doc_pdf_reflow` | `DOCX/DOC/ODT/RTF/MD → PDF` | pair-static | — |
+| `doc_html_render` | `HTML → PDF` | pair-static | — |
+| `doc_pdf_to_text` | `PDF → TXT` | pair-static | — |
+| `doc_to_text` | `DOCX/DOC/ODT/RTF/MD/HTML → TXT` | pair-static | — |
+| `doc_simplified` | `DOCX/DOC/ODT → RTF/MD/HTML`, `RTF → MD/HTML`, `HTML → RTF/MD` | pair-static | rich sources only: a TXT or MD source is never flagged |
 
 ---
 
@@ -410,8 +420,8 @@ are the **concrete option lists and defaults** this file owns (§1.6).
 - **Options/settings:** none surfaced.
 - **Lossy?:** `HTML→PDF` is lossy in the sense that LibreOffice's HTML/CSS engine
   is **not** a full modern browser — complex CSS/JS-driven layouts will differ
-  (§2.9 `doc_html_render`). `HTML→TXT/MD` drop styling (§2.9 `doc_to_text` /
-  `doc_simplified`). Simple,
+  (§2.9 `doc_html_render`). `HTML→TXT` drops styling (§2.9 `doc_to_text`);
+  `HTML→RTF/MD` simplify it (§2.9 `doc_simplified`). Simple,
   document-like HTML (articles, reports) converts faithfully.
 - **Edge cases:** **JavaScript is never executed** — only static HTML is rendered
   (offline + security). **External CSS/images** referenced by remote URL are
@@ -477,18 +487,12 @@ path stay *drop → (PDF already highlighted) → convert* in two clicks (Princi
 
 ### Lossy disclosure (links to §2.9 — strings live there, not here)
 
-Predictably-lossy pairs in this category, each mapped to the exact §2.9
-`LossyKind` (the catalog owns the string; this file only names the kind):
-- `PDF → TXT` → §2.9 `doc_pdf_to_text`.
-- `* → PDF` from word-processor sources (`DOCX/DOC/ODT/RTF`) **and `MD → PDF`** (LO lays
-  Markdown out with reflow/font-substitution, same as the word-processor sources) → §2.9
-  `doc_pdf_reflow`.
-- `HTML → PDF` → §2.9 `doc_html_render`.
-- `* → TXT` (from DOCX/DOC/ODT/RTF/MD/HTML) → §2.9 `doc_to_text`.
-- `* → MD` and `* → RTF` from rich sources → §2.9 `doc_simplified`.
-- `TXT → PDF/HTML/office` and `MD → HTML/office` are **not** flagged (faithful). **`MD → PDF`
-  IS flagged `doc_pdf_reflow`** (the one MD→PDF exception — LO reflows it, see above);
-  `TXT → PDF` stays faithful because plain text has no structure to reflow.
+`## Lossy kinds` maps every predictably-lossy pair to its §2.9 `LossyKind` (the catalog
+owns the string; this file only names the kind). `TXT → PDF/HTML/office` and
+`MD → HTML/office` are **not** flagged (faithful). **`MD → PDF` IS flagged
+`doc_pdf_reflow`**: LibreOffice lays Markdown out with reflow and font substitution, like
+the word-processor sources, while `TXT → PDF` stays faithful because plain text has no
+structure to reflow.
 
 The note is a calm, passive inline line next to the chosen target (Principle 7),
 shown only for these predictable cases — never a blocking dialog or per-conversion
@@ -523,7 +527,7 @@ nag.
    down-conversions **unless** corpus testing shows its RTF reader too lossy
    (super/subscript, complex tables), in which case **LibreOffice** takes them.
    (`DOC→TXT/MD/HTML` is **already DECIDED LibreOffice** — pandoc can't read binary
-   `.doc`; see the matrix `LO†` cells and the engine-ownership note.) Empirical →
+   `.doc`; see the matrix `lo²` cells and the engine-ownership note.) Empirical →
    deferred.
 3. **Ghostscript bundling — `[DECIDED]`: dropped in v1** (poppler-only `PDF→TXT`, no
    AGPL surface; §3.1/§3.6). **[DEFER:** re-add only if the §6.5 corpus shows poppler

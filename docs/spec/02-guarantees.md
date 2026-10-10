@@ -1486,15 +1486,15 @@ at target choice; the kind's unmarked row is the exact note (§2.9.2).
 | `doc_pdf_to_text` | `PDF → TXT` | **"Text only — layout, tables and images are dropped."** |
 | `doc_html_render` | `HTML → PDF` | **"The result may look different from a web browser."** |
 | `doc_to_text` | `* → TXT` from rich sources | **"Text only — formatting and images are dropped."** |
-| `doc_simplified` | `* → MD/RTF` from rich sources | **"Some formatting may be simplified."** |
+| `doc_simplified` | `* → MD/RTF/HTML` from rich sources | **"Some formatting may be simplified."** |
 | `sheet_to_delimited` | `XLSX/XLS/ODS → CSV/TSV` (spreadsheets.md) | **"Only one sheet and its values are exported — formatting, formulas and other sheets are dropped."** |
 | `xls_legacy_limits` | `* → XLS` (spreadsheets.md) | **"Saved in the old Excel format — rows/columns beyond the legacy limit and newer features are dropped."** |
-| `text_encoding_narrowed` | `CSV/TSV → workbook/CSV` with a non-Unicode chosen encoding (spreadsheets.md) | **"Some characters can't be saved in the chosen encoding and would be lost."** |
+| `text_encoding_narrowed` | `* → CSV/TSV` with a non-Unicode chosen output encoding (spreadsheets.md) | **"Some characters can't be saved in the chosen encoding and would be lost."** |
 | `slides_to_pdf_flatten` | `PPTX/PPT/ODP → PDF` (presentations.md) | **"Animations, transitions and embedded media are flattened or dropped, and editing is no longer possible."** |
 | `office_roundtrip_approx` | ODF↔MS office round-trip: `ODP → PPTX/PPT`, `PPTX → ODP` (presentations.md); also slide `→ PPTX/PPT` re-layout | **"Some effects and layout may shift when converting between PowerPoint and OpenDocument."** |
 | `pptx_to_ppt_legacy` | `PPTX → PPT` (presentations.md) — downgrade to the legacy BIFF8/PowerPoint-97 format | **"Saved in the old PowerPoint format — SmartArt, modern charts, and newer transitions (e.g. Morph) can't be stored and are simplified or dropped."** |
-| `audio_lossy_target` | `→ MP3/AAC/M4A/OGG/OPUS` (audio.md) | **"Saved in a compressed audio format — some quality is reduced."** |
-| `audio_transcode` | lossy source `→` lossy target (e.g. MP3→AAC) | **"Re-compressing already-compressed audio — quality drops a little more."** |
+| `audio_lossy_target` | `→ MP3/AAC/M4A/OGG/OPUS` (audio.md), not the AAC ↔ M4A rewrap (§3.5.1) | **"Saved in a compressed audio format — some quality is reduced."** |
+| `audio_transcode` | lossy source `→` lossy target (e.g. MP3→AAC), not the AAC ↔ M4A rewrap (§3.5.1) | **"Re-compressing already-compressed audio — quality drops a little more."** |
 | `audio_lossy_origin` | lossy source `→` lossless target (e.g. MP3→FLAC) | **"This won't improve quality — the original is already compressed, so the result is just larger."** |
 | `audio_bitdepth` | >16-bit source `→` default 16-bit WAV/AIFF | **"Saved at 16-bit — the source's extra audio precision is reduced."** |
 | `audio_tags_dropped` | `→ AAC` (raw ADTS), partly WAV/AIFF | **"This format can't store song info, so title/artist tags are dropped."** |
