@@ -211,6 +211,7 @@
 - [ ] **P5.32** [RUST] Wire HEIC-encode availability gating — read the §3.4.4a `available` flag → unavailable-with-reason · §3.4.3 §3.4.4a §2.8 · G29
   needs: P5.31
   > **reads** (never re-decides) the §3.4 patent cell via the P4-built `engines.lock.available → PatentDisposition → C3 Target.availability` wiring (mirrored in `EngineHealth.unavailable_targets`); when HEIC-encode is `available=false` on a platform, the target tile is surfaced **disabled-with-reason** (`PlatformUnavailable`, §2.8), never silently dropped — the only legitimate `select()→None` for an in-scope pair. (P4 owns the wiring; this box consumes it for the HEIC target.)
+  > This box is the first live leg of the conductor's `select()`-miss → `PlatformUnavailable` arm (registry-level-tested since P4.4).
 - [ ] **P5.33** [RUST] Wire `heifsave compression=av1` (→ AVIF encode, libaom) — single code path incl. HEIC→AVIF · §3.5.5 §3.4.3 · G29 G31
   needs: P5.19, P5.11
   > `heifsave compression=av1` for `{JPG,PNG,WEBP,GIF,BMP,TIFF,HEIC,ICO,SVG} → AVIF` (incl. the cross-codec `HEIC→AVIF`, one vips process; libaom the single bundled AV1 encoder); lossy by default (`image_lossy_codec`), `lossless` toggle; AVIF ship-bundled everywhere per §3.4 (no gate), but never defaulted *to* in v1.

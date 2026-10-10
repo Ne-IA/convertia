@@ -1768,7 +1768,7 @@ breaking the portable build, and degrades silently to the cheap tier anywhere el
 
 | OS | Realized on top of the cheap tier | Network deny |
 |----|-----------------------------------|--------------|
-| Linux | three independent legs in one pre-exec closure, each degrading silently on its own: a **network namespace** (loopback only, the §2.11.4 primitive; entered with `unshare` in the pre-exec child, so a setup failure skips the leg instead of failing the conversion); a **Landlock** grant `{input ro, scratch rw}` (kernel ≥ 5.13, ABI ≥ 1, the `landlock` crate; scratch = the item's `.part` and working directory, §2.14.2; the engine's own bundle directory and the standard system directories read + execute); a **seccomp-bpf** deny-list of never-legitimate decoder primitives (`ptrace`, `mount`, `bpf`, `kexec_load`, `setns`, …; the `seccompiler` crate). Exec is inheritance-limited, not denied: the filter installs pre-exec, so its list excludes `execve`/`execveat` (the engine's own launch), `unshare` (the namespace leg) and `setpgid` (the §1.7 group leader), and any program the decoder does exec inherits the namespace, Landlock and seccomp confinement (`NO_NEW_PRIVS`) | the network namespace |
+| Linux | three independent legs in one pre-exec closure, each degrading silently on its own: a **network namespace** (loopback only, the §2.11.4 primitive, and its loopback interface is left down, so the engine has no network at all; entered with `unshare` in the pre-exec child, so a setup failure skips the leg instead of failing the conversion); a **Landlock** grant `{input ro, scratch rw}` (kernel ≥ 5.13, ABI ≥ 1, the `landlock` crate; scratch = the item's `.part` and working directory, §2.14.2; the engine's own bundle directory and the standard system directories read + execute); a **seccomp-bpf** deny-list of never-legitimate decoder primitives (`ptrace`, `mount`, `bpf`, `kexec_load`, `setns`, …; the `seccompiler` crate). Exec is inheritance-limited, not denied: the filter installs pre-exec, so its list excludes `execve`/`execveat` (the engine's own launch), `unshare` (the namespace leg) and `setpgid` (the §1.7 group leader), and any program the decoder does exec inherits the namespace, Landlock and seccomp confinement (`NO_NEW_PRIVS`) | the network namespace |
 | macOS | none: no Seatbelt profile is applied and no private-sandbox FFI enters the core (the `no_seatbelt_apply_callsite_in_the_core` source-scan pins it). Revisit when a safe apply path exists: a signed/notarized build epoch, or an Apple-sanctioned spawn-time sandbox API | none |
 | Windows | two legs, both applied parent-side on the `CREATE_SUSPENDED` child before its threads resume: **(1)** a reduced-integrity token at a ConvertIA-private mandatory level `0x1800`, strictly between Low (`0x1000`) and Medium (`0x2000`), with the engine's working directory (§2.14.2) and `.part` labelled at that level before the token is lowered (label-then-lower, the analogue of the Landlock `{scratch rw}` grant) — the engine writes only its labelled sinks and cannot write Medium user files, and a Low co-tenant is denied write-up to them (`NO_WRITE_UP`, the MIC total order); the label is stripped before the §2.1.2 publish (§2.1.1 step 2); **(2)** the engine's own Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (the §1.7 crash-time reap: cleared on a clean completed wait, left armed on the crash arm as the host-crash backstop), a job memory limit at the §1.10 per-item memory ceiling, a generous `ACTIVE_PROCESS` runaway cap and `DIE_ON_UNHANDLED_EXCEPTION`. No restricted token and no AppContainer, and no FFI for them in the core (the `no_appcontainer_or_spawn_token_ffi_in_the_core` source-scan). Revisit anchor: a signed, installing build epoch with a spawn-token path and a brokered/staged input model | none — a Job Object governs memory, CPU, process count and UI, never sockets |
 
@@ -1795,6 +1795,10 @@ breaking the portable build, and degrades silently to the cheap tier anywhere el
   level (`0x1000`) is rejected as well: the standard Low sandboxes (Acrobat renderer, Office
   Protected View, browser content) could then write the `.part` in the user's destination
   directory.
+- Rejected: confining the Windows engine's writes to a labelled per-run scratch and copying
+  `out_tmp` to the `.part` afterwards — it gives up the §2.14.1 same-volume publish without a
+  copy and only moves the labelled object into the scratch, where a co-tenant can still write
+  it, while the intermediate level keeps the `.part` beside `final` and closes that hole.
 
 > **Not load-bearing `[DECIDED]`.** The privilege-drop tier is defence-in-depth
 > (§0.10/§2.11.1): the T9b network/LFR guarantee rests on the always-on argv/build controls
@@ -1808,6 +1812,13 @@ breaking the portable build, and degrades silently to the cheap tier anywhere el
 > interval (Low, Medium) could write them. It sits outside the single-user offline model; the
 > standard Low sandboxes are excluded by the intermediate level, the DACL is not the defence,
 > the label is stripped before publish, and the tier is best-effort.
+>
+> **Windows per-engine opt-out `[DECIDED]`.** An engine whose conversions fail under the
+> integrity leg skips that leg for its own spawns, a per-engine decision its corpus verdict
+> makes; its other legs stay. The known shape is an engine that deletes and re-creates its
+> output mid-run: the re-create is denied in the Medium destination directory, and the delete
+> releases the §2.1.2 reserved name. The grant is never widened, and the user's destination
+> directory is never labelled.
 >
 > The precise per-OS profile contents — the paths the Landlock read set grants (its execute
 > right could scope which programs run once tightened), the seccomp list, the label placement

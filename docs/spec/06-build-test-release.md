@@ -93,7 +93,11 @@ build-time mechanics that realise them**:
     `name-<target-triple>[.exe]` (e.g. `ffmpeg-x86_64-pc-windows-msvc.exe`,
     `ffmpeg-aarch64-apple-darwin`); a small build script (`scripts/stage-engines.*`,
     run before `tauri build`) stages and target-triple-suffixes each binary for the
-    runner's host triple. For the macOS **universal** build (`--target
+    runner's host triple. A sidecar is overwritten whole when staged, never merged into, and
+    Tauri bundles only the sidecars `externalBin` lists, so a sidecar destination needs no clearing
+    step: a removed row's leftover is neither merged nor shipped. The resource-tree
+    destinations, which staging copies into, are cleared before each run.
+    For the macOS **universal** build (`--target
     universal-apple-darwin`), Tauri v2 resolves a **single fat Mach-O sidecar named
     `<name>-universal-apple-darwin`** and **expects that file to ALREADY be a pre-merged
     fat binary** — **Tauri does NOT `lipo` sidecars `[DECIDED — verified vs Tauri v2 docs/
@@ -262,7 +266,9 @@ build-time mechanics that realise them**:
   asset — **before a single byte reaches the cache**, unpacks it, and publishes the entry under
   the same key with one atomic rename, so a failed verify or a crash leaves no partial entry. Its fetch targets are read from the L(-1)-caged `engines.lock` rows and from
   nowhere else — never from argv — so the §3.8 engine-source allow-list constrains WHERE it may
-  connect as data, not as script code. Each
+  connect as data, not as script code; every redirect hop is re-checked against the same
+  https-only scheme pin and origin allow-list, so a redirect cannot reach a scheme or host
+  outside them. Each
   cache entry stores the verified per-triple binary tree; `scripts/stage-engines` reads from
   the restored cache (never the live network at package time) — the two halves are split
   precisely so that exactly ONE script at package time may open a socket, and only on a miss. **macOS dual-arch key scheme:**

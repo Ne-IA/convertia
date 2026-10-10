@@ -291,6 +291,7 @@
   > DRM (FairPlay `.m4v`, PlaysForSure WMV/ASF) → the §video.md "copy-protected, can't be converted" message, batch continues, nothing written; a source with no audio track converts fine (silent video, never an error); §1.10 owns the up-front size/space pre-flight + "too big" fast-fail (video is the category most likely to trip the budgets); concurrency degree owned by §0.9 (low parallelism for CPU-heavy re-encode).
   - [ ] **P6.56.1** [TEST] Exercise the §1.10 low-memory graceful-degradation policy on a memory-constrained host (large batch → adaptive degree + watermark-pause, no OOM/freeze) · §1.10 §0.9 §2.12.3 · G31
     > a memory-constrained-host stress test (cap available RAM, run a large AV/image batch): assert the effective §0.9 concurrency degree drops toward serial, the high-memory watermark pauses NEW item dispatch (the §5 `LowMemoryNote` shows, in-flight items finish, then resumes), the batch completes with peak RSS bounded (no OOM-crash, no UI freeze), and a single over-budget item is killed to `Failed(TooBig)` while the batch continues. `[DEFER: corpus]` for the constrained-RAM number (calibrated with the §1.10 budgets; P4.20 implements the memory-adaptive degree; **P4.87 owns the `LowMemoryNote` signal this test asserts** — added 2026-08-27). The cross-cutting low-spec proof complementing P6.56's very-large-single-file fast-fail.
+    > Its run includes a real Mac: there the §1.10 available-memory reading is the `free + inactive` page count (`crate::platform`, a deliberate under-estimate), validated here rather than argued.
 
 ---
 
