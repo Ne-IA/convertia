@@ -111,7 +111,7 @@ live `Converting` screen, IS the sufficient primary "we're busy" feedback. **Mid
 `BusyNotice` text is shown ONLY on the defence-in-depth path** (if/when a nudge somehow
 reaches the UI mid-run despite the core-side gate — and it carries nothing, so it could
 not set-swap even then; the §5.4 non-intake states outside a run have their own Banner
-trigger, §5.8). A Phase-3 dev must **not** add
+trigger, §5.8). The implementation must **not** add
 a new event/toast to announce busy-ness — re-focus + the (rare) defence-in-depth Banner
 are the whole surface, so the §0.4.2 three-`app://`-event invariant is not expanded.
 
@@ -124,7 +124,7 @@ plugin's macOS single-instance is the least-mature leg, §7.1.1 [REC] above). Th
 "two separate extracted copies" action; the **normal single-`.app` AppleEvent path is
 single-instance-correct** (Open-with / re-launch of the one installed copy re-focuses the
 running instance, §7.8.1). v1 does **not** add defensive bundle-ID locking code to chase
-this corner — it is recorded here so Phase 3 does not build unnecessary hardening for it.
+this corner — it is recorded here so the implementation does not build unnecessary hardening for it.
 The §6.6 walkthrough confirms the normal one-`.app` path; the two-copies case is noted as a
 known limitation on the download page if it proves to matter.
 
@@ -1042,7 +1042,7 @@ from a user-supplied log without remote access.
 
 ### 7.6.1 The Tauri updater is explicitly absent `[DECIDED]`
 
-Concrete spec items (each a Phase-3 checklist line, asserted by §6.5/§2.11):
+Concrete spec items (each an implementation checklist line, asserted by §6.5/§2.11):
 
 - **`tauri-plugin-updater` is NOT added** to `Cargo.toml` / the Builder. There is
   no updater endpoint, no update manifest, no pubkey in `tauri.conf.json`, no

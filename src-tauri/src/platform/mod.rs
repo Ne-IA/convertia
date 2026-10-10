@@ -1,8 +1,9 @@
 //! `crate::platform` — the §0.7 OS-abstraction leaf (depends on no other module): path handling,
 //! volume detection (§2.14), the OS shims (§7.7 reveal-in-folder), and the §7.2.4 portable-build
-//! executable-permission helper (`ensure_executable`, landed P1.17). The one allow-listed `unsafe`
-//! FFI surface is the §2.1.2 Windows-only `windows-sys` extern set: the `FileRenameInformationEx`-class
-//! no-replace move (`rename_noreplace_at`, P3.14) via `NtSetInformationFile` (ntdll), the §2.6.3
+//! executable-permission helper (`ensure_executable`, landed P1.17). Its other helpers (the Windows
+//! ones over the §2.1.2 `windows-sys` extern set; the G29 paragraph below names each OS's `unsafe`):
+//! the `FileRenameInformationEx`-class no-replace move (`rename_noreplace_at`, P3.14) via
+//! `NtSetInformationFile` (ntdll), the §2.6.3
 //! run-lock `LockFileEx` exclusive advisory-lock acquire (`acquire_exclusive_lock`, P3.21) + its
 //! non-blocking startup-sweep liveness probe (`try_acquire_exclusive_lock`, P3.23), and the §2.14.3
 //! cross-volume free-space re-check `GetDiskFreeSpaceExW` (`available_bytes`, P3.17 — built at its
@@ -22,9 +23,10 @@
 //! helpers are authored by their consuming boxes (P3+).
 //!
 //! **The one `unsafe` allow (G29):** this file carries the module-inner `#![allow(unsafe_code)]` that
-//! overrides the crate-root `#![deny(unsafe_code)]` — `src-tauri/src/platform/*.rs` is the sole entry in
-//! `check-unsafe-policy`'s `ALLOWED_UNSAFE_MODULES`, so the core's entire `unsafe` surface is confined here,
-//! each block carrying a `// SAFETY:` justification. The Windows renames/locks/free-space ride the
+//! overrides the crate-root `#![deny(unsafe_code)]` — the `src-tauri/src/platform/**` subtree holds the
+//! core's only entries in `check-unsafe-policy`'s `ALLOWED_UNSAFE_MODULES`, so the core's entire
+//! `unsafe` surface, on every OS, is confined here, each block carrying a `// SAFETY:` justification.
+//! The Windows renames/locks/free-space ride the
 //! `windows-sys` FFI, joined at **P4.17** by the §2.12.3 best-effort **Windows** privilege-drop tier —
 //! Leg A the intermediate-integrity write confinement (`label_confinement_sinks` /
 //! `lower_child_to` / `strip_mandatory_label`) and Leg B the own Job Object

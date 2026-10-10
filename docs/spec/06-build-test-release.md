@@ -73,8 +73,8 @@ and referenced by the release notes; it is not re-decided here.
 
 **Compressed-artifact size gate (SSOT Principle 1 "stay light") `[DECIDED]`:** the
 packaging step **measures each platform artifact's compressed size and FAILS the build if
-it exceeds the §3.9.2 per-platform budget** (≤ 400 MB compressed v1 target,
-`[DEFER: corpus/build]` exact digit). The measured sizes are published as a release asset.
+it exceeds the §3.9.2 per-platform budget** (400 MB compressed — the gate value; only an
+owner decision changes it). The measured sizes are published as a release asset.
 This is the actionable owner of "stay light"; the budget itself is owned by **§3.9.2**.
 
 ### 6.1.3 How engines bundle per platform (process, not policy)
@@ -470,71 +470,44 @@ build-time mechanics that realise them**:
 
 | Leg | Runner | Toolchain installed | Platform-specific deps |
 |-----|--------|---------------------|------------------------|
-| Windows | `windows-latest` (x64) | Rust (MSVC host triple), Node + pnpm | WebView2 is preinstalled on supported Windows; **not** bundled (no-network forbids downloading it at runtime — §0.3.1 owns the floor). **CI-realism note `[DECIDED]`:** WebView2's presence is a **runner-IMAGE property** (true on the `windows-latest` image) — **not guaranteed if the image is later pinned to a specific version**, so the E2E step verifies WebView2 is present on the pinned image. The Windows runner provides a **virtual desktop**, so — unlike the Linux/Xvfb leg — the §6.4.6 E2E needs **no extra display setup**. NSIS provided by tauri-cli. |
-| macOS | `macos-latest` (Apple Silicon) building `universal-apple-darwin` | Rust with **`rustup target add aarch64-apple-darwin x86_64-apple-darwin`** (both targets — prerequisite for the universal build and for `lipo`-merging each sidecar into its single `<name>-universal-apple-darwin` fat binary, §6.1.3), Node + pnpm | Xcode CLT for `lipo`/codesign-less packaging. No notarization step (out of scope). **Dual-arch engine sourcing (Lane-B operational prerequisite) `[DECIDED]`:** the universal build runs on an **arm64** runner, so the **engine-asset cache (§6.1.3) MUST supply pre-built binaries for BOTH `aarch64-apple-darwin` AND `x86_64-apple-darwin`** for every sidecar/lib — `scripts/stage-engines` `lipo -create`s them per §6.1.3, and it cannot lipo a slice it doesn't have. The cache provides the x86_64 slices (this is the hardest practical part); building x86_64 engines on an arm64 runner from source needs the cross toolchain / Rosetta 2 and is the documented fallback only. |
+| Windows | `windows-2022` (x64, pinned) | Rust (MSVC host triple), Node + pnpm | WebView2 is preinstalled on supported Windows; **not** bundled (no-network forbids downloading it at runtime — §0.3.1 owns the floor). **CI-realism note `[DECIDED]`:** WebView2's presence is a **runner-IMAGE property** (a runner-image assumption below), so the E2E step verifies WebView2 is present on the pinned image. The Windows runner provides a **virtual desktop**, so — unlike the Linux/Xvfb leg — the §6.4.6 E2E needs **no extra display setup**. |
+| macOS | `macos-14` (Apple Silicon, pinned) building `universal-apple-darwin` | Rust with **`rustup target add aarch64-apple-darwin x86_64-apple-darwin`** (both targets — prerequisite for the universal build and for `lipo`-merging each sidecar into its single `<name>-universal-apple-darwin` fat binary, §6.1.3), Node + pnpm | Xcode CLT for `lipo`/codesign-less packaging. No notarization step (out of scope). **Dual-arch engine sourcing (Lane-B operational prerequisite) `[DECIDED]`:** the universal build runs on an **arm64** runner, so the **engine-asset cache (§6.1.3) MUST supply pre-built binaries for BOTH `aarch64-apple-darwin` AND `x86_64-apple-darwin`** for every sidecar/lib — `scripts/stage-engines` `lipo -create`s them per §6.1.3, and it cannot lipo a slice it doesn't have. The cache provides the x86_64 slices (this is the hardest practical part); building x86_64 engines on an arm64 runner from source needs the cross toolchain / Rosetta 2 and is the documented fallback only. |
 | Linux | **`ubuntu-22.04` (pinned, NOT `ubuntu-latest`) `[DECIDED]`** | Rust, Node + pnpm | **compile closure** `libwebkit2gtk-4.1-dev` + `libgtk-3-dev` + `libsoup-3.0-dev` + `libjavascriptcoregtk-4.1-dev` + `libdbus-1-dev` (each maps to a Tauri-v2 `-sys` build-script consumer — `libgtk-3-dev` is the gdk/pango/cairo/atk/glib/x11/wayland umbrella; the per-push gate-tooling lint job §6.7.1 installs **exactly this Linux-only subset**, since it compiles+tests but does not bundle), **plus** the release-bundle/runtime deps `librsvg2-dev` + `libayatana-appindicator3-dev` (runtime SVG / dlopen tray) + `patchelf`; **plus FUSE 2** for the AppImage. **Pin rationale + two FUSE notes `[DECIDED]`:** the runner is pinned to **`ubuntu-22.04`** (not the drifting `ubuntu-latest`) for **(i)** glibc-floor stability (older glibc = wider compatibility, §0.3.1 floor) and **(ii)** to avoid **FUSE2-vs-FUSE3 drift** — `ubuntu-latest` rolling to 24.04+ broke `libfuse2` packaging (the time_t `libfuse2t64` rename). (1) **FUSE 2 is a RUNTIME dependency, not build-time** — an AppImage *mounts* itself via FUSE 2 at launch, so the **end user's machine needs `libfuse2`**; the download page must disclose this (a bare "download, run, done" is false on a distro shipping only FUSE 3 — alternatively `tauri build` / the AppImage runs with `--appimage-extract-and-run`, which needs **no** FUSE at all and is the recommended CI invocation to sidestep the issue entirely). (2) If a newer runner is ever used, the install step must handle both package names (`libfuse2 \|\| libfuse2t64`) or use `--appimage-extract-and-run`. |
 
-**macOS/Windows runner-pin asymmetry — explained + drift-guarded `[DECIDED]`.** The Linux
-leg is pinned (`ubuntu-22.04`) for the glibc/FUSE reasons above; macOS/Windows are left at
-**`macos-latest`/`windows-latest`** *deliberately*, with a guard rather than a hard pin:
-- **Why not hard-pin them:** the §0.3.1 floor for Win/macOS is "rely on the OS WebView2 /
-  WKWebView present on the supported OS" — building on the *current* image is the realistic
-  end-user baseline, and unlike Linux there is no glibc-floor / FUSE-packaging hazard that a
-  newer image reopens. `macos-latest` rolling (Sonoma → Sequoia) *can* change Xcode CLT /
-  the default deployment target, which affects the universal build + the sidecar `lipo`.
-- **Drift guard (the price of `latest`) `[DECIDED]`:** each macOS/Windows leg **records the
-  resolved image label + Xcode/CLT (macOS) / WebView2 (Windows) version as a release-asset
-  line**, and the build **fails if the macOS deployment target drifts below the §0.3.1
-  floor** (`MACOSX_DEPLOYMENT_TARGET` assertion = `11.0`) or WebView2 is absent on the
-  image — so a `latest` roll surfaces loudly, not silently. If a future roll breaks the
-  build, the fallback is to **pin to the last-known-good label** (e.g. `macos-15` /
-  `windows-2025`) — recorded as the remedy, not pre-applied.
+**Runner policy `[DECIDED]`:** every lane runs on GitHub-hosted runners, on the three
+pinned labels above (`ubuntu-22.04`, `macos-14`, `windows-2022`). Lane A and Lane B use the
+same labels, so per-push and release builds run the same images; a label bump is an
+ordinary pin bump. The repository is public, so standard hosted minutes are free and a fork
+pull request never reaches a persistent host. No self-hosted runner exists; G56 still fails
+any secret-bearing job on a self-hosted label. Every hosted job runs on a fresh VM, so no
+job shares a host or a workspace with another — the §6.7.2 stage-6 signing job included.
 
-The platform CI standard (`reference_self_hosted_ci_runner.md`) runs a **self-hosted
-VPS runner** for the Ne-IA org's existing four projects. ConvertIA's build matrix
-**cannot** reuse a single Linux VPS runner for all three legs (no native macOS/Windows
-there). **`[DECIDED]` (adopting the [REC]): GitHub-hosted runners for the
-macOS/Windows legs; the self-hosted Linux runner for the Linux leg + the Lane-A
-lint/test gate.** Rationale: matches upstream Tauri guidance, and release builds are
-**infrequent** (one-large-all-or-nothing v1, SSOT) so Actions-minute spend is
-bounded. **Budget note (kept visible):** GitHub **macOS**-hosted minutes bill ~10×
-Linux/min — relevant to the hobby/no-paid-upgrades budget
-(`user_hobby_budget_no_paid_upgrades.md`); the infrequent-release cadence keeps it
-within free-tier/affordable bounds, and the Linux leg (the frequent Lane-A path)
-stays on the free self-hosted runner. Revisit only if release cadence rises.
-**Runner-host integrity carve-out `[DECIDED — P0 review r2]`:** the self-hosted VPS
-runs the Lane-B Linux **corpus** leg (untrusted `corpus-large` + fuzz/adversarial
-inputs), so the **secret-bearing signing step (§6.7.2 stage 6) must NOT run on it** —
-it runs on an ephemeral GitHub-hosted runner, host-isolated from the corpus/fuzz jobs,
-enforced by build-gates **G56** (a secret-using job bound to a self-hosted label is a
-hard fail). A persistent multi-tenant runner that handles untrusted input is the
-standard host-compromise vector for the one key the whole trust substitute depends on.
+**Image drift under a pinned label `[DECIDED]`:** a pinned label's image still takes tool
+updates, so each macOS/Windows release leg **records the resolved image version + Xcode/CLT
+(macOS) / WebView2 (Windows) version as a release-asset line**, and the build **fails if the
+macOS deployment target drifts below the §0.3.1 floor** (`MACOSX_DEPLOYMENT_TARGET`
+assertion = `11.0`) or WebView2 is absent on the image — so an image update surfaces
+loudly, not silently.
 
-**`ubuntu-22.04` pin vs the self-hosted Lane-A runner's actual OS — reconciled per lane
-`[DECIDED]`.** The `ubuntu-22.04` pin above is a **GitHub-hosted-image** label; the
-**self-hosted IONOS VPS runner** (used for **Lane-A** Linux and the **Lane-B** Linux corpus
-leg) has a **fixed host OS that may not be ubuntu-22.04**. So the pin is honoured **per
-lane**, not by assuming the VPS image:
-- **Record the VPS distro AND kernel as concrete facts** in
-  `reference_self_hosted_ci_runner.md` / §6.1.4 (the runner's actual `lsb_release` **and
-  `uname -r`**), so the gap is known, not guessed. **Recorded fact (placeholder, confirm
-  at setup) `[DECIDED]`:** the Ne-IA self-hosted runner is **Ubuntu-class** (the
-  org-standard IONOS VPS per `reference_self_hosted_ci_runner.md`), whose stock kernel is
-  **≥ 5.15 (Jammy-class)** — i.e. **above the Landlock ≥ 5.13 floor** — so the **expected
-  §6.4.2 fs-audit enforcement path on the self-hosted Linux leg is Landlock** (with
-  `SYS_PTRACE` as the alternative inside `--cap-add SYS_PTRACE` Docker, §6.4.2). The
-  **exact `uname -r` is recorded at runner provisioning** (`[DEFER: record at setup]`) and
-  the build asserts Landlock availability before relying on it (§6.4.2); if the recorded
-  kernel turns out < 5.13, the leg must run under `--cap-add SYS_PTRACE` or the
-  GitHub-hosted fallback (so the fs-audit half never silently no-enforces).
-- **If the VPS OS matches the `ubuntu-22.04` glibc/FUSE floor**, the pin is satisfied
-  natively and Lane-A runs directly on the host.
-- **If it does NOT match**, the **Lane-A compile-sanity + the Lane-B Linux corpus build run
-  inside a `ubuntu:22.04` Docker container** on the VPS runner (so the glibc floor / FUSE
-  packaging match the pinned baseline regardless of the host OS), **or** the Lane-B Linux
-  leg uses **GitHub-hosted `ubuntu-22.04` as the documented fallback** (already the standing
-  fallback for VPS contention, above). Either way the *artifact-relevant* build always meets
-  the `ubuntu-22.04` floor; only the *runner host* is allowed to differ.
+**`corpus-large` on hosted runners `[DECIDED]`:** each Lane-B leg restores the LFS-backed
+`corpus-large` (§6.4.5) from `actions/cache`, keyed by the SHA-256 of the corpus manifest;
+on a miss it pulls the set from git LFS and saves the entry. G24a verifies every restored
+file against the manifest before the corpus runs (a cache is not a trust boundary).
+Realizability probe at the box that wires the Lane-B corpus restore: `corpus-large` fits
+the repository's Actions-cache budget beside the engine-asset cache, and a leg's runner
+disk holds it beside the staged engines and the build output. If the cache does not fit,
+each leg pulls `corpus-large` from LFS directly; if a disk does not, that leg runs the
+corpus in per-category jobs, each pulling only its category (`git lfs pull --include`) —
+both without escalation.
+
+**Runner-image assumptions `[DECIDED]`** (recorded here; when one breaks, the check that relies
+on it fails closed or takes the fallback its § or the G42 row names):
+- `windows-2022` ships the WebView2 runtime (the Windows row above; the §6.4.6 E2E step);
+- `macos-14` grants passwordless `sudo` (the §6.7.3 `pf` profile);
+- `ubuntu-22.04` grants passwordless `sudo` (the §6.4.2 loop-mount leg), allows unprivileged
+  user namespaces (the §6.7.3 net-namespace preflight), lets a job `ptrace` its own
+  descendants and runs a Landlock-capable kernel (≥ 5.13) (the §6.4.2 fs-audit and its
+  Landlock fallback).
 
 ---
 
@@ -692,7 +665,7 @@ it enables x264, §3.6.1; LibreOffice MPL; poppler/pandoc GPL; libvips LGPL; the
 | Layer | Contents | Tool |
 |-------|----------|------|
 | **App dependency graph** | Rust crates (`Cargo.lock`) + JS deps (`pnpm-lock.yaml`) that compose ConvertIA's own MIT code | **`cargo cyclonedx`** for Rust; **`@cyclonedx/cdxgen`** for the frontend (native `pnpm-lock.yaml` support — **NOT `@cyclonedx/cyclonedx-npm`**, which is npm-only and would SBOM an npm-resolved tree diverging from the frozen pnpm graph, `[DECIDED — P0 review r2]`); merged into one CycloneDX document. |
-| **Bundled engines (the important layer)** | Every separately-invoked engine binary + its support libs/fonts, each as an SBOM component with **name, version, licence (SPDX id), supplier (§3.7.2 item 1), source URL, and the per-platform availability** | A **manually-maintained `engines.lock` manifest** (owned/sourced by §3.1/§3.8) is the authoritative input; CI converts it into CycloneDX components and merges with the dependency-graph layer. Optionally **Syft** scans the staged bundle to *cross-check* that nothing in the shipped tree is missing from the manifest (drift detection). |
+| **Bundled engines (the important layer)** | Every separately-invoked engine binary + its support libs/fonts, each as an SBOM component with **name, version, licence (SPDX id), supplier (§3.7.2 item 1), source URL, and the per-platform availability** | A **manually-maintained `engines.lock` manifest** (owned/sourced by §3.1/§3.8) is the authoritative input; CI converts it into CycloneDX components and merges with the dependency-graph layer. **Syft** scans the staged bundle to *cross-check* that nothing in the shipped tree is missing from the manifest (drift detection) — the §6.3.3 item-1 failing gate. |
 
 **The merge step `[DECIDED]`:** the two layers are merged by **§3.7.2's `cargo xtask
 sbom`** build step (the single named tool — it reads `engines.lock` + the
@@ -705,11 +678,8 @@ therefore pin **1.5 explicitly on every input** rather than relying on any tool 
 `1.3 | 1.4 | 1.5`)** (1.5 supported since the CycloneDX-1.5 release; the pinned
 `cargo-cyclonedx` version MUST be one that exposes it). The SBOM tools are pinned in the
 gate-tool manifest `scripts/gate-tools.toml`, their only pin home, like every gate tool
-(build-gates §0); §3.8 pins engines, never tools. `[DEFER: verify]` the **exact
-default specVersion of the pinned `cargo-cyclonedx`** at pin time and record it
-factually here — we do not rely on it (we pass `--spec-version 1.5` regardless), but the
-note should state the pinned tool's real default rather than a speculative "now defaults to
-1.6". **Invocation `[DECIDED]`:** `cargo xtask sbom` invokes **`cargo cyclonedx` as a
+(build-gates §0); §3.8 pins engines, never tools. **Invocation `[DECIDED]`:**
+`cargo xtask sbom` invokes **`cargo cyclonedx` as a
 subprocess** (the CLI, not the library API) — it shells out to the pinned `cargo-cyclonedx`
 binary and to the pnpm/npm CycloneDX generator, then merges their JSON. It therefore
 MUST pass **`--spec-version 1.5`** on the `cargo cyclonedx` **command line** **and** to the
@@ -804,14 +774,13 @@ being updated in the same change):
   and the common HTTP-client crates (`reqwest`/`ureq`/`hyper`/`isahc`/`curl`).
 - **Static-security / unsafe policy** (build-gates **G29**): `#![deny(unsafe_code)]`
   at the crate root of **every** first-party Rust crate (the core AND
-  `convertia-imgworker`), with a **single narrowly allow-listed FFI module** carrying
-  `#[allow(unsafe_code)]` (the core's §2.1.2 Windows-only `windows-sys` externs — the
-  `FileRenameInfoEx`-class no-replace move + `GetDiskFreeSpaceExW`; the Unix renames ride
-  safe `rustix`, the §2.3 identity reads ride safe `winapi-util`, the §0.9 kill rides
-  `process-wrap` — example list corrected 2026-07-08, the P3.12 ruling;
-  the imgworker's libvips/libheif/libde265/librsvg/libimagequant FFI). The gate is "no new
-  `unsafe` outside the allow-listed FFI module", enforced by deny-at-root **plus** a check
-  that `#[allow(unsafe_code)]` appears on exactly the one allow-listed module path.
+  `convertia-imgworker`), with `#[allow(unsafe_code)]` only in **one narrowly allow-listed
+  FFI module per crate**: the core's `unsafe` is confined to `src-tauri/src/platform/**` and
+  the worker's to its `ffi` module (`crates/imgworker/src/ffi.rs`) — the
+  `ALLOWED_UNSAFE_MODULES` list of `scripts/check-unsafe-policy` — and each `unsafe` block
+  carries a `// SAFETY:` comment. The rule names the module, never the FFI calls inside it.
+  The gate is "no new `unsafe` outside the allow-listed FFI modules", enforced by
+  deny-at-root **plus** a check that every `allow(unsafe_code)` sits on an allow-listed path.
   **`#![forbid(unsafe_code)]` is NOT usable on an FFI-bearing crate** — `forbid` is
   deliberately un-overridable (a module cannot re-permit `unsafe` via
   `#[allow(unsafe_code)]` under `forbid`), so an FFI crate under `forbid` would not
@@ -835,15 +804,11 @@ being updated in the same change):
   user and cannot stop the root apt-get), the offline `--no-download` install excepted
   (G56; apt's own timeouts are idle timeouts, which a mirror transfer that still trickles
   never trips), and a failed try is retried.
-- **CI runner-host integrity** (build-gates **G56**, *added P0 review r2*): the
-  secret-bearing signing step (§6.7.2 stage 6) runs on an ephemeral GitHub-hosted
-  runner, host-isolated from the self-hosted-VPS Lane-B corpus/fuzz jobs (§6.1.4/§6.7.2);
-  a workflow lint fails any secret-using job bound to a self-hosted label, and the
-  **GitHub-hosted signing job** uses `step-security/harden-runner` (its free/Community
-  tier works only on GitHub-hosted runners; self-hosted requires a StepSecurity
-  Enterprise license, so on the self-hosted VPS the egress enforcement is the §6.4.2
-  ptrace/Landlock fs-audit + the §6.7.3 nftables/strace monitor + the VPS egress
-  allowlist + an ephemeral/JIT low-priv runner, not harden-runner). The single most
+- **CI runner-host integrity** (build-gates **G56**, *added P0 review r2*): every job
+  runs on a GitHub-hosted runner (§6.1.4), so the secret-bearing signing job (§6.7.2
+  stage 6) is its own ephemeral job that shares no host with the untrusted corpus/fuzz
+  jobs; a workflow lint fails any secret-using job bound to a self-hosted label, and the
+  signing job runs under `step-security/harden-runner` (BLOCK mode). The single most
   damaging secret never shares a host with untrusted corpus input.
 - **JS/WebView supply-chain parity** (build-gates **G17/G18c/G18d/G36b**, *added P0
   review r2*): a committed `.npmrc` registry pin + a resolution-URL guard over
@@ -930,6 +895,12 @@ and stub/real engines:
   per §2.7.3 when the divert target is itself ephemeral/unwritable), the original is
   untouched, and the **late-divert re-checks** (§2.7.2: §2.3.3 link-safety + §2.2.3
   path-limit + §2.14.4 per-volume free-space on the divert volume) all run.
+  **Scenario (b) in CI `[DECIDED]`:** the mid-run flip is proven at the §2.7.2 seam (a
+  simulated writability flip) plus one Linux loopback filesystem remounted read-only
+  mid-run; real macOS/Windows network shares are a §6.6 walkthrough item. Realizability
+  probe at the box that runs the Linux loop-mount leg: a hosted job remounts a loopback
+  filesystem read-only while a conversion is in flight. If it cannot, the seam-level flip
+  alone carries scenario (b) in CI, without escalation.
 - **Out-of-disk / too-big (§1.10/§2.8):** a constrained-FS harness proves the item
   fails fast+clearly, the batch continues, and free space returns to ~baseline
   (§2.6); a cleanup that itself fails is **never** reported as a clean success.
@@ -971,8 +942,8 @@ and stub/real engines:
   - **fs-audit-half enforcement dependency `[DECIDED]`:** the "no out-of-input file read"
     half typically uses **`ptrace`** (strace / an `ptrace`-based fs-audit), which is
     **commonly blocked inside CI containers** (no `SYS_PTRACE` capability) → the check
-    would silently not-enforce. So: run this leg with **`docker --cap-add SYS_PTRACE`**
-    (or outside Docker on the §6.1.4 self-hosted VPS runner); **if `ptrace` is unavailable,
+    would silently not-enforce. So: this leg runs directly on the GitHub-hosted Linux
+    runner (§6.1.4), never inside a container; **if `ptrace` is unavailable,
     the fallback is the §2.12.3 Linux Landlock tier** — restrict the decoder to `{input
     ro, scratch rw}` and treat **the grant itself as the enforcement** (an out-of-input
     open is denied by the kernel, observable as the engine's `EACCES`), so the property
@@ -987,10 +958,10 @@ and stub/real engines:
     be diagnosable `[DECIDED]`:** before the non-zero exit, the step **emits a GitHub Actions
     `::error::` annotation** (e.g. `::error::fs-audit cannot enforce: neither ptrace
     (SYS_PTRACE) nor Landlock (kernel ≥ 5.13) available on this runner — see §6.4.2`) so the
-    reason surfaces in the checks UI, not just an opaque red exit code. **§6.1.4 must record
-    the Lane-B VPS runner's kernel version** as a prerequisite (so Landlock availability is
-    a known fact, not a runtime surprise) and **document which enforcement path the runner
-    uses**. A mandatory adversarial-egress gate that silently no-enforces is worse than a
+    reason surfaces in the checks UI, not just an opaque red exit code. **§6.1.4 records the
+    hosted Linux runner's enforcement path** as runner-image assumptions (`ptrace` of the
+    job's own descendants; a Landlock-capable kernel), so availability is a known fact, not
+    a runtime surprise. A mandatory adversarial-egress gate that silently no-enforces is worse than a
     visible red — so the absence of both tiers blocks, it does not pass.
   This is a **distinct case from the benign §2.11.4
   gate** and proves the argv/build controls — not "all engines bundled" — close T9b.
@@ -1358,14 +1329,12 @@ half of the DoD **core-UX-flow** gate; the human half is §6.6. Frontend compone
   `ConvertIA.app` directly** (no archive/re-extract step between build and smoke). **If the
   pipeline zips and re-unzips the `.app` before the smoke test**, the re-extracted copy IS
   quarantined and the smoke step MUST first run **`xattr -rd com.apple.quarantine
-  ConvertIA.app`** before launch. **Phase-3 path: run the smoke test on the build-output dir
-  (no zip round-trip) → no quarantine handling needed.** **TCC `[DECIDED]`:** TCC
+  ConvertIA.app`** before launch. **The smoke test runs on the build-output dir (no zip
+  round-trip), so no quarantine handling is needed.** **TCC `[DECIDED]`:** TCC
   file-access prompts **cannot be answered headlessly**, so the automated smoke leg **writes
   to and reads from a `TMPDIR`/temp dir only** (no Desktop/Documents/Downloads access), where
   **no TCC prompt fires**; the **TCC-prompt exercise (beside-source default touching a
-  protected folder) is moved to the §6.6 human walkthrough** (§6.4.4's "macOS TCC … in the
-  headed smoke run" is corrected to: TCC is a §6.6 human-walkthrough item, the automated leg
-  stays in a temp dir to avoid prompting).
+  protected folder) is a §6.6 human-walkthrough item** (§6.4.4).
 
 #### 6.4.6a Automated accessibility assertions (DoD basic-a11y owner) `[DECIDED]`
 
@@ -1376,8 +1345,8 @@ owned here** (it had no named tool/lane before):
 - **Tool & lane:** **`axe-core` (`^4.4`)** run via **`vitest-axe`** — a real, published npm
   package (a Vitest-native fork of `jest-axe`; npm `latest 0.1.0`, with a `1.0.0-pre`
   prerelease track; deps `axe-core ^4.4.2`, peer `vitest >=0.16.0`) `[DECIDED — verified on
-  npm]`. **Pin `[DECIDED]`:** pin **`vitest-axe@0.1.0`** (the stable `latest`) in §0.8; if
-  the `1.0.0-pre` line stabilises before Phase 3, bump to it. **Honest fallback note:**
+  npm]`. **Pin `[DECIDED]`:** pin **`vitest-axe@0.1.0`** (the stable `latest`) in §0.8; a
+  stable `1.x` release is an ordinary pin bump. **Honest fallback note:**
   `jest-axe` is **not** "wrong because the runner is Vitest" — it works fine under Vitest's
   Jest-compatible matcher API; `vitest-axe` is preferred purely for first-class Vitest
   ergonomics. If `vitest-axe` were ever unavailable, the fallback is **`axe-core` +
@@ -1489,7 +1458,7 @@ silent omissions:
 
 **Concrete shape & home of a "release-note item" `[DECIDED]` (so rows 16/17 are non-stub).**
 A release-note item for a demoted or patent-gapped pair is **not** free-form prose; it is a
-structured entry with a fixed home and required fields, so Phase 3 has an exact anchor:
+structured entry with a fixed home and required fields, so the implementation has an exact anchor:
 - **Home:** a tracked `docs/demoted-pairs.md` table in the repo (the single canonical file),
   **plus** a one-line summary mirrored into the release `CHANGELOG.md`/GitHub Release body for
   that version. The §6.5.2 pair-status ledger is the machine-readable form. For
@@ -1576,6 +1545,11 @@ specifically tests whether a *human who didn't build it* succeeds. Protocol:
     twice and launches from both** to confirm the §7.1.1 single-instance / refuse-busy
     hand-off behaves (or to **document the limitation** if two unsigned copies run as
     independent instances — an accepted v1 edge, not a silent gap).
+- **Real network share (macOS, Windows) `[DECIDED]`:** on macOS and on Windows one
+  walkthrough conversion writes its output to a real network share: the output lands
+  there, or — when the share is read-only — the §2.7 divert places it at the §2.7.3
+  target and shows its divert note. CI proves the mid-run read-only flip only at the
+  §2.7.2 seam and on a Linux loopback filesystem (§6.4.2 scenario (b)).
 - **Accessibility floor (part of the same gate, SSOT *For anyone*):** at least one
   walkthrough completes the core path **keyboard-only** (per the §5.10 shortcut map)
   and verifies readable contrast/text-size; this checks the DoD **basic-a11y** gate
@@ -1632,8 +1606,8 @@ non-dev tester since it is the highest non-technical-user blocker.
 
 ## 6.7 CI/CD `[DECIDED — two-lane pipeline]`
 
-Two lanes, reflecting the platform CI standard (`reference_cicd_setup.md`:
-reusable workflows + a green-`main` deploy-gate) adapted from a
+Two lanes, following the Ne-IA platform CI standard (reusable workflows + a
+green-`main` deploy-gate) adapted from a
 *server-deploy* model to a *desktop-release* model (there is **no server deploy** —
 ConvertIA is a downloadable artifact; the "deploy" is a GitHub Release).
 
@@ -1653,12 +1627,12 @@ ConvertIA is a downloadable artifact; the "deploy" is a GitHub Release).
 
 ### 6.7.1 Lane A — per-push validation on `main` (fast, every change)
 
-Runs on the **self-hosted Linux runner** (cheap; `reference_self_hosted_ci_runner.md`)
-for the OS-agnostic checks, fanning to the matrix only for compile-sanity:
+Runs on the GitHub-hosted runners (§6.1.4) — the OS-agnostic checks on `ubuntu-22.04`, the
+gate tooling and compile-sanity on the three-OS matrix:
 1. **Lint/format:** `cargo fmt --check`, `cargo clippy -D warnings` (enforces the
    platform **no-`any`/no-unwrap-sloppiness** quality bar), ESLint + `tsc --noEmit`
-   (no `any` — CLAUDE.md global rule), Prettier, `yamllint` (via `python3 -m`, per
-   the platform runner PATH workaround in the recent commits).
+   (no `any` — CLAUDE.md global rule), Prettier, `yamllint` (via `python3 -m`,
+   hash-pinned in `requirements-yamllint.txt`).
 2. **Rust↔TS type drift check (§0.4.5):** the codegen tool **`tauri-specta` (DECIDED,
    §0.4.5; + specta)** regenerates the shared types and CI **fails if the committed types
    differ** (enforces the IPC contract + "no `any`").
@@ -1726,20 +1700,18 @@ blocking the next:
    styles; jsdom cannot compute contrast, so it is **NOT** in the Lane-A per-push a11y leg).
    **macOS contrast is the acknowledged automated-coverage gap:** `tauri-driver` has no
    macOS WKWebView driver (§6.4.6), so the **macOS WCAG-AA contrast gate is verified ONLY
-   via the §6.6 human walkthrough** (readable-contrast check) — Phase 3 must not silently
-   skip macOS contrast; it is human-covered, recorded in `docs/usability-floor.md`. **Runtime / cost:** the dominant cost is the corpus run (video
+   via the §6.6 human walkthrough** (readable-contrast check) — the implementation must not
+   silently skip macOS contrast; it is human-covered, recorded in `docs/usability-floor.md`. **Runtime / cost:** the dominant cost is the corpus run (video
    re-encode + LibreOffice, the slow engines). Estimate **~30–90 min per leg**
    depending on corpus size; set CI **`timeout-minutes` ≈ 120 per leg** with headroom.
    **Per-OS summary `[DECIDED]`:** the **120-min** figure applies to the **Linux +
    Windows** legs only; the **macOS** leg starts at **180** (the escalation ladder below) —
    a CI YAML authored from a flat 120 would under-time macOS. **macOS-leg caveat +
    mitigation ladder `[DECIDED]`:** the **~30–90 min** estimate is
-   **optimistic for the macOS leg** — it pulls `corpus-large` over **GitHub LFS** (no
-   VPS-local cache, unlike the self-hosted Linux leg) **and** `macos-latest` minutes bill
-   **~10×** Linux/min (§6.1.4 budget note), so the 120-min figure has thin headroom. **The
+   **optimistic for the macOS leg**, so the 120-min figure has thin headroom there. **The
    escalation ladder is concrete (not ad-hoc) `[DECIDED]`:**
-   1. **Initial macOS `timeout-minutes = 180`** (not 120) — give the LFS pull + 10×-cost leg
-      real headroom from the start.
+   1. **Initial macOS `timeout-minutes = 180`** (not 120) — give the macOS leg real
+      headroom from the start.
    2. **Trigger to split `[DECIDED]`:** the **operative v1 trigger is TWO CONSECUTIVE macOS
       Lane-B runs each exceeding 180 min, OR a single run exceeding 240 min** — actionable from
       run 2 / run 1 respectively, while a **one-off** slow or LFS-congested macOS run does
@@ -1750,8 +1722,7 @@ blocking the next:
       switch the macOS leg to a **representative macOS subset**:
       one video re-encode pair (the slowest engine), one office→PDF pair (the LibreOffice
       path), one image-worker pair, and the E2E smoke — **the §6.6 video/office smoke set** —
-      while the **full `corpus-large` continues to run on the cheaper Linux leg** (which has
-      the VPS-local LFS cache and 1× cost).
+      while the **full `corpus-large` continues to run on the Linux leg**.
    3. **Subset selection criterion (so it is not ad-hoc):** pick the **slowest pair per
       engine family** (one each: video, office, image, audio) plus any pair whose §3.4
       disposition is *macOS-specific*, so the macOS subset still exercises every macOS-unique
@@ -1765,37 +1736,9 @@ blocking the next:
    watchdog poll interval, no-progress threshold), NOT a
    hard-coded `1` (or hard-coded timeout values), so the test env can never drift from prod).
    The **`corpus-large` LFS set is fetched only for this Lane-B run** (never the
-   per-PR fast lane, §6.4.5). **Runner `[DECIDED]`:** the **Linux** Lane-B leg runs on
-   the **self-hosted VPS runner** (same as Lane A, §6.1.4) — it has local/cheap LFS
-   bandwidth and disk for `corpus-large`; the **macOS/Windows** Lane-B legs use the
-   GitHub-hosted runners (no self-hosted equivalent), so for those `corpus-large` is
-   pulled over GitHub LFS bandwidth — a budgeted, tag-only cost (release frequency is
-   low, §6.1.4 budget note).
-   - **Self-hosted-runner capacity & contention analysis `[DECIDED]`.** The VPS runner
-     (12 vCore / 24 GB RAM / 720 GB NVMe) is **shared** with four other Ne-IA projects'
-     Lane-A CI. A Lane-B Linux corpus run is **disk- and CPU-heavy** (corpus-large LFS
-     +
-     staged engines + `tauri build` artifacts + transient scratch can reach tens of GB;
-     the slow LibreOffice/video legs saturate cores for 30–90 min) and must **not starve
-     the other projects' fast lanes**:
-     - **Concurrency isolation:** the Lane-B job runs under a **dedicated runner label /
-       `concurrency` group** with **`max-parallel: 1`** for corpus jobs, and is **niced /
-       cgroup-capped** (CPU + IO weight) so co-scheduled Lane-A jobs still get a slice.
-       Tag-triggered Lane-B is **rare** (release-only), so a single long run is tolerable;
-       it **should not materially delay Lane-A on typical PR loads**. **Fallback trigger
-       `[DECIDED]`:** if a Lane-B Linux run **measurably delays Lane-A on more than one
-       occasion**, **migrate the Lane-B Linux leg to a dedicated GitHub-hosted runner**
-       and keep the VPS runner **Lane-A-only** (the GitHub-hosted Linux fallback already
-       documented above becomes the standing arrangement).
-     - **Disk budget:** the runner reserves headroom for the worst-case sum
-       (corpus-large + 3-leg artifacts + scratch); the post-run cleanup (`docker`/build
-       cache + corpus checkout) is mandatory so 720 GB is never exhausted.
-     - **LFS hosting:** `corpus-large` lives in the **Ne-IA org LFS quota**, but the
-       Linux leg uses a **persistent VPS-local LFS cache** (clone once, reuse) so repeat
-       runs do not re-egress the org quota; only the macOS/Windows legs pull over GitHub
-       LFS bandwidth (the budgeted tag-only cost above). If org LFS egress becomes the
-       bottleneck, the Linux leg is the cache of record. (Revisiting GitHub-hosted Linux
-       for Lane-B remains the documented fallback if VPS contention proves unmanageable.)
+   per-PR fast lane, §6.4.5). **Runner `[DECIDED]`:** all three Lane-B legs run on the
+   pinned GitHub-hosted labels, each restoring `corpus-large` from the manifest-keyed
+   `actions/cache` entry (§6.1.4).
 3. **SBOM + NOTICE assembly + attribution-completeness gate (§6.3):** generate
    CycloneDX (app + engines), assemble `NOTICE`/`THIRD-PARTY-LICENSES.txt`, run the
    §6.3.3 completeness check. **A missing/UNKNOWN attribution aborts the release**
@@ -1808,22 +1751,16 @@ blocking the next:
    absent.** (Human step — its *evidence* is what CI checks.)
 6. **Integrity hashing (§6.2.3):** compute SHA-256 per artifact, build `SHA256SUMS`
    covering **every** release asset, **and the minisign signature over `SHA256SUMS`**
-   (§6.2.3 `[DECIDED]`). **Runner-host isolation `[DECIDED — P0 review r2]`:** this is
+   (§6.2.3 `[DECIDED]`). **Runner-host isolation `[DECIDED]`:** this is
    the **only** step that holds `MINISIGN_SECRET_KEY`/`MINISIGN_PASSWORD`, and the
-   user-facing trust substitute collapses to that one key, so the signing job runs on an
-   **ephemeral GitHub-hosted runner** — **NEVER on the shared self-hosted VPS** that ran
-   the stage-2 Lane-B Linux corpus leg (which processes `corpus-large` untrusted/
-   adversarial files + fuzz inputs, §6.1.4). A persistent multi-tenant runner that
-   handles untrusted input is the textbook host-compromise vector — once poisoned, every
-   future release could be silently re-signed with the real key. The signing job and the
-   untrusted-corpus/fuzz jobs declare **disjoint runner hosts** (no shared workspace, no
-   shared host); the **GitHub-hosted signing job** runs under `step-security/harden-runner`
-   (BLOCK mode) — its free/Community tier works only on GitHub-hosted runners (self-hosted
-   needs a StepSecurity Enterprise license), so the shared self-hosted VPS leg relies on
-   the §6.4.2 ptrace/Landlock fs-audit + the §6.7.3 nftables/strace egress monitor + the
-   VPS egress allowlist + an ephemeral/JIT low-priv runner instead. A workflow lint
-   (build-gates **G56**) fails any secret-using job bound to a self-hosted label. This
-   implements security-concept principle 11.
+   user-facing trust substitute collapses to that one key, so signing is a **separate
+   ephemeral GitHub-hosted job** under `step-security/harden-runner` (BLOCK mode) with no
+   untrusted-input step in it: no corpus, fuzz or engine run shares its job, and no hosted
+   job shares a host with another (§6.1.4). A runner that handles untrusted input is the
+   textbook host-compromise vector — once poisoned, every future release could be
+   silently re-signed with the real key. A workflow lint (build-gates **G56**) fails any
+   secret-using job bound to a self-hosted label. This implements security-concept
+   principle 11.
 7. **Publish to canonical GitHub Releases (§6.2.2):** upload artifacts + `SHA256SUMS`
    + `.sha256` files + SBOM (CycloneDX/SPDX) + `reliability-report.json` +
    `NOTICE`/`THIRD-PARTY-LICENSES.txt` as a **single coordinated release** (one
@@ -1843,20 +1780,18 @@ network-touching test that would contradict the offline invariant (§2.11).
 
 **Offline-observability hard gate `[DECIDED]` (6.10 DoD #5 / §2.11.4).** This is a
 **concrete release-blocking gate**, not "ideally enforced": the §6.4.6 E2E flow is run
-with **egress blocked** and **any outbound attempt fails the test**. Per-platform tool:
+with **egress blocked** and **any outbound attempt fails the test**. The contract is zero
+outbound packets, proven per OS; the per-OS mechanism (the deny layer, the attempt log, the
+armed-window canary, the DNS leg) is the build-gates **G42** row. Per-platform tool:
 - **Linux (Lane-B leg):** run the full E2E **inside a network namespace with egress
-  blocked** — `unshare --net` (loopback only) or `iptables -A OUTPUT -j DROP` (allowing
-  only the local WebDriver/IPC loopback). Any outbound packet aborts the run.
+  blocked** — `unshare --net` (loopback only, which keeps the local WebDriver/IPC
+  loopback). Any outbound packet aborts the run.
   **Precondition `[DECIDED]`:** `unshare --net` requires **unprivileged user namespaces**
   (`kernel.unprivileged_userns_clone=1` / `user.max_user_namespaces>0`), so the job runs a
   **preflight `unshare --net true` assertion with a clear diagnostic** ("net-namespace
-  unavailable — enable unprivileged userns or run with `--cap-add NET_ADMIN`") and **fails
-  loud rather than silently skipping the isolation**. **If the VPS runner runs inside Docker**
-  (the §6.1.4 containerised path), unprivileged `unshare --net` may be denied by the default
-  seccomp/AppArmor profile — in that case the job MUST use **`--network=none`** on the
-  container **or** add **`--cap-add NET_ADMIN`** rather than relying on in-container `unshare`;
-  the §6.1.4 kernel-recording requirement is the cross-ref for which path the runner host
-  supports.
+  unavailable — unprivileged user namespaces are disabled on this runner") and **fails
+  loud rather than silently skipping the isolation**. The leg runs directly on the hosted
+  `ubuntu-22.04` runner, never inside a container (§6.1.4 runner-image assumptions).
   **Composing the net-ns with the §6.4.6 `Xvfb` display (order-sensitive, pinned)
   `[DECIDED]`:** WebKitGTK needs a display, so the E2E must run under **both** `xvfb-run`
   **and** `unshare --net`. The **net-namespace wraps the entire `Xvfb`+E2E process**, and
@@ -1898,10 +1833,8 @@ with **egress blocked** and **any outbound attempt fails the test**. Per-platfor
   driver** (§6.4.6), so the offline gate runs the **§6.4.6 synthetic-argv smoke test** (launch
   + argv-driven conversion + window/output/exit-0 assertions) — **NOT** the WebDriver E2E flow
   the Linux/Windows legs run — under a **`pf` outbound-deny** profile (`pf` anchor/rule blocking
-  outbound to non-loopback) **plus** the §2.11.4 packet-monitor assertion. **`pfctl` needs
-  `sudo`** to load the anchor; GitHub-hosted macOS runners have **passwordless sudo**, recorded
-  as a **§6.1.4 runner-image assumption** (if a future runner image drops passwordless sudo the
-  gate degrades to the packet-monitor alone). **Acknowledged gap (§6.10 row 5):** because the
+  outbound to non-loopback; loading it needs `sudo`, a §6.1.4 runner-image assumption)
+  **plus** the §2.11.4 packet-monitor assertion. **Acknowledged gap (§6.10 row 5):** because the
   macOS leg cannot drive the WebView, the **WebView CSP offline property on macOS is verified by
   human walkthrough (§6.6) + static config inspection only**, NOT packet-monitored through a
   driven WebView — the argv smoke test packet-asserts the *core/engine* egress, not the
@@ -1930,8 +1863,8 @@ success.
 
 ## 6.8 Repo governance & policy artifacts `[DECIDED — concrete deliverables]`
 
-The SSOT *License & Openness* mandates a specific set of in-repo documents; each is
-a **Phase-3 authoring task** and several are **referenced by the release gates**.
+The SSOT *License & Openness* mandates a specific set of in-repo documents; several are
+**referenced by the release gates**.
 All are English (public OSS repo). Mapping each to its SSOT origin and content owner:
 
 | File | Required content | SSOT origin / owner |
@@ -1969,11 +1902,9 @@ that a governance doc could silently ship empty. **The same gate also asserts th
 ledger entry in state `unavailable-per-§3.4` or `demoted` MUST have a matching
 `docs/demoted-pairs.md` row (required fields present, §6.5.3) **and vice-versa** (no orphan
 rows) — so a patent-gapped or demoted pair can never ship without its release-note item, making
-§6.10 rows 16/17 a concrete machine-checkable gate. **Authoring owner `[DECIDED]`:** the
-five governance docs are a **blocking Phase-3 authoring task owned by the project owner
-(the §6.6 "owner" — the developer)**; the Lane-B gate checks **existence + non-emptiness +
-the key-section grep**, NOT prose quality, so authoring the substantive content is an
-explicit owner deliverable, not something the gate can substitute for.
+§6.10 rows 16/17 a concrete machine-checkable gate. The five governance docs exist
+(authored in the foundation phase); the Lane-B gate (build-gates **G44**) checks
+**existence + non-emptiness + the key-section grep**, NOT prose quality.
 
 **`[DECIDED]`**: a `GOVERNANCE.md`/maintainer
 model doc is **NOT adopted for v1** — the seven files above satisfy the SSOT mandate; a
@@ -2063,7 +1994,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 5 | **Offline guarantee observably true (no network at all)** | §2.11 | Network-egress-blocked E2E run asserts zero calls (§6.7.3 / §6.4.6) | **in-scope-gate** |
 | 6 | **Basic accessibility (keyboard path + readable contrast/sizes; **screen-reader path, SSOT Principle 10**; WCAG 2.1 AA per §5.6)** | §5.6 · §5.6.1 (SR contract) · §5.10 (shortcut map) | **Automated axe-core a11y assertions (§6.4.6a)** — **ARIA-role validity + focus-order run in Lane A (jsdom, §6.7.1)**; **WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI, both themes) runs in Lane B on the `@axe-core/webdriverio` live-WebView session (§6.7.2)** — jsdom cannot compute contrast. **Text-size half (body copy ≥ `--text-base` = 16px, §5.5) is verified by the §6.6 human walkthrough** — axe-core does not measure font size (§6.4.6a). Plus the keyboard-only human walkthrough (§6.6) **and the §6.6 screen-reader smoke pass that walks the §5.6.1 SR contract** | **in-scope-gate** |
 | 7 | **Core UX flow (drag/drop+picker+keyboard → same result; reacts to type; pre-highlighted default; destination shown before convert; visible cancellable progress; end-of-batch summary; one-click open-folder/file)** | §5.2 (states) · §1.1/§1.5/§1.11/§1.12 · §7.7 (open) | E2E flow per platform (§6.4.6) + usability-floor human walkthrough (§6.6) | **in-scope-gate** |
-| 8 | **Unwritable/ephemeral-location fallback works** | §2.7 (per-location divert) · §2.14 (cross-volume) | Property tests on read-only/USB/network/temp locations (§6.4.2); divert path in corpus runs | **in-scope-gate** |
+| 8 | **Unwritable/ephemeral-location fallback works** | §2.7 (per-location divert) · §2.14 (cross-volume) | Property tests on read-only/USB/network/temp locations (§6.4.2; the network-share flip at the §2.7.2 seam and on a Linux loopback filesystem); divert path in corpus runs; real macOS/Windows network shares in the §6.6 walkthrough | **in-scope-gate** |
 | 9 | **Every bundled engine's required licence text + attribution present and correct (NOTICE/third-party-licenses, backed by SBOM) — missing attribution release-blocking** | §3.7 (data) · §5.9 (display) | SBOM + NOTICE assembly + **attribution-completeness gate** (§6.3.3); blocks release | **in-scope-gate** |
 | 10 | **Name/trademark clearance completed; any rename applied across repo/LICENSE/NOTICE/branding before release** | this file (§6.9) | Clearance-record gate (§6.9.2) + scripted rename propagation + old-name grep gate (§6.9.3) | **in-scope-gate** (the *clearance check + rename*); **out-of-scope-process** (*registering* a mark) |
 | 11 | **Usability floor: ordinary non-tech person completes each named conversion unaided on first try; ≥1 genuine non-dev walkthrough on ≥1 platform (owner may run the remaining two — matches the AMENDED SSOT §9 gate, owner amendment recorded at the SSOT source, implemented in §6.6)** | §5 (UX) · this file (§6.6) | Human walkthrough recorded in `docs/usability-floor.md` (which were non-dev vs owner-run); evidence gate in Lane B (§6.6/§6.7.2) | **in-scope-gate** |

@@ -589,8 +589,8 @@ Rationale (this materially shapes §0.10 and §1.7):
   registry and the frozen job. This is the tighter half of the §0.11 threat map
   (the §3.5 sidecar invocation is *not* WebView-reachable).
 - **Concrete path resolution `[DECIDED]`.** When the Rust core spawns via
-  `tokio::process`, it resolves the bundled program path as follows (so Phase 3 does
-  not rediscover it):
+  `tokio::process`, it resolves the bundled program path as follows (so the implementation
+  does not rediscover it):
   - **externalBin sidecars** (ffmpeg, ffprobe, pdftotext, pandoc,
     `convertia-imgworker`): resolved at runtime by the **bare name** (NO triple
     suffix) **beside the app executable** —
@@ -627,7 +627,7 @@ Rationale (this materially shapes §0.10 and §1.7):
   - **`Sidecar(EngineId)` → binary-filename mapping `[DECIDED]`.** Because
     `EngineProgram::Sidecar` carries only an `EngineId`, the resolver needs the bare
     binary name per `EngineId`. The convention is a **fixed `EngineId → binary-name`
-    table** owned here (Phase-3 does not invent one): `FFmpeg → "ffmpeg"`,
+    table** owned here (the implementation does not invent one): `FFmpeg → "ffmpeg"`,
     `FFprobe → "ffprobe"`, `Poppler → "pdftotext"`,
     `Pandoc → "pandoc"`, `ImageCore → "convertia-imgworker"` (the libvips image-worker,
     §3.5.5). **`EngineId::LibreOffice` is not in this table:** its program is a
@@ -790,7 +790,7 @@ processes**, and the matrix rows above are split accordingly:
   the **GPL FFmpeg binary** via FFmpeg's native `hevc` decoder and its `libdav1d` AV1
   decoder (FFmpeg does **not** link libde265, and its `libdav1d` is a separate link from
   the image-worker's libheif/dav1d module).
-A Phase-3 engine/trim/licence decision must read the **right row**: image HEVC/AV1
+An engine/trim/licence decision must read the **right row**: image HEVC/AV1
 decode = libheif+libde265/dav1d (image-worker, §3.5.5); video HEVC/AV1 decode =
 FFmpeg's decoders (FFmpeg sidecar, §3.5.1). The §6.1.3 curated-FFmpeg
 decoder-coverage assertion must therefore list **`hevc` and `libdav1d`** as required FFmpeg
@@ -1448,7 +1448,7 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   §0.7 `binaries/` tree and the §0.3 subprocess box), **resolved Rust-side via
   `current_exe().parent()`** (the §3.3.3 [DECIDED] sidecar-resolution path — Tauri strips
   the triple suffix on bundle), **never linked into the MIT core**. So `EngineProgram::
-  Sidecar(EngineId::ImageCore)` resolves to this artifact; Phase-3 builds it as its own
+  Sidecar(EngineId::ImageCore)` resolves to this artifact, built as its own
   binary that statically links the libvips/libheif/libde265/ImageMagick stack and compiles
   in the `librsvg` crate.
 - **Build shape `[DECIDED]`.** The worker's native C link is a compile-time cfg, never a
@@ -1617,7 +1617,7 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   route through `EngineId::ImageCore` = the image-worker). It has **no `EngineProgram`**,
   **no §3.2.3 registry entry**, and **no `trait Engine` impl**; its `EngineId` exists
   **only** for SBOM/NOTICE attribution (§3.7) and the §7.2 EngineHealth presence-check.
-  (Stated so Phase-3 does not author a spurious `Engine` impl / registry row for it.)
+  (Stated so the implementation authors no `Engine` impl or registry row for it.)
 
 ### 3.5.6 Native CSV/TSV engine (in-core Rust)
 
@@ -2045,11 +2045,10 @@ blocker).
 **Accepted trade-off (SSOT *Completeness > lightweight*, temp.md):** bundling
 everything — *including* LibreOffice — makes the download large; this is
 deliberate. v1 **never trades in-scope completeness for size** (completeness is the
-gate, not size). The §3.9.2 `[DECIDED]` per-platform compressed ceiling is reached only
-through its fixed trim-lever order, never by dropping a pair (dropping pandoc stays
-BLOCKED). Its digit is calibrated against the measured trimmed builds
-(`[DEFER: corpus/build]`). The budget below sets expectations and identifies what
-dominates, so trimming effort is spent where it matters.
+gate, not size). The §3.9.2 `[DECIDED]` per-platform compressed ceiling — 400 MB, the gate
+value, which only an owner decision changes — is reached only through its fixed trim-lever
+order, never by dropping a pair (dropping pandoc stays BLOCKED). The budget below sets
+expectations and identifies what dominates, so trimming effort is spent where it matters.
 
 ### 3.9.1 Estimated per-component compressed contribution
 
@@ -2085,12 +2084,11 @@ dominates, so trimming effort is spent where it matters.
 
 #### Per-platform compressed-artifact size budget + CI enforcement `[DECIDED — "stay light", SSOT Principle 1]`
 "Stay light" needs an owning number and a gate, not just an estimate:
-- **Per-platform COMPRESSED artifact ceiling (the downloaded file):** ship a **finite
-  starting budget of ≤ 400 MB compressed per platform** (the Windows `.zip`, `.dmg`,
-  AppImage) as the v1 target — comfortably above the dominant LibreOffice+fonts+pandoc
-  floor yet a real cap. **`[DEFER: corpus/build]`** the exact number is re-pinned once the
-  trimmed engine builds + the chosen CJK-font breadth (§3.9.3) are measured in §6.1; the
-  **design (a hard ceiling exists and is enforced) is DECIDED**, only the digit is empirical.
+- **Per-platform COMPRESSED artifact ceiling (the downloaded file):** **400 MB compressed
+  per platform** (the Windows `.zip`, `.dmg`, AppImage) is the gate value — comfortably
+  above the dominant LibreOffice+fonts+pandoc floor yet a real cap. Only an owner decision
+  changes it; a measured trimmed build that trips it runs the fixed lever order below
+  first, and the §3.9.3 CJK-font breadth is tuned against it.
 - **CI enforcement (the actionable gate):** the **§6.1.2 packaging step measures each
   platform artifact's compressed size and FAILS the build if it exceeds the budget** (a
   Lane-B gate, with the current measured sizes published as a release asset for
@@ -2109,20 +2107,17 @@ dominates, so trimming effort is spent where it matters.
   first), and a **macOS-only single-arch fallback** (ship two `.dmg`s instead of one
   universal) is the recorded last-resort contingency `[DEFER: corpus/build]` — it trades the
   "one artifact per platform" nicety for headroom, only if trim cannot reach the gate.
-- **Feasibility risk at the upper bound (must verify before the digit is fixed) `[DEFER:
-  corpus/build]`.** The ≤ 400 MB **compressed** ceiling is comfortable against the *low*
-  installed end (~430 MB → ~40-50% compression is routine), but at the **high installed end
-  (~700-820 MB: full-CJK fonts + pandoc 3.x upper bound)** it needs **~50%+ compression**,
-  achievable only with aggressive trim. The `[DEFER: corpus/build]` calibration **MUST
-  verify this is actually reachable before treating 400 MB as a fixed gate** (measure the
-  real trimmed-build compressed size in §6.1, both font-breadth extremes). **If the gate
-  trips, the lever order is fixed `[DECIDED]`:** (1) **trim the CJK font weights first**
+- **Feasibility at the upper bound.** The 400 MB **compressed** ceiling is comfortable
+  against the *low* installed end (~430 MB → ~40-50% compression is routine), but at the
+  **high installed end (~700-820 MB: full-CJK fonts + pandoc 3.x upper bound)** it needs
+  **~50%+ compression**, achievable only with aggressive trim. **If the gate trips, the
+  lever order is fixed `[DECIDED]`:** (1) **trim the CJK font weights first**
   (§3.9.3 — the single biggest swing knob, SC-only vs all-CJK); (2) only then revisit other
   font/help trims; (3) **dropping pandoc stays BLOCKED** until LibreOffice Markdown export
   is corpus-proven for the `DOCX/ODT/RTF → MD/HTML` pairs (documents.md item 1/2
-  `[DEFER: corpus]`) — it is a post-v1 contingency, not a size lever to reach for. This
-  ties the deferred digit to a
-  **decided remedy** rather than a silent build-gate failure.
+  `[DEFER: corpus]`) — it is a post-v1 contingency, not a size lever to reach for. A tripped
+  gate therefore has a **decided remedy**, never a silent failure; the value itself moves
+  only by owner decision.
 
 ### 3.9.3 Open size decisions (genuine)
 
