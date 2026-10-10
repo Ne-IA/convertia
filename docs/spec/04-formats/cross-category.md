@@ -348,24 +348,24 @@ to the §1.10 resource pre-flight; §1.10 owns the threshold mechanics):
    trim_or_cap)) × out_w × out_h × ~1 byte/px` (a deliberately conservative
    per-pixel-per-frame heuristic for GIF). This is cheap (no decode needed — clip
    length + chosen fps/width are known).
-2. **Default duration cap** when no trim is chosen: encode at most **N seconds**
-   (proposal **N = 10 s** — see [XCAT-E] `[DEFER: corpus]`; the cap is *also* the guardrail's main
-   lever). The cap is applied as `-t` in the same single invocation.
-3. **Fail-fast threshold:** if the estimate still exceeds the §1.10 "too big"
-   ceiling (e.g. very high width + long allowed window), the item **fails clearly
-   up front** with the §2.8.2 `TooBig` (to-GIF) row rather than grinding out a giant
+2. **Duration cap:** encode at most `GIF_DURATION_CAP` (§1.10) — the default when no trim
+   is chosen and the maximum of any trim window ([XCAT-E] decides whether one exists); the
+   cap is *also* the guardrail's main lever. It is applied as `-t` in the same single
+   invocation.
+3. **Fail-fast threshold:** if the estimate still exceeds `GIF_ESTIMATE_CEILING` (e.g. very
+   high width + long allowed window), the item **fails clearly before its encode** at
+   §1.10 point 2 with the §2.8.2 `TooBig` (to-GIF) row rather than grinding out a giant
    file (SSOT *fail fast and clearly, preferably up front*). The rest of the batch
    continues.
 4. The estimate + cap are **honest, not silent truncation**: if a cap shortened
    the clip, that's a predictable, disclosed outcome (passive note via §2.9
    `video_to_gif`), not a quiet surprise.
 
-> **`[XCAT-F]` `[DEFER: corpus]` — the cap & ceiling numbers.** The default duration cap
-> (proposed 10 s), the per-pixel heuristic constant, and the absolute "too big" ceiling are
-> **`[DEFER: corpus]`** (finite starting values ship; calibrate against the §6 corpus) and
-> co-owned with §1.10 (resource pre-flight). They must be *some* finite value in v1 —
-> leaving the cap unset is not an option (it reintroduces the foot-gun). Tracked in the
-> open-questions log.
+> **`[XCAT-F]` — the cap & ceiling numbers.** The duration cap and the size ceiling are
+> `[DECIDED]`: the §1.10 constants `GIF_DURATION_CAP` and `GIF_ESTIMATE_CEILING` (their one
+> home). The per-pixel heuristic constant (item 1) stays `[DEFER: corpus]`: a finite
+> starting value ships and the §6 corpus calibrates it; leaving it unset is not an option
+> (it reintroduces the foot-gun).
 
 ### Lossy?
 
@@ -461,7 +461,7 @@ the default (MP3) is unchanged — so no platform loses the *operation*, at most
 | **[XCAT-C]** | Probe for "no audio track" up front (disable target with reason) vs offer-then-fail — cost vs UX on large recursive batches | `[DEFER: corpus]` — validate in §6.6 |
 | **[XCAT-D]** | Default GIF dither | **`[DECIDED]`** — `bayer:bayer_scale=5` (favours small files, the everyday GIF priority); error-diffusion modes remain available as Advanced |
 | **[XCAT-E]** | to-GIF **trim** scope: hard cap only / Basic start+duration / Advanced (recommend Basic start+duration) | `[DEFER: corpus]` — design leans Basic start+duration; validate in §6.6 |
-| **[XCAT-F]** | to-GIF guardrail numbers: default duration cap (~10 s), per-pixel size heuristic, absolute "too big" ceiling (co-owned §1.10) | `[DEFER: corpus]` — finite starting values ship; calibrate against the §6 corpus |
+| **[XCAT-F]** | to-GIF guardrail numbers: duration cap, size ceiling, per-pixel size heuristic (co-owned §1.10) | cap and ceiling **`[DECIDED]`** — the §1.10 constants `GIF_DURATION_CAP` and `GIF_ESTIMATE_CEILING`; the per-pixel heuristic `[DEFER: corpus]` — a finite starting value ships; calibrate against the §6 corpus |
 
 > None of these block enumerating the **pairs**: both operations are **in** for
 > all ten video sources regardless of how A–F resolve; A–F tune *which audio

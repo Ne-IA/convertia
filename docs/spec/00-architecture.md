@@ -1139,13 +1139,12 @@ pub struct PreflightVerdict {        // §1.10 (owner) summary surfaced before c
                                      //   NOT necessarily the destination. (§2.7 beside-source/
                                      //   divert spread a batch across 2+ destination volumes;
                                      //   §1.10 / §2.14.4.) TooBig =
-                                     //   the absolute per-item/aggregate output ceiling. A
-                                     //   PER-ITEM too-big / out-of-disk is NOT carried here: it
-                                     //   is enforced at WRITE TIME (mid-run) as that item's
+                                     //   the aggregate projected output over
+                                     //   AGGREGATE_OUTPUT_CEILING (§1.10 point 1). A
+                                     //   PER-ITEM too-big / out-of-disk is NOT carried here:
+                                     //   §1.10 points 2–4 fail that item as
                                      //   Failed(TooBig|OutOfDisk) while the batch continues
-                                     //   (§1.10 / §1.11 fast-fail surfacing). So "preferably up
-                                     //   front" = the per-volume whole-batch verdict here +
-                                     //   per-item enforcement at the §2.1 write.
+                                     //   (§1.11 fast-fail surfacing).
     pub up_front_fail_text: Option<String>, // the backend-rendered §2.8.2 batch-scoped line for
                                      //   the up_front_fail verdict (None when up_front_fail is
                                      //   None); the §5.3 DestinationBar shows it verbatim
@@ -1761,13 +1760,18 @@ pool** governs how many engine processes run at once. **This number lives here;
   this §0.9 pool module** (co-located with `MAX_LO_CONCURRENCY`, and **imported by the §6.7.2
   test harness** so test and prod can never drift): a **per-engine wall-clock timeout**
   (generous for video — a long film legitimately takes minutes — tight for the light
-  engines), the **watchdog poll interval**, the **no-progress threshold** (time without
-  stdout/stderr/output-size progress before a hang is declared), and the **§1.7 group-kill
+  engines), the **watchdog poll interval**, the **no-progress threshold** (time without a
+  progress tick before a hang is declared; it applies only to the streaming models, and
+  `CoarseSpawnDone` and `InProcessFraction` are bounded by the wall clock, §1.7), the **§1.7 group-kill
   confirm-wait bound** (`GROUP_CONFIRM_WAIT` — the short cap the §2.12 confined runner waits,
   after issuing the whole-group kill on cancel, for the OS to reap the engine group before
   the per-job `*.part` is removed, so the cancel/quit path never hangs on a wedged descendant;
-  mechanism owned by §1.7's cancel ordering, homed here by the pool-const convention). v1 ships
-  **baseline values calibrated against the §6 corpus**, and a committed **timeout-sentinel
+  mechanism owned by §1.7's cancel ordering, homed here by the pool-const convention), and the
+  **§1.7 engine-output capture bounds** (`STDERR_HEAD_BYTES`, `STDERR_TAIL_BYTES`,
+  `PROBE_STDOUT_MAX_BYTES` — homed here by the same convention; §1.7 decides their values).
+  The same poll enforces the §1.10 point-3 ceilings, whose values are the §1.10 constants
+  table. v1 ships **baseline values calibrated against the §6 corpus** for the time bounds,
+  and a committed **timeout-sentinel
   corpus case** (a deterministic input / a `#[cfg(test)]` sidecar that reliably exceeds the
   budget or stalls without progress) exercises the §1.7 reap so the parameters are test-covered,
   not prose.

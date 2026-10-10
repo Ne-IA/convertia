@@ -1098,10 +1098,10 @@ One glossary for every spec file; per-file headers point here.
 ### Deferred to corpus / usability validation `[DEFER: corpus]`
 > Design decided; only an empirical number or a real-world validation remains. These
 > are **not** open design questions.
-- **Resource budget numbers** — "too big" ceiling, memory/handle ceilings,
-  per-category heuristics, **headroom margin 1.3×**, **GIF duration cap ~10 s** ship
-  as finite starting values, tuned against the §6 corpus. Owner: §1.10 (co-owned
-  §0.9 + cross-category [XCAT-F]).
+- **Resource budget heuristics** — the §1.10 per-category size-heuristic constants (the
+  to-GIF per-pixel constant included, cross-category [XCAT-F]) ship as finite starting
+  values, tuned against the §6 corpus; the ceilings, margins and caps are the §1.10
+  constants table (v1 values `[DECIDED]`). Owner: §1.10 (co-owned §0.9 + 04).
 - **Documents `MD→PDF`/`MD→ODT/DOCX` ownership** (LO 26.2 MD import unproven; default
   LO, pandoc fallback) and **`RTF→markup` ownership** (pandoc, LO fallback if too
   lossy). `DOC→markup` is already DECIDED LibreOffice. Owner: documents.md.
@@ -1226,6 +1226,24 @@ One glossary for every spec file; per-file headers point here.
   expiry the §2.13.5 `WebviewFault` line shows on a native non-blocking dialog (probe at the
   building box; fallback: stderr and the §7.5 log). The `get_webview_window` `None` arm is
   no detection seam. Owner: §7.2.1 / §2.13.3.
+- **§1.10 enforcement points and v1 ceilings — `[DECIDED]`.** `TooBig` and `OutOfDisk` are
+  enforced at four points: the C4/C5 whole-batch verdict (the only `up_front_fail`), a
+  per-item check before the engine spawns, the §1.7 mid-run watchdog (byte budget, per-item
+  scratch ceiling, per-item memory ceiling, the one-victim free-space arbiter) and the core's
+  own write or publish. The v1 values are one constants table in §1.10; each item's engine
+  works in a per-item kind-2 sub-directory removed at its terminal transition (§2.14.2).
+  Owner: §1.10 / §2.14.2.
+- **Per-item memory ceiling — `[DECIDED]`, enforced per OS.** The §1.7 watchdog poll sums
+  the engine group's resident memory on Linux and macOS; on Windows the engine's own §2.12.3
+  Job Object carries the ceiling as its job memory limit. A realizability probe runs at the
+  building box; where it fails there is no per-item kill, the adaptive degree and the OS
+  bound memory, and an OOM-killed engine ends `EngineCrash`. Owner: §1.10.
+- **Bounded engine capture and the coarse progress contract — `[DECIDED]`.** `stderr` keeps
+  a bounded head and tail and a `CoarseSpawnDone` stdout is capped (over the cap the item
+  fails `Corrupt`); a `CoarseSpawnDone` invocation reports `Spawning`, `Encoding` and, at the
+  verified exit, `Writing` with `1.0`; the video probe occupies `0.0..0.05` and the encode is
+  rescaled into `0.05..=1.0`; the no-progress threshold applies only to the streaming
+  models. Owner: §1.7.
 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
 - **§5.2 launch-with-files initial state** — the one live fork, tagged in 05-ui-ux §5.2: a

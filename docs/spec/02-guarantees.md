@@ -900,6 +900,7 @@ volume rule are owned by §2.14.2 (referenced here, not re-decided):
 | **Item failure** (engine error, corrupt, etc.) | remove that item's `tmp`. |
 | **Cancel** (user) | §1.7 kills the engine group and, on a **bounded** confirm-wait, removes the killed item's `tmp`; **already-finished items are kept** (SSOT). **If the group-kill confirm-wait times out** (a wedged descendant still holding the `*.part`), reclamation of that publish temp is **deferred to the §2.6.4 sweep** and surfaced as a `CleanupResidue` on the Cancelled item (§2.6.4 case 3) — i.e. tmp is *not* unconditionally removed here. |
 | **Out-of-disk mid-write** | remove the partial `tmp`; report `OutOfDisk` (§2.8); **batch continues** (SSOT). |
+| **Item terminal** (succeeded, failed or cancelled) | remove the item's kind-2 working sub-directory (§2.14.2) — its cwd, temp dir and LibreOffice profile. |
 | **Run end (any reason)** | remove the now-empty central `run-<RunId>/` dir **and** leftover publish temps in the run's **RECORDED `final_dir` set** — the union of **every distinct `final_dir` actually used this run**, tracked in memory as outputs are planned/written. This is **not** just the dropped/destination roots: it **includes late-divert targets (§2.7.2) and cross-volume intermediates (§2.14.3)**, which can land in dirs that are neither a drop root nor the chosen destination. **CRITICAL — own-prefix scope, never a bare `*.part` glob `[DECIDED]`:** a RECORDED `final_dir` can be **shared across concurrent instances** (the beside-source-into-the-same-folder scenario §2.6.1/§2.6.3 guard), so run-end cleanup removes **only this run's own temps by exact prefix** — `.convertia-<thisInstanceId>-<thisRunId>-*.part` — in each recorded dir, and **never** a bare `*.part` / `.convertia-*.part` glob (which would delete a concurrent foreign instance's **live** in-progress `.part`, violating the SSOT *"cleanup never removes another instance's in-progress file"*). For any **non-matching** `.convertia-*.part` encountered in a recorded dir, apply the §2.6.3 per-file **"held lock ⇒ keep"** guard so a foreign live temp is never deleted (a dead foreign run's residue may be opportunistically reclaimed under that guard, but never a live one). (Recording the actual `final_dir` per item as it is written is what makes run-end cleanup enumerate every dir a `*.part` could have been written to; the §2.6.3 opportunistic/startup sweep is the post-crash backstop.) |
 | **Next app start** | sweep stale central `run-<RunId>/` dirs from prior runs (§2.6.3); destination-resident `*.part` from a *crashed* prior run are reclaimed opportunistically by a later write into that dir, not by the startup sweep (§2.6.3 limitation). |
 
@@ -1342,8 +1343,8 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 | `Gone` | **"This file is no longer there — it may have been moved, renamed, or its drive removed."** | — | present at freeze, missing at its turn (removable media, etc.). |
 | `PasswordProtected` | **"This file is password-protected or copy-protected, so ConvertIA can't read it."** | — | encrypted PDF, DRM video/audio. ConvertIA never prompts for / cracks passwords. |
 | `NoAudioTrack` | **"This file has no audio to extract."** | — | extract-audio asked of a video/source with no audio stream (cross-category.md / audio.md). |
-| `TooBig` | **"This file is too large for ConvertIA to convert on this computer."** | — | §1.10 ceiling; the to-GIF case uses the row below. |
-| `TooBig` (to-GIF) | **"This clip is too long or too large to turn into a GIF — try a shorter selection."** | — | the per-item to-GIF fail-fast before encoding (cross-category.md), against the §1.10 ceiling. |
+| `TooBig` | **"This file is too large for ConvertIA to convert on this computer."** | — | per item, §1.10 point 2 or 3; the to-GIF case uses the row below. |
+| `TooBig` (to-GIF) | **"This clip is too long or too large to turn into a GIF — try a shorter selection."** | — | the per-item to-GIF fail-fast before encoding: §1.10 point 2 with `GIF_ESTIMATE_CEILING` (cross-category.md). |
 | `OutOfDisk` | **"There isn't enough free disk space to finish this conversion."** | — | batch continues; partial cleaned (§2.6). |
 | `WriteFailed` | **"ConvertIA couldn't save the converted file to that location."** | — | non-space write/publish failure at the destination (permission/IO, §2.1/§2.7); distinct from `OutOfDisk`. |
 | `PathTooLong` | **"The output name would be too long for this system, so this file was skipped. Try a shorter folder or file name."** | — | never truncates (§2.2.3). |
@@ -1812,9 +1813,10 @@ Beyond the process boundary, ConvertIA drops the decoder's privileges so a
 the privilege-drop tier is best-effort, degrading silently — see the callout):
 
 - **All platforms (cheap, v1):** spawn each engine with **(a)** a working directory
-  set to the **per-run scratch dir** (§2.6) so relative paths can't wander; **(b)**
-  a **minimal environment** (cleared env except what the engine needs — no inherited
-  secrets); **(c)** the §2.12.1 process boundary; **(d)** the §1.7 timeout. The
+  set to the item's **working sub-directory** of the run's kind-2 dir (§2.14.2) so relative
+  paths can't wander; **(b)** a **minimal environment** (cleared env except what the engine
+  needs — no inherited secrets; its temp-directory variables point at that same
+  sub-directory); **(c)** the §2.12.1 process boundary; **(d)** the §1.7 timeout. The
   engine is handed **only** the exact input path and the `tmp` output path (§3.5),
   not a directory it can scan.
 - **Linux (recommended v1 if feasible):** wrap the spawn in a **seccomp-bpf** filter
@@ -1871,7 +1873,7 @@ the privilege-drop tier is best-effort, degrading silently — see the callout):
   **never** the network bound. As with the Linux split (net namespace, not seccomp, is the
   egress block), the network confinement is named to the mechanism that actually provides
   it; the §2.11.4 packet-monitor is the load-bearing offline gate regardless of tier.
-  **`[DECIDED — P4.17, Co-Pilot ruling 2026-08-25: v1-portable Windows = intermediate-IL write-confinement + an own Job Object; restricted-token/AppContainer + AppContainer/WFP net-deny are NOT realizable.]`** On stable Rust + `tokio` there is **no parent-side spawn-token / process-creation-attribute path** (`std::os::windows::process::CommandExt` has no `raw_attribute`/token parameter on 1.96.0; `tokio::process::Child` cannot be built from a raw handle), and an **AppContainer** additionally needs `ALL APPLICATION PACKAGES` DACL grants on the portable engine bundle dir (impossible on a FAT/exFAT stick) and on every input (source-metadata mutation = §2.0 harm) — so restricted-token/AppContainer is realized as the §2.12.1 cheap-tier floor only. What **IS** realized, both applied PARENT-SIDE on the `CREATE_SUSPENDED` child before the threads resume (never a post-fork child — the P4.16 admission test is satisfied): (1) a **reduced-integrity token** at a **ConvertIA-private mandatory IL strictly between Low (0x1000) and Medium (0x2000)** — the canonical `0x1800` — with the per-run scratch + `.part` labelled at that same IL BEFORE the token is lowered (label-then-lower), the Windows analogue of the Landlock `{scratch rw}` grant: the engine can write only its own labelled sinks and **cannot write Medium user files**, while a **Low (4096) co-tenant is denied write-UP** to the labelled `.part` (`NO_WRITE_UP`, the MIC total order) — the intermediate IL, NOT Low, is deliberate so the standard Low sandboxes (Acrobat renderer, Office Protected View, browser content) cannot tamper with the `.part` in the user's destination dir; the label is stripped before the §2.1.2 publish (it travels with `MoveFileEx`); (2) an **own Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (closes the §1.7 crash-time reap) + a generous `JOB_MEMORY`/`ACTIVE_PROCESS` runaway cap + `DIE_ON_UNHANDLED_EXCEPTION`, with `KILL_ON_JOB_CLOSE` cleared on the CLEAN completed wait and LEFT ARMED on the crash arm as the host-crash backstop (matching the delivered `GroupKillGuard`: clean wait → stand down, crash wait → the guard fires the group-kill). **Network deny is NOT realizable in v1-portable** (an AppContainer no-network profile needs the unrealizable AppContainer; a WFP/firewall rule needs elevation + leaves a persistent machine-global mutation) — the load-bearing offline gate is the §2.11.4 packet-monitor regardless of tier, and the §6.7.3 CI egress gate uses an ELEVATED runner firewall (a CI fact, unaffected). **Honest residual:** the deliberate intermediate-IL label on the `.part` is a same-user cross-integrity co-tenancy residual, distinct from the cross-user T13 (a same-user process at an unusual IL in the open interval (Low, Medium) could write the labelled `.part`) — out of the single-user offline model, standard Low sandboxes excluded by the intermediate IL, the DACL is not the defence, the label stripped before publish, and the tier best-effort non-load-bearing. **Revisit anchor:** a signed/installing build epoch that unlocks a spawn-token path + a brokered/staged input model (re-opens restricted-token/AppContainer + net-deny). This is the write-side analogue of the P4.16 macOS decision above; the T9b/offline guarantees never rested on this tier (§0.11 T9b).
+  **`[DECIDED — P4.17, Co-Pilot ruling 2026-08-25: v1-portable Windows = intermediate-IL write-confinement + an own Job Object; restricted-token/AppContainer + AppContainer/WFP net-deny are NOT realizable.]`** On stable Rust + `tokio` there is **no parent-side spawn-token / process-creation-attribute path** (`std::os::windows::process::CommandExt` has no `raw_attribute`/token parameter on 1.96.0; `tokio::process::Child` cannot be built from a raw handle), and an **AppContainer** additionally needs `ALL APPLICATION PACKAGES` DACL grants on the portable engine bundle dir (impossible on a FAT/exFAT stick) and on every input (source-metadata mutation = §2.0 harm) — so restricted-token/AppContainer is realized as the §2.12.1 cheap-tier floor only. What **IS** realized, both applied PARENT-SIDE on the `CREATE_SUSPENDED` child before the threads resume (never a post-fork child — the P4.16 admission test is satisfied): (1) a **reduced-integrity token** at a **ConvertIA-private mandatory IL strictly between Low (0x1000) and Medium (0x2000)** — the canonical `0x1800` — with the engine's working directory (its per-item sub-directory, §2.14.2) + `.part` labelled at that same IL BEFORE the token is lowered (label-then-lower), the Windows analogue of the Landlock `{scratch rw}` grant: the engine can write only its own labelled sinks and **cannot write Medium user files**, while a **Low (4096) co-tenant is denied write-UP** to the labelled `.part` (`NO_WRITE_UP`, the MIC total order) — the intermediate IL, NOT Low, is deliberate so the standard Low sandboxes (Acrobat renderer, Office Protected View, browser content) cannot tamper with the `.part` in the user's destination dir; the label is stripped before the §2.1.2 publish (it travels with `MoveFileEx`); (2) an **own Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (closes the §1.7 crash-time reap) + a `JOB_MEMORY` limit at the §1.10 per-item memory ceiling + a generous `ACTIVE_PROCESS` runaway cap + `DIE_ON_UNHANDLED_EXCEPTION`, with `KILL_ON_JOB_CLOSE` cleared on the CLEAN completed wait and LEFT ARMED on the crash arm as the host-crash backstop (matching the delivered `GroupKillGuard`: clean wait → stand down, crash wait → the guard fires the group-kill). **Network deny is NOT realizable in v1-portable** (an AppContainer no-network profile needs the unrealizable AppContainer; a WFP/firewall rule needs elevation + leaves a persistent machine-global mutation) — the load-bearing offline gate is the §2.11.4 packet-monitor regardless of tier, and the §6.7.3 CI egress gate uses an ELEVATED runner firewall (a CI fact, unaffected). **Honest residual:** the deliberate intermediate-IL label on the `.part` is a same-user cross-integrity co-tenancy residual, distinct from the cross-user T13 (a same-user process at an unusual IL in the open interval (Low, Medium) could write the labelled `.part`) — out of the single-user offline model, standard Low sandboxes excluded by the intermediate IL, the DACL is not the defence, the label stripped before publish, and the tier best-effort non-load-bearing. **Revisit anchor:** a signed/installing build epoch that unlocks a spawn-token path + a brokered/staged input model (re-opens restricted-token/AppContainer + net-deny). This is the write-side analogue of the P4.16 macOS decision above; the T9b/offline guarantees never rested on this tier (§0.11 T9b).
 
 > **v1 sandbox depth per OS — `[DECIDED]` (two tiers, owner §2.12):**
 > - **Cheap tier = the NON-NEGOTIABLE v1 floor on all three OSes `[DECIDED]`:** the
@@ -2183,7 +2185,7 @@ beside-source case (dest dir = source dir = one volume) **and** in the divert ca
   converted bytes. On Windows the equivalent is the default per-user ACL (the scratch
   lives under the user profile / `app_local_data_dir()`; no explicit broadening). A
   unit/property gate asserts these modes (build-gates G15/G31).
-- **Windows mandatory-label clarification `[DECIDED — P4.17, 2026-08-25]` (the label is NOT DACL broadening):** the §2.12.3 Windows privilege-drop tier (P4.17) sets an explicit **mandatory integrity LABEL** at a ConvertIA-private IL strictly between Low and Medium (`0x1800`) on the per-run scratch + the `.part` — the orthogonal INTEGRITY dimension, which leaves the **DACL untouched**, so it is **not** the "explicit broadening" the clause above forbids (that clause is confidentiality/DACL-scoped, the `0o600`/`0o700` mirror). The intermediate IL is chosen (over the well-known Low) so a Low co-tenant cannot write UP to our sinks while the engine stays confined below Medium; the label is **stripped before the §2.1.2 publish** (it travels with `MoveFileEx`), so `final` carries the destination's implicit level. Set non-recursively so the pre-existing `run-<RunId>/.lock` (§2.6.3 lock-before-part) is unaffected.
+- **Windows mandatory-label clarification `[DECIDED — P4.17, 2026-08-25]` (the label is NOT DACL broadening):** the §2.12.3 Windows privilege-drop tier (P4.17) sets an explicit **mandatory integrity LABEL** at a ConvertIA-private IL strictly between Low and Medium (`0x1800`) on the engine's working directory (its per-item sub-directory, §2.14.2) + the `.part` — the orthogonal INTEGRITY dimension, which leaves the **DACL untouched**, so it is **not** the "explicit broadening" the clause above forbids (that clause is confidentiality/DACL-scoped, the `0o600`/`0o700` mirror). The intermediate IL is chosen (over the well-known Low) so a Low co-tenant cannot write UP to our sinks while the engine stays confined below Medium; the label is **stripped before the §2.1.2 publish** (it travels with `MoveFileEx`), so `final` carries the destination's implicit level. Set non-recursively so the pre-existing `run-<RunId>/.lock` (§2.6.3 lock-before-part) is unaffected.
 
 ### 2.14.2 Two kinds of scratch `[DECIDED]`
 
@@ -2195,13 +2197,19 @@ ConvertIA distinguishes:
    the final artifact (e.g. a LibreOffice user-profile dir per invocation, FFmpeg's
    internal temp, the isolated profile §documents.md). These **need not** be
    on the destination volume and live under the **per-run scratch root** chosen via
-   Tauri v2 `PathResolver` (`app_local_data_dir()`/`temp_dir()`), keyed by `RunId`
+   Tauri v2 `PathResolver` (`app_local_data_dir()`), keyed by `RunId`
    (§2.6). They are cleaned with the run.
+
+**Per-item working directory `[DECIDED]`.** Each item's engine runs with its cwd, temp dir
+and per-invocation LibreOffice profile in a per-item sub-directory of the run's kind-2 dir,
+removed at the item's terminal transition (§2.6.2). §1.10 point 3 counts it against
+`PER_ITEM_SCRATCH_CEILING`; the macOS staged source copy (below) is input and is not
+counted.
 
 The LibreOffice isolated user profile (documents.md *Edge cases*; §0.9 notes
 LibreOffice headless is **not** safely parallel under one profile) is a **kind-2**
-working file: it lives in the per-run scratch root, one disposable profile per invocation
-(§3.5.2 [Co-Pilot ruling 2026-09-15 — owner may overturn]), so serialized LibreOffice invocations don't collide.
+working file: it lives in the item's working sub-directory, one disposable profile per
+invocation (§3.5.2), so serialized LibreOffice invocations don't collide.
 
 **macOS TCC source-staging copy is a THIRD kind-2 contributor (macOS-only) `[DECIDED]`.**
 On macOS the Rust core **copies every beside-source input into kind-2 scratch before
@@ -2324,8 +2332,8 @@ exclusive-publish. Callers (§2.1) never see the distinction.
 
 The scratch model means a conversion transiently needs **destination-volume free
 space ≈ output size** (publish temp) **plus** any kind-2 working space — and the two
-**may live on different physical volumes**. §1.10 (resource pre-flight, `[DEFER: corpus]`
-budget digits) owns the up-front estimate and the "doomed for disk" fast-fail; §2.14 **supplies** the
+**may live on different physical volumes**. §1.10 (resource pre-flight; its constants table
+holds the v1 values) owns the up-front estimate and the "doomed for disk" fast-fail; §2.14 **supplies** the
 model it estimates against. The free-space check is therefore **per PHYSICAL volume**, and
 the footprint is split by where each byte actually lands (§2.14.2):
 - **`est_output_bytes` + the kind-1 publish temp (`*.part`)** land on **each item's
@@ -2333,7 +2341,7 @@ the footprint is split by where each byte actually lands (§2.14.2):
 - **`est_scratch_bytes` (kind-2 engine working files — the LibreOffice per-invocation profile,
   FFmpeg two-pass/internal temp, **plus on macOS the staged input sizes of the in-flight set**, §2.14.2)**
   land on the **system / scratch volume** that
-  `app_local_data_dir()`/`temp_dir()` resolves to (§2.14.2), which is **NOT** necessarily
+  `app_local_data_dir()` resolves to (§2.14.2), which is **NOT** necessarily
   the destination volume (e.g. a beside-source-on-USB job: output → USB, kind-2 → internal
   disk). **macOS TCC staging term `[DECIDED]`:** on macOS `est_scratch_bytes` **includes
   the staged input sizes of the in-flight set — the PEAK-CONCURRENT footprint, never the

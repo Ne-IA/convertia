@@ -284,7 +284,7 @@ pub trait Engine: Send + Sync {
 
     /// Parse a probe sub-invocation's captured stdout into `ProbeOutput` `[DECIDED §3.2.1]`. Called by
     /// §1.7 ONLY for an engine whose `plan()` returned `PlanOutcome::Probe`: §1.7 buffers the probe's
-    /// `CoarseSpawnDone` stdout in FULL (a single `ffprobe -print_format json` blob — no line reader) and
+    /// `CoarseSpawnDone` stdout up to the §1.7 cap (a single `ffprobe -print_format json` blob — no line reader) and
     /// hands the complete buffer here, so the ENGINE — which alone knows its probe's wire format (§3.5.1) —
     /// turns it into the four typed fields (inner codecs + `duration_us` + rotation + interlace). §1.7 then
     /// carries the `ProbeOutput` into `plan_encode`, where `duration_us` becomes the
@@ -332,7 +332,8 @@ the engine-layer-internal ones are defined here):
 pub struct Invocation {
     pub program: EngineProgram,   // resolved bundled program to spawn (below)
     pub args: Vec<OsString>,      // fully constructed (§3.5)
-    pub cwd: Option<PathBuf>,     // per-run scratch (§2.14)
+    pub cwd: Option<PathBuf>,     // the item's kind-2 working sub-directory (§2.14.2),
+                                  //   set by §1.7 after planning
     pub env: Vec<(OsString, OsString)>, // isolated/minimal env (§3.5, §2.12)
     pub stdin: StdinPlan,         // how stdin is fed (below) — see §3.5
     pub progress: ProgressModel,
@@ -427,14 +428,16 @@ pub enum ProgressModel {
                                            //   FfmpegKeyValue. (Renamed from VipsCallback — an
                                            //   in-process callback cannot cross the worker's
                                            //   process boundary.)
-    CoarseSpawnDone,                       // LibreOffice/pandoc/poppler: 0%→spin→100%.
+    CoarseSpawnDone,                       // LibreOffice/pandoc/poppler: the §1.7 coarse
+                                           //   contract (spawn → running → done).
                                            //   ALSO the video PROBE sub-invocation
                                            //   (`ffprobe`, §3.2.1): the probe is a short
                                            //   read whose ONLY output is a single stdout
                                            //   JSON blob (NOT FFmpeg `-progress` key=value
                                            //   lines), so it streams no fraction — §1.7
-                                           //   dispatches it through the coarse spawn→done
-                                           //   path, NOT the FfmpegKeyValue line-reader.
+                                           //   buffers its stdout (NOT the FfmpegKeyValue
+                                           //   line-reader) and reports the contract's
+                                           //   probe-phase pair.
                                            //   [DECIDED] The probe Invocation always carries
                                            //   `progress: ProgressModel::CoarseSpawnDone`;
                                            //   the FfmpegKeyValue model belongs to the ENCODE
@@ -451,8 +454,7 @@ pub enum ProgressModel {
                                            //   mpsc::Sender<f32>` whose every send §1.7 forwards
                                            //   as an `ItemProgress` tick (delivery mechanism:
                                            //   §1.7 `InProcessNative` sub-case). Sub-100-KB
-                                           //   inputs emit a single start→done tick (§1.11),
-                                           //   indistinguishable on the wire from CoarseSpawnDone.
+                                           //   inputs emit a single start→done tick (§1.11).
 }
 
 // ─── Engine-layer types referenced by the trait (defined here, §3.2 is owner) ──
@@ -1003,11 +1005,12 @@ by **§2.1**. Output paths below are always the temp path `out_tmp`, never the
 final user path.
 
 **Shared invocation conventions (all engines).**
-- **cwd** = the per-run scratch dir (§2.14); engines that emit beside their input
-  (LibreOffice `--outdir`) are pointed at scratch.
+- **cwd** = the item's kind-2 working sub-directory (§2.14.2); engines that emit beside
+  their input (LibreOffice `--outdir`) are pointed into it.
 - **env** = a **minimal, isolated environment** (§2.12): no inherited user env
   beyond what the engine needs; `LC_ALL=C.UTF-8`/`LANG` set for deterministic
-  text handling; `HOME`/profile redirected (LibreOffice) into per-run scratch;
+  text handling; the temp directory and `HOME`/profile (LibreOffice) redirected into that
+  sub-directory;
   no proxy vars (offline). **`PATH` is *not* relied on** — every program is an
   absolute resolved bundled path (§3.3.3). The minimal env **explicitly STRIPS the
   dynamic-loader injection variables** so a hostile input cannot coerce a side-load:
@@ -1252,6 +1255,7 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   corrupt; "No audio" path → the `cross-category` *named* "no audio track" kind;
   DRM/"Operation not permitted" on FairPlay/WMV → the §video.md "copy-protected"
   message; everything else → generic engine-failure (still plain-language, §2.13).
+  Disk-full is found by the §1.10 point-3 free-space arbiter, not by stderr patterns.
 - **Licence/isolation:** the FFmpeg binary is **GPL-2.0+** (it enables `libx264`,
   `--enable-gpl`; no `--enable-nonfree`) — the whole binary is the aggregation case,
   shipped as a separate invoked binary (§3.6.1), written-offer-of-source honored.
@@ -1267,8 +1271,9 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   safely parallel under one profile** (§0.9 owns the concurrency degree and the
   *serialize-LibreOffice* rule — parallel instances on one profile lock/corrupt).
   This section honors it by giving **each invocation its own disposable
-  `-env:UserInstallation` profile** in per-run scratch (§2.14), and the queue
-  serializes LO jobs per §0.9. The profile is torn down with the run (§2.6).
+  `-env:UserInstallation` profile** in the item's working sub-directory (§2.14.2), and
+  the queue serializes LO jobs per §0.9. The profile is removed with that sub-directory at
+  the item's terminal transition (§2.6.2).
 - **Filter names (from the `04` files, fixed here):**
   - `*→PDF`: `writer_pdf_Export` (Writer sources), `calc_pdf_Export` (Calc),
     `impress_pdf_Export` (Impress);
@@ -1294,7 +1299,7 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   `--outdir`, but it can **normalise or truncate** the basename (illegal chars,
   length, charset folding), so the core must **not** string-match the source
   basename to find the result. Instead, each LO job is given a **unique, empty,
-  per-job `--outdir`** under the per-run scratch (§2.14 kind-2), and discovery is by
+  per-job `--outdir`** in the item's working sub-directory (§2.14.2), and discovery is by
   **snapshot-diff**: list the (empty) outdir before spawn, list it after a verified
   success, and pick **the single new `*.<ext>` file** that appeared. (A unique outdir
   per job guarantees exactly one new file, so the diff is unambiguous even under LO
@@ -1337,7 +1342,7 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
     no out-of-input file read**) as its release-blocking proof, exactly as the FFmpeg
     `-protocols`/`-demuxers` and pandoc `--sandbox` controls are corpus-proven. So Calc gets
     the same proof level as the other engines even where a registry key is only best-effort.
-  The profile is disposable per invocation, in per-run scratch (§2.14), and torn down with the run (§2.6).
+  The profile is disposable per invocation, in the item's working sub-directory (§2.14.2), and removed with it (§2.6.2).
 - **Licence/isolation:** MPL-2.0 sidecar (§3.6); untrusted office files (zip-bomb,
   malformed OOXML, macro-bearing) parsed inside §2.12; **macros never executed**
   (the profile-hardening above + the `04` "macros dropped" policy).
@@ -1548,8 +1553,8 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   (optionally `progress=end` on completion) — exactly the cross-process wire mechanism
   FFmpeg uses (`-progress pipe:1` key=value). The §1.7 invocation layer's **same**
   line-by-line stdout reader parses these into normalised `ItemProgress` ticks. (For ops
-  that are reliably sub-second the worker may simply emit start→`progress=end`, equivalent
-  to `CoarseSpawnDone`; HEIC/AVIF HEVC/AV1 encode is the case where a real % matters.)
+  that are reliably sub-second the worker may simply emit start→`progress=end`, a coarse
+  start→done; HEIC/AVIF HEVC/AV1 encode is the case where a real % matters.)
 - **Isolation `[DECIDED]`:** image decode/encode runs in a **separate short-lived
   image-worker process** (not an in-app thread), so a libvips/libheif/libde265/librsvg/
   codec crash, hang, **or memory-corruption exploit** is contained by the OS process
@@ -1590,8 +1595,7 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   **self-reports `bytes_processed / source_size`** per N-KB chunk over the §1.7
   `InProcessNative` `progress_tx: mpsc::Sender<f32>` (the §1.11 *Native CSV/TSV* row owns
   the fraction basis; §1.7 owns the IPC delivery), falling back to a single start→done
-  tick for sub-100 KB inputs (wire-indistinguishable from `CoarseSpawnDone`) — never a
-  bare spinner. MIT (own code) — no §3.6 concern.
+  tick for sub-100 KB inputs — never a bare spinner. MIT (own code) — no §3.6 concern.
 - **`out_tmp` is the §2.14.1 destination-dir publish temp, NOT a system-temp file
   `[DECIDED]`.** Like every other engine the native CSV/TSV `out_tmp` is the
   `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` **sibling in the destination

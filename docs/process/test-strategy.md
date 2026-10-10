@@ -844,9 +844,9 @@ property/integration tests on **G31** / **G15** / **G16**:
   recording "tier applied vs degraded" per platform in the release evidence. The
   tier **ratchet/trend** itself (G64, the decrease-guarded
   `privilege-drop-coverage.toml`) is the release-tier policy homed in P0.7.
-- **§2.12.3 memory-cap kill (G31):** an engine exceeding its Job-Object/`RLIMIT`
-  memory budget mid-conversion is killed to a clean `Failed(TooBig|EngineHang)`, the
-  batch continues, host RSS returns to baseline.
+- **§1.10 per-item memory-ceiling kill (G31):** an engine exceeding the §1.10 per-item
+  memory ceiling mid-conversion is killed to a clean `Failed(TooBig)` on each OS its §1.10
+  per-OS row realizes, the batch continues, host RSS returns to baseline.
 - **Process-group / Job-Object reap (T10 · G31):** a deliberately-hanging /
   child-spawning sidecar is reaped by the §0.9 Job-Object/process-group kill with no
   orphan/zombie left and the handle count returning to baseline.
@@ -856,8 +856,7 @@ property/integration tests on **G31** / **G15** / **G16**:
   slowly exploding a 1 KB input into a 50 GB intermediate *within* its RAM/time
   budget exhausts the scratch **disk**: a bomb whose decoded output exceeds N× input
   or an absolute scratch ceiling → killed to a clean `Failed(TooBig)`, batch
-  continues, scratch returns to baseline; the byte budget lives in the §1.10
-  preflight).
+  continues, scratch returns to baseline; the byte budget is §1.10 point 3).
 - **macOS T11 first-accessor (§3.5.0/§7.2.6 · G31):** the **Rust core PID** (not the
   engine PID) is the first process to access a TCC-protected source path, and the
   engine receives a per-job **kind-2 scratch** path — pairs with the **G29** macOS

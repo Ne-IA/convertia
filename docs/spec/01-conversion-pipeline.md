@@ -777,9 +777,11 @@ enum InvocationResult {
   **streaming subprocess** `ProgressModel` (`FfmpegKeyValue`, `VipsStdout`),
   **`stdout`** is **streamed line-by-line** and parsed by the §3.5 per-engine
   adapter into normalised progress ticks (FFmpeg `-progress pipe:` key=value;
-  LibreOffice has no native progress → §1.11's heuristic; libvips is fast/atomic →
-  coarse ticks). For **`ProgressModel::CoarseSpawnDone`** (the ffprobe probe sub-invocation,
-  below) §1.7 instead **buffers stdout in full** and passes the **complete buffer** to the
+  libvips is fast/atomic → coarse ticks). For **`ProgressModel::CoarseSpawnDone`** (the
+  ffprobe probe sub-invocation, below, and the engines with no native progress signal:
+  LibreOffice, pandoc, poppler) §1.7 instead **buffers stdout up to `PROBE_STDOUT_MAX_BYTES`**
+  (4 MiB; the probe's JSON is its one consumer) — over the cap the item fails `Corrupt` —
+  and passes the probe's **complete buffer** to the
   engine's `Engine::parse_probe` seam (§3.2.2 — the §3.5.1 adapter's concrete `ProbeOutput`
   JSON parser) — **no line reader is attached** to a
   CoarseSpawnDone stdout (it would corrupt the single-JSON-blob parse). **`ProgressModel::InProcessFraction`
@@ -790,12 +792,25 @@ enum InvocationResult {
   to the frontend over the **§0.4.2 `Channel<ConversionEvent>`** as
   `ConversionEvent::ItemProgress` (the wire shape is defined in **§0.4**, not here;
   "ProgressEvent" in §1.11 is the internal projection of that wire variant). `stderr` is
-  **captured in full** for exit-classification and for the §7.5 verbose/diagnostic echo, and
-  fed to §2.13 for `stderr`-classify-into-§2.8.
-- **Timeout / hang policy:** an item that produces **no progress and no output**
-  for a per-engine watchdog interval (parameters owned by §0.9; mechanism here) is
-  treated as hung → killed → `Failed(EngineHang)` (§2.8). A hang fails **that one item**;
-  the batch continues (SSOT *Fail clearly*).
+  captured as a **bounded head plus tail** — the first `STDERR_HEAD_BYTES` (16 KiB) and the
+  last `STDERR_TAIL_BYTES` (48 KiB); the middle is counted, not stored — for
+  exit-classification and for the §7.5 verbose/diagnostic echo, and fed to §2.13 for
+  `stderr`-classify-into-§2.8, which reads the concatenation.
+- **Coarse progress contract `[DECIDED]`:** a `CoarseSpawnDone` invocation reports three
+  observable stages over the §0.4.2 channel: `ItemProgress { fraction: None, stage: Spawning }`
+  at spawn, `{ fraction: None, stage: Encoding }` once the process is confirmed running, and
+  `{ fraction: Some(1.0), stage: Writing }` at the verified exit (Exit & output verification
+  below). The probe of the two-step probe-then-encode sequence (below) is the one
+  `CoarseSpawnDone` leg that reports the §1.11 probe-phase pair instead: the probe occupies
+  `0.0..0.05`, and the encode's `FfmpegKeyValue` fraction is rescaled linearly into
+  `0.05..=1.0`, so the item's fraction stays monotonic (§0.4.2).
+- **Timeout / hang policy:** an item that runs past its per-engine wall-clock timeout, or
+  produces **no progress** for the no-progress threshold (parameters owned by §0.9;
+  mechanism here), is treated as hung → killed → `Failed(EngineHang)` (§2.8). The
+  no-progress threshold applies only to the streaming models (`FfmpegKeyValue`,
+  `VipsStdout`), whose silence signals a hang; `CoarseSpawnDone` and `InProcessFraction` are
+  bounded by the wall clock. A hang fails **that one item**; the batch continues (SSOT
+  *Fail clearly*).
 - **Two-step probe-then-encode (video) `[DECIDED]`:** a video job is **two sequential
   sub-invocations of the one FFmpeg engine** — `ffprobe` then `ffmpeg` — **not** a format
   chain (§3.2.1). Because `Engine::plan()` is **Pure** (no I/O) but the encode argv depends
@@ -824,13 +839,14 @@ enum InvocationResult {
   cleanup table to handle on the probe leg. (§3.2.1 / §3.5.1 own the sequencing rationale.)
   **Probe stdout is BUFFERED-and-JSON-parsed, NOT routed to the line reader `[DECIDED]`:**
   the probe sub-invocation runs `ffprobe -print_format json …`, which emits a **single JSON
-  blob** (not key=value progress lines). So for the probe invocation §1.7 **captures stdout
-  in full and hands the complete buffer to the engine's `Engine::parse_probe` seam (§3.2.2 —
-  the §3.5.1 adapter's concrete `ProbeOutput` JSON parser)** —
+  blob** (not key=value progress lines). So for the probe invocation §1.7 **buffers stdout
+  (up to `PROBE_STDOUT_MAX_BYTES`, above) and hands the complete buffer to the engine's
+  `Engine::parse_probe` seam (§3.2.2 — the §3.5.1 adapter's concrete `ProbeOutput` JSON
+  parser)** —
   it does **not** feed probe stdout to the line-by-line progress reader. The line-by-line
   progress reader (above) is used **only** for invocations with a streaming `ProgressModel`
-  (`FfmpegKeyValue` for the encode, `VipsStdout` for the image-worker); the probe's
-  `CoarseSpawnDone` model emits a start→done tick while its stdout is buffered for the parser.
+  (`FfmpegKeyValue` for the encode, `VipsStdout` for the image-worker); the probe reports the
+  coarse contract's probe-phase pair (above) while its stdout is buffered for the parser.
 
 ### Cancellation / kill mechanism `[DECIDED — sole owner]`
 
@@ -1026,8 +1042,7 @@ process to kill**, so §1.7 defines its lifecycle explicitly:
   the frontend cannot tell this engine apart. A bounded channel applies natural
   back-pressure (a slow consumer just coalesces; no unbounded memory). For **sub-100-KB
   inputs** the loop sends a single `1.0` on completion → an honest start→done tick
-  (§1.11), wire-indistinguishable from `CoarseSpawnDone`. Channel close (loop end or drop
-  on cancel) ends the forwarding task.
+  (§1.11). Channel close (loop end or drop on cancel) ends the forwarding task.
 - **Cancellation (cooperative, not a kill):** the synchronous streaming loop **polls the
   job's `CancellationToken` at every N-KB chunk boundary** (the same chunk granularity it
   uses for its `bytes_processed / source_size` progress, §1.11). On cancel it **stops
@@ -1050,11 +1065,10 @@ process to kill**, so §1.7 defines its lifecycle explicitly:
     case the **timeout marks the item `Failed(EngineHang)` and the run CONTINUES** (the wedged
     thread is abandoned, not awaited), exactly like the subprocess hang case — the user is
     never left staring at a hang. **The abandoned thread MUST NOT exhaust the blocking pool
-    `[DECIDED]`:** the `spawn_blocking` pool is **bounded** (a few parked threads cannot starve
-    it — the pool size is sized with headroom above the global degree), AND/OR CSV/TSV reads go
-    through a **bounded chunked reader with a short per-read deadline** so a single read syscall
-    cannot block indefinitely in the first place. Either way a handful of wedged reads degrade
-    gracefully (those items fail, the batch finishes) rather than wedging the whole pool.
+    `[DECIDED]`:** the `spawn_blocking` pool is **bounded** with headroom above the §0.9
+    global degree, and an abandoned worker holds no §0.9 permit, so a few parked threads
+    cannot starve it: a handful of wedged reads degrade gracefully (those items fail, the
+    batch finishes) rather than wedging the whole pool.
 - **Concurrency / permit model:** it runs on the §0.9 pool **up to the global degree, on
   dedicated worker threads** (a `spawn_blocking`-style pool so the synchronous CPU/IO loop
   **never blocks the Tokio runtime** that drives the subprocess engines and the IPC). It
@@ -1314,25 +1328,39 @@ struct SizeEstimate {
     so per-pixel estimates consume `dims`, no decode. When `dims` is `None` (header
     lacked them) the estimate falls back to the source byte-size bound like video below.
   - **Video / GIF:** the cheap pass does **NOT** run a per-item `ffprobe`; it uses a
-    **worst-case bound from source byte-size** (+ the GIF duration cap from
-    `cross-category.md`) — deliberately conservative. The precise per-item
+    **worst-case bound from source byte-size** (+ `GIF_DURATION_CAP`, the constants table
+    below) — deliberately conservative. The precise per-item
     duration/dimension probe (`EstBasis::EngineProbe`) is **deferred to convert-time**
     (§3.5's `ffprobe`, which runs then anyway), where a refined estimate may still trip
     the mid-run enforcement. So `PerCategoryHeuristic` is the up-front basis; `EngineProbe`
     is the convert-time refinement, never an up-front cost. (Aligns the cross-category
     `[XCAT-C]`.)
-- **Headroom margin:** require **free space ≥ footprint × margin** on **each physical
-  volume** (see the split below — `est_output` and `est_scratch` may land on different
-  volumes). `[REC]` margin **1.3×** as a starting value (confirm against the §6 corpus).
-- **Decision (the up-front-vs-mid-run split, made precise) `[DECIDED]`:**
-  - **Whole-batch doomed is PER-PHYSICAL-VOLUME, split by where each byte lands `[DECIDED]`.**
+- **Headroom margin:** require **free space ≥ footprint × `HEADROOM_MARGIN`** (the constants
+  table below) on **each physical volume** (see the split below — `est_output` and
+  `est_scratch` may land on different volumes).
+- **Decision (the up-front-vs-mid-run split, made precise) `[DECIDED]`:** `TooBig` and
+  `OutOfDisk` are enforced at exactly these four points; the constants are the table under
+  *Ceilings & large lists* below.
+
+  | # | Point | Kinds | Rule |
+  |---|---|---|---|
+  | 1 | C4/C5 whole-batch verdict | `OutOfDisk`, `TooBig` | per physical volume, the grouped footprint × `HEADROOM_MARGIN` against its free space (below); `TooBig` = the aggregate projected output over `AGGREGATE_OUTPUT_CEILING`; the only `up_front_fail` carrier; its text is the §2.8.2 batch-scoped line |
+  | 2 | per-item dispatch check | `TooBig` | before an item's engine spawns: its projected output over `PER_ITEM_OUTPUT_CEILING`, or a to-GIF projection over `GIF_ESTIMATE_CEILING`; never feeds `up_front_fail`, not even in a one-item batch |
+  | 3 | mid-run watchdog (the §1.7 poll) | `TooBig`, `OutOfDisk` | `out_tmp` over `PER_ITEM_OUTPUT_CEILING` or over max(`BYTE_BUDGET_FACTOR` × input, `BYTE_BUDGET_FLOOR`), or the item's working directory over `PER_ITEM_SCRATCH_CEILING` → kill to `TooBig`; the engine group's resident memory over `PER_ITEM_RSS_CEILING` → kill to `TooBig` (the per-item memory ceiling below); free space under `FREE_SPACE_MARGIN` → the arbiter kills the largest attributable consumer, one per poll interval, to `OutOfDisk` |
+  | 4 | core write/publish | `OutOfDisk` | a `StorageFull`/`QuotaExceeded` error from the core's own write or publish is `OutOfDisk`, never `WriteFailed`; so is a failed at-use free-space re-check (the §2.7.2 late divert, the §2.14.3 cross-volume copy) |
+
+  A per-item `TooBig`/`OutOfDisk` (points 2–4) fails that one item with its §2.8 message while
+  the batch continues (§1.9/§1.11); `PreflightVerdict` carries no per-item list. The item's
+  working directory at point 3 is its per-item kind-2 sub-directory (§2.14.2); the macOS
+  staged source copy is input and is not counted.
+  - **Whole-batch doomed (point 1) is PER-PHYSICAL-VOLUME, split by where each byte lands `[DECIDED]`.**
     The §2.7 beside-source default lands each item's **publish temp + final** on its **own
     source volume** (§2.14.1), and per-location divert sends some items to Downloads and
     others beside themselves — so a batch routinely spans **2+ destination volumes with no
     single destination volume**. Crucially, the **kind-2 engine working scratch** (LO
     per-invocation profile, FFmpeg two-pass/internal temp — `est_scratch_bytes`) does **NOT** land
     on the destination volume: it lands on the **system / scratch volume** that
-    `app_local_data_dir()`/`temp_dir()` resolves to (§2.14.2). A summed check against one
+    `app_local_data_dir()` resolves to (§2.14.2). A summed check against one
     volume is therefore **wrong** in two ways (a 5 GB share destined for a 1 GB USB stick
     falsely PASSing against 500 GB internal; a heavy office batch exhausting the **system**
     volume while every destination volume passes). Instead, group by **physical volume,
@@ -1356,35 +1384,31 @@ struct SizeEstimate {
     final accumulate until run end), but use the **peak-concurrent** bound for the
     scratch-volume kind-2 term (it does not accumulate across the whole batch); a destination
     volume that *is* the scratch volume gets both. Require headroom on **each** volume
-    **independently** (× the margin). Set `PreflightVerdict.up_front_fail = Some(OutOfDisk)` when **any one physical
-    volume's grouped footprint cannot fit its free space**. `TooBig` (the absolute
-    output-size ceiling) stays per-item / aggregate as before. This is the **only** up-front
+    **independently** (× `HEADROOM_MARGIN`). Set `PreflightVerdict.up_front_fail = Some(OutOfDisk)` when **any one physical
+    volume's grouped footprint cannot fit its free space**. This is the **only** up-front
     fail carrier — batch-level by design, but evaluated per-physical-volume (destination
     volumes **and** the system/scratch volume).
-  - **Per-item too-big / out-of-disk** is **enforced at WRITE TIME (mid-run)**: when an
-    item's own size/space breaches the budget (or real disk usage outruns the estimate),
-    its §2.1 write fails, §2.6 restores free space, and the item is reported as
-    `Failed(TooBig|OutOfDisk)` (§2.8) **while the batch continues** (§1.9/§1.11 fast-fail
-    surfacing). There is **no** per-item up-front-fail list on `PreflightVerdict`; a
-    per-item doom shows as that item's mid-run terminal row, not a pre-convert verdict.
-  - So: **estimate up front; the per-volume whole-batch doom fails up front; per-item doom
-    is enforced at the write** — the SSOT "preferably up front" is honoured by the
-    per-volume whole-batch verdict (which now correctly catches the doomed-USB-volume case
-    in the common beside-source layout), and per-item correctness is honoured at write time.
 
-### Ceilings & large lists `[DECIDED design; DEFER: corpus numbers]`
+### Ceilings & large lists `[DECIDED]`
 
-- **`[DEFER: corpus]` (owner §1.10, co-owned §0.9 + 04)** the concrete numbers: the
-  absolute **"too big" output ceiling** (**starting values `[DECIDED design]`: ~4 GB
-  per-item projected output, ~16 GB aggregate-batch projected output** — finite from day
-  one so `TooBig` is enforceable, calibrated against the corpus), the **memory/handle
-  ceilings**, the per-category heuristic constants, the **headroom margin (1.3× starting
-  value)**, and the **GIF duration cap (~10 s starting value)** (`cross-category.md` [XCAT-F]).
-  These are **genuinely empirical** — the right thresholds depend on corpus
-  timing/measurement (a §6 asset), so they are **deferred to corpus calibration**,
-  not left open as a design question. They ship with the stated finite starting
-  values (margin 1.3×, GIF cap ~10 s) and are tuned against the real-world corpus
-  (SSOT *v1 DoD* reliability gate) — finite-from-day-one, calibrated-against-corpus.
+The v1 values `[DECIDED]` — a corpus finding changes one by an ordinary spec edit; this table
+is their one home, and §0.9, 04 and the plan cite it:
+
+| Constant | v1 value | Used at |
+|---|---|---|
+| `HEADROOM_MARGIN` | 1.3× | point 1 |
+| `AGGREGATE_OUTPUT_CEILING` | 16 GB | point 1 |
+| `PER_ITEM_OUTPUT_CEILING` | 4 GB | points 2 and 3 |
+| `GIF_ESTIMATE_CEILING` | 100 MB | point 2 |
+| `GIF_DURATION_CAP` | 10 s | the to-GIF default and maximum duration (cross-category.md) |
+| `BYTE_BUDGET_FACTOR` | 1000 | point 3 |
+| `BYTE_BUDGET_FLOOR` | 1 GiB | point 3 |
+| `PER_ITEM_SCRATCH_CEILING` | 8 GiB | point 3 |
+| `FREE_SPACE_MARGIN` | 512 MiB | point 3 |
+| `PER_ITEM_RSS_CEILING` | min(4 GiB, physical memory ÷ 2) | point 3 (the per-item memory ceiling below) |
+
+`FRONTEND_READY_TIMEOUT` is §7.2.1's.
+
 - **Large recursively-collected lists** (thousands of files): the **frozen set and
   job queue are bounded in memory** by storing lightweight `ItemId`/path records,
   not file contents; the **UI list is virtualized** (§5 owns the virtualization
@@ -1398,11 +1422,11 @@ struct SizeEstimate {
   `effective = min(cpu-degree, per-engine-cap, memory-based-cap)`), a **high-memory
   watermark pauses dispatch of NEW items** (in-flight items finish; the §5 passive `LowMemoryNote` banner
   shows a brief "working — low memory" line, not a modal) and resumes as memory frees, and
-  a single item that still exceeds its **§1.10 per-item memory ceiling** is killed (the §1.7 kill mechanism, reinforced by the §2.12.3 Job-Object memory cap where that tier is present) to a clean
+  a single item that still exceeds the **per-item memory ceiling** (below) is killed to a clean
   `Failed(TooBig)` (the batch continues, host RSS returns to baseline). The watermark + the
-  memory-based degree cap are corpus-calibrated starting values (like the other §1.10
-  numbers). This is why the §0.3.1 2 GB floor holds: bounded concurrency + adaptive degree
-  + per-item kill keep peak RSS finite regardless of batch size.
+  memory-based degree cap are corpus-calibrated §0.9 pool constants. This is why the §0.3.1
+  2 GB floor holds: bounded concurrency + adaptive degree + the per-item memory ceiling keep
+  peak RSS finite regardless of batch size.
   > **The watermark pause is CEILED, and it pauses DISPATCH only `[DECIDED — P4.20]`.**
   > Two properties the sentence above leaves implicit, both required by §2.12.3's
   > never-break floor (a defence-in-depth control must never become the reason a
@@ -1415,6 +1439,20 @@ struct SizeEstimate {
   > spent inside a timed lane would come out of the ENGINE's budget and could turn a
   > slow-but-progressing conversion into `Failed(EngineHang)`. Placing it there is also
   > what makes "in-flight items finish" hold by construction rather than by bookkeeping.
+- **Per-item memory ceiling `[DECIDED]`:** one constant, `PER_ITEM_RSS_CEILING`, enforced per
+  OS:
+
+  | OS | Read / enforcement | Breach |
+  |---|---|---|
+  | Linux | the §1.7 watchdog poll sums `/proc/<pid>/status` `VmRSS` over the engine's process group (a `crate::platform` shim) | kill → `Failed(TooBig)` |
+  | macOS | the same poll sums the `proc_pid_rusage` resident size over the group | kill → `Failed(TooBig)` |
+  | Windows | the engine's own §2.12.3 Job Object (where that tier attached) carries the constant as its job memory limit (committed memory), read through the job's accounting | a breach → the §1.7 group-kill → `Failed(TooBig)` |
+
+  Realizability probe at the box that builds it: the group enumeration and the read work
+  unprivileged on the CI images of all three OS. If it fails on an OS — or on a Windows host
+  where that tier did not attach — there is no per-item memory kill: the adaptive degree
+  (§0.9) and the OS out-of-memory killer bound memory, and an OOM-killed engine ends
+  `EngineCrash`, without escalation.
 
 This section **feeds** §1.8 (plan only if it fits), §2.6 (cleanup on
 out-of-disk), §2.8 (the named failure kinds), §2.14 (scratch sizing) and §5
@@ -1435,17 +1473,18 @@ long conversion. The fraction source per engine (parsed by §3.5, normalised by
 |--------|----------------|
 | **FFmpeg** (audio/video/cross-cat) | `-progress pipe:` → fraction = **`out_time_us` / source-duration-µs** (the denominator is the **`ffprobe` source duration**, NOT `total_size` — `total_size` is FFmpeg's running *output byte count*, which is not a duration and must not be the denominator) → true % even for a 2-hour film |
 | **image-worker** (libvips, images) | `ProgressModel::VipsStdout` (§3.2.2): the separate image-worker process marshals libvips' `eval`-progress signal to its **stdout** as `progress=<0..100>` key=value lines (it cannot deliver an in-process callback across the process boundary), parsed by the §1.7 same stdout reader as FFmpeg's `-progress`. Fast ops emit start→`progress=end` (coarse); HEIC/AVIF HEVC/AV1 encode reports a real % |
-| **LibreOffice** (office/PDF) | No native progress signal → a **bounded indeterminate-but-animated** state with a watchdog (still reads as "working"); `[REC]` show a determinate-looking staged bar driven by the **four canonical §0.6 `JobStage` values — `Spawning` → `Decoding` → `Encoding` → `Writing`** rather than a raw spinner. (The LO lifecycle maps onto them: process spawn / profile init → **`Spawning`**; load+layout the source document → **`Decoding`**; run the export/render filter → **`Encoding`**; flush the produced file → **`Writing`**. No separate "render"/"export" stage vocabulary is emitted on the wire — only the four `JobStage` names §0.6 defines, so §1.11 and §0.6 agree on what the frontend receives.) |
-| **poppler / pandoc** | Usually fast; staged ticks; large PDFs report per-page where `pdftotext` allows |
-| **Native CSV/TSV** (in-process, §3.5.6) | `[DECIDED]` `ProgressModel::InProcessFraction` (§3.2.2): fraction = **`bytes_processed / source_size`** emitted per N-KB chunk as the in-process engine streams the file (there is no subprocess to watch, so it **self-reports** over the §1.7 `InProcessNative` `progress_tx: mpsc::Sender<f32>`, which §1.7 forwards as `ItemProgress`). Measured on the **decoded text** — fraction, boundary and the sub-chunk gate all share that unit (§1.7 Realization note `[DECIDED — P3.43]`; identical to source bytes for the dominant UTF-8 case). For a **sub-chunk decoded text** it is effectively instant → a single **start→done** tick (wire-indistinguishable from `CoarseSpawnDone`). So even the only non-subprocess engine reports a real fraction (or an honest start→done for tiny files), never a bare spinner. |
+| **LibreOffice** (office/PDF) | No native progress signal → the **§1.7 coarse contract** (three observable stages: `Spawning` at spawn, `Encoding` while it runs, `Writing` at the verified exit), bounded by the wall clock; the frontend shows a determinate-looking staged bar from `stage`, never a raw spinner. Only the §0.6 `JobStage` names cross the wire — no "render"/"export" stage vocabulary. |
+| **poppler / pandoc** | Usually fast; the §1.7 coarse contract, as LibreOffice |
+| **Native CSV/TSV** (in-process, §3.5.6) | `[DECIDED]` `ProgressModel::InProcessFraction` (§3.2.2): fraction = **`bytes_processed / source_size`** emitted per N-KB chunk as the in-process engine streams the file (there is no subprocess to watch, so it **self-reports** over the §1.7 `InProcessNative` `progress_tx: mpsc::Sender<f32>`, which §1.7 forwards as `ItemProgress`). Measured on the **decoded text** — fraction, boundary and the sub-chunk gate all share that unit (§1.7 Realization note `[DECIDED — P3.43]`; identical to source bytes for the dominant UTF-8 case). For a **sub-chunk decoded text** it is effectively instant → a single **start→done** tick. So even the only non-subprocess engine reports a real fraction (or an honest start→done for tiny files), never a bare spinner. |
 
 ```rust
 // payload SHAPE is §0.4.2's `ItemProgress` { runId, itemId, fraction, stage };
 // `JobStage` is the §0.6 wire enum (Spawning | Decoding | Encoding | Writing).
 // This section owns the SEMANTICS (the per-engine fraction basis above):
-//   fraction: Option<f32>   // 0.0..=1.0 ; None ONLY where truly unknowable (LibreOffice)
+//   fraction: Option<f32>   // 0.0..=1.0 ; None ONLY where truly unknowable (the §1.7
+//                           //   coarse contract before its exit tick)
 //   stage:    JobStage      // §0.6
-// For the None-fraction LibreOffice case the frontend synthesises a staged
+// For a None-fraction (coarse) row the frontend synthesises a staged
 // determinate-looking bar from `stage` transitions (§5.3) — never a raw spinner.
 ```
 
@@ -1456,9 +1495,9 @@ during the probe (a "looks hung" moment, contra SSOT *working, not hung*). So §
 the probe leg: **`ItemProgress { fraction: Some(0.0), stage: Spawning }` at probe-start** and
 **`ItemProgress { fraction: Some(0.05), stage: Decoding }` at probe-done** — the bar shows
 immediate motion (0 → 5%) while the probe runs, then the **encode `FfmpegKeyValue` fraction
-takes over from 0.05 onward** (rescaled into the 0.05..=1.0 band, or simply continuing — the
-encode % dominates the runtime). This is the **one deliberate departure** from the
-`None`-fraction LibreOffice case: the probe is short and bounded, so a small synthetic
+takes over from 0.05 onward**, rescaled into the `0.05..=1.0` band (the §1.7 coarse
+contract). This is the **one deliberate departure** from the coarse contract's
+`None`-fraction stages: the probe is short and bounded, so a small synthetic
 start/done pair is honest (it really is spawning then decoding the header), not a fake.
 
 ### Aggregate batch progress `[DECIDED]`
@@ -1478,9 +1517,9 @@ leftover, never touches originals).
 
 ### Fast-fail surfacing `[DECIDED]`
 
-"Too big / doomed for disk space" items (decided by §1.10) surface here as an
-immediate per-item fast-fail (preferably up front), with the §2.8 message, while
-the rest continue. The app **stays responsive regardless of batch or file size**
+"Too big / doomed for disk space" items (decided by §1.10) surface here as a
+per-item fast-fail at §1.10 point 2 or 3 (a whole-batch doom is point 1's up-front
+verdict), with the §2.8 message, while the rest continue. The app **stays responsive regardless of batch or file size**
 (all conversion is off the UI thread, on the §0.9 Tokio pool) — **including on a low-RAM
 machine**, where the §1.10 low-memory policy reduces the effective degree / pauses
 new-item dispatch rather than thrash or freeze the UI.
@@ -1516,8 +1555,8 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   `[DECIDED 2026-07-16]` P3.59 ruling added); `None` for a plain success,
   and for a §2.6.4 case-3 (cancelled-with-residue) item, whose per-item surface is the
   structural `cleanup_incomplete` entry alone. **`lossy` carries the item's exact §2.9 lossy
-  note** (§0.6; set after convert, never in `reason`), so a lossy item that is also
-  residue-annotated shows both
+  note** (§0.6; set after convert, never in `reason`; when several lossy kinds fire, the
+  first in §2.9.1 table order), so a lossy item that is also residue-annotated shows both
 - `Totals { succeeded, failed, cancelled, skipped }` — the "all failed" condition is
   **derived** (`failed == total && total > 0`), not a stored field.
 - `CleanupResidue { item, residue_display }` (§2.6.4; reveal via C9 `Residue(ItemId)`) — the
@@ -1590,7 +1629,7 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
 
 | ID | Item | Owner | Status |
 |----|------|-------|--------|
-| 1.10-a | Resource budgets: absolute "too big" output ceiling, memory/handle ceilings, per-category size-heuristic constants, headroom margin (1.3×), GIF duration cap (~10 s) | §1.10 (co-owned §0.9 + 04) | `[DEFER: corpus]` — ship with the stated finite starting values; calibrate against the §6 corpus (design is decided, only the numbers are empirical) |
+| 1.10-a | Resource budgets: the output ceilings, headroom margin, GIF cap and estimate ceiling, byte budget, scratch ceiling, free-space margin, per-item memory ceiling | §1.10 (co-owned §0.9 + 04) | resolved: the §1.10 constants table (v1 values `[DECIDED]`) |
 | 1.2-sec | Whether the in-core text-encoding heuristic / Rust ZIP central-directory peek / **`.svgz` pure-Rust bounded inflate (flate2 `rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap)** may stay outside the §2.12 isolation boundary | §2.12.4 (raised by §1.2) | **`[DECIDED]` — YES, they stay in-core** (all memory-safe, bounded, no third-party **C/C++** decoder, so they satisfy the §2.12.4 "no C/C++ decoder in-core" absolute). Resolved in the consolidation pass — §2.12.4 / README resolved log. |
 
 ### Resolved here with a recommended default (`[REC]`)
