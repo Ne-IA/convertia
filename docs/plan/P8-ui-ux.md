@@ -8,9 +8,10 @@
 > rebuild those primitives nor re-register per-format declarations — it **completes
 > the global chrome + polish**: the ship-gating surfaces UI owns and nothing else
 > does (About + NOTICE attribution, Impressum, the About→Releases user-initiated
-> link, the settings chrome, the cross-cutting refinement of the §2.8 error /
-> edge-state copy and §2.9 lossy presentation that is not a per-format declaration),
-> plus the non-blocking visual-polish / Ne-IA branding pass.
+> link, the settings chrome and the core-owned prefs door it reads and writes, the
+> DestinationBar "Save beside the originals" control, the cross-cutting refinement of
+> the §2.8 error / edge-state copy and §2.9 lossy presentation that is not a
+> per-format declaration), plus the non-blocking visual-polish / Ne-IA branding pass.
 >
 > **Spec homes:** [05-ui-ux](../spec/05-ui-ux.md) (design system §5.5, drop area
 > §5.3/§5.4, format picker §5.3, advanced-options panels §5.3, progress+cancel
@@ -22,7 +23,8 @@
 >
 > **Two scopes, marked per box:** **(i) ship-gating UI** —
 > release-blocking surfaces UI alone owns (About+NOTICE+Impressum, About→Releases,
-> settings chrome, cross-cutting error/lossy refinement); a **`P8.<n>` "P8
+> settings chrome + its core-owned prefs door, the DestinationBar Save-beside control,
+> cross-cutting error/lossy refinement); a **`P8.<n>` "P8
 > ship-gating done"** sub-gate (P8.21) closes scope (i). **(ii) visual-polish /
 > branding** — **NON-BLOCKING, may trail the P11 RC** (SSOT §9 marks only
 > "modern/eye-candy" polish non-blocking); each scope-(ii) box says so in its note.
@@ -52,6 +54,19 @@
 
 ---
 
+### Core-owned prefs door + "Save beside the originals" — scope (i) ship-gating
+
+- [ ] **P8.29** [RUST] Build the core-owned prefs door — C17 `get_ui_prefs`, C18 `set_ui_pref` and the C6 `lastDestinationMode` writer · §0.4.1 §7.4.1 §7.4.2 §5.8
+  needs: P2.85, P3.48, P3.80
+  > scope (i), ship-gating: the §7.4.2 writer in `crate::prefs` (its realizability probe runs here), the §7.4.2 WebView door C17/C18 in `crate::ipc::system`, and the §7.4.1 `lastDestinationMode` write after C6 accepts a run.
+  > Pure cores, unit-tested: the merge `(existing bytes, key, value) → bytes`, the `UiPref → (key, JSON value)` narrowing and the resolved destination → stored string. The `&Path` file step gets a `tempfile` leg (replace in place, missing dir created, a config-dir path that is a regular file → `Err`); only the AppHandle wrappers are boot-glue (G28).
+  > A write failure logs one static line with its `io::ErrorKind` (§7.5). The wire `Theme` is `prefs::Theme` gaining serde and `specta::Type`; the C6 hook runs detached (`spawn_blocking`) after the accept. G23 does not apply (no conversion command); own commands need no capability entry (§0.10).
+  > Same-commit sync (DoD 2): `src-tauri/ipc-commands.golden` (check 12), `cargo run -p xtask -- codegen` → `bindings.ts` (G19), the `src/lib/ipc/commands.ts` wrappers, the `crate::ipc` `HANDLERS` rows (the golden bind reds without them), the `lib.rs` command-surface name pins and the `prefs.rs` consumer map. No L(-1) tail: check 9 admits C17/C18.
+- [ ] **P8.30** [UI] Build the DestinationBar "Save beside the originals" control (C5 with `BesideSource`) · §5.3 §5.2 §2.7.1 · G57 G33a
+  needs: P3.56
+  > scope (i), ship-gating: the §5.3 DestinationBar **Save beside the originals** button — C5 with `besideSource`, shown only while the current `DestinationChoice` is `chosenRoot`; no accelerator (§5.10 lists none).
+  > Label `destination_beside_originals: "Save beside the originals"` in `strings/ui.ts` (G57). Tests: a component test through the mocked IPC façade (dispatches C5 with `besideSource`; hidden while beside-source) and a G33a jsdom leg (role `button`, accessible name).
+
 ### App chrome (AppHeader / BrandLogo / ThemeToggle) — scope (i) ship-gating
 
 - [ ] **P8.1** [UI] Build the persistent slim AppHeader chrome frame · §5.3 §5.5
@@ -64,11 +79,11 @@
   needs: P8.1
   > scope (i) (ship-gating: the header is a ship surface; the *final mark* is scope-(ii) branding). A single `<BrandLogo>` primitive reading a bundled-local placeholder SVG (offline, no CDN, §2.11) so the owner can swap the final Ne-IA mark without touching layout; the logo + "ConvertIA"/"Ne-IA" names are NOT MIT-granted (SSOT Trademark) — placeholder stand-in only.
 - [ ] **P8.3** [UI] Build the ThemeToggle (Light/Dark/System) writing the `theme` prefs key · §5.5 §7.4.2
-  needs: P8.1, P2.85
-  > scope (i). The Light/Dark/System selector in AppHeader (right side); three explicit states; default `system` (follow `prefers-color-scheme`); sets the `theme` key through the core-owned prefs door (§7.4.2) so the choice persists across launches; cycles `system → light → dark`. Tab-reachable only, no global accelerator (§5.10) — wired to the keymap in P8.18. (`needs: P2.85` — the core-owned 3-key prefs blob this `theme` key writes into.)
+  needs: P8.1, P8.29
+  > scope (i). The Light/Dark/System selector in AppHeader (right side); three explicit states; default `system` (follow `prefers-color-scheme`); sets the `theme` key via C18 `set_ui_pref` and initialises from C17 `get_ui_prefs` (§7.4.2) so the choice persists across launches; cycles `system → light → dark`. Tab-reachable only, no global accelerator (§5.10) — wired to the keymap in P8.18.
 - [ ] **P8.4** [UI] Resolve the persisted `theme` into the design tokens at the root · §5.5 §7.4.2
-  needs: P8.3
-  > scope (i). Read the persisted `theme` at startup, read through the core-owned prefs door (§7.4.2); a `system` value follows the OS `prefers-color-scheme`; resolve the chosen mode into the `design/tokens.css` colour tokens at the root so light + dark both render from one semantic token set (`theme.ts` light/dark resolution).
+  needs: P8.3, P8.29
+  > scope (i). Read the persisted `theme` via C17 `get_ui_prefs` at mount (§7.4.2); a `system` value follows the OS `prefers-color-scheme`; resolve the chosen mode into the `design/tokens.css` colour tokens at the root so light + dark both render from one semantic token set (`theme.ts` light/dark resolution).
 
 ### Design system completion (tokens / motion / a11y floors)
 
@@ -114,8 +129,10 @@
 ### Settings chrome (verbose-log toggle) — scope (i)
 
 - [ ] **P8.16** [UI] Build the verbose-logging toggle in About with the "applies after restart" hint · §5.9 §7.4.2 · G57
-  needs: P8.9, P2.85
-  > scope (i), ship-gating settings chrome. About checklist item 9: the "Detailed diagnostic log" labelled toggle (§7.5.3 mandate) with its disclosure notice (turning it on makes the LOCAL log additionally record file paths + engine command lines, still purely local — nothing sent, §2.11); off by default. Persists as the 3rd key (`verboseLog`) in the §7.4 prefs blob; takes effect on next launch (the setup stage resolves the verbose level once at startup) so it shows the "applies after restart" hint (§7.5.3). The toggle is the §7.5.3 SURFACE; logging behaviour is owned by §7.5. Labels are `strings/ui.ts` (G57). (`needs: P2.85` — the core-owned 3-key prefs blob this `verboseLog` key persists into.)
+  needs: P8.9, P8.29
+  > scope (i), ship-gating settings chrome. About checklist item 9: the "Detailed diagnostic log" labelled toggle (§7.5.3 mandate) with its disclosure notice (turning it on makes the LOCAL log additionally record file paths + engine command lines, still purely local — nothing sent, §2.11); off by default.
+  > Persists as the 3rd key (`verboseLog`) of the §7.4 prefs blob via C18 `set_ui_pref`, its initial state read via C17 `get_ui_prefs`; takes effect on next launch (the setup stage resolves the verbose level once at startup) so it shows the "applies after restart" hint (§7.5.3).
+  > The toggle is the §7.5.3 SURFACE; logging behaviour is owned by §7.5. Labels are `strings/ui.ts` (G57).
 
 ### Cross-cutting error / edge-state copy refinement — scope (i)
 
@@ -143,8 +160,10 @@
 ### Scope-(i) ship-gating sub-gate
 
 - [ ] **P8.21** [DOC] Record the "P8 ship-gating done" sub-gate (scope (i) complete) · §5.9 · G44
-  needs: P8.10, P8.11, P8.12, P8.13, P8.14, P8.15, P8.16, P8.17, P8.18, P8.19, P8.20
-  > scope (i) closure (the P8 header's scope-(i) sub-gate, so "P8 done for release" is unambiguous). Record in this plan that every release-blocking scope-(i) surface is built: About + NOTICE attribution (P8.10–P8.13) + Impressum (P8.14), About→Releases (P8.15), settings chrome (P8.16), cross-cutting error/lossy/empty-state refinement (P8.17/P8.19/P8.20) + the keymap (P8.18). This is the line that makes scope (i) (ship) separable from scope (ii) (non-blocking polish). G44 governance-completeness covers the About/NOTICE leg at release.
+  needs: P8.10, P8.11, P8.12, P8.13, P8.14, P8.15, P8.16, P8.17, P8.18, P8.19, P8.20, P8.30
+  > scope (i) closure (the P8 header's scope-(i) sub-gate, so "P8 done for release" is unambiguous).
+  > Record in this plan that every release-blocking scope-(i) surface is built: About + NOTICE attribution (P8.10–P8.13) + Impressum (P8.14), About→Releases (P8.15), settings chrome (P8.16), the DestinationBar Save-beside control (P8.30), cross-cutting error/lossy/empty-state refinement (P8.17/P8.19/P8.20) + the keymap (P8.18).
+  > This is the line that makes scope (i) (ship) separable from scope (ii) (non-blocking polish). G44 governance-completeness covers the About/NOTICE leg at release.
 
 ### Visual-polish / Ne-IA branding pass — scope (ii) NON-BLOCKING (may trail P11)
 

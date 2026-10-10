@@ -489,7 +489,7 @@ THREAT_CLASSES = {"T1", "T2", "T2a", "T2b", "T2c", "T3", "T3a", "T4", "T5", "T6"
                   "T7", "T7a", "T8", "T9a", "T9b", "T10", "T11", "T12", "T13"}
 # the §0.4.1 enumerated IPC command SET (a set, not a contiguous range — C2 is split into C2a/C2b)
 IPC_COMMANDS = {"C1", "C2a", "C2b", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14",
-                "C15", "C16"}
+                "C15", "C16", "C17", "C18"}
 
 
 def _target_missing(check: str, target: str, what: str = "") -> list[Finding]:

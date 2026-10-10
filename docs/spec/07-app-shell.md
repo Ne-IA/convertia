@@ -829,7 +829,15 @@ always `beside-source`, verbose → always `false` — so this is a low-stakes d
 a load-bearing call.)
 **A `lastDestinationMode` path is always re-validated as writable at use time** (§2.7
 per-location fallback applies if it has since become read-only/gone) — it is a
-*hint*, never a guarantee. The blob's location/mechanism is §7.4.2; it is
+*hint*, never a guarantee. **`lastDestinationMode` writer `[DECIDED]`:** the core writes
+it, best-effort, after C6 `start_conversion` accepts a run: `ChosenRoot(id)` → the absolute
+path the §0.4.4 picked-roots registry resolves `id` to — a root the user picked via C2b this
+session, or the persisted root C14 re-validated — so the stored value is a folder the user
+explicitly picked, by construction; `BesideSource` → `"beside-source"`. A resolved path that
+is not valid Unicode cannot be stored as a JSON string without loss, so the writer stores
+`"beside-source"` and logs one static line (a lossy string could name a folder the user never
+picked). The write never delays or fails C6, and the WebView cannot set the key (§7.4.2).
+The blob's location/mechanism is §7.4.2; it is
 **core-owned** — the WebView holds no `store:` grant (§0.10) and never reads or writes the file.
 
 ### 7.4.2 Where it lives & how — core-owned `[DECIDED]`
@@ -843,7 +851,11 @@ per-location fallback applies if it has since become read-only/gone) — it is a
   read-modify-write under one process-local lock — load the current object as above (unknown
   keys kept; a non-object document is replaced by a fresh object), serialise, write a sibling
   file in the config dir, flush it (`sync_all`) and rename it over `settings.json` (an atomic
-  replace on all three OS), creating the config dir first. (SUPERSEDED `[DECIDED 2026-09-29]`:
+  replace on all three OS), creating the config dir first. Realizability probe at the box
+  that builds the writer: the rename over an existing `settings.json` on all three OS (a
+  `tempfile` leg). If a platform refuses it, the writer falls back to an in-place
+  truncate-write-`sync_all` of `settings.json`, without escalation — the blob is
+  best-effort. (SUPERSEDED `[DECIDED 2026-09-29]`:
   `tauri-plugin-store` and the former 'or a hand-rolled equivalent — either is fine' `[REC]`.
   Measured against the then-pinned 2.4.5 source: every mutating `Store` call
   (`set`/`delete`/`clear`/`reset`) emits a `store://change` event carrying the store's absolute
@@ -855,6 +867,17 @@ per-location fallback applies if it has since become read-only/gone) — it is a
   `theme`/`verboseLog` only through typed core IPC commands that carry no path, store name
   or free-form key (§0.4.1) — never `lastDestinationMode`. (SUPERSEDED: the
   `store:default` grant, which let a compromised WebView write any path — §0.10.)
+- **The WebView door `[DECIDED]`:** C17 `get_ui_prefs` → `UiPrefs`; C18
+  `set_ui_pref { pref: UiPref }` → `()` (§0.4.1). Both return `Ok` on every path, a failed
+  blocking task included: a read degrades to the §7.4.1 defaults, a failed write is logged
+  (§7.5). Blocking file work runs off the async runtime (`spawn_blocking`, as C14 does).
+  `UiPref` rides the externally tagged camelCase form (`{ theme: "dark" }` /
+  `{ verboseLog: true }`), as `DestinationChoice` does:
+  ```rust
+  pub enum Theme { System, Light, Dark }                         // wire: "system" | "light" | "dark" (§7.4.1)
+  pub struct UiPrefs { pub theme: Theme, pub verbose_log: bool } // C17 return, outbound only
+  pub enum UiPref { Theme(Theme), VerboseLog(bool) }             // C18 argument, inbound only; no lastDestinationMode variant
+  ```
 - **Location (per-OS, via Tauri `app.path().app_config_dir()`):**
   - Windows: `%APPDATA%\dev.ne-ia.convertia\settings.json`
   - macOS: `~/Library/Application Support/dev.ne-ia.convertia/settings.json`
