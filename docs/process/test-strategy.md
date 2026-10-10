@@ -455,7 +455,7 @@ a no-op). The committed corpus/crash files are plain git-tracked files (never LF
 by git content addressing; `check-fuzz-contract` requires each named bound-firing seed (§3).
 
 **Resource bounds are PINNED** (a decompression-bomb / recursive-quote input must
-not OOM/hang the shared runner and surface as flaky infra — a denial-of-CI vector):
+not OOM/hang the runner and surface as flaky infra — a denial-of-CI vector):
 every fuzz leg pins **`-rss_limit_mb`**, **`-max_len`**, **`-timeout`** (per input),
 **`-max_total_time`** (per job), plus the **G56** `timeout-minutes`. A libFuzzer
 **OOM or timeout is a FINDING** (minimized + committed to `fuzz/crashes/`),

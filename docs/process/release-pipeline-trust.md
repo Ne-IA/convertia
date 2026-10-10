@@ -125,7 +125,7 @@ explicitly rather than assumed covered by the general `GITHUB_TOKEN`-scope lint 
 
 **Host isolation (cross-reference, not restated).** The secret-bearing signing job
 runs on an **ephemeral GitHub-hosted runner under `step-security/harden-runner` (BLOCK
-mode)**, host-isolated from the untrusted-corpus VPS leg — the rationale + the G56
+mode)**, host-isolated from the untrusted-corpus leg — the rationale + the G56
 self-hosted-label ban live in spec **§6.7.2** + security-concept **§2 / principle 11**
 and the **G56** row; this doc points at them.
 

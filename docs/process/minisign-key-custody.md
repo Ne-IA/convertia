@@ -57,12 +57,10 @@ generates, holds, or restores this key.
 
 ## 2. Genesis — generate off the shared host, never on it
 
-The keypair is generated **air-gapped, off the shared multi-tenant VPS**. The
-production CI's self-hosted Linux runner is the **IONOS VPS shared with four other
-Ne-IA projects** (spec §6.1.4) — a persistent multi-tenant host that *also* processes
-untrusted / adversarial corpus bytes is the textbook host-compromise vector (spec
-§6.7.2, security-concept principle 11). A secret key that ever touches that host is
-not trustworthy. So:
+The keypair is generated **air-gapped, off the shared multi-tenant VPS**. The org's
+IONOS VPS is **shared by four other Ne-IA projects** — a persistent multi-tenant
+host is the textbook host-compromise vector (security-concept principle 11). A
+secret key that ever touches that host is not trustworthy. So:
 
 1. **Generate on a clean, owner-controlled machine** (not the VPS, not any CI
    runner): `minisign -G -p minisign.pub -s minisign.key`, choosing a strong, unique
