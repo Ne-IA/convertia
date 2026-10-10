@@ -1136,8 +1136,8 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
 - **Probe first (video only):** `ffprobe -v error -print_format json -show_streams
   -show_format <input>` → inner codecs / duration / rotation / interlace. The
   **duration** becomes the §1.11 progress denominator; the **inner codecs** drive
-  `video.md`'s remux-vs-reencode decision (a §3.2 capability decision, executed
-  here).
+  `video.md`'s remux-vs-reencode decision through its *Remux codec table* (a §3.2
+  capability decision, executed here).
 - **Progress:** `-progress pipe:1 -nostats` → key=value lines (`out_time_us=…`,
   `total_size=…`, `progress=continue|end`) parsed into `ProgressModel::
   FfmpegKeyValue { duration_us }` (§1.11). Real per-item %, never a spinner.
@@ -1256,19 +1256,18 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
       list (update audio.md accordingly).
     - **Raw ADTS `.aac` and WAV/AIFF omit it** (no picture support → the
       `audio_tags_dropped` §2.9 note fires, audio.md tag policy).
-  - **Channel handling:** preserve source channels by default for **every** target
-    (audio.md "Sample rate, channels, bit depth — preservation policy": no down-mix to
-    stereo in v1 unless the encoder strictly requires it; Format-default item 4:
-    `audio_downmix` fires "only if the codec forces a downmix"). libmp3lame and
-    libvorbis both carry >2 channels, so MP3/OGG (like AAC/M4A/OPUS/FLAC/WAV) **preserve
-    the source channel layout — there is NO proactive `-ac 2` downmix**; the §2.9
-    `audio_downmix` note fires ONLY where the chosen encoder/muxer strictly forces a
-    downmix (a codec-forced-only kind). *(Corrected: the prior `>2-channel → MP3/OGG
-    -ac 2` line contradicted the authoritative audio.md preservation policy and is
-    removed.)*
+  - **Channel handling:** no `-ac` is passed on any target; each encoder keeps the
+    source channel layout as far as its own layouts allow (audio.md *Format-default
+    decisions* 4, measured): libmp3lame takes mono or stereo only, so FFmpeg's
+    channel-layout negotiation mixes a surround source → MP3 down to stereo and
+    `audio_downmix` fires (§2.9), while a mono source stays mono; the native `alac`
+    encoder stops at 6.1 and the wide 7.1, so a 7.1 source → ALAC becomes 6.1; libvorbis,
+    libopus and the native `aac`, `flac` and PCM encoders keep layouts up to 7.1.
 - **Video (`video.md`):** **remux** = `-c copy` (+ `-movflags +faststart` for
   MP4/MOV/M4V, `-fflags +genpts` for FLV, `mov_text` subtitle convert for MKV→MP4
-  text subs); **re-encode** = `-c:v libx264 -crf 23 -preset medium -pix_fmt
+  text subs, `-c:s subrip` (SRT) for a `mov_text` stream → MKV; a data stream is never
+  mapped, so chapters travel as chapter metadata — video.md *Subtitles & embedded tracks*);
+  **re-encode** = `-c:v libx264 -crf 23 -preset medium -pix_fmt
   yuv420p` (H.264 family) or `-c:v libvpx-vp9 -b:v 0 -crf 32 -row-mt 1` (WEBM) +
   `-c:a aac -b:a 128k` / `-c:a libopus -b:a 96k`; `yadif` deinterlace when flagged
   (`video.md` `[DEFER: corpus]` — default-on for flagged-interlaced); rotation honored.
@@ -1283,9 +1282,9 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   PNG** (no chaining — §3.2).
 - **Exit/stderr quirks:** non-zero exit → `classify_failure` maps known stderr
   patterns to §2.8 kinds: "could not find codec parameters"/"Invalid data" →
-  corrupt; "No audio" path → the `cross-category` *named* "no audio track" kind;
-  DRM/"Operation not permitted" on FairPlay/WMV → the §video.md "copy-protected"
-  message; everything else → generic engine-failure (still plain-language, §2.13).
+  corrupt; "No audio" path → the §2.8.2 `NoAudioTrack` kind (cross-category.md);
+  DRM/"Operation not permitted" on FairPlay/WMV → §2.8.2 `PasswordProtected`;
+  everything else → generic engine-failure (still plain-language, §2.13).
   Disk-full is found by the §1.10 point-3 free-space arbiter, not by stderr patterns.
 - **Licence/isolation:** the FFmpeg binary is **GPL-2.0+** (it enables `libx264`,
   `--enable-gpl`; no `--enable-nonfree`) — the whole binary is the aggregation case,

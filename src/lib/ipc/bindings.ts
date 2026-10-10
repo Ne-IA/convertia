@@ -1559,7 +1559,10 @@ export type LossyKind =
 "audio_lossy_target" |
 /**  lossy source `→` lossy target (audio.md). */
 "audio_transcode" |
-/**  lossy source `→` lossless target (audio.md). */
+/**
+ *  lossy source `→ FLAC/ALAC`, never `→ WAV/AIFF` (audio.md); extracted audio `→ FLAC`
+ *  (cross-category.md).
+ */
 "audio_lossy_origin" |
 /**  >16-bit source `→` default 16-bit WAV/AIFF (audio.md). */
 "audio_bitdepth" |
@@ -1573,7 +1576,7 @@ export type LossyKind =
 "video_subs_dropped" |
 /**  `video → GIF` cross-category, unconditional (cross-category.md). */
 "video_to_gif" |
-/**  surround forced to stereo by codec (rare; audio.md). */
+/**  surround source `→ MP3`, mixed down to stereo (audio.md / cross-category.md). */
 "audio_downmix";
 
 /**

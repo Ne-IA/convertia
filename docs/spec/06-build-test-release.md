@@ -429,7 +429,8 @@ build-time mechanics that realise them**:
   targets), **`alac`**, **`flac`**, **`pcm_s16le`/`pcm_s16be`/pcm_*** (WAV/AIFF/ALAC),
   **`libmp3lame`** (MP3), **`libvorbis`** (OGG), **`libopus`** (OPUS), **`libx264`** (H.264
   video), **`libvpx-vp9`** (WEBM/VP9), **`mov_text`** (configure `movtext`: the text subtitles
-  an MP4 target keeps, `video.md` *Subtitles & embedded tracks*). (This enumeration is the
+  an MP4 target keeps, `video.md` *Subtitles & embedded tracks*), **`subrip`** (the SRT a
+  `mov_text` track becomes in an MKV target, same section). (This enumeration is the
   *expected floor*; the authoritative set is the generated `ffmpeg-required-encoders.lock`,
   regenerated from the 04 target matrices, never hand-edited.) So a trimmed build can't drop an
   encoder a 04 target needs without failing CI.
@@ -915,14 +916,16 @@ and stub/real engines:
   - **In-core detector fuzz harness `[DECIDED]` (the one untrusted-byte path OUTSIDE
     the §2.12 isolation boundary):** the §1.2 detection layer (the pure-Rust bounded
     gzip/svgz inflate, the Rust ZIP central-directory peek, the OLE2/CFB directory
-    read, the bounded `xl/workbook.xml`/ODS `content.xml` structural peeks) runs in the
-    trust kernel, so a panic/OOM/UB there is in the core, not a contained subprocess.
+    read, the ISO-BMFF box walk, the ASF header peek, the MPEG audio scan with its ID3v2
+    tag skip, the bounded `xl/workbook.xml`/ODS `content.xml` structural peeks) runs in
+    the trust kernel, so a panic/OOM/UB there is in the core, not a contained subprocess.
     It carries a **coverage-guided `cargo-fuzz` (libFuzzer)** target over
-    `crate::detection`/sniff on a hostile ZIP/OLE2/gzip/svgz/XML corpus, asserting: **no
-    panic/abort**, the decompression-ratio cap (≤100×) and the `MAX_SVGZ_SNIFF`
-    (≤64 KiB) bound **actually fire**, and the XML reader has **DTD/external-entity
-    resolution disabled by construction** (a `quick-xml`/`roxmltree` reader with entity
-    resolution off — defeats XXE / billion-laughs in the workbook/content peek). The
+    `crate::detection`/sniff on a hostile ZIP/OLE2/ISO-BMFF/ASF/ID3v2/MPEG-audio/gzip/svgz/XML
+    corpus, asserting: **no panic/abort**, the decompression-ratio cap (≤100×), the
+    `MAX_SVGZ_SNIFF` (≤64 KiB) bound and the §1.2 *Detection bounds* **actually fire**,
+    and the XML reader has **DTD/external-entity resolution disabled by construction**
+    (the §2.12.4 `quick-xml` reader with DTD processing and entity expansion off —
+    defeats XXE / billion-laughs in the XML member peeks). The
     coverage-guided run is constrained to where libFuzzer is reliable (**Linux + macOS,
     nightly toolchain**); the per-push/pre-push leg is a fast deterministic `proptest`
     smoke / saved-crash-corpus replay, **not** an instrumented Windows build. This is

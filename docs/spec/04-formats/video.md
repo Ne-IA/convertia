@@ -21,8 +21,8 @@ spinner. Two ideas drive the whole category:
    what ConvertIA can do cheaply depends on the **codecs inside**. ConvertIA detects
    the container by content (magic bytes) and inspects the inner codecs with
    `ffprobe` before planning the job.
-2. **Re-encode vs remux (stream-copy).** When the source's inner codecs are already
-   legal in the target container, ConvertIA **remuxes** (`-c copy`): it repackages
+2. **Re-encode vs remux (stream-copy).** When the source's inner codecs are ones the
+   target keeps (*Remux codec table*), ConvertIA **remuxes** (`-c copy`): it repackages
    the existing streams into the new container with **no quality loss** and in
    seconds (no decode/encode). When they are not, it **re-encodes** to the target's
    canonical codecs — slower and **lossy**. This is the single most important
@@ -68,25 +68,24 @@ animated GIF); their matrix is [cross-category.md](cross-category.md)'s.
 Notes on the `R`/`✓~` choice per cell:
 - **MP4 / MOV / MKV / M4V / FLV → MP4 / MOV / MKV / M4V** are marked **R** because
   these containers very commonly already hold **H.264 + AAC** (FLV typically
-  H.264/AAC since ~2008), which is legal in all four MP4-family/Matroska
-  containers → a clean **lossless remux**. The runtime check (§3.5) downgrades a
-  given item to re-encode (`✓~`) only when a specific inner codec is *not* legal in
-  the target (e.g. MKV holding HEVC/VP9 → MP4 may re-encode video; PCM/Vorbis audio
-  → MP4 re-encodes audio to AAC). The matrix marks the **common** case.
+  H.264/AAC since ~2008), which all four targets keep → a clean **lossless remux**.
+  The runtime check (§3.5) downgrades a given item to re-encode (`✓~`) only when an
+  inner codec is one the target does not keep (*Remux codec table*: e.g. MKV holding
+  HEVC/VP9 → MP4 re-encodes the video by default; AC-3, PCM or Vorbis audio → MP4
+  becomes AAC). The matrix marks the **common** case.
   - **FLV footnote:** the FLV `R` cells hold **only for H.264/AAC FLV**. **Older
-    VP6 / Sorenson Spark (H.263-class) FLV cannot losslessly remux to MP4/MOV/M4V**
-    (those codecs are not legal in the MP4 family — only MKV can wrap them verbatim),
-    so the §3.5 runtime check re-encodes such items (`✓~`) on the MP4-family targets.
-    Phase-3 must **not** implement an always-remux FLV→MP4 path — the remux-vs-reencode
-    decision is per-item from the ffprobe inner-codec inventory (§3.5).
-- **→ WEBM** is always **✓~ re-encode**: WEBM legally carries only VP8/VP9/AV1
-  video + Vorbis/Opus audio, which the H.264/AAC mainstream never matches, so a
-  WEBM target always decodes-and-re-encodes (lossy).
+    VP6 / Sorenson Spark (H.263-class) FLV re-encodes on the MP4-family targets**
+    (*Remux codec table*; only MKV keeps those codecs verbatim), so the §3.5 runtime
+    check re-encodes such items (`✓~`). No pair always remuxes: the decision is per
+    item, from the ffprobe inner-codec inventory (§3.5) and the *Remux codec table*.
+- **→ WEBM** re-encodes in the common case (`✓~`): WebM carries only VP8/VP9/AV1
+  video and Vorbis/Opus audio, which the H.264/AAC mainstream never matches; a stream
+  already in one of those codecs is copied (*Remux codec table*).
 - **AVI / WMV / MPG / 3GP sources → MP4/MOV/M4V** are **✓~** because their inner
   codecs (MPEG-4 Part 2/DivX, MS-MPEG4/WMV, MPEG-1/2, H.263) are old and a clean
   modernization re-encodes to H.264/AAC (lossy but that is the point). **→ MKV** is
-  more often **R**: MKV is permissive enough to wrap most legacy codecs verbatim
-  (lossless container change) — but the everyday user wants MP4, hence MP4 default.
+  more often **R**: MKV keeps nearly every legacy codec verbatim (*Remux codec table*)
+  — a lossless container change — but the everyday user wants MP4, hence MP4 default.
 
 ## Decode inventory
 
@@ -153,9 +152,9 @@ row (§3.4.3).
 | DVD LPCM | MPG/MPEG | `pcm_dvd` | `pcm_dvd` | `pcm_dvd` | §3.4.2 |
 
 The *Subtitles & embedded tracks* policy decodes the text subtitle tracks (SRT, MOV_TEXT,
-WebVTT) to convert them to `mov_text` for an MP4 target; the image and styled subtitles it drops
-(PGS, VobSub, ASS/SSA) need no decoder. Text subtitle formats have no §3.4 line, so this table
-has no §3.4 home column.
+WebVTT) to convert them to `mov_text` for an MP4 target, and a MOV_TEXT track to SRT for an MKV
+target; the image and styled subtitles it drops (PGS, VobSub, ASS/SSA) need no decoder. Text
+subtitle formats have no §3.4 line, so this table has no §3.4 home column.
 
 | Codec | Sources | Configure component | `ffmpeg -decoders` name | `ffprobe` `codec_name` |
 |---|---|---|---|---|
@@ -163,11 +162,53 @@ has no §3.4 home column.
 | WebVTT | MKV, WEBM | `webvtt` | `webvtt` | `webvtt` |
 | 3GPP Timed Text (MOV_TEXT) | MP4, MOV, M4V, 3GP | `movtext` | `mov_text` | `mov_text` |
 
+## Remux codec table
+
+`[DECIDED]` Which inner streams each video target keeps as they are — the §3.5.1
+remux-vs-re-encode decision reads it per stream, keyed by the `ffprobe` `codec_name`
+of the *Decode inventory*'s video and audio rows. MP4 and M4V share the `mp4` muxer
+(§3.5.1), so they share a column.
+
+| `ffprobe` `codec_name` | MP4, M4V | MOV | MKV | WEBM |
+|---|---|---|---|---|
+| `h264` | ✓ | ✓ | ✓ | ✗ |
+| `hevc` | K | K | ✓ | ✗ |
+| `av1` | K | ✗ | ✓ | ✓ |
+| `vp9` | S | ✗ | ✓ | ✓ |
+| `vp8` | ✗ | ✗ | ✓ | ✓ |
+| `mpeg4`, `mpeg1video`, `mpeg2video`, `mjpeg`, `vc1` | S | S | ✓ | ✗ |
+| `msmpeg4v1`, `msmpeg4v2`, `msmpeg4v3`, `wmv1`, `wmv2`, `wmv3`, `h263`, `flv1`, `vp6`, `vp6f`, `vp6a`, `cinepak`, `dvvideo`, `prores` | ✗ | S | ✓ | ✗ |
+| `aac`, `mp3` | ✓ | ✓ | ✓ | ✗ |
+| `alac`, `mp2`, `ac3`, `eac3`, `dts`, `pcm_s16le`, `pcm_s16be`, `pcm_s24le`, `pcm_s24be` | S | S | ✓ | ✗ |
+| `opus` | S | ✗ | ✓ | ✓ |
+| `vorbis` | S | S | ✓ | ✓ |
+| `flac` | S | ✗ | ✓ | ✗ |
+| `amr_nb`, `wmav1`, `wmav2`, `wmapro`, `wmalossless`, `pcm_u8` | ✗ | S | ✓ | ✗ |
+| `nellymoser` | ✗ | S | ✗ | ✗ |
+| `pcm_dvd` | ✗ | ✗ | ✗ | ✗ |
+
+- `✓` — copied on every pair into that target.
+- `K` — copied on the self-normalize pair (*Same-container*) and under the *keep
+  original quality* toggle; otherwise re-encoded to H.264 (*HEVC/H.265 default
+  disposition*).
+- `S` — copied on the self-normalize pair only, where the container already holds it;
+  from any other source, re-encoded to the target's default codec (*Default codec /
+  quality / resolution*) — the MP4 family keeps H.264, AAC and MP3 for "plays
+  everywhere".
+- `✗` — re-encoded to the target's default codec, on every pair: the target's FFmpeg
+  muxer refuses the codec.
+
+Subtitles, chapters and attachments follow *Subtitles & embedded tracks*. The muxer
+verdicts behind `✗` were measured as stream copies into FFmpeg's `mp4`, `mov`,
+`matroska` and `webm` muxers. Realizability probe at the box that builds the decision:
+every non-`✗` cell is re-measured against the §3.8-pinned FFmpeg; a cell the pinned
+muxer refuses becomes `✗`, without escalation.
+
 ## Lossy kinds
 
 | Kind | Pairs | Layer | Condition |
 |---|---|---|---|
-| `video_reencode` | every video pair | per-item-runtime | the §3.5.1 per-item disposition re-encoded a stream: always on a `~` cell without `R`, as the worst case on an `R` cell (*Re-encode vs remux*) |
+| `video_reencode` | every video pair | per-item-runtime | the §3.5.1 per-item disposition re-encoded a stream (*Remux codec table*): the common case on a `~` cell without `R`, the worst case on an `R` cell (*Re-encode vs remux*) |
 | `video_alpha_lost` | `WEBM → MP4`, `→ MOV`, `→ M4V` | per-item-runtime | the WEBM carries alpha (VP8/VP9 `yuva420p`), which the H.264 re-encode cannot keep |
 | `video_subs_dropped` | a source with subtitles `→ MP4` | per-item-runtime | image (PGS, VobSub) or styled ASS/SSA subtitles, which `mov_text` cannot carry (*Subtitles & embedded tracks*) |
 
@@ -181,12 +222,13 @@ differ and are spelled out per format.
 ---
 
 ### `MP4` (.mp4)
-- **Detection:** ISO Base Media File Format. Bytes 4–7 = `66 74 79 70` (`ftyp`);
-  the **major brand** at offset 8 distinguishes the MP4 family: `isom`, `mp41`,
-  `mp42`, `avc1`, `dash`, etc. Shares the `ftyp` box with MOV / M4V / 3GP — the
-  brand, not the extension, disambiguates (a `.mov`-branded `qt  ` file dropped as
-  `.mp4` is treated as MOV per SSOT *Recognize files by content*). Extension `.mp4`
-  (also `.m4v`, see its entry).
+- **Detection:** ISO Base Media File Format. Bytes 4–7 = `66 74 79 70` (`ftyp`).
+  MP4 has no brand of its own: a generic major brand (`isom`, `mp41`, `mp42`, `avc1`,
+  `dash`, …) with no specific compatible brand goes through the §1.2 ISO-BMFF box
+  walk, and a video track makes the file MP4. Shares the `ftyp` box with MOV / M4V /
+  3GP / M4A — the brand, not the extension, disambiguates (a `.mov`-branded `qt  `
+  file dropped as `.mp4` is treated as MOV per SSOT *Recognize files by content*).
+  Extension `.mp4` (also `.m4v`, see its entry).
 - **Role:** both.
 - **As source → targets:** **MP4★** (self, re-mux/repackage), MOV (R), MKV (R),
   WEBM (✓~ re-encode), M4V (R) · + extract-audio, to-GIF (→ cross-category).
@@ -217,9 +259,9 @@ differ and are spelled out per format.
 
 ### `MOV` (.mov, .qt)
 - **Detection:** QuickTime / ISO-BMFF variant — `ftyp` box with brand `qt  `
-  (`71 74 20 20`) at offset 8, **or** a top-level `moov`/`mdat`/`wide` atom for
-  older QuickTime files that omit `ftyp`. Same family as MP4; brand disambiguates.
-  Extension `.mov` (`.qt` legacy).
+  (`71 74 20 20`) at offset 8, **or**, for older QuickTime files that omit `ftyp`, a
+  `moov`/`mdat`/`wide` atom as the first box. Same family as MP4; brand disambiguates
+  (§1.2 ISO-BMFF rule). Extension `.mov` (`.qt` legacy).
 - **Role:** both.
 - **As source → targets:** **MP4★** (R), MOV (self R), MKV (R), WEBM (✓~), M4V (R)
   · + extract-audio, to-GIF.
@@ -234,13 +276,13 @@ differ and are spelled out per format.
 - **Options/settings:** category defaults (CRF 23 / medium / AAC 128k), re-encode
   path only.
 - **Lossy?:** Remux (MOV→MP4/MKV/M4V with H.264/AAC inside) lossless; ProRes/other
-  → MP4 re-encode lossy → §2.9; →WEBM always lossy.
+  → MP4 re-encode lossy → §2.9; →WEBM lossy (the video re-encodes to VP9).
 - **Edge cases:** iPhone `.mov` often carries **HEVC (H.265)** video + AAC + a
   timed-metadata track and sometimes rotation flags — ConvertIA honours the
   display-matrix **rotation** so portrait clips stay portrait. HEVC→MP4: H.265 is
   legal in MP4, so the **video can remux**; but the everyday-compatibility default
-  **re-encodes HEVC→H.264 for "plays everywhere"** `[DECIDED]` (a "keep original quality
-  (H.265)" Advanced toggle offers verbatim remux — see the *HEVC/H.265 default
+  **re-encodes HEVC→H.264 for "plays everywhere"** `[DECIDED]` (a "keep original
+  quality" Advanced toggle offers verbatim remux — see the *HEVC/H.265 default
   disposition* decision below).
 
 ---
@@ -256,14 +298,14 @@ differ and are spelled out per format.
 - **As target ← sources:** MP4, MOV, MKV, WEBM, AVI, WMV, FLV, MPG/MPEG, M4V, 3GP
   (**every** source — MKV is the permissive "wrap anything losslessly" target and
   is offered to all, just never the default).
-- **Engine(s):** FFmpeg. MKV is the most permissive container: most legacy and
-  modern codecs can be **remuxed in verbatim**, so source→MKV is frequently a
-  lossless container change. Re-encode only when a target-codec is explicitly
-  requested (not in v1 — no codec picker).
+- **Engine(s):** FFmpeg. MKV is the most permissive container: it keeps every
+  *Decode inventory* codec but Nellymoser and DVD LPCM **verbatim** (*Remux codec
+  table*), so source→MKV is frequently a lossless container change.
 - **Options/settings:** category defaults on re-encode; remux ignores them.
 - **Lossy?:** source→MKV usually **lossless remux** → no §2.9 note in the common
-  case; MKV→MP4 lossy only if an MKV-only codec (e.g. some PCM/DTS audio, certain
-  subtitle formats) forces a transcode; MKV→WEBM always lossy → §2.9.
+  case; MKV→MP4 lossy only if a codec the MP4 family does not keep (*Remux codec
+  table*: HEVC by default, AC-3, DTS or PCM audio, …) forces a transcode; MKV→WEBM
+  lossy unless the MKV holds only VP8/VP9/AV1 video and Vorbis/Opus audio → §2.9.
 - **Edge cases:** MKV routinely holds **multiple audio tracks, multiple subtitle
   tracks (SRT/ASS/PGS), chapters, and attachments (fonts)**. On **→MP4**: MP4 can
   carry **multiple audio** and **tx3g/mov_text subtitles** but **not** ASS/PGS →
@@ -296,8 +338,9 @@ differ and are spelled out per format.
   **Single-pass** by default — two-pass is smaller but doubles runtime and is out of v1's
   no-knobs default (an Advanced two-pass toggle is `[DECIDED]` NOT in v1 — `[DEFER: post-v1]`).
 - **Lossy?:** WEBM→MP4/MOV/M4V = re-encode (VP9→H.264) = **lossy** → §2.9.
-  WEBM→MKV = remux VP9 verbatim (lossless). source→WEBM = **always lossy** (VP9/Opus
-  re-encode) → §2.9.
+  WEBM→MKV = remux VP9 verbatim (lossless). source→WEBM = **lossy** (VP9/Opus
+  re-encode) → §2.9, except for a stream already in a WebM codec, which is copied
+  (*Remux codec table*).
 - **Edge cases:** WEBM can have **transparency (alpha, VP8/VP9 yuva420p)** — alpha
   is **lost** when re-encoding to H.264/MP4 (H.264 has no alpha) → an extra §2.9
   note (`video_alpha_lost`) for that specific case. WEBM has no native subtitle muxing in common use;
@@ -331,27 +374,25 @@ differ and are spelled out per format.
 ### `WMV` (.wmv)
 - **Detection:** Advanced Systems Format (ASF) — 16-byte GUID at offset 0
   `30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C`. The **same ASF GUID** is used
-  by `.wma` (audio-only) — the presence of a video stream (probed) tells WMV from
-  WMA. Extension `.wmv` (`.asf`).
+  by `.wma` (audio-only) — the stream types declared in the ASF header tell WMV from
+  WMA (§1.2 ASF rule: a video stream ⇒ WMV). Extension `.wmv` (`.asf`).
 - **Role:** both (legacy source; **not** a target).
 - **As source → targets:** **MP4★** (✓~), MOV (✓~), **MKV (✓~R — usually lossless,
   see below)**, WEBM (✓~), M4V (✓~) · + extract-audio, to-GIF.
 - **As target ← sources:** **none** — Windows-only legacy delivery format, no
   everyday demand to *produce*. Out as target.
 - **Engine(s):** FFmpeg. WMV holds **WMV1/2/3 / VC-1** video + **WMA** audio.
-  **Matroska (MKV) can carry VC-1 and WMA verbatim**, so **WMV→MKV is commonly a
-  lossless remux** (`-c copy`, container swap) — corrected from the prior "always
-  re-encode" claim. Old **WMV7/8 (WMV1/2)** variants that some Matroska muxers won't
-  accept fall back to re-encode at runtime (the §3.5 probe decides per item). The
-  **MP4-family** targets (MP4/MOV/M4V) are **not** first-class homes for WMV/WMA, so
-  those stay re-encode (✓~); modernization → H.264/AAC.
+  **Matroska (MKV) carries every WMV and WMA codec verbatim** (VC-1, WMV1/2/3, WMA
+  v1/v2/Pro/Lossless; *Remux codec table*), so **WMV→MKV is a lossless remux**
+  (`-c copy`, container swap). The **MP4-family** targets (MP4/MOV/M4V) are **not**
+  first-class homes for WMV/WMA, so those stay re-encode (✓~); modernization →
+  H.264/AAC.
 - **Options/settings:** category defaults.
-- **Lossy?:** **WMV→MKV is usually a lossless remux** (VC-1/WMA copied verbatim;
-  older WMV7/8 may re-encode). **WMV→MP4/MOV/M4V/WEBM** = re-encode = lossy → §2.9.
+- **Lossy?:** **WMV→MKV is a lossless remux** (the WMV and WMA streams copied
+  verbatim). **WMV→MP4/MOV/M4V/WEBM** = re-encode = lossy → §2.9.
 - **Edge cases:** DRM-protected WMV/ASF (legacy PlaysForSure) **cannot** be decoded
-  → fails clearly per SSOT *Fail clearly* (one plain message: "this file is
-  copy-protected and can't be converted"), batch continues. VC-1 advanced-profile
-  decode is supported by bundled FFmpeg.
+  → the item fails with §2.8.2 `PasswordProtected` (SSOT *Fail clearly*), and the
+  batch continues. VC-1 advanced-profile decode is supported by bundled FFmpeg.
 
 ---
 
@@ -379,8 +420,8 @@ differ and are spelled out per format.
 ### `MPG / MPEG` (.mpg, .mpeg, .m1v, .m2v, .vob)
 - **Detection:** MPEG Program Stream / Elementary Stream start codes — `00 00 01 BA`
   (Program Stream pack header) or `00 00 01 B3` (sequence header). Extensions
-  `.mpg`, `.mpeg`, `.m2v`, `.vob` (DVD). `.ts` (transport stream) also detected by
-  sync byte `0x47` and treated here.
+  `.mpg`, `.mpeg`, `.m2v`, `.vob` (DVD). A `.ts` transport stream is not a v1
+  source: no signature row covers it, so it is declined as unrecognised (§1.2).
 - **Role:** both (legacy source; **not** a target).
 - **As source → targets:** **MP4★** (✓~), MOV (✓~), MKV (R), WEBM (✓~), M4V (✓~)
   · + extract-audio, to-GIF.
@@ -396,16 +437,15 @@ differ and are spelled out per format.
   **deinterlace (`yadif`) automatically** when the source is flagged interlaced so
   the MP4 looks right on progressive screens (a `[DEFER: corpus]` default — design is
   default-on for flagged-interlaced sources, only the call is corpus-confirmed; see
-  *Format-default decisions*). Multi-program transport streams: ConvertIA takes the **first/best
-  program** (specialist multi-program demux is out of scope). AC-3 audio → AAC on
-  re-encode.
+  *Format-default decisions*). AC-3 audio → AAC on re-encode.
 
 ---
 
 ### `M4V` (.m4v)
-- **Detection:** ISO-BMFF `ftyp`, brand `M4V `/`mp42`/`M4VH` (Apple). Byte-identical
-  family to MP4; the **only** practical difference is Apple's optional **FairPlay
-  DRM** flag and the `.m4v` extension. Detected as the MP4 family by `ftyp`.
+- **Detection:** ISO-BMFF `ftyp`, brand `M4V `, `M4VH` or `M4VP` (Apple; §1.2
+  ISO-BMFF rule). Byte-identical family to MP4; the **only** practical difference is
+  Apple's optional **FairPlay DRM** flag and the `.m4v` extension. A `.m4v` carrying
+  only a generic brand (`mp42`, `isom`, …) is detected as MP4, the same bytes.
 - **Role:** both.
 - **As source → targets:** **MP4★** (R — essentially a rename+repackage), MOV (R),
   MKV (R), WEBM (✓~), M4V (self R) · + extract-audio, to-GIF.
@@ -420,15 +460,16 @@ differ and are spelled out per format.
 - **Options/settings:** category defaults (re-encode path only — rare for M4V).
 - **Lossy?:** M4V↔MP4/MOV/MKV = **lossless remux**; →WEBM lossy → §2.9.
 - **Edge cases:** **DRM-protected (FairPlay) M4V** — purchased iTunes content —
-  **cannot** be decoded → fails clearly ("this file is copy-protected and can't be
-  converted"), batch continues, nothing written. Non-DRM M4V (Handbrake output,
-  home videos) converts identically to MP4.
+  **cannot** be decoded → the item fails with §2.8.2 `PasswordProtected`, nothing is
+  written, and the batch continues. Non-DRM M4V (Handbrake output, home videos)
+  converts identically to MP4.
 
 ---
 
 ### `3GP` (.3gp, .3g2)
-- **Detection:** ISO-BMFF `ftyp` with brand `3gp4`/`3gp5`/`3gp6`/`3g2a`. MP4 family;
-  brand disambiguates. Extensions `.3gp`, `.3g2`.
+- **Detection:** ISO-BMFF `ftyp` with a brand starting `3gp` or `3g2` (`3gp4`,
+  `3gp5`, `3gp6`, `3g2a`, …). MP4 family; brand disambiguates (§1.2 ISO-BMFF rule).
+  Extensions `.3gp`, `.3g2`.
 - **Role:** both (legacy mobile source; **not** a target).
 - **As source → targets:** **MP4★** (✓~ — see below), MOV (✓~), MKV (R), WEBM (✓~),
   M4V (✓~) · + extract-audio, to-GIF.
@@ -482,13 +523,12 @@ The engine layer (§3.5) decides per item, never asking the user:
 1. **Probe** the source's streams (`ffprobe`): inner video codec, audio codec(s),
    subtitle codec(s), pixel format, rotation, interlace flag.
 2. **Remux** (`-c copy`, **lossless**, seconds) **iff** *every* stream the target
-   keeps is a codec **legal in the target container** *and* no normalization is
+   keeps is one the *Remux codec table* copies on that pair *and* no normalization is
    required. This is the common, preferred path for the MP4/MOV/MKV/M4V family and
    for FLV/MOV/MKV holding H.264/AAC.
-3. **Re-encode** (decode → H.264/AAC or VP9/Opus, **lossy**, minutes) when any kept
-   stream's codec is illegal in the target (e.g. VP9→MP4, PCM→MP4), when the target
-   is WEBM (codecs never match), or when a normalization (deinterlace, rotation
-   bake-in) is needed.
+3. **Re-encode** (decode → H.264/AAC or VP9/Opus, **lossy**, minutes) a stream the
+   table does not copy on that pair (e.g. VP9→MP4, AC-3→MP4, H.264→WEBM), and the
+   video when a normalization (deinterlace, rotation bake-in) is needed.
 4. **Mixed** is allowed: video may remux while audio re-encodes (e.g. MKV with
    H.264 video + Vorbis audio → MP4 copies video, transcodes audio to AAC). This is
    still **one engine, one FFmpeg invocation** — no chaining, satisfies §3.2.
@@ -497,15 +537,13 @@ Because remux vs re-encode changes whether the result is lossy, the §2.9
 `video_reencode` note's firing is governed by §2.9.2. **Timing matters:** the *exact*
 per-item disposition needs the full `ffprobe` stream inventory, which is deferred to
 **convert-time** (§1.2/§3.5) — it is **not** run on every item before convert (too
-costly on large recursive batches). So the note shown at **target choice** is a
-**header/container-pair-derived best-effort worst-case** (§2.9.2): a target pair that
-is **always re-encode** (→WEBM, or a legacy source with known-incompatible inner
-codecs) fires the note definitely; a pair that **commonly remuxes** but *might*
-re-encode a given item fires the worst-case *"may be re-encoded"* phrasing rather
-than falsely promising losslessness. `RunStarted.willReencode` (§0.4.2) carries this
-same worst-case flag. The **§1.12 summary reflects what actually happened** per item
-once §3.5 resolved the real disposition. (For a mixed batch, the pre-convert note
-shows if **any** item *may* re-encode — honest worst-case.)
+costly on large recursive batches). So the note shown at **target choice** is the
+pair's **best-effort worst case** (§2.9.2): every video pair shows the
+`video_reencode` before-convert line (§2.9.1), never a promise of losslessness.
+`RunStarted.willReencode` (§0.4.2) carries this same worst-case flag. The **§1.12
+summary reflects what actually happened** per item once §3.5 resolved the real
+disposition. (For a mixed batch, the pre-convert note shows if **any** item *may*
+re-encode — honest worst-case.)
 
 ### Default codec / quality / resolution
 
@@ -514,7 +552,7 @@ shows if **any** item *may* re-encode — honest worst-case.)
 | Video codec (re-encode) | **H.264 (libx264)** for MP4/MOV/MKV/M4V; **VP9 (libvpx-vp9)** for WEBM | universal vs web |
 | Quality (H.264) | **CRF 23**, preset **medium** | x264 native defaults; sane 18–28 range |
 | Quality (VP9) | **CRF 32**, `-b:v 0` (constant quality), single-pass, `-row-mt 1` | libvpx-vp9 CRF range is **0–63** (15–35 is the recommended band; 32 = "good for web"); a slider validates `0..=63` |
-| Audio codec (re-encode) | **AAC-LC** (MP4 family) / **Opus** (WEBM) | native FFmpeg encoders |
+| Audio codec (re-encode) | **AAC-LC** for MP4/MOV/MKV/M4V; **Opus** for WEBM | the native `aac` encoder / `libopus` |
 | Audio bitrate | **128 kbps** AAC / **96 kbps** Opus | transparent-enough everyday default |
 | Resolution / frame rate | **unchanged** (copy source W×H and fps) | never upscale; never down-res by default — no synthetic loss |
 | Pixel format | normalize to **yuv420p** on H.264 re-encode | maximizes player compatibility (some players reject yuv444/yuv422) |
@@ -547,10 +585,14 @@ defaults.
     represented as `mov_text`; they are **dropped** with a §2.9 note
     (`video_subs_dropped`) rather than failing the conversion. Burning subtitles
     into the picture is **out of v1** (irreversible, a real choice — parked).
-- **MKV → MKV / → MP4-as-remux**: all subtitle/chapter/attachment streams that the
-  target supports are **copied**; unsupported ones are dropped with the note.
-- Chapters and font attachments: copied to MKV; dropped (with note) for MP4 where
-  unsupported.
+- **→ MKV**: every subtitle stream is **copied**, except `mov_text` (the MP4-family
+  text format), which Matroska cannot hold: it becomes SRT — text, nothing lost.
+- **Chapters `[DECIDED]`** are kept on every target: FFmpeg writes them into MP4, MOV,
+  M4V, MKV and WEBM alike (measured). They travel as chapter metadata, never as a
+  stream: the chapter track an MP4 or MOV carries (an `ffprobe` `bin_data` data stream)
+  is not mapped, because Matroska refuses data streams (measured). **Font attachments**
+  exist to style ASS/SSA subtitles: they are copied to MKV and dropped elsewhere with
+  the subtitles they style, so they carry no note of their own.
 
 ### Metadata / color
 
@@ -587,7 +629,8 @@ defaults.
 
 Per SSOT *Never harm* (re-save same format keeps the original + adapted name),
 MP4→MP4 / MOV→MOV / MKV→MKV / WEBM→WEBM / M4V→M4V are valid: ConvertIA **normalizes**
-(remux + `+faststart`, re-index) without re-encoding — a genuinely useful
+(remux + `+faststart`, re-index) without re-encoding — a stream the container's muxer
+refuses (*Remux codec table* `✗`) is re-encoded — a genuinely useful
 "fix a broken/un-streamable MP4" everyday action — and writes `name (1).mp4`
 beside the source, never overwriting. The legacy-only containers (AVI/WMV/FLV/MPG/
 3GP) have no self target because they aren't offered as targets at all.
@@ -612,13 +655,21 @@ acceleration later. `[DECIDED]` NOT in v1 — software-only (`[DEFER: post-v1]`,
   re-encode HEVC→H.264** (lossy, larger, maximally compatible) — it honours the
   usability-floor promise (the converted MP4 plays on any everyday target). **(a) remux
   HEVC→MP4 verbatim** (lossless, smaller, but less compatible) is offered as a **"keep
-  original quality (H.265)" Advanced toggle**, not the default. This makes mov→mp4
-  zero-click correct (the §6.10 row-7 "no required choices" gate can verify it) and the
-  §6.6 usability-floor walkthrough can validate the chosen default. Re-encode uses the
-  §video.md H.264 defaults (CRF 23, preset medium) and depends on H.264 encode
-  availability per the §3.4 platform disposition. **Same disposition applies to AV1-in-MP4**
-  (re-encode to H.264 by default; verbatim-keep is the Advanced toggle). The H.264 encode
-  parameter values remain `[DEFER: corpus]` (numbers, not the remux-vs-reencode design).
+  original quality" Advanced toggle** (a `Toggle`, default off), not the default. This
+  makes mov→mp4 zero-click correct (the §6.10 row-7 "no required choices" gate can
+  verify it) and the §6.6 usability-floor walkthrough can validate the chosen default.
+  Re-encode uses the §video.md H.264 defaults (CRF 23, preset medium) and depends on
+  H.264 encode availability per the §3.4 platform disposition. **Same disposition
+  applies to AV1-in-MP4** (re-encode to H.264 by default; verbatim-keep is the Advanced
+  toggle). **Scope `[DECIDED]`:** the default re-encode applies only on the
+  cross-container pairs into MP4, M4V and MOV; the self-normalize pairs and → MKV keep
+  the stream, and → WEBM keeps AV1 and re-encodes HEVC, which WebM cannot carry
+  (*Remux codec table* `K`). The toggle is declared only on the cross-container pairs
+  into MP4, M4V or MOV whose source can hold such a stream — from MP4, MOV, M4V or MKV,
+  and from WEBM (AV1 only) into MP4 or M4V — and keeps HEVC on all three targets and AV1
+  on MP4 and M4V: MOV cannot carry AV1, so an AV1 stream → MOV always re-encodes. The
+  H.264 encode parameter values remain `[DEFER: corpus]` (numbers, not the
+  remux-vs-reencode design).
 - **Auto-deinterlace default — `[DEFER: corpus]`.** The v1 design is `yadif` (mode 0)
   **default-on for flagged-interlaced sources, default-off otherwise**; the only residual
   is empirical — deinterlacing is a judgement call (wrong field order looks worse), so the

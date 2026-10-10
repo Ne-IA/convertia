@@ -1495,7 +1495,7 @@ at target choice; the kind's unmarked row is the exact note (§2.9.2).
 | `pptx_to_ppt_legacy` | `PPTX → PPT` (presentations.md) — downgrade to the legacy BIFF8/PowerPoint-97 format | **"Saved in the old PowerPoint format — SmartArt, modern charts, and newer transitions (e.g. Morph) can't be stored and are simplified or dropped."** |
 | `audio_lossy_target` | `→ MP3/AAC/M4A/OGG/OPUS` (audio.md), not the AAC ↔ M4A rewrap (§3.5.1) | **"Saved in a compressed audio format — some quality is reduced."** |
 | `audio_transcode` | lossy source `→` lossy target (e.g. MP3→AAC), not the AAC ↔ M4A rewrap (§3.5.1) | **"Re-compressing already-compressed audio — quality drops a little more."** |
-| `audio_lossy_origin` | lossy source `→` lossless target (e.g. MP3→FLAC) | **"This won't improve quality — the original is already compressed, so the result is just larger."** |
+| `audio_lossy_origin` | a lossy source `→ FLAC` or `→ ALAC`, never `→ WAV/AIFF` (audio.md); extract audio from a lossy track `→ FLAC` (cross-category.md) | **"This won't improve quality — the original is already compressed, so the result is just larger."** |
 | `audio_bitdepth` | >16-bit source `→` default 16-bit WAV/AIFF | **"Saved at 16-bit — the source's extra audio precision is reduced."** |
 | `audio_tags_dropped` | `→ AAC` (raw ADTS), partly WAV/AIFF | **"This format can't store song info, so title/artist tags are dropped."** |
 | `video_reencode` | the per-item re-encode disposition after convert (§1.12) | **"Re-encoded to play widely — some video quality is reduced."** |
@@ -1503,7 +1503,7 @@ at target choice; the kind's unmarked row is the exact note (§2.9.2).
 | `video_alpha_lost` | WEBM(alpha) `→ MP4/H.264` | **"Transparency isn't supported in this format and will be removed."** |
 | `video_subs_dropped` | image/ASS subs `→ MP4` (subtitles policy) | **"Embedded subtitles couldn't be kept and were dropped."** |
 | `video_to_gif` | `video → GIF` (cross-category, unconditional) | **"GIFs reduce colours, smoothness and remove sound — best for short clips."** |
-| `audio_downmix` | surround forced to stereo by codec (rare) | **"Surround sound is mixed down to stereo for this format."** |
+| `audio_downmix` | a surround source `→ MP3`, as audio or as extracted audio (audio.md, cross-category.md) — MP3 carries at most two channels | **"Surround sound is mixed down to stereo for this format."** |
 
 ### 2.9.2 Note behaviour rules `[DECIDED]`
 
@@ -1840,9 +1840,10 @@ untrusted bytes are: (a) a **small set of bounded, memory-safe pure-Rust sniffs*
 text-encoding heuristic, the Rust ZIP central-directory peek, the `.svgz` bounded
 inflate (`flate2 rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap, §1.2 step 2),
 **the OLE2/CFB stream-directory read** (legacy `.doc`/`.xls`/`.ppt` detection, §1.2),
-and the **bounded XML structural peeks** (`xl/workbook.xml`, ODS `content.xml` — read
-with a `quick-xml`/`roxmltree` reader whose **DTD/external-entity resolution is disabled
-by construction**, defeating XXE / billion-laughs; G48 asserts this) — which are **not**
+the ISO-BMFF box walk, the ASF header peek and the MPEG audio scan (§1.2 step 2), and
+the **bounded XML structural peeks** (`[Content_Types].xml`, `xl/workbook.xml`, ODS
+`content.xml` — read with a `quick-xml` reader whose **DTD/external-entity resolution is
+disabled by construction**, defeating XXE / billion-laughs; G48 asserts this) — which are **not**
 full decodes and run no C/C++ decoder; and (b) the **native CSV/TSV
 `InProcessNative` conversion** (§3.5.6), which *is* a full in-core untrusted-byte
 **transform** (not a mere sniff) but is **acceptable in-core** for the same structural
@@ -1851,10 +1852,10 @@ reason: it is **pure memory-safe Rust** doing a **bounded, streamed** re-encode/
 CSV-expansion DoS, §1.7 `InProcessNative` sub-case). The §2.12.4 **absolute is about
 third-party C/C++ decoders, not "only sniffs run in-core"** — so the native CSV/TSV path
 does not weaken it. Whether the pure-Rust sniffs may stay outside the §2.12 boundary is
-now **`[DECIDED]`: yes** — the text-encoding heuristic, the Rust ZIP central-directory
-peek, and the `.svgz` bounded inflate (pure safe Rust, no C/C++ decoder, ≤64 KiB + ≤100×
-caps) **stay in-core** (memory-safe, bounded, not a full decode), so the §2.12.4 absolute
-is satisfied (it forbids third-party **C/C++** decoders in-core, which none of these are).
+now **`[DECIDED]`: yes** — every (a) sniff (pure safe Rust, no C/C++ decoder, bounded by
+the `.svgz` caps and the §1.2 *Detection bounds*) **stays in-core** (memory-safe, bounded,
+not a full decode), so the §2.12.4 absolute is satisfied (it forbids third-party **C/C++**
+decoders in-core, which none of these are).
 The absolute
 as worded above is **not** weakened by any of these because none invokes a third-party
 C/C++ decoder. This is true for **all** engines including the
@@ -1865,6 +1866,16 @@ core — the §2.12.1 process boundary contains it exactly as for FFmpeg/LibreOf
 T1 (§0.11) is uniformly subprocess-isolated. (This also reinforces §3.6: copyleft
 engines are aggregated as separate binaries; the image-worker links libvips/LGPL
 internally, which is aggregation, never a link into the MIT core.)
+
+**In-core readers `[DECIDED]`.** The container readers behind the (a) sniffs — the ZIP
+central-directory reader, the CFB directory reader, the ISO-BMFF box walk, the ASF
+header peek and the MPEG audio scan with its ID3v2 tag skip — are hand-rolled over
+`std`, with `flate2` (its `rust_backend`, §0.8) inflating a deflated ZIP member; no `zip`
+or `cfb` crate is used. §1.2 step 2 holds their rules and §1.2 *Detection bounds* their
+caps. The XML members are read with `quick-xml` (§0.8) with DTD processing and entity
+expansion off: a `<!DOCTYPE>` is skipped unprocessed and any entity reference beyond
+XML's five predefined ones and character references is an error, so an XXE or
+billion-laughs member ends the peek and is never fetched or expanded.
 
 > **Clarification (P4.19 realization, 2026-08-27) — the absolute's SCOPE + its in-crate assertion
 > `[DECIDED — P4.19]`:** "decoder" in this absolute means a decoder on the **untrusted-input path** —
@@ -1890,7 +1901,7 @@ internally, which is aggregation, never a link into the MIT core.)
 > reviewed classification, never a silent link); (2) over the live §3.2.3 registry every registered
 > engine's `EngineKind` matches an exhaustive per-`EngineId` classification and the native CSV/TSV
 > engine is the one `InProcessNative`; (3) `crate::detection` imports only the vetted pure-Rust sniff
-> crates named here/§0.8 (`chardetng`, `encoding_rs`, `flate2`/`miniz_oxide`, `quick-xml`/`roxmltree`)
+> crates named here/§0.8 (`chardetng`, `encoding_rs`, `flate2`/`miniz_oxide`, `quick-xml`)
 > with no `unsafe`/`extern`/`#[link]`/process/network path — so a pure-Rust **full** decoder is refused
 > there too (sniffs only); (4) the G29 mirror, scoped to the core crate — `#![deny(unsafe_code)]` at both
 > core-crate roots (`lib.rs` + `main.rs`), no `unsafe` and no `allow`/`expect(unsafe_code)` in any

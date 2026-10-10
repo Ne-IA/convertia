@@ -1223,7 +1223,8 @@ pub enum LossyKind {
     AudioLossyTarget,
     /// lossy source `→` lossy target (audio.md).
     AudioTranscode,
-    /// lossy source `→` lossless target (audio.md).
+    /// lossy source `→ FLAC/ALAC`, never `→ WAV/AIFF` (audio.md); extracted audio `→ FLAC`
+    /// (cross-category.md).
     AudioLossyOrigin,
     /// >16-bit source `→` default 16-bit WAV/AIFF (audio.md).
     AudioBitdepth,
@@ -1237,7 +1238,7 @@ pub enum LossyKind {
     VideoSubsDropped,
     /// `video → GIF` cross-category, unconditional (cross-category.md).
     VideoToGif,
-    /// surround forced to stereo by codec (rare; audio.md).
+    /// surround source `→ MP3`, mixed down to stereo (audio.md / cross-category.md).
     AudioDownmix,
 }
 

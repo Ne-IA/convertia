@@ -208,14 +208,69 @@ batch grouping (§1.3).
 2. **Container introspection** where the magic is generic and shared:
    - **ZIP-family disambiguation** (`50 4B 03 04`): read the archive's
      `[Content_Types].xml` / ODF `mimetype` member to tell DOCX vs XLSX vs PPTX
-     vs ODT/ODS/ODP (rule owned per file in 04; detection performs the peek).
-   - **OLE2 / CFB** (`D0 CF 11 E0…`): inspect the stream directory to tell legacy
-     DOC vs XLS vs PPT.
-   - **`ftyp` box brand**: MP4 vs MOV vs M4V vs 3GP vs AVIF/HEIC vs M4A.
-   - **Codec-inside-container probe**: an `.m4a` is AAC vs ALAC; an Ogg page is
-     Vorbis vs Opus; a video container's inner codecs (used later by §3.5's
+     vs ODT/ODS/ODP (rule owned per file in 04; detection performs the peek). The
+     §2.12.4 ZIP reader finds the end-of-central-directory record in the file's tail,
+     reads the central directory and reads only the member it needs — stored or
+     deflated; any other compression method ends the peek — within the *Detection
+     bounds* below.
+   - **OLE2 / CFB** (`D0 CF 11 E0…`): the §2.12.4 CFB reader follows the directory
+     sector chain, within the *Detection bounds*, to tell legacy DOC vs XLS vs PPT by
+     their stream names (rule owned per file in 04).
+   - **ISO-BMFF `[DECIDED]`** (a first box `ftyp`: MP4, MOV, M4V, 3GP, M4A, ALAC, HEIC,
+     AVIF; or a first box `moov`, `mdat` or `wide`: legacy QuickTime). A first box
+     counts only when its size (the 64-bit one when the 32-bit field is 1) is at least 8
+     and ends within the file; printable text in bytes 0–3 reads as a size over 514 MiB,
+     so a smaller text file whose bytes 4–7 spell one of those types is not ISO-BMFF.
+     1. *Brand table.* The major brand decides when it is one of the specific brands
+        the 04 entries list (video.md MOV, M4V and 3GP; audio.md M4A; images.md HEIC
+        and AVIF). A generic major brand (`isom`, `iso2`–`iso9`, `mp41`, `mp42`,
+        `avc1`, `dash`, `mif1`, `msf1`, `miaf`), or one no entry lists, defers to the
+        first specific brand among the compatible brands. A video or image brand
+        decides the format; the audio brand (`M4A `) marks an audio container whose
+        codec the *box walk* reads. A file whose first box is `moov`, `mdat` or `wide`
+        is a legacy QuickTime file (video.md MOV).
+     2. *Box walk*, when no brand decided the format or the brand is the audio one:
+        read the top-level box headers (size and type; each payload is skipped by its
+        size) up to `moov`, at most `BMFF_MAX_TOP_LEVEL_BOXES` of them; inside `moov`,
+        descend to each track's handler (`hdlr`) and audio sample entry (`stsd`),
+        skipping every other box by its size, and read at most `BMFF_MOOV_PEEK_MAX`
+        bytes there.
+     3. *Verdict.* After a generic brand: a `vide` handler ⇒ MP4; no `vide` handler, a
+        `soun` handler and every track read ⇒ M4A, or ALAC when the first audio track's
+        sample entry is `alac`. After the audio brand: ALAC when that sample entry is
+        `alac`, else M4A.
+     4. *Fallback.* A walk that stops at a bound or a malformed box, or ends without
+        a verdict, leaves the brand's: M4A after the audio brand, `Uncertain` after
+        a generic one.
+   - **MPEG audio and ADTS `[DECIDED]`** (an ID3v2 tag at offset 0, or `FF` and a second
+     byte starting `111` there):
+     1. *Tags.* Leading ID3v2 tags are skipped: a tag (`ID3`, a major version of 2, 3 or
+        4, a syncsafe size) by its 10-byte header plus that size, and 10 bytes more when
+        a version-4 tag's flags announce a footer; a tag that follows directly is skipped
+        the same way, at most `ID3V2_MAX_LEADING_TAGS` of them. The scan starts where the
+        skipping stops (offset 0 without a tag); a FLAC stream marker (`fLaC`) there
+        makes the file FLAC (audio.md FLAC).
+     2. *Frame search.* A chained header pair decides: a frame header none of whose
+        fields holds a reserved or invalid value, followed at the frame length it gives
+        by a second such header with the same version, layer and sampling rate. Without
+        a skipped tag the pair must start at offset 0, because a text file can open with
+        the sync (a UTF-16LE byte-order mark is `FF FE`) and hold a chance pair further
+        in. Behind skipped tags, the first offset within `MPEG_SYNC_SEARCH_MAX` bytes of
+        the scan start that holds a pair decides; the bytes before it (padding or junk
+        no tag's size counts) are skipped.
+     3. *Verdict.* The pair's layer bits: `01` (Layer III) ⇒ MP3; `00` under a 12-bit
+        sync (the ADTS layout) ⇒ AAC; `10` or `11` (Layer II or I) is MPEG audio
+        ConvertIA does not convert, `UnsupportedType`. Without a pair (at offset 0, or in
+        the window behind tags) the file is neither MPEG audio nor ADTS.
+   - **ASF `[DECIDED]`** (the ASF Header Object GUID at offset 0): the stream types of
+     the Stream Properties objects inside the Header Object, read within
+     `ASF_HEADER_PEEK_MAX`, tell WMV from WMA: a video stream ⇒ WMV; an audio stream and
+     no video stream ⇒ WMA; neither ⇒ `Uncertain`.
+   - **Codec-inside-container probe**: an Ogg stream's first page names Vorbis vs
+     Opus (audio.md), and the ISO-BMFF rule above reads an `.m4a`'s sample entry
+     (AAC vs ALAC). A video container's inner codecs are used later by §3.5's
      remux-vs-re-encode decision, but the *user-facing source type* is the
-     **container**, e.g. MKV). The probe depth here is **header-level only**; the
+     **container**, e.g. MKV. The probe depth here is **header-level only**; the
      full `ffprobe` stream inventory is an engine-layer concern (§3.5), invoked
      later, not during the cheap detection pass.
    - **gzip wrapper (`.svgz`)** `[DECIDED — pure-Rust bounded inflate, stays in-core per §2.12.4]`:
@@ -240,9 +295,12 @@ batch grouping (§1.3).
 3. **Text classification** for the magic-less formats (TXT/MD/CSV/TSV/SVG): confirm
    the bytes decode as text (BOM → strict UTF-8 → single-byte codepage fallback),
    then apply the per-file rules (SVG root element; CSV/TSV delimiter sniff;
-   TXT-vs-MD by extension/intent). Encoding/delimiter specifics owned by the 04
-   files. (Note: `.svgz` is gzip, **not** text — caught by the gzip rule in step 2,
-   not here.)
+   TXT-vs-MD by extension/intent). **`.md` before the sniff `[DECIDED]`:** a decoded-text
+   file named `.md` or `.markdown` that the SVG root check did not claim is MD before the
+   delimiter sniff runs — a Markdown pipe table is a consistent `|` split the sniff would
+   take for CSV; every other name, `.txt` included, still goes through the sniff.
+   Encoding/delimiter specifics owned by the 04 files. (Note: `.svgz` is gzip, **not**
+   text — caught by the gzip rule in step 2, not here.)
 4. **Bounded structural-peek for the §1.4 summary `notes`** (cheap, still
    header/member-level — the producer of `CollectedSummary.notes`): once a type is
    recognised, ConvertIA may read a **small, bounded** structural fact needed for the
@@ -276,6 +334,9 @@ batch grouping (§1.3).
      Header-level only, no image decode; bounded in-memory read in memory-safe Rust. (This
      peek produces `Recognized.dims`, not a `CollectedNoteKind` note — the four note
      producers above plus this dims producer together are the complete step-4 output.)
+     **No SVG size peek `[DECIDED]`:** an SVG's `dims` is `None` — its rendered size
+     follows the chosen width and scale (images.md SVG), so the §1.10 estimate takes the
+     byte-size bound, and `image_svg_raster` names the size only after convert (§2.9.1).
    These peeks are **bounded member reads in memory-safe Rust** (no third-party
    decoder, §2.12), so they stay in-core and cheap; they run only for the relevant
    detected types, not every item. **`CollectedSummary.notes` (§1.4) is produced
@@ -286,6 +347,33 @@ batch grouping (§1.3).
    detection note can be surfaced without a wire-type change, and is rendered via the §5
    generic-note fallback if ever produced. So every *typed* variant has a producer and the
    one catch-all is intentionally unproduced-in-v1 (not an unreachable bug).
+
+### Detection bounds `[DECIDED]`
+
+The container readers of step 2 (§2.12.4) read past the step-1 header window, and so do
+the step-4 member peeks that reuse them; this table is their caps' one home. A cap ends
+the read and is never widened: a ZIP or CFB file whose inner type was not found by then is
+reported as the bare container (§2.8.2 `UnsupportedType`), an ISO-BMFF, ASF or MPEG audio
+peek falls back as its rule in step 2 says, and a step-4 peek produces no note it has not
+decided by then.
+
+| Constant | v1 value | Caps |
+|---|---|---|
+| `ZIP_EOCD_SEARCH_MAX` | 65,557 B | the file tail searched for the ZIP end-of-central-directory record: the record's 22 bytes plus the largest comment, 65,535 bytes |
+| `ZIP_CD_MAX_BYTES` | 4 MiB | the bytes of a ZIP central directory read |
+| `ZIP_CD_MAX_ENTRIES` | 20,000 | the central-directory entries scanned |
+| `OPC_PART_INFLATE_MAX` | 1 MiB | the bytes one peeked ZIP member yields, inflated or stored, and the compressed bytes read for it (`[Content_Types].xml`, a step-4 member such as `xl/workbook.xml`) |
+| `CFB_MAX_DIR_SECTORS` | 4,096 | the CFB directory sectors followed along their chain (a chain that loops is a breach) |
+| `BMFF_MAX_TOP_LEVEL_BOXES` | 64 | the top-level box headers the ISO-BMFF walk reads |
+| `BMFF_MOOV_PEEK_MAX` | 1 MiB | the bytes the walk reads inside `moov`; a skipped box costs only its header |
+| `ASF_HEADER_PEEK_MAX` | 1 MiB | the bytes of the ASF Header Object read |
+| `ID3V2_MAX_LEADING_TAGS` | 16 | the consecutive leading ID3v2 tags the MPEG audio scan skips; a skipped tag costs only its 10-byte header |
+| `MPEG_SYNC_SEARCH_MAX` | 64 KiB | the bytes behind skipped leading ID3v2 tags whose offsets are tried for a chained frame-header pair (without a tag only offset 0 is tried); a pair's second header may lie past them |
+
+`OPC_PART_INFLATE_MAX` bounds an inflate at both ends — the compressed bytes it reads and
+the bytes it yields — so a member that inflates without end, or reads without end while
+yielding nothing, costs at most that many bytes either way and needs no ratio cap; the
+`.svgz` inflate keeps its own `MAX_SVGZ_SNIFF` and ≤ 100× ratio cap (step 2).
 
 ### Detection result model `[DECIDED]`
 
@@ -350,27 +438,27 @@ enum ReadFailure {
 Detection is **the first code that touches untrusted bytes**, so its placement
 relative to the §2.12 isolation boundary is security-relevant:
 
-- **Header-only magic sniff + ZIP/OLE/`ftyp` structural peeks + text/encoding
-  classification + the `.svgz` bounded inflate run in-core** (in the Rust process).
-  `[REC]` rationale: these are bounded reads parsed by **memory-safe Rust** crates (e.g.
-  `infer`/custom matcher for magic, a Rust ZIP reader for the content-type member, an
-  encoding detector such as `chardetng`, and **`flate2` pinned to its `rust_backend`
-  (miniz_oxide) feature** for the `.svgz` 1F-8B inflate — pure safe Rust, no C decoder)
-  over a **capped window** (the `.svgz` inflate additionally capped at ≤64 KiB + ≤100×
-  ratio) — they do not invoke a third-party C/C++ decoder, so the classic decoder attack
-  surface (§0.11 "untrusted decoder input") is not yet engaged. Keeping detection in-core
-  makes the cheap pass fast (no subprocess per item for thousands of files).
+- **Header-only magic sniff + the ZIP, CFB, ISO-BMFF, ASF and MPEG audio structural
+  peeks + text/encoding classification + the `.svgz` bounded inflate run in-core** (in the
+  Rust process). `[REC]` rationale: these are bounded reads in **memory-safe Rust** — the
+  hand-rolled magic tables and container readers (§2.12.4), `quick-xml` for the XML
+  members, the encoding detector `chardetng`, and **`flate2` pinned to its `rust_backend`
+  (miniz_oxide) feature** for every inflate — pure safe Rust, no C decoder — over
+  **capped windows** (step 2's `.svgz` caps and the *Detection bounds* above) — they do
+  not invoke a third-party C/C++ decoder, so the classic decoder attack surface (§0.11
+  "untrusted decoder input") is not yet engaged. Keeping detection in-core makes the
+  cheap pass fast (no subprocess per item for thousands of files).
 - **The full decode** (anything that hands bytes to libvips/FFmpeg/LibreOffice/
   poppler/pandoc) happens only at **conversion time**, **inside** the §2.12
   boundary (§1.7 routes every invocation through the isolation wrapper).
-- `[DECIDED — owner §2.12.4]` the **text-encoding heuristic**, the Rust-side ZIP
-  central-directory parse, and the **`.svgz` pure-Rust bounded inflate** **stay in-core**
-  (outside the §2.12 isolation boundary): all three are memory-safe, bounded (the `.svgz`
-  inflate capped ≤64 KiB + ≤100× ratio), none is a full decode, and **none links a
-  third-party C/C++ decoder**, so none violates the §2.12.4 "no third-party C/C++ decoder
-  in-core" absolute (worded exactly that way for this reason). §2.12.4 owns the final
-  isolation-boundary line and confirms this disposition; no isolation subprocess is spun
-  up for a detection sniff.
+- `[DECIDED — owner §2.12.4]` the **text-encoding heuristic**, the container readers of
+  step 2 and the **`.svgz` pure-Rust bounded inflate** **stay in-core** (outside the
+  §2.12 isolation boundary): all of them are memory-safe, bounded (the `.svgz` inflate
+  capped ≤64 KiB + ≤100× ratio, the readers by the *Detection bounds*), none is a full
+  decode, and **none links a third-party C/C++ decoder**, so none violates the §2.12.4
+  "no third-party C/C++ decoder in-core" absolute (worded exactly that way for this
+  reason). §2.12.4 owns the final isolation-boundary line and confirms this disposition;
+  no isolation subprocess is spun up for a detection sniff.
 
 ---
 

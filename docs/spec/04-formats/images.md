@@ -74,6 +74,11 @@ which are always `~` because the JPEG codec is lossy at any Q). The `~` denotes 
 this matrix the note is keyed on the source's alpha capability, not a per-instance
 pixel scan.
 
+**Any-to-any `[DECIDED]`.** Within a single-engine category any-to-any passes the SSOT
+inclusion test: the image worker serves every pair through one code path, so a raster
+pair such as BMP → TIFF costs only its corpus files and tests, and every raster ↔ raster
+cell is offered. SVG, a vector source, offers the subset its row shows.
+
 **Diagonal (same→same).** Not a category-internal "conversion" in the menu, but
 re-encoding *is* a real user action (re-compress a JPG, flatten a PNG). The SSOT
 *Never harm the original* clause explicitly covers source==target (kept original +
@@ -362,16 +367,18 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   flagged lossy; becomes lossy only if the user explicitly picks
   `compression=jpeg`. TIFF *as a source* loses nothing on decode.
 - **Edge cases:** **Multi-page TIFF** as source: v1 converts the **first page**
-  for still targets (per-page fan-out is parked); a calm note when >1 page. **16/32-bit
-  and CMYK** TIFFs: preserved to 16-bit-capable targets (TIFF/PNG), else
-  down-converted to 8-bit RGB. Alpha preserved to alpha-capable targets. ICC
+  for every target — a documented limitation with no note (per-page fan-out is
+  parked). **16/32-bit and CMYK** TIFFs: preserved to 16-bit-capable targets
+  (TIFF/PNG), else down-converted to 8-bit RGB. Alpha preserved to alpha-capable targets. ICC
   preserved. Float/scientific TIFFs (specialist) → still rasterised but flagged if
   out of normal range.
 
 ### HEIC / HEIF
-- **Detection:** ISO-BMFF box `ftyp` at offset 4 with major/compatible brand
-  `heic`/`heix`/`heif`/`mif1`/`heis`/`hevc` (bytes `66 74 79 70` then brand).
-  Extensions `.heic .heif .hif`. **Patent-encumbered (HEVC) → §3.4.**
+- **Detection:** ISO-BMFF box `ftyp` at offset 4 (bytes `66 74 79 70` then the
+  brand) with the major brand `heic`, `heix`, `heif`, `heis` or `hevc`, or with a
+  generic major brand such as `mif1` and one of them among the compatible brands
+  (§1.2 ISO-BMFF rule). Extensions `.heic .heif .hif`. **Patent-encumbered (HEVC) →
+  §3.4.**
 - **Role:** **both**, **subject to §3.4 per-platform availability** — on a
   platform where §3.4 gates HEIC encode (the §3.4.4a flag; HEVC decode is never gated),
   the HEIC target is honestly surfaced as unavailable there (SSOT
@@ -402,14 +409,17 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   decoded pixels (but cannot recover the HEIC's own prior loss).
 - **Edge cases:** **Live Photos / image sequences / depth / aux images:** v1
   converts the **primary image** only (the still). **HDR / 10-bit:** decoded and
-  tone-mapped/down-converted to 8-bit SDR for 8-bit targets (note if HDR dropped).
+  tone-mapped/down-converted to 8-bit SDR for 8-bit targets — a documented limitation
+  with no note.
   **Multi-image HEIF (bursts):** primary image only (fan-out parked).
   **EXIF/orientation** honoured (auto-upright). ICC preserved. Transparency rare in
   HEIC; preserved if present.
 
 ### AVIF
 - **Detection:** ISO-BMFF `ftyp` with brand `avif` (single image) or `avis`
-  (sequence). Bytes `66 74 79 70 61 76 69 66`/`…61 76 69 73`. Extension `.avif`.
+  (sequence), as the major brand or among the compatible brands under a generic major
+  brand such as `mif1` (§1.2 ISO-BMFF rule). Bytes
+  `66 74 79 70 61 76 69 66`/`…61 76 69 73`. Extension `.avif`.
   **Patent/AV1 ship-posture tracked in §3.4** (AV1 is royalty-free; the flag is for
   the §3.4 build/disposition decision, not a usage royalty).
 - **Role:** **both**. A genuinely modern target (excellent compression, alpha,
@@ -443,8 +453,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   AVIF→JPG lossy; AVIF→PNG/TIFF lossless w.r.t. decoded pixels.
 - **Edge cases:** **Animated AVIF** (`avis`) source: the **first frame** for every target
   `[DECIDED]`, with the `image_animation_flatten` note (*Animation policy*). **HDR /
-  10-12-bit / wide gamut:** tone-mapped/down-converted for 8-bit targets (note if HDR
-  dropped).
+  10-12-bit / wide gamut:** tone-mapped/down-converted for 8-bit targets — a documented
+  limitation with no note.
   **Transparency** (alpha) preserved to alpha targets. ICC/EXIF preserved.
 
 ### ICO
@@ -468,9 +478,9 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   - *Basic:* **Icon sizes** — an `Enum` preset `[DECIDED]`: **standard**
     `[16, 32, 48, 256]` (default — favicons and Windows app icons in one file),
     **favicon** `[16, 32, 48]` or **single 256** `[256]`; no custom list. The source is
-    downscaled to each size (high-quality Lanczos); upscaling beyond the source is
-    **skipped** (never invents detail) with a note if the source is smaller than a
-    requested size.
+    downscaled to each size (high-quality Lanczos); a size larger than the source is
+    **left out** (never invents detail) — documented behaviour with no note — and a
+    source smaller than every chosen size becomes one entry at its own size.
   - No other option: every entry is stored as an **embedded PNG** (a valid, small 256
     entry needs it).
 - **Lossy?:** **`→ ICO` is lossy by downscaling** (multiple reduced copies) →
@@ -521,18 +531,18 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
     JPG or BMP target (no alpha); on SVG → JPG it is the pair's one background option
     (the JPG target adds none).
 - **Lossy?:** Rasterising is **inherently a one-way loss of vector scalability**
-  (you bake to a pixel grid). We surface a calm note for SVG→raster ("vector →
-  fixed-size image — picked size: WxH") → §2.9. On top of that, SVG→JPG/WEBP/GIF
-  carries the target codec's own loss.
+  (you bake to a pixel grid) → §2.9 `image_svg_raster`, whose before-convert line names
+  no size (there is no in-core SVG size peek, §1.2) and whose after-convert line names
+  the rendered size. On top of that, SVG→JPG/WEBP/GIF carries the target codec's own
+  loss.
 - **Edge cases:** **Transparency** preserved (PNG/WEBP/TIFF/ICO); flattened to
   background for JPG/BMP. **Fonts `[DECIDED]`:** SVG text is rendered with the
   **bundled font set (§3.9.3)** — **not** host OS fonts. The librsvg rasteriser runs
   **inside the image-worker process**, which has **no host-font access** (consistent with
   the offline/portable floor and the §2.12 isolation), so its fontconfig is pointed at the
   bundled Liberation/Carlito/Caladea + Noto subset (the `font_dir=` argv key, §3.5.5). A
-  glyph not in the bundled set
-  substitutes (a predictable-loss font note may be surfaced) — the substitution is
-  deterministic across machines, unlike host-font resolution. **Huge/zero
+  glyph not in the bundled set substitutes — a documented limitation with no note; the
+  substitution is deterministic across machines, unlike host-font resolution. **Huge/zero
   intrinsic size:** if no size resolvable, fall back to viewBox @96 DPI; clamp a
   pathological render size against the §1.10 budget (a 1×1 viewBox asked to render
   at 50000 px fails clearly, not OOM). **Untrusted SVG** is decoded inside the

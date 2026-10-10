@@ -135,9 +135,9 @@ const G53_FORBIDDEN_STEMS: &[&str] = &[
 /// image-codec C libs behind the image-worker (§3.5.5: libwebp, mozjpeg/libjpeg/turbojpeg, libpng, libavif +
 /// dav1d/libaom, OpenJPEG, libtiff, x265), the C zlib backends `flate2` must not select (§2.12.4 names
 /// `flate2 rust_backend`/miniz_oxide; the §0.8 row: "NO zlib/zlib-ng C backend"), the C XML parsers the
-/// §2.12.4 bounded XML peeks must not use (`quick-xml`/`roxmltree`, entity resolution off), and the C
-/// xz/bzip2 decompressors (no in-core C decompressor of any kind). Every stem was checked against the live
-/// closure for false positives before landing. [Build-Session-Entscheidung: P4.19]
+/// §2.12.4 bounded XML peeks must not use (they read with `quick-xml`, DTD processing and entity expansion
+/// off), and the C xz/bzip2 decompressors (no in-core C decompressor of any kind). Every stem was checked
+/// against the live closure for false positives before landing. [Build-Session-Entscheidung: P4.19]
 const SUBPROCESS_ONLY_DECODER_STEMS: &[&str] = &[
     "ffmpeg",
     "libav",
@@ -264,12 +264,13 @@ const CLASSIFIED_NATIVE_BINDINGS: &[(&str, LinkClass)] = &[
 
 /// The ONLY third-party crate roots `crate::detection` may reach — the vetted pure-Rust sniff set §2.12.4 /
 /// §0.8 name BY NAME: the text-encoding heuristic (`chardetng` + `encoding_rs`, §1.2 step 3, P3.27), the
-/// `.svgz` bounded inflate (`flate2` on `miniz_oxide`, §1.2 step 2) and the bounded XML peeks (`quick-xml` /
-/// `roxmltree`, entity resolution disabled). A crate a P5–P7 sniff box adds (the OLE2/CFB reader, the ZIP
-/// central-directory peek) joins this list WITH its §0.8 row in that box — the list is the spec's set, not a
-/// presence assertion, so naming a crate here does not require it to be linked today. Standing obligation
-/// carried forward for `quick_xml`: a DIRECT §1.2 `quick-xml` dep must be `>= 0.41` + §0.8-floored (since
-/// the 2026-09-24 refresh retired the RUSTSEC-2026-0194/0195 ignores, both scanners refuse a `< 0.41` re-entry).
+/// bounded inflates (`flate2` on `miniz_oxide`: the `.svgz` sniff and a deflated ZIP member, §1.2 step 2) and
+/// the bounded XML member reads (`quick-xml`, DTD processing and entity expansion off). The ZIP, CFB, ISO-BMFF
+/// and ASF container readers and the MPEG audio scan are hand-rolled over `std` (§2.12.4 *In-core readers*),
+/// so they add no crate to this list — the list is the spec's set, not a presence assertion, so naming a crate
+/// here does not require it to be linked today. Standing obligation carried forward for `quick_xml`: a DIRECT
+/// §1.2 `quick-xml` dep must be `>= 0.41` + §0.8-floored (since the 2026-09-24 refresh retired the
+/// RUSTSEC-2026-0194/0195 ignores, both scanners refuse a `< 0.41` re-entry).
 /// [Build-Session-Entscheidung: P4.19]
 const VETTED_DETECTION_CRATES: &[&str] = &[
     "chardetng",
@@ -277,7 +278,6 @@ const VETTED_DETECTION_CRATES: &[&str] = &[
     "flate2",
     "miniz_oxide",
     "quick_xml",
-    "roxmltree",
 ];
 
 /// Path roots that are never a third-party crate: the std family, the crate-relative keywords, the

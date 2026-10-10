@@ -54,21 +54,22 @@ settings + defaults* below), and maps 1:1 onto a corpus `covers` 2-tuple —
 
 | Source ↓ \ Target → | Extract audio → MP3 ★ | → WAV | → FLAC | → M4A | → OGG | To animated GIF |
 |---|---|---|---|---|---|---|
-| **MP4** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
-| **MOV** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
-| **MKV** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
-| **WEBM** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
-| **AVI** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
-| **WMV** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
-| **FLV** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
-| **MPG/MPEG** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
-| **M4V** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
-| **3GP** | ✓~ | ✓ | ✓ | ✓~ | ✓~ | ✓~ |
+| **MP4** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
+| **MOV** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
+| **MKV** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
+| **WEBM** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
+| **AVI** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
+| **WMV** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
+| **FLV** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
+| **MPG/MPEG** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
+| **M4V** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
+| **3GP** | ✓~ | ✓ | ✓~ | ✓~ | ✓~ | ✓~ |
 
 The `★` on the MP3 column marks MP3 as the everyday extract target (`[XCAT-A]`); a
 video source's default target stays its video.md `★` (MP4). The extract `~` cells are the
 re-encode worst case: a track already in the target's codec is stream-copied bit-exact
-(*Stream-copy vs re-encode*).
+(*Stream-copy vs re-encode*). The FLAC `~` is `audio_lossy_origin`'s worst case: a
+lossy track gains nothing from a lossless container (*Lossy?*).
 
 > **Single-engine rule (§3.2).** Both operations are satisfied end-to-end by the
 > **one** FFmpeg invocation — no chaining. extract-audio = demux (+ optional
@@ -90,7 +91,8 @@ re-encode worst case: a track already in the target's codec is stream-copied bit
 |---|---|---|---|
 | `audio_lossy_target` | `video → MP3`, `→ M4A`, `→ OGG` (extract audio) | per-item-runtime | the track is re-encoded; a stream copy (an MP3, AAC or Vorbis track into its own container) keeps it bit-exact |
 | `audio_transcode` | `video → MP3`, `→ M4A`, `→ OGG` (extract audio) | per-item-runtime | a lossy track is re-encoded |
-| `audio_downmix` | `video → MP3`, `→ OGG` (extract audio) | per-item-runtime | a surround track whose encoder forces a downmix (rare, *Edge cases*) |
+| `audio_lossy_origin` | `video → FLAC` (extract audio) | per-item-runtime | the track is lossy (AAC, MP3, Opus, Vorbis, AC-3, …); never on `→ WAV`, as in audio.md |
+| `audio_downmix` | `video → MP3` (extract audio) | per-item-runtime | a surround track: MP3 carries at most two channels (*Edge cases*) |
 | `video_to_gif` | `video → GIF` | pair-static | — |
 
 ---
@@ -199,8 +201,9 @@ result). The **no-decision default** path is: drop video → choose "Extract aud
 | OGG | Quality (Advanced) | Vorbis `-q:a` 0–10 | copy if Vorbis source, else **`-q:a 3` (~112 kbps)** — the canonical OGG default owned by [audio.md](audio.md) (aligned; the earlier `-q:a 5` drift is resolved to audio.md's value) |
 
 - **Sample rate / channels:** **always preserved from the source** by default (no
-  resample, no downmix) — a setting to change them is a scope addition, not a v1
-  default.
+  resample, no downmix), except that MP3 carries at most two channels, so a surround
+  track → MP3 is mixed down to stereo (`audio_downmix`, audio.md *Format-default
+  decisions* 4); a setting to change them is a scope addition, not a v1 default.
 - **Track selection:** **first audio track** by default (`-map 0:a:0`). Multiple
   audio tracks (multilingual MKV) → first only in v1; per-track choice is **out
   of v1** (parked — see edge cases). No silent picking of "the loudest" track;
@@ -225,14 +228,16 @@ Lossiness depends on the target, **not** the source container:
 | MP3 source → MP3 (copy) | **No** | copy |
 | Vorbis source → OGG (copy) | **No** | copy |
 | any source → WAV | **No** (transcode-lossless) | PCM is the decoded signal; no *further* loss, but the file is large and the **source's own lossy compression is already baked in** — WAV does not recover lost quality |
-| any source → FLAC | **No** (transcode-lossless) | same caveat: lossless *relative to the decoded signal* |
+| any source → FLAC | **No** (transcode-lossless) | same caveat: lossless *relative to the decoded signal*; a lossy track fires `audio_lossy_origin` |
 | any lossy/AAC/Vorbis source → MP3 / re-encoded M4A / OGG | **Yes** | re-encoding one lossy codec to another (generation loss) |
 
-The lossy inline note (passive, at target choice; SSOT *Fail clearly*) fires
-**only** for the genuinely-lossy re-encode rows. **Exact strings live in §2.9**
-(this file links, never restates). A subtle but important note §2.9 should carry:
-even WAV/FLAC "lossless" extraction **cannot un-bake** the source's existing
-lossy compression — the disclosure should not imply WAV/FLAC *improves* quality.
+The lossy inline note (passive, at target choice; SSOT *Fail clearly*) fires for the
+genuinely-lossy re-encode rows. **Exact strings live in §2.9** (this file links,
+never restates). That a "lossless" extraction **cannot un-bake** the source's existing
+lossy compression is disclosed as in audio.md: `audio_lossy_origin` fires on → FLAC
+from a lossy track (the archive-quality target, where a user could think the result
+improves quality) and deliberately not on → WAV, the plain uncompressed target
+(audio.md *Lossless ↔ lossy disclosure*, its WAV/AIFF scope).
 
 ### Edge cases
 
@@ -254,9 +259,9 @@ lossy compression — the disclosure should not imply WAV/FLAC *improves* qualit
   (video.md / audio.md), not here; extract-audio is only offered on a real video.
 - **Variable/odd sample formats** (32-bit float, multichannel 5.1): WAV default
   is 16-bit PCM (downconverts bit depth — minor, expected); 5.1 → preserved as
-  5.1 in WAV/FLAC, **not** auto-downmixed to stereo (no silent channel loss).
-  MP3/OGG re-encode of >2ch follows the encoder's standard channel handling
-  (§2.9 `audio_downmix` if a downmix is forced by the codec).
+  5.1 in WAV/FLAC/M4A/OGG, **not** auto-downmixed to stereo (no silent channel
+  loss). MP3 carries at most two channels, so a >2ch track → MP3 is mixed down to
+  stereo with §2.9 `audio_downmix` (audio.md *Format-default decisions* 4).
 - **Very long videos** (2-hour movie): extract-audio output is bounded and
   modest (audio is small); the §1.10 "too big" guardrail rarely triggers here —
   unlike to-GIF. Progress is real per-item (§1.11), driven by FFmpeg time
@@ -365,9 +370,10 @@ to the §1.10 resource pre-flight; §1.10 owns the threshold mechanics):
    §1.10 point 2 with the §2.8.2 `TooBig` (to-GIF) row rather than grinding out a giant
    file (SSOT *fail fast and clearly, preferably up front*). The rest of the batch
    continues.
-4. The estimate + cap are **honest, not silent truncation**: if a cap shortened
-   the clip, that's a predictable, disclosed outcome (passive note via §2.9
-   `video_to_gif`), not a quiet surprise.
+4. The estimate + cap are **honest, not silent truncation**: the trim duration
+   option shows the cap as its default and maximum ([XCAT-E]), so a clip longer than
+   the chosen window visibly yields that window — a predictable outcome, not a quiet
+   surprise. No §2.9 kind names the cut.
 
 > **`[XCAT-F]` — the cap & ceiling numbers.** The duration cap and the size ceiling are
 > `[DECIDED]`: the §1.10 constants `GIF_DURATION_CAP` and `GIF_ESTIMATE_CEILING` (their one
@@ -420,7 +426,7 @@ default in the offered target list, each with its no-decision options:
 
 | Target | Offered on | The no-choice path |
 |--------|-----------|--------------------|
-| Extract audio → MP3 (WAV, FLAC, M4A and OGG likewise, each with its own defaults) | every v1 video source | **Standard quality (~190 kbps VBR)**, first audio track, source rate/channels preserved |
+| Extract audio → MP3 (WAV, FLAC, M4A and OGG likewise, each with its own defaults) | every v1 video source | **Standard quality (~190 kbps VBR)**, first audio track, source rate preserved, channels preserved up to stereo |
 | To animated GIF | every v1 video source | **12 fps, 480 px wide, the clip's first `GIF_DURATION_CAP` seconds, bayer dither, infinite loop** |
 
 So a user who never opens Advanced gets: *drop video → "Extract audio → MP3"* or
@@ -444,7 +450,8 @@ So a user who never opens Advanced gets: *drop video → "Extract audio → MP3"
 ### Metadata / encoding / audio-channel policy
 
 - **Extract audio:** preserve source tags where target supports them; preserve
-  sample rate & channels (no resample/downmix by default); first audio track;
+  sample rate & channels (no resample/downmix by default; MP3 carries at most two
+  channels, so a surround track → MP3 is mixed down); first audio track;
   stream-copy (lossless) whenever the codec matches the container, else
   least-lossy re-encode the target allows.
 - **To GIF:** drops audio (intrinsic), drops to 256 colours, no metadata of

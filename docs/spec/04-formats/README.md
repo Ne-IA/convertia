@@ -4,7 +4,7 @@
 > sensible conversion**, in **both directions**. Origin: SSOT *What It Converts*.
 > One file per category; this README defines the shared template every entry uses.
 
-## Categories (v1 — six)
+## Categories (v1 — six, plus the cross-category outputs)
 
 | File | Category |
 |------|----------|
@@ -78,7 +78,8 @@ One grammar serves the six category matrices and the cross-category.md operation
     `source-fact` kind alone never sets it;
   - `R` — video only, always after `~`: re-encoding is the pair's worst case, not its
     rule — a lossless remux is common, and the note is the `video_reencode`
-    before-convert line. A video `~` cell without `R` always re-encodes.
+    before-convert line. A video `~` cell without `R` re-encodes in the common case; a
+    stream whose codec the target keeps (video.md *Remux codec table*) is still copied.
 - **Engine tag**, after the flags: the §3.2 registry engine that serves the pair — `img`
   (the image worker, §3.5.5), `ff` (FFmpeg, §3.5.1), `lo` (LibreOffice, §3.5.2), `pp`
   (poppler, §3.5.3), `pd` (pandoc, §3.5.4) or `csv` (the in-core CSV/TSV engine,
@@ -115,7 +116,8 @@ One grammar serves the six category matrices and the cross-category.md operation
   `## Lossy kinds` table is the pair → kind map.
 - **Per-source default target:** every detected source has exactly **one** fixed,
   pre-highlighted default target — the `★` in its matrix row; each category file's
-  one-glance defaults table gives the reason per source.
+  one-glance defaults table gives the reason per source, and the §1.6 generated defaults
+  registry is the one index of every pair's default options.
 - `cross-category.md` **intentionally departs** from the entry template: its entries
   are *operations* (extract-audio, to-GIF), not standalone formats; its operation
   matrix follows the grammar above.

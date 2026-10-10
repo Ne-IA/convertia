@@ -101,10 +101,12 @@ control + generation-loss disclosure; see Format-default decisions item 2 / see
 - **AAC ↔ M4A** rewraps the stream with no re-encode (§3.5.1), so the pair declares no
   options and carries no codec note; `M4A → AAC` is still `~`, because raw ADTS keeps
   none of the M4A's tags (`audio_tags_dropped`).
-- Every `✓` cell passes the SSOT inclusion test: each is a plausible everyday
-  audio interchange (shrink for a phone, get a universally-playable MP3/WAV,
-  archive losslessly, produce an Apple-friendly M4A/ALAC, get a small
-  modern OPUS).
+- **Any-to-any `[DECIDED]`.** Within a single-engine category any-to-any passes the
+  SSOT inclusion test: one engine and one code path serve every pair, so a pair costs
+  only its corpus files and tests. Every `✓` cell is in for that reason, each a
+  plausible everyday audio interchange (shrink for a phone, get a universally-playable
+  MP3/WAV, archive losslessly, produce an Apple-friendly M4A/ALAC, get a small modern
+  OPUS); the diagonal and `→ WMA` stay out by the rules their notes give.
 
 ---
 
@@ -153,7 +155,7 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
 | `audio_lossy_origin` | a lossy source `→ FLAC` or `→ ALAC` | pair-static | never on `→ WAV/AIFF` (*Lossless ↔ lossy disclosure*) |
 | `audio_bitdepth` | `WAV/FLAC/AIFF/ALAC/WMA → WAV` or `→ AIFF` | per-item-runtime | a >16-bit source while the target keeps its 16-bit default |
 | `audio_tags_dropped` | a tagged source (every format but AAC) `→ AAC`, `→ WAV` or `→ AIFF` | per-item-runtime | the source carries tags the target cannot store (raw ADTS stores none; WAV and AIFF keep only the common text tags) |
-| `audio_downmix` | a surround source `→` a target whose encoder forces stereo | per-item-runtime | only where the encoder forces the downmix (*Format-default decisions* 4) |
+| `audio_downmix` | a surround source `→ MP3` | per-item-runtime | the source carries more than two channels: MP3 is stereo at most (*Format-default decisions* 4) |
 
 ---
 
@@ -164,9 +166,9 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
 - **Detection:** MPEG-1/2 Audio Layer III. Magic = MPEG audio frame sync
   `FF Fx` (commonly `FF FB`, `FF F3`, `FF F2`) **or** a leading `ID3` tag header
   (`49 44 33`, "ID3", ID3v2) before the first audio frame. Extension `.mp3`.
-  Ambiguity: a bare frame-sync also matches MP1/MP2 — FFmpeg's probe distinguishes
-  the layer; a file that is really MP2 is detected as such and treated as
-  out-of-scope (not silently called MP3).
+  Ambiguity: the frame sync is shared with MP1/MP2 and with ADTS (AAC); the frame
+  header's layer bits decide (§1.2 MPEG audio rule) — a file that is really MP2 is
+  detected as such and declined as `UnsupportedType` (not silently called MP3).
 - **Role:** both.
 - **As source → targets:** **WAV ★**, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC.
   *(MP3→MP3 not offered — see diagonal note; the per-source default is WAV per the
@@ -186,8 +188,10 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
     `High (V0, ≈245k)` · `Standard (V2, ≈190k)` **[default]** · `Small (V5,
     ≈130k)` · plus explicit CBR `128k / 192k / 320k` for users who need a fixed
     bitrate. Implemented as `-q:a N` (VBR presets) or `-b:a Nk` (CBR presets).
-  - Sample rate / channels: **preserved from source by default** (no resample, no
-    down/up-mix); an Advanced "force 44.1 kHz / stereo" is *not* exposed in v1.
+  - Sample rate: **preserved from source** (no resample). Channels: **at most two**
+    — libmp3lame encodes mono or stereo only, so a surround source is mixed down to
+    stereo and `audio_downmix` fires (*Format-default decisions* 4); a mono or stereo
+    source keeps its layout. No "force 44.1 kHz / stereo" option is exposed in v1.
 - **Lossy?:** **Always lossy as a target** (LAME re-encode). As a source it is
   already lossy, so any further conversion is lossy-origin. Disclosure → §2.9.
 - **Edge cases:** ID3v1/ID3v2 tags (title/artist/album/year/genre/track/cover
@@ -234,7 +238,8 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
 ### `FLAC`
 
 - **Detection:** Free Lossless Audio Codec, native FLAC stream. Magic = `66 4C 61
-  43` ("fLaC") at byte 0. Extension `.flac`. Unambiguous.
+  43` ("fLaC") at byte 0, or where leading ID3v2 tags end (§1.2 MPEG audio rule,
+  *Tags*). Extension `.flac`. Unambiguous.
 - **Role:** both.
 - **As source → targets:** MP3 ★, WAV, AAC, M4A, OGG, OPUS, AIFF, ALAC.
 - **As target ← sources:** every other audio format (the everyday **lossless
@@ -250,8 +255,8 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
     range** — libFLAC's native maximum is **8**, and FFmpeg's levels **9–12 are
     undocumented/non-standard** (they do NOT match a standard libFLAC 9–12 — FFmpeg accepts
     them internally but they behave as ~8 or are undefined). So the **exposed cap of 8 is
-    correct** and Phase-3 must **not** expect standard FLAC semantics above 8; do not surface
-    9–12. (Earlier "0–12 valid" was inaccurate.)
+    correct** and the implementation must **not** expect standard FLAC semantics above 8;
+    do not surface 9–12. (Earlier "0–12 valid" was inaccurate.)
   - Sample rate / bit depth / channels preserved exactly from source.
 - **Lossy?:** **Lossless as a target.** Lossy *origin* (e.g. MP3→FLAC) is flagged
   as no-quality-gain (§2.9), not as further loss.
@@ -267,8 +272,9 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
   the with-CRC variants (protection present). All are valid ADTS. Extension `.aac`.
   **Disambiguation:** an
   AAC *codec* inside an MP4 container is an **M4A**, not this — `.aac` here means
-  the raw ADTS elementary stream. Bare `FF Fx` overlaps MP3 frame sync; FFmpeg's
-  probe resolves ADTS-vs-MP3 by parsing the header fields.
+  the raw ADTS elementary stream. Bare `FF Fx` overlaps MP3 frame sync; the layer
+  bits — `00` in ADTS — resolve ADTS vs MP3 (§1.2 MPEG audio rule, which also finds
+  an ADTS stream behind leading ID3v2 tags).
 - **Role:** both.
 - **As source → targets:** MP3 ★, WAV, FLAC, M4A, OGG, OPUS, AIFF, ALAC.
   (→ "M4A" rewraps the same AAC stream into the MP4 container, §3.5.1.)
@@ -308,12 +314,13 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
 ### `M4A`
 
 - **Detection:** MPEG-4 audio container (MP4 flavour, iTunes/Apple). Magic = `ftyp`
-  box: bytes 4–7 = `66 74 79 70` ("ftyp"), major brand `M4A ` / `mp42` / `isom` /
-  `dash`. Extension `.m4a` (also `.mp4` used for audio-only). **Codec inside is
-  read from the `stsd`/`esds` atom:** an `.m4a` holds **AAC** (the common case) or
-  **ALAC**. ConvertIA reports the user-facing format as **M4A** when the codec is
-  AAC and as **ALAC** when the codec is ALAC (so the offered targets and lossy
-  flag are correct).
+  box: bytes 4–7 = `66 74 79 70` ("ftyp"), with the audio brand `M4A `, or a generic
+  brand (`mp42`, `isom`, `dash`, …) and an audio track but no video track (§1.2
+  ISO-BMFF rule). Extension `.m4a` (also `.mp4` used for audio-only). **Codec inside is
+  read from the `stsd` sample entry:** an `.m4a` holds **AAC** (the common case) or
+  **ALAC**. ConvertIA reports the user-facing format as **M4A** when the codec is AAC
+  and as **ALAC** when the codec is ALAC (so the offered targets and lossy flag are
+  correct).
 - **Role:** both.
 - **As source → targets:** MP3 ★, WAV, FLAC, AAC, OGG, OPUS, AIFF, ALAC.
   (An M4A-holding-AAC source → "AAC" target = same codec, rewrapped to raw ADTS
@@ -421,11 +428,13 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
 ### `ALAC`
 
 - **Detection:** Apple Lossless codec — **not a standalone file type**; it lives
-  **inside an M4A/MP4 container** (`.m4a`) or rarely a CAF. Detection = the M4A
-  `ftyp` signature **plus** codec ID `alac` in the `stsd` atom. Extension `.m4a`
-  (occasionally `.caf`). ConvertIA reports this as the **ALAC** user-facing format
+  **inside an M4A/MP4 container** (`.m4a`). Detection = an M4A-family file (the M4A
+  entry's brands) **plus** the sample entry `alac` in the `stsd` box (§1.2 ISO-BMFF
+  rule). Extension `.m4a`. ConvertIA reports this as the **ALAC** user-facing format
   (distinct from AAC-in-M4A which is reported as **M4A**), so the lossless flag and
-  target set are correct.
+  target set are correct. **`.caf` `[DECIDED]`:** a Core Audio Format file (ALAC or
+  another codec inside) is not a v1 source — no signature row covers CAF, so it is
+  declined as unrecognised (§1.2).
 - **Role:** both.
 - **As source → targets:** MP3 ★, WAV, FLAC, AAC, M4A, OGG, OPUS, AIFF.
 - **As target ← sources:** every other audio format. **"ALAC" target = `.m4a`
@@ -436,7 +445,8 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
   Apple, royalty-free — *do not* confuse with AAC's §3.4 status; ALAC is clean).
 - **Options/settings:**
   - *Default:* none required — ALAC is lossless, no quality/bitrate dial. Sample
-    rate / bit depth / channels preserved exactly.
+    rate / bit depth / channels preserved exactly, except that a 7.1 source keeps 6.1
+    (*Format-default decisions* 4).
   - *Advanced:* none meaningful (no compression-level knob exposed by FFmpeg's ALAC
     encoder). The view stays clean.
 - **Lossy?:** **Lossless as a target.** Lossy *origin* (e.g. MP3→ALAC) flagged as
@@ -449,9 +459,10 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
 ### `WMA`
 
 - **Detection:** Windows Media Audio, inside an ASF container. Magic = ASF GUID
-  header `30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C` at byte 0. Codec is read
-  from the stream properties (WMA v1 `0x160`, WMA v2 `0x161`, WMA Pro `0x162`, WMA
-  Lossless `0x163`). Extension `.wma`.
+  header `30 26 B2 75 8E 66 CF 11 A6 D9 00 AA 00 62 CE 6C` at byte 0; the ASF header
+  declaring an audio stream and no video stream makes it WMA rather than WMV (§1.2
+  ASF rule). Codec is read from the stream properties (WMA v1 `0x160`, WMA v2
+  `0x161`, WMA Pro `0x162`, WMA Lossless `0x163`). Extension `.wma`.
 - **Role:** **source only** (see matrix note — `→ WMA` is parked/out-of-v1).
 - **As source → targets:** MP3 ★, WAV, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC.
 - **As target ← sources:** **none in v1** (no everyday demand to produce WMA; the
@@ -465,9 +476,9 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
   rare. Either way, treat WMA→lossless target as **lossy-origin** (no quality gain)
   per §2.9, and WMA→lossy target as a second lossy round.
 - **Edge cases:** ASF metadata (title/artist/album) is mapped to tag-supporting
-  targets. Surround WMA Pro decodes fine (multi-channel preserved into FLAC/WAV/
-  ALAC); but the default MP3 target down-mixes per the encoder only if needed —
-  channels are otherwise preserved.
+  targets. Surround WMA Pro decodes fine; its channels follow *Format-default
+  decisions* 4, so the default MP3 target mixes them down to stereo
+  (`audio_downmix`).
 
 ---
 
@@ -533,14 +544,16 @@ size/speed-neutral knobs (FLAC level) or bit-depth.
 
 - **Always preserved from source by default** for every conversion: sample rate
   (44.1/48/96 kHz …), channel layout (mono/stereo/5.1), and — for lossless
-  targets — bit depth. No silent resampling, down-mixing, or bit-depth change in
-  the default path. *(Exception, disclosed:* a >16-bit source → the **default**
-  16-bit WAV/AIFF reduces bit depth; choose 24-bit in Advanced to avoid it.
-  *Exception, transparent:* OPUS always runs at 48 kHz internally — Opus's design,
-  not a user-visible quality loss.)
-- There is **no down-mix to stereo** in v1 even for surround sources into stereo
-  lossy targets unless the encoder strictly requires it; multichannel is carried
-  through wherever the target codec supports it (FLAC, WAV, AIFF, ALAC, AAC, OPUS).
+  targets — bit depth. No resampling, down-mixing, or bit-depth change in the
+  default path beyond these exceptions. *(Exceptions, disclosed:* a >16-bit source →
+  the **default** 16-bit WAV/AIFF reduces bit depth (`audio_bitdepth`); choose 24-bit
+  in Advanced to avoid it. A surround source → MP3 is mixed down to stereo
+  (`audio_downmix`). *Exception, documented:* a 7.1 source → ALAC is mixed down to 6.1
+  (*Format-default decisions* 4). *Exception, transparent:* OPUS always runs at 48 kHz
+  internally — Opus's design, not a user-visible quality loss.)
+- **MP3 is the one stereo-only target:** a surround source → MP3 is mixed down to
+  stereo; every other target keeps the source's channels, within the encoder limits
+  *Format-default decisions* 4 names.
 
 ### Metadata / tag preservation policy
 
@@ -570,7 +583,7 @@ size/speed-neutral knobs (FLAC level) or bit-depth.
 
 ### Lossless ↔ lossy disclosure (links §2.9, never restates the string)
 
-Three predictably-lossy situations are flagged in the matrix and disclosed as a
+These predictably-lossy situations are flagged in the matrix and disclosed as a
 calm inline note at target choice (per SSOT *Fail clearly* / §2.9 catalog):
 
 1. **lossy → lossy** (e.g. MP3→AAC, OGG→OPUS): a *second* round of compression
@@ -593,6 +606,8 @@ calm inline note at target choice (per SSOT *Fail clearly* / §2.9 catalog):
      kind).
 4. **bit-depth reduction** (>16-bit source → default 16-bit WAV/AIFF): a narrow
    lossy case, flagged only for that path. → §2.9 `audio_bitdepth`.
+5. **surround → MP3**: the channels are mixed down to stereo (*Format-default
+   decisions* 4). → §2.9 `audio_downmix`.
 
 Exact strings live in the **§2.9 message catalog** (home); this file only records
 *which* pairs trigger them (`## Lossy kinds` and the matrix `~` flags).
@@ -650,8 +665,14 @@ Exact strings live in the **§2.9 message catalog** (home); this file only recor
    "unavailable" on, say, Linux, then on Linux the AAC and M4A targets are marked
    unavailable — surfaced honestly per SSOT v1-DoD; the §3.4.4a flag gates the AAC
    *encoder* only, so AAC/M4A sources still decode.
-4. **Down-mix policy for surround→stereo-only contexts. `[DECIDED]` NOT in v1.** v1
-   **preserves channels** (no explicit "convert 5.1 to stereo" control); the encoder
-   handles the surround-M4A→MP3-for-phone edge case via its standard channel handling
-   (§2.9 `audio_downmix` only if the codec forces a downmix). A "force stereo" Advanced
-   toggle is a `[DEFER: post-v1]` scope addition, not a v1 default.
+4. **Down-mix policy for surround→stereo-only contexts. `[DECIDED]`** v1 **preserves
+   channels** wherever the target's encoder can hold the source layout: there is no
+   explicit "convert 5.1 to stereo" control (a "force stereo" Advanced toggle is a
+   `[DEFER: post-v1]` scope addition), and no `-ac` is passed (§3.5.1). Two encoders
+   cannot hold every layout:
+   - **MP3** carries at most two channels (libmp3lame encodes mono or stereo only), so
+     the surround-M4A→MP3-for-phone case is mixed down to stereo and §2.9
+     `audio_downmix` fires; a mono source stays mono.
+   - **ALAC** stops at 6.1 and the wide 7.1 layout, so a 7.1 source is mixed down to
+     6.1 — a documented limitation with no note (the `audio_downmix` note names
+     stereo).
