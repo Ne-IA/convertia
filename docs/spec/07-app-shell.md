@@ -211,7 +211,14 @@ section only fixes the *identity* embedded in it.)
    not a per-item failure. The §7.2.3 *smoke* leg, the check of "runnable", is not
    part of this step — it runs after step 5 (§7.2.3 Placement).
 4. **Executable-permission setup** on the engine binaries for the portable build
-   (§7.2.4).
+   (§7.2.4). **Verdict `[DECIDED — Co-Pilot ruling 2026-09-07]`:** a failure of this setup is
+   the `EngineMissing` app-level fault (§2.13): a binary that cannot be made executable is
+   unrunnable (§3.1 *Startup-fault classification*), and a mode bit is not byte damage, so it
+   is never `BundleDamaged`. **Absent binary `[DECIDED — Co-Pilot ruling 2026-09-15]`:** the
+   step is presence-agnostic, because presence is step 3's finding: a path that does not exist
+   (`io::ErrorKind::NotFound`) is skipped at the step-4 call site, never inside the §7.2.4
+   helper, with a debug-level §7.5 line naming the bare sidecar name, never a path; every other
+   failure keeps the verdict.
 5. **Scratch + log dir creation** with the per-instance root (§7.1.2). Reclaim
    orphaned scratch roots (§7.2.5, owned by §2.6), then probe writability: create the
    per-instance root, write and delete a probe file inside a lock-held probe run dir
@@ -414,7 +421,8 @@ struct EngineStatus {
     id: EngineId,                      // §0.6
     present: bool,                     // file resolved at its expected path
     integrity_ok: bool,               // matched the build-time hash manifest (§7.2.3)
-    runnable: Option<bool>,            // Some(result) if the smoke probe ran; None if skipped
+    runnable: Option<bool>,            // Some(result) if the smoke probe ran; None if skipped or
+                                       //   quarantine-blocked (the macOS caveat below)
 }
 ```
 

@@ -1063,8 +1063,9 @@ One glossary for every spec file; per-file headers point here.
   engine** (not an unreachable bug) — the §1.2 "no unreachable variant" claim is scoped to
   the typed four. Owner: §1.2 / §0.6.
 - **CycloneDX→SPDX export tool named** = CycloneDX CLI `convert` (`--output-format spdxjson`;
-  Syft `convert` fallback), pinned in §3.8. **minisign key-rotation policy** added (announced
-  signed commit + retained `minisign-retired.pub` + release-note). Owner: §6.3.1 / §6.2.3.
+  Syft `convert` fallback), pinned in `scripts/gate-tools.toml`. **minisign key-rotation
+  policy** added (announced signed commit + retained `minisign-retired.pub` + release-note).
+  Owner: §6.3.1 / §6.2.3.
 - **fs-audit fails CLOSED if neither ptrace NOR Landlock available**; Landlock availability
   asserted before relying on it; Lane-B VPS runner kernel version recorded as a prerequisite.
   **`ubuntu-22.04` floor honoured per lane** (VPS-host may differ → `ubuntu:22.04` Docker or

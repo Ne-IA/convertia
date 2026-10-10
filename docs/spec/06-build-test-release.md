@@ -215,6 +215,13 @@ build-time mechanics that realise them**:
   that manifest is the third-party inventory, and every row carries an upstream URL and source
   ref a first-party build product has none of. Naming the exemption keeps a real typo from
   hiding behind it, and a name that is both exempt and staged is itself a failure.
+- **Build-generated bundle resources `[DECIDED]`:** `tauri-build` copies `bundle.resources` at
+  compile time and fails on a missing source, so a resource that only a build step produces —
+  the §7.2.3 in-bundle hash manifest, the per-build SBOM, the §3.3.2 step-4 patent-disposition
+  record — is a committed placeholder carrying `"placeholder": true` and declared in
+  `bundle.resources`. The producing step overwrites it in the build tree, the committed copy
+  keeps the flag (§7.2.3 *Build-window posture* says how the runtime reads a placeholder hash
+  manifest), and it is no G19 drift artifact: its content is per-build output.
 - The whole engine set is **vendored into the build inputs** — never fetched at
   runtime (SSOT offline floor) and, per the supply-chain stance (§6.3.4),
   **pinned by version + checksum**, ideally not fetched at build time from a live
@@ -680,7 +687,7 @@ libheif plugin GPL; the **required** ImageMagick permissive; …). (Ghostscript 
 | Layer | Contents | Tool |
 |-------|----------|------|
 | **App dependency graph** | Rust crates (`Cargo.lock`) + JS deps (`pnpm-lock.yaml`) that compose ConvertIA's own MIT code | **`cargo cyclonedx`** for Rust; **`@cyclonedx/cdxgen`** for the frontend (native `pnpm-lock.yaml` support — **NOT `@cyclonedx/cyclonedx-npm`**, which is npm-only and would SBOM an npm-resolved tree diverging from the frozen pnpm graph, `[DECIDED — P0 review r2]`); merged into one CycloneDX document. |
-| **Bundled engines (the important layer)** | Every separately-invoked engine binary + its support libs/fonts, each as an SBOM component with **name, version, licence (SPDX id), source URL, and the per-platform availability** | A **manually-maintained `engines.lock` manifest** (owned/sourced by §3.1/§3.8) is the authoritative input; CI converts it into CycloneDX components and merges with the dependency-graph layer. Optionally **Syft** scans the staged bundle to *cross-check* that nothing in the shipped tree is missing from the manifest (drift detection). |
+| **Bundled engines (the important layer)** | Every separately-invoked engine binary + its support libs/fonts, each as an SBOM component with **name, version, licence (SPDX id), supplier (§3.7.2 item 1), source URL, and the per-platform availability** | A **manually-maintained `engines.lock` manifest** (owned/sourced by §3.1/§3.8) is the authoritative input; CI converts it into CycloneDX components and merges with the dependency-graph layer. Optionally **Syft** scans the staged bundle to *cross-check* that nothing in the shipped tree is missing from the manifest (drift detection). |
 
 **The merge step `[DECIDED]`:** the two layers are merged by **§3.7.2's `cargo xtask
 sbom`** build step (the single named tool — it reads `engines.lock` + the
@@ -690,9 +697,11 @@ different generators (and different `cargo-cyclonedx` versions) **default to dif
 specVersions**, so merging mixed-version CycloneDX docs can **fail the schema gate** — we
 therefore pin **1.5 explicitly on every input** rather than relying on any tool default.
 **Verified `[DECIDED]`:** `cargo-cyclonedx` **does expose `--spec-version` (values incl.
-`1.3 | 1.4 | 1.5`)** (1.5 supported since the CycloneDX-1.5 release; the §3.8-pinned
-`cargo-cyclonedx` version MUST be one that exposes it). `[DEFER: verify]` the **exact
-default specVersion of the §3.8-pinned `cargo-cyclonedx`** at pin time and record it
+`1.3 | 1.4 | 1.5`)** (1.5 supported since the CycloneDX-1.5 release; the pinned
+`cargo-cyclonedx` version MUST be one that exposes it). The SBOM tools are pinned in the
+gate-tool manifest `scripts/gate-tools.toml`, their only pin home, like every gate tool
+(build-gates §0); §3.8 pins engines, never tools. `[DEFER: verify]` the **exact
+default specVersion of the pinned `cargo-cyclonedx`** at pin time and record it
 factually here — we do not rely on it (we pass `--spec-version 1.5` regardless), but the
 note should state the pinned tool's real default rather than a speculative "now defaults to
 1.6". **Invocation `[DECIDED]`:** `cargo xtask sbom` invokes **`cargo cyclonedx` as a
@@ -711,10 +720,10 @@ consumer needs the ISO-standard form. Both are release assets. **Conversion tool
 `[DECIDED]`:** the CycloneDX→SPDX export is produced by the **CycloneDX CLI's `convert`
 command** (`cyclonedx convert --input-format json --output-format spdxjson` — the official
 `@cyclonedx/cyclonedx-cli`/`cyclonedx-cli` tool, which supports SPDX-JSON output), pinned
-in §3.8 alongside the other SBOM tools. (If a future pin drops SPDX-JSON support, the
-fallback is `syft convert` from the already-present Syft, which also emits `spdx-json`.) The
-SPDX export is a convenience artifact, not the gate input — the §6.3.3 completeness gate
-reads the canonical CycloneDX JSON.
+in `scripts/gate-tools.toml` alongside the other SBOM tools. (If a future pin drops SPDX-JSON
+support, the fallback is `syft convert` from the already-present Syft, which also emits
+`spdx-json`.) The SPDX export is a convenience artifact, not the gate input — the §6.3.3
+completeness gate reads the canonical CycloneDX JSON.
 
 ### 6.3.2 NOTICE / third-party-licenses assembly
 
@@ -1045,6 +1054,14 @@ matrices and the corpus `manifest.toml`:
 This is what makes the §6.5 reliability gate **non-circular**: a pair literally
 cannot be declared `reliable` without a corpus file whose `covers` list names it.
 
+**Phase-in `[DECIDED]`:** the steady-state semantics above are unchanged; only their arming is
+staged. Direction 2 and the §6.4.5 `[file.expect]`↔`covers` step-check are fail-closed from the
+guard's first run. Direction 1 is report-only for a category while its corpus is filling and
+fail-closes for that category once its phase has registered every required pair of it (a close
+on the first file would fail the whole fill phase, because the leg needs every required pair
+covered); a pair already backed passes either way. The all-category fail-close is proven over
+the release candidate (§6.10 row 3).
+
 ### 6.4.4 Cross-platform test runs
 
 The integration + property suites run on **all three native CI legs** (§6.1.4) —
@@ -1117,6 +1134,10 @@ covers   = [              # the (source→target) pairs this file backs (§6.4.3
 > `covers` (the array form) **only**; it never parses the `→` keys. A CI lint asserts
 > every `[file.expect]` key has a matching `covers` 2-tuple (so the two stay in step)
 > — but the machine-checkable coupling is always the array.
+>
+> **Cross-category operations `[DECIDED]`:** a pair of the cross-category.md operation matrix
+> is covered by its source and the output format of its column's §0.6 `TargetId` —
+> `ExtractAudio(<FORMAT>)` as `["<SOURCE>", "<FORMAT>"]`, `ToGif` as `["<SOURCE>", "GIF"]`.
 
 > **Manifest layout + discovery `[DECIDED]`.** There is **ONE root manifest
 > `tests/corpus/manifest.toml`** listing **all** `[[file]]` entries by their
@@ -1427,6 +1448,13 @@ A `harness_fixture` pair (the §6.4.3a exception) is emitted as an **information
 row outside the enumerated release-gate set: the release predicate ignores it, and it
 never takes one of the four release-gate cell values.
 
+**Runner record `[DECIDED]`:** the §6.4.3 runner emits one record per leg and per corpus file,
+carrying the §6.5.1 items 1–4 outcomes and the §6.4.3 patent-gap (`unavailable-per-§3.4`)
+assertion, keyed by this ledger's platform, never the §3.4.5 triple. The generator folds one or
+more legs' records into `(source, target, platform)` cells and computes the release predicate
+in the JSON; a patent-gapped cell comes from the record, never from a second read of
+`engines.lock` (§3.4.4a). `demoted` is never a runner output (§6.5.3).
+
 This directly realises the SSOT *v1 DoD* conversions clause. Because v1 is **one
 large all-or-nothing release with no deadline** (SSOT), the gate has no
 time-pressure escape hatch — internal *sequencing* (fill/validate category by
@@ -1459,8 +1487,13 @@ A release-note item for a demoted or patent-gapped pair is **not** free-form pro
 structured entry with a fixed home and required fields, so Phase 3 has an exact anchor:
 - **Home:** a tracked `docs/demoted-pairs.md` table in the repo (the single canonical file),
   **plus** a one-line summary mirrored into the release `CHANGELOG.md`/GitHub Release body for
-  that version. The §6.5.2 pair-status ledger is the machine-readable source; `docs/demoted-pairs.md`
-  is its human-readable, release-attached projection.
+  that version. The §6.5.2 pair-status ledger is the machine-readable form. For
+  `unavailable-per-§3.4` cells it is the source and `docs/demoted-pairs.md` its human-readable,
+  release-attached projection; `demoted` cells come from the file (the next bullet).
+- **`demoted` source `[DECIDED — Co-Pilot ruling 2026-09-15]`:** `docs/demoted-pairs.md` is the
+  committed input the ledger generator reads for `demoted` cells. An absent file is zero
+  demotions, and a `reliability-demotion` row that names no §04 cell or platform fails the
+  generator, so the `demoted` direction of the CI tie-in below holds by construction.
 - **Required fields (each row):** **(a)** the pair (`source → target`, e.g. `HEIC encode`/
   `RTF → MD`); **(b)** the **kind** (`patent-gap-per-platform` (exception 1) | `reliability-
   demotion` (exception 2)); **(c)** the **affected platform(s)** (all / Linux / macOS /
@@ -1480,6 +1513,14 @@ When §3.8 bumps a bundled engine (best-effort currency), the **full reliability
 re-runs** before that engine version can ship (§6.3.4) — a patch must not silently
 regress a pair. The ledger diff (pairs that changed status) is part of the bump's
 review.
+
+**What counts as a bump `[DECIDED]`:** with every `engines.lock` row keyed by `(id, triple)`
+for each entry of its `triples` (the §3.7.2 row law), a commit bumps an engine when a key
+present before it is removed or changes its effective `version`, `cache_version` (defaulting to
+`version`), `source_ref`, `sha256`, `asset_sha256` or `from_source.tarball_sha256`. Comparing
+keys, not lines, catches a `triples` split that moves an existing triple into a new row at
+another version with no removed `version` line. A commit that only adds keys stages a new
+engine and is validated by its category's first reliability run, not as a bump.
 
 ---
 

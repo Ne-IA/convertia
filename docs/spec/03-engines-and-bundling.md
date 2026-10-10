@@ -1746,8 +1746,11 @@ gate is **§6.3**. This section produces the *data* those consume.
    pinned version (§3.8), upstream URL, one or more **corroboration URLs**
    (`corroboration_urls`), SPDX licence
    id, `linked|invoked|plugin-loaded` class, a mandatory **`purl`** (and a CPE where one
-   exists), and the per-artifact **SHA-256** are declared in the **build manifest
-   `engines.lock`** (in `src-tauri/`; the single canonical name used by
+   exists), a mandatory non-blank **`supplier`** `[DECIDED]` (the organisation that supplied
+   the staged bytes, the CycloneDX `component.supplier.name` §3.7.1 requires; it is not
+   derivable, because `upstream_url` names one pinned asset whose host is the transport, not
+   the supplier), and the per-artifact **SHA-256** are declared in
+   the **build manifest `engines.lock`** (in `src-tauri/`; the single canonical name used by
    §6.3.1/§6.3.2/§6.3.3/§6.8 — there is no `engines.toml`). Every staged shared object
    (`.dll`/`.dylib`/`.so`, T3a §0.11) gets its own row with its own SHA-256. This manifest
    is the authoritative input — **not** hand-curated prose, so it can't drift from what
@@ -1800,6 +1803,14 @@ gate is **§6.3**. This section produces the *data* those consume.
    manifest + Rust crate licences (via `cargo about` / `cargo-cyclonedx`) +
    the bundled-engine entries → emits the **CycloneDX SBOM** and concatenates
    `THIRD-PARTY-LICENSES.txt` from each component's vendored `LICENSE`/`COPYING`.
+   **Vendored texts `[DECIDED — Co-Pilot ruling 2026-09-15]`:** they live in the in-repo
+   `third-party-licenses/` tree, one file per component with its real copyright lines, bound
+   per row and normalized to the G52 axes (UTF-8, LF, no trailing whitespace, a final newline)
+   without changing their content; an SPDX template text is only a cross-check, and the patent
+   and notice companions (libvpx/libaom `PATENTS`, the `LicenseRef-AOMPL-1.0` text, the OFL
+   reserved-font-name notices) stay separate texts. The commit that adds an engine row vendors
+   its text and regenerates the committed `THIRD-PARTY-LICENSES.txt` / `NOTICE` pair. A §6.1.3
+   licence-text assertion reads the pinned source's own text, never the vendored copy.
 3. The bundled fonts (§3.9) are **also** listed (their OFL/Apache licences).
 4. **Every linked sub-component gets its own SBOM/`engines.lock` row**, not just the
    top-level engines — including the **FFmpeg binary** (SPDX `GPL-2.0-or-later`, with
@@ -1950,6 +1961,30 @@ blocker).
   matching hash). This is the engine-tier `[sources]` gate (build-gates **G37**), pairing with
   the acquisition-mode decision above — the engine binary is "the highest-value place to plant
   a backdoor" (§3.7.2), so its source host is constrained, not just its hash.
+  - **Origin model `[DECIDED]`.** The allow-list is keyed on `cache_engine`, not on the row
+    `id` (one downloaded entry has one origin; `ffprobe` has none of its own), and holds two
+    host sets per engine. The **provenance** set binds every URL field of the engine's rows
+    (`upstream_url`, each `corroboration_urls` entry, `from_source.signature_url`); the
+    independence rules read it. The **transport** set holds the extra hosts a redirect chain may
+    touch (e.g. `objects.githubusercontent.com`, where a GitHub release asset redirects); it may
+    be empty and is never a `corroboration_urls` member, so it never dilutes that field's
+    provenance meaning. A fetch hop is admitted only over https to a hostname in the engine's
+    provenance ∪ transport set: integrity comes from `asset_sha256`, the transport set only
+    bounds egress. Every origin comparison uses the parsed **hostname**, never the netloc,
+    which carries userinfo and port (`https://ffmpeg.org@evil.invalid/x` connects to
+    `evil.invalid`). A `mirrors` row also fails unless its `corroboration_urls` are pairwise on
+    distinct hostnames: the ≥ 2 count alone admits the same URL twice, or two URLs on one host.
+    An origin is widened only by an owner-acked edit of the committed allow-list, never in a
+    script.
+  - **Independence by acquisition mode `[DECIDED]`.** No `engines.lock` field records whether
+    an upstream publishes its checksum on a separate channel, so the gate reads the
+    independence clause above per mode. For `mirrors` it is the pairwise rule plus the count
+    floor, and a mirror on the pin's host is admissible. For a `signed-repo` prebuilt it does
+    not apply: the repo signature is the trust root ((ii) above). For a from-source row it does
+    not apply to `corroboration_urls` or `from_source.signature_url`: the `from_source.anchor`
+    variant is the trust root, and a same-host `.asc`/`.sig` beside its tarball is the
+    convention; whether a record anchors a from-source pin at all is the anchor enum's
+    independence rule.
 - **Minimum-version floors that gate a *capability*** (not just currency) are
   recorded here so a bump can't silently drop them: **libvips ≥ 8.12** (native
   `gifsave`/cgif backend — §3.5.5/§3.6.1, so the GIF path uses cgif natively). A bump
