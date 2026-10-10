@@ -252,7 +252,7 @@ build-time mechanics that realise them**:
   shared install prefix the group's earlier sources installed into), keyed on the `engines.lock`
   row `id` each line configures (a compiled group legitimately spans SEVERAL tarballs, and FFmpeg's
   configure line is not LAME's — nor is FFmpeg's build system libvips's: FFmpeg ships a
-  handwritten `configure` with no `configure.ac`, libvips is Meson, x265 and poppler are CMake, so
+  handwritten `configure` with no `configure.ac`, libvips is Meson, libheif and poppler are CMake, so
   the build system is declared per source and never guessed), filled by the named compile boxes
   (the P4.89 act first — libvips in the minimal PNG closure — then the P5–P7 compile boxes) — so
   the §6.1.3 assertions cross-check the produced
@@ -290,7 +290,8 @@ build-time mechanics that realise them**:
   on that slice's own triple.
 - A platform's artifact ships **only the engines available on that platform per
   §3.4**. A patent-gapped engine (e.g. an HEVC encoder absent on a platform) is
-  simply not staged there; the affected target is surfaced as unavailable in the UI
+  simply left out of that platform's build (kvazaar configured out of libheif, §3.4.4a);
+  the affected target is surfaced as unavailable in the UI
   (§5.2, sourced from §3.4) — **never a silent omission** (SSOT *v1 DoD* exception 1).
 - **LGPL link assertion (§3.6.1 build rule) — scoped by WHERE the lib is linked
   `[DECIDED]`:** the LGPL §6 obligation differs for the MIT core vs the separate
@@ -315,11 +316,9 @@ build-time mechanics that realise them**:
     written-offer + §3.7 SBOM record the exact pinned source). The stage step **asserts the
     relinkable-source bundle (object files / recipe) is present** for the static image-worker
     and **fails the build if it is missing** — mirroring the FFmpeg carve-out below.
-    **The bundle MUST also cover x265 `[DECIDED]`:** when the x265 GPL plugin is loaded, the
-    image-worker is a **GPL combined work** (§3.6.1 x265 row), so the corresponding-source
-    obligation extends to **x265 itself** (its GPL §3 complete corresponding source + offer),
-    not only the LGPL stack — the assertion checks the **pinned x265 source/offer is present**
-    alongside the LGPL source, and fails the build if x265's source is missing.
+    librsvg, the `librsvg` crate compiled into the worker, rides the same bundle (its pinned
+    crate source and the worker's build recipe, §3.6.2); no GPL code is linked into or
+    loaded by the worker.
   - **(iii) FFmpeg-internal static LGPL → aggregation, never fails the assertion.** FFmpeg
     is static `[DECIDED]` (§3.9.1): `libmp3lame` (LGPL, its §6 obligation subsumed by the GPL
     corresponding-source) plus the BSD `libvorbis`/`libogg`/`libopus`/`libvpx`/`libdav1d` and
@@ -342,7 +341,9 @@ build-time mechanics that realise them**:
   sidecar, §3.5.3), so this costs nothing. The stage step runs a **positive assertion**
   that the staged libvips exposes **no poppler/mupdf loader/symbols** (e.g. no
   `pdfload`/`poppler`/`mupdf` foreign loaders registered) and **fails the build** if one
-  is present (a distro/default libvips often enables poppler-glib PDF).
+  is present (a distro/default libvips often enables poppler-glib PDF). The same scan
+  **fails the build** if **`svgload`** is registered: libvips is configured without
+  librsvg, because SVG loads only through the worker's `librsvg` crate (§3.5.5).
 - **libimagequant BSD-leg assertion (§3.1 row 1e / §3.6.1) `[DECIDED]`:** the stage step
   asserts the staged `libimagequant` `COPYRIGHT` actually contains the **BSD-2-Clause**
   text (the frozen `lovell/libimagequant` v2.4.x fork), and **fails the build** if a
@@ -353,15 +354,26 @@ build-time mechanics that realise them**:
   pinned `imagequant`/`libimagequant` ref in `engines.lock` (and any `Cargo.lock` entry) is
   **exactly the `lovell/libimagequant` v2.4.x-fork commit** — provenance, not an ABI/soname
   check (which would be meaningless for a vendored static lib).
-- **libheif-resolves-dav1d-for-AV1-decode assertion (§3.1 row 1b / images.md) `[DECIDED]`:**
+- **libheif built-in codec assertion (§3.1 rows 1a/1b, §3.5.5 / images.md) `[DECIDED]`:**
   "libaom is encode-only" is a configuration choice, not a libaom limitation — so the stage
-  step asserts the staged **libheif resolves `dav1d` as its AV1 *decoder* plugin** (e.g.
-  `heif-info`/`libheif_decoder` enumeration lists dav1d, not libaom, for AV1) and **fails
-  the build** if libaom is wired as the decoder (or no dav1d decoder is present). Parallel
-  to the libimagequant pin/provenance check (§3.1 row 1e): the shipped wiring is verified,
-  not trusted. (Here the wiring IS a runtime plugin enumeration, so this one legitimately
-  inspects the staged libheif's resolved decoder — distinct from libimagequant, which is
-  statically vendored and so verified by its lockfile pin, not a soname.)
+  step asserts the staged **libheif's built-in codecs**: the decoders `libde265` (HEVC) and
+  `dav1d` (AV1 — never libaom), the AV1 encoder `aom`, the HEVC encoder `kvazaar` present
+  exactly where the triple's `heic_hevc` row reads `available = true` and absent where the
+  row reads `false` or is missing (§3.4.4a: the gapped encoder stays out of that triple's
+  libheif), and plugin loading off (`heif_load_plugins` reports plugins unsupported), and
+  **fails the build** otherwise. Parallel to the libimagequant pin/provenance check
+  (§3.1 row 1e): the shipped wiring is verified, not trusted. (Here the wiring IS libheif's
+  codec enumeration, so this one legitimately inspects the staged libheif — distinct from
+  libimagequant, which is statically vendored and so verified by its lockfile pin, not a
+  soname.)
+- **ImageMagick compiled-policy read-back (§3.5.5, T9b/T1) `[DECIDED]`:** the stage step
+  runs the staged worker's policy self-check, which reads the effective ImageMagick policy
+  back — a denied coder (SVG, MSVG, URL, PS) must be refused, BMP must read and write and
+  ICO must read — and **fails the build** otherwise. It is the structural proof of the coder
+  lockdown, which is compiled into the worker rather than parsed from a file; on the §3.5.5
+  fallback route the same self-check runs against the staged read-only `policy.xml`, whose
+  directory reaches the worker as the `policy_dir=` argv key under the G29 (b) engine-argv
+  rule.
 - **Exposed-parameter capability assertions (against the §3.8-pinned versions) `[DECIDED]`:**
   the per-format option names ConvertIA exposes must actually exist in the staged engine
   builds, so the stage step asserts (and **fails the build** on a miss): (1) the **FFmpeg
@@ -375,26 +387,15 @@ build-time mechanics that realise them**:
   (2) the **libvips `webpsave`/`heifsave` `effort` parameter** (and `Q`) exists in the staged
   libvips (images.md exposes the integer `effort` for WEBP/**AVIF** — `heifsave` has
   no `preset` string, only `effort`, §images.md) — `vips webpsave`/`heifsave` arg
-  introspection. **The `heifsave effort` arg-presence check is necessary but NOT sufficient
-  for HEIC exposure `[DECIDED]`:** images.md gates the HEIC `effort` *control* on a
-  `[DEFER: corpus]` spike confirming `effort` measurably steers the bundled x265/HEVC path —
-  if the corpus shows it is inert for HEIC, the control is **hidden for HEIC** (no dead
-  control); AVIF `effort` stays exposed (libvips-documented as honoured). These prevent a
+  introspection. HEIC exposes **no** `effort` control `[DECIDED]` (images.md), so the check
+  covers the WEBP and AVIF `effort` and every `Q`. These prevent a
   version bump from silently dropping an exposed knob.
-- **ICO multi-size/256px save spike `[DEFER: corpus/build spike]` (gates the v1 `* → ICO`
-  pairs):** ImageMagick's ICO encoder has documented trouble with **256px / multi-size**
-  entries and libvips' `magicksave` is not documented to support `.ico` save (§3.5.5), so the
-  ICO-save capability is **unverified**. A build spike MUST confirm the bundled
-  libvips+ImageMagick can **write a valid multi-size `.ico` including a 256px embedded-PNG
-  entry** (`[16,32,48,256]`, the 256 stored as embedded PNG); a corpus case re-opens the
-  produced `.ico` and verifies all four entries + the 256px PNG marker. **Two outcomes:**
-  (a) **spike passes** → the `magicksave` ICO path is confirmed and **this assertion fails
-  the build if magicksave ICO save regresses**; (b) **spike fails** → ConvertIA ships the
-  **in-core Rust ICO container assembler** (§3.5.5) instead, the assertion targets that
-  assembler's output, and ImageMagick is dropped from the ICO path. **Until the spike
-  resolves, the `* → ICO` v1 pairs are gated on it** — the §6.4.3 ICO corpus case (multi-res
-  16/32/48/256 + non-square) is the runtime proof of whichever path ships, and this build
-  assertion is **not** stated as settled-and-working until the spike outcome is recorded.
+- **ICO assembler and parser `[DECIDED]`:** libvips has no ICO saver or loader, so the
+  worker's safe-Rust ICONDIR assembler writes the `.ico` from vips-encoded PNG frames and
+  its ICONDIR parser reads an ICO source (§3.5.5). The §6.4.3 ICO corpus case re-opens the
+  produced `.ico` and verifies every requested entry (`[16,32,48,256]` for the standard
+  preset, each an embedded PNG) and the non-square padding; an ICO source with DIB entries
+  exercises the `magickload` route.
 - **Curated-FFmpeg decoder-coverage assertion `[DECIDED]`:** the FFmpeg build uses
   `--disable-everything --enable-…` trimmed to the `04` codec set (size lever, §3.9),
   which risks **silently dropping a decoder a 04 pair needs**. So the stage step runs
@@ -454,13 +455,13 @@ build-time mechanics that realise them**:
   NO `base_file`/base URL**, so librsvg has nothing to resolve a local/relative `href`
   against and refuses all such loads by construction; **no base-URL confinement is used** —
   supplying any base URL is what re-enables the CVE-2023-38633-class surface, §3.5.5).
-  **librsvg API assertion `[DECIDED]`:** the stage step **also asserts the pinned `librsvg`
-  crate/version exposes the relied-upon `rsvg::Loader::read_stream`/`from_data`-without-
+  **librsvg API assertion `[DECIDED]`:** the build **also asserts the pinned `librsvg`
+  crate exposes the relied-upon `rsvg::Loader::read_stream`/`from_data`-without-
   `base_file` path** and **fails the build** if it is absent (so the load-bearing control is
-  actually buildable against the staged crate). **librsvg version-floor assertion
-  `[DECIDED]`:** the stage step **also asserts the staged librsvg is `>= 2.56.3`** (the
-  CVE-2023-38633 fix floor — the CVE that bypassed base-URL directory-confinement) and
-  **fails the build** if older; this is a belt-and-suspenders floor (not load-bearing for
+  actually buildable against the pinned crate). **librsvg version floor `[DECIDED]`:** the
+  crate's §0.8 floor row is **`>= 2.56.3`** (the CVE-2023-38633 fix floor — the CVE that
+  bypassed base-URL directory-confinement), and G18 **fails the build** when `Cargo.lock`
+  resolves it older; this is a belt-and-suspenders floor (not load-bearing for
   v1, which sets no base URL) so that if a base URL is ever required later it is not a
   known-bypassed version. This is the SVG analogue of the §6.4.2 FFmpeg adversarial-egress
   case, giving the SVG vector the same proof-parity as FFmpeg/pandoc/LibreOffice.
@@ -684,8 +685,8 @@ gate; G60 publishes the determinism delta of the Rust-core and WebView layer.
 
 ConvertIA's bill of materials is **not** just its Rust crate graph — the
 load-bearing licence risk is the **bundled engine binaries** (**FFmpeg GPL-2.0+** —
-it enables x264, §3.6.1; LibreOffice MPL; poppler/pandoc GPL; libvips LGPL; the x265
-libheif plugin GPL; the **required** ImageMagick permissive; …). (Ghostscript is
+it enables x264, §3.6.1; LibreOffice MPL; poppler/pandoc GPL; libvips LGPL; the
+**required** ImageMagick permissive; …). (Ghostscript is
 **dropped v1**, §3.1 — no AGPL row.) So the SBOM is assembled in **two layers**:
 
 | Layer | Contents | Tool |
@@ -1263,8 +1264,8 @@ any is absent) that the root `manifest.toml` contains **at least one `[[file]]` 
   row 3 ("every pair works") on an all-synthetic / all-plain raster set, undercutting the SSOT
   "real photos" clause, so the content floor **additionally** requires each of: **≥1 HEIC**
   (real iPhone-class photo, the headline decode path), **≥1 AVIF**, **≥1 SVG** (the
-  librsvg/no-base-URL path), **≥1 multi-size ICO** (the ICONDIR-count / `magicksave` or
-  in-core-assembler path), and **≥1 PNG with an alpha channel** (the §2.9 `image_alpha_flatten`
+  librsvg/no-base-URL path), **≥1 multi-size ICO** (the ICONDIR-count note and the
+  worker's ICONDIR parser, §3.5.5), and **≥1 PNG with an alpha channel** (the §2.9 `image_alpha_flatten`
   source). A missing image-floor tag is a build failure exactly like the others.
 
 The required tag set is a fixed list in the lint; a missing tag is a **build failure**, so

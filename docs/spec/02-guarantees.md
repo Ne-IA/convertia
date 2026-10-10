@@ -1479,7 +1479,7 @@ at target choice; the kind's unmarked row is the exact note (§2.9.2).
 | `image_palette` | `→ GIF` (256-colour) | **"Reduced to 256 colours — some colour detail is lost."** |
 | `image_downscale` | `→ ICO` (multi-size icon assembly, images.md) | **"Resized to multiple icon sizes — detail may be lost at smaller sizes."** |
 | `image_alpha_flatten` | alpha source `→ JPG/BMP` (transparency policy) | **"Transparency isn't supported here and will be filled with a background colour."** |
-| `image_animation_flatten` | animated source `→` still target (animation policy) | **"Animated — only the first frame is converted."** |
+| `image_animation_flatten` | animated source `→` still target; an APNG or AVIF sequence `→` any target (animation policy) | **"Animated — only the first frame is converted."** |
 | `image_svg_raster` | `SVG → raster` after rendering, with the rendered size (§1.12) | **"Vector image converted to a fixed-size picture ({w}×{h}) — it won't scale up cleanly afterward."** |
 | `image_svg_raster` (before convert) | target choice for `SVG → raster` (no in-core size peek, §1.2) | **"Vector image converted to a fixed-size picture — it won't scale up cleanly afterward."** |
 | `doc_pdf_reflow` | `DOCX/DOC/ODT/RTF → PDF` **and `MD → PDF`** (documents.md — LO lays Markdown out with reflow/font-substitution like the word-processor sources); **`XLSX/XLS/ODS → PDF` (spreadsheets.md)** — the same office→PDF reflow kind covers spreadsheet→PDF too | **"Layout may shift slightly when converted to PDF."** |
@@ -1626,7 +1626,7 @@ Offline is enforced **structurally**, not by policy, on two complementary halves
   fetch (SSRF) AND the absolute-file LFR half closed by loading the SVG via `rsvg::Loader`
   with NO base URL/`base_file`, so librsvg refuses all local `<image href>`/XInclude
   resolution by construction (no base URL = nothing to resolve against); calls librsvg
-  directly since libvips `svgload` has no external-resource toggle; no base-URL confinement
+  directly (libvips is built without `svgload`); no base-URL confinement
   is used (any base URL is what re-enables the CVE-2023-38633-class surface) (§3.5.5; §6.1.3
   corpus assertion)**.
   The §2.12 wrapper's sandbox profile can **additionally** deny network syscalls and

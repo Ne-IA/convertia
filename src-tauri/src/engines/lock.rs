@@ -134,11 +134,11 @@ pub enum RowKind {
 /// How the artifact relates to the MIT core — the field the §3.6.1 copyleft-isolation argument reads,
 /// and the one CLAUDE §3's "MIT core clean; copyleft isolated" guardrail keys on.
 ///
-/// §3.1 names THREE relationships, not two: the GPL set is "always **invoked** or
-/// **dynamically-plugin-loaded**, never statically **linked** into the MIT core". A two-variant enum
-/// could not express the x265 libheif plugin — the very component §3.4.4a's `available` flag governs —
-/// and would have forced P5.9 to mis-declare an obligation. [Build-Session-Entscheidung: P4.56.1 —
-/// raised by the dual review, which found the fixture modelling x265 as `invoked`.]
+/// §3.7.2 item 1 names THREE relationships, not two: `linked`, `invoked` and `plugin-loaded`.
+/// A runtime-loaded plugin carries an obligation neither neighbour does, so a two-variant enum
+/// could not express one; none ships while libheif carries its codecs built in (§3.5.5), and the
+/// third variant keeps the schema able to. [Build-Session-Entscheidung: P4.56.1 — raised by the
+/// dual review, which found the fixture modelling the libheif encoder plugin as `invoked`.]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Linkage {
@@ -147,10 +147,10 @@ pub enum Linkage {
     Linked,
     /// Spawned as its own process (FFmpeg / LibreOffice / poppler / pandoc, §3.6.1 aggregation).
     Invoked,
-    /// Loaded at RUNTIME into an already-running first-party process as a plugin (§3.1 row 1a: x265
-    /// ships as a dynamically-loaded libheif encoder plugin, never statically linked). Distinct from
-    /// both neighbours because the obligation differs: §3.6.1's x265 row makes the image-worker a GPL
-    /// **combined work** while it is loaded, which neither an invoked sidecar nor the LGPL static link
+    /// Loaded at RUNTIME into an already-running first-party process as a plugin. None
+    /// ships: libheif carries its codecs built in (§3.5.5). Distinct from both neighbours
+    /// because the obligation differs: a GPL plugin makes its host process a GPL **combined
+    /// work** while it is loaded, which neither an invoked sidecar nor an LGPL static link
     /// implies.
     PluginLoaded,
 }
@@ -289,7 +289,8 @@ pub struct EngineRow {
     /// The SPDX licence id / expression. §6.3.3 + G36 validate it with a real SPDX parser; the schema
     /// only requires it to be declared, so a missing licence can never reach the NOTICE assembly.
     pub licence: String,
-    /// The §3.6.1 copyleft-isolation class — linked, invoked, or runtime plugin-loaded (§3.1).
+    /// The §3.6.1 copyleft-isolation class — linked, invoked, or runtime plugin-loaded
+    /// (§3.7.2 item 1).
     pub linkage: Linkage,
     /// §3.8 acquisition mode — what the SHA-256 below proves.
     pub acquisition: Acquisition,

@@ -53,7 +53,7 @@ pub struct ProgramRoots {
     /// The directory holding the app executable — where Tauri places every `externalBin` sidecar (§3.3.1).
     exe_dir: PathBuf,
     /// The bundle's resource root — the `BaseDirectory::Resource` base the §3.3.1 `bundle.resources`
-    /// TARGET paths (`engines/libreoffice/`, `engines/image/`, `fonts/`) hang off.
+    /// TARGET paths (`engines/libreoffice/`, `fonts/`) hang off.
     resource_root: PathBuf,
 }
 

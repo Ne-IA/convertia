@@ -97,7 +97,11 @@ are validated a **second time with a DIFFERENT decoder family** — `ffprobe`
 libvips/libheif that *produced* the file — and **animated WEBP via `ffprobe`**
 (not `dwebp`, which cannot decode animated WebP). A producing-library bug that
 emits a structurally-valid-but-subtly-wrong file the *same* library tolerates is
-caught only by a foreign reader. The "lacks the decoder" skip is decided by
+caught only by a foreign reader. FFmpeg applies an HEIC's container crop aligned
+to 4:2:0 chroma, so an odd width or height reads back 1 px short whichever HEVC
+encoder wrote the file (measured: 764×508 for 765×509); the HEIC leg reads with
+`-apply_cropping none`, crops after the RGB conversion and takes alpha from the
+auxiliary stream. The "lacks the decoder" skip is decided by
 querying the committed **`ffmpeg-allowed-decoders.lock`** golden (G38), **not** a
 live `ffmpeg -decoders` call: absent-from-golden → legitimate skip; present-in-
 golden-but-absent-from-binary → **G38 hard-fail** (the staged FFmpeg is broken,

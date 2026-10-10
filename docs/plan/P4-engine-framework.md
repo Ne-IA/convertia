@@ -285,7 +285,7 @@
   > First-party `extern "C"` libvips declarations in the single G29-allow-listed `crates/imgworker/src/ffi.rs` (no crates.io binding), compiled only under `imgworker_native`; the Rust-only build answers `--version` and fails every conversion with a distinct exit.
   > Wire contract (this box authors §3.5.5's `Shape:` and `Exit/stderr` bullets): one invocation = one load→transform→save conversion; argv `key=value` (source `FormatId`, `TargetId`, input, `out_tmp`, options; resource roots as named keys, never env). §3.5.5's "not via argv" is the libvips call inside the worker, not this wire.
   > Emits the §3.5.5 `VipsStdout` progress wire (eval-progress → stdout `progress=<0..100>`); the consumer is the delivered P4.8 reader.
-  > Operation allow-list via `vips_operation_block_set` through `ffi.rs`. Realizability probe at this box: if the pinned libvips lacks it, `VIPS_BLOCK_UNTRUSTED=1` in P4.37's env allow-list applies without escalation. librsvg is P5's.
+  > Operation allow-list via `vips_operation_block_set` through `ffi.rs`; its realizability probe runs at this box and its fallback is §3.5.5's, never `VIPS_BLOCK_UNTRUSTED` (it blocks BMP's `magickload`/`magicksave`). librsvg is P5's.
   - [ ] **P4.35.1** [TEST] Instantiate the P0.4.3 imgworker-FFI G48 fuzz leg against the real `convertia-imgworker` Rust→FFI surface · §6.4.2 §3.5.5 · G48
     needs: P4.35, P0.4.3, P4.83
     l-neg1: same-push

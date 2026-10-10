@@ -438,14 +438,14 @@ struct EngineStatus {
 > **BUT** ImageMagick is **REQUIRED for BMP load+save** (§3.1 row 1d — not a
 > fallback), so a present-but-broken/missing delegate would otherwise fail **every BMP
 > conversion silently at first use at runtime**, not at startup. (**ICO save** is the
-> `magicksave` default but `[DEFER: build spike]` §3.5.5 — if the spike fails, ICO save uses
-> the in-core Rust assembler and does **not** depend on the ImageMagick delegate.) To surface
+> worker's ICONDIR assembler and does **not** depend on the ImageMagick delegate; an ICO
+> source's DIB entries load through it, §3.5.5.) To surface
 > a missing BMP delegate at startup (a §3.1 degrade, never an app-level fault) instead, the
 > image-worker smoke probe (§7.2.3 above) **MUST include a BMP delegate exercise
 > `[DECIDED]`** — e.g. a tiny
 > `magicksave`/`magickload` BMP round-trip **or** a `vips`/ImageMagick `--list-formats`-style
-> check verifying **BMP is a registered delegate** (and, **if the magicksave ICO path ships**,
-> ICO too) — so a missing/corrupt ImageMagick delegate makes the `ImageCore`
+> check verifying **BMP is a registered delegate** (and ICO, the route of an ICO source's DIB
+> entries) — so a missing/corrupt ImageMagick delegate makes the `ImageCore`
 > `EngineStatus.runnable = Some(false)` (and BMP targets show as unavailable, §5.2) at
 > startup, never a silent per-item failure on the first BMP job.
 

@@ -22,13 +22,12 @@ Rows = **source** format, columns = **target** format; cells follow the
 [README](README.md) *Matrix cell grammar*. One engine serves every pair, so the cells
 carry no tag: the image worker (`img`, §3.5.5). Inside it, **vips** = libvips raster
 core (incl. `heifsave` for ALL
-HEIC/AVIF *encode* — `compression=hevc` via the x265 libheif plugin, `compression=av1`
-via libaom — and `magicksave` via the **required** ImageMagick delegate for BMP, and the
-default ICO-save path (ICO save **`[DEFER: build spike]`** §3.5.5; in-core Rust ICO
-assembler fallback)),
-**svg** = SVG rasteriser (**librsvg**, libvips' native `svgload` backend) **invoked
-via libvips' SVG loader** (so the *raster save* stays in vips — still one engine for
-the pair; resvg is NOT a libvips backend and is **not shipped** [DECIDED] §3.1 row 1c).
+HEIC/AVIF *encode* — `compression=hevc` via kvazaar, `compression=av1` via libaom, both
+built into libheif — and `magicksave` via the **required** ImageMagick delegate for BMP;
+ICO is written by the worker's ICONDIR assembler around vips-encoded PNG frames, §3.5.5),
+**svg** = SVG rasteriser (**librsvg**, the `librsvg` crate) called through **`rsvg::Loader`
+directly inside the worker** (libvips is built without `svgload`; the *raster save* stays
+in vips — still one engine for the pair; resvg is **not shipped** [DECIDED] §3.1 row 1c).
 (There are **no separate `heif`/`avif` short-names** — the standalone encoders were
 dropped; all HEIC/AVIF encode is `vips heifsave`, [IMG-1] [DECIDED].) See *Engines*
 for the binding.
@@ -102,7 +101,7 @@ dedicated "re-compress / optimise" action is **parked** (not in v1). Marked `—
 | `image_palette` | `* → GIF` | pair-static | — |
 | `image_downscale` | `* → ICO` | pair-static | — |
 | `image_alpha_flatten` | an alpha-capable source (PNG, WEBP, GIF, TIFF, HEIC, AVIF, ICO, SVG) `→ JPG` or `→ BMP` | pair-static | keyed on the source format's alpha capability, not a pixel scan (*Transparency policy*) |
-| `image_animation_flatten` | an animated GIF, WEBP, APNG or AVIF sequence `→` a still target | source-fact | the §1.4 `AnimatedSource` note (*Animation policy*) |
+| `image_animation_flatten` | an animated GIF or WEBP `→` a still target; an APNG or AVIF sequence `→` any target | source-fact | the §1.4 `AnimatedSource` note (*Animation policy*) |
 | `image_svg_raster` | `SVG → *` | per-item-runtime | always; before convert it shows its §2.9.1 before-convert row, after convert the note names the rendered size |
 
 ---
@@ -111,23 +110,24 @@ dedicated "re-compress / optimise" action is **parked** (not in v1). Marked `—
 
 Single raster core (libvips, with linked codec/delegate components) + one vector
 rasteriser. **Per (source, target) pair exactly one engine runs** (§3.2): every image
-pair is served end-to-end by **vips** (the SVG loader and the heif/cgif/ImageMagick
-savers are libvips load/save modules, not separate pipeline stages), never a chain.
+pair is served end-to-end by **vips** inside the image worker (the heif/cgif/ImageMagick
+modules are libvips load/save modules, and the SVG rasteriser and the ICO assembler run in
+the same worker process — not separate pipeline stages), never a chain.
 
 | Short | Engine | Role | Licence | Patent | Platforms |
 |-------|--------|------|---------|--------|-----------|
-| **vips** | **libvips** (raster core, built with libheif/libde265, libaom/dav1d, cgif, the **required** ImageMagick delegate; the librsvg `svgload` module may be present but is **NOT used** — SVG is loaded via the direct `rsvg::Loader` path, see the **svg** row + §3.5.5) | Decode+encode JPG/PNG/WEBP/GIF/BMP/TIFF/ICO; HEIC/AVIF **decode** (libheif / dav1d load modules) **and encode** (`heifsave compression=hevc\|av1`); BMP save via the required ImageMagick `magicksave` delegate; **ICO save = default `magicksave`, `[DEFER: build spike]` (in-core Rust ICO assembler fallback, §3.5.5)**; **SVG load via direct `rsvg::Loader` (not vips `svgload`)**; orchestrates resize/colour/alpha | LGPL-2.1+ (libvips); cgif MIT; ImageMagick permissive; **x265 GPL-2.0-or-later (dynamically-loaded libheif plugin)** | **HEVC patents → §3.4** (HEIC); AV1 royalty-free (AVIF, ship-posture §3.4) | Win / macOS / Linux (HEIC per §3.4 disposition) |
-| **svg** | **librsvg** (also libvips' native `svgload` backend, but ConvertIA does **not** use that path; resvg is NOT a libvips backend and is **not shipped**, §3.1 row 1c) | Rasterise SVG → bitmap (no scripting, no network) `[DECIDED]`; **librsvg is called DIRECTLY via `rsvg::Loader` (image-worker) with NO base URL — NOT via libvips `svgload`** (svgload exposes no external-resource toggle; the direct, no-base-URL call is the load-bearing T9b/CVE-2023-38633 security boundary, §3.5.5). The rendered raster is then handed to libvips for encode | librsvg LGPL-2.1+ | none | Win / macOS / Linux |
+| **vips** | **libvips** (raster core, built with libheif (libde265, kvazaar, dav1d and aom built in), cgif, the **required** ImageMagick delegate; built **without `svgload`** — SVG loads through the **svg** row's `rsvg::Loader`, §3.5.5) | Decode+encode JPG/PNG/WEBP/GIF/BMP/TIFF/ICO; HEIC/AVIF **decode** (libheif / dav1d load modules) **and encode** (`heifsave compression=hevc\|av1`); BMP load and save via the required ImageMagick delegate; **ICO through the worker's ICONDIR assembler and parser (PNG entries via vips, DIB entries via `magickload`, §3.5.5)**; orchestrates resize/colour/alpha | LGPL-2.1+ (libvips); cgif MIT; ImageMagick permissive; kvazaar BSD-3-Clause | **HEVC patents → §3.4** (HEIC); AV1 royalty-free (AVIF, ship-posture §3.4) | Win / macOS / Linux (HEIC per §3.4 disposition) |
+| **svg** | **librsvg** — the `librsvg` crate compiled into the worker (libvips is built without `svgload`; resvg is **not shipped**, §3.1 row 1c) | Rasterise SVG → bitmap (no scripting, no network) `[DECIDED]`; **librsvg is called DIRECTLY via `rsvg::Loader` (image-worker) with NO base URL** — the load-bearing T9b/CVE-2023-38633 security boundary (§3.5.5). The rendered raster is then handed to libvips for encode | librsvg LGPL-2.1+ | none | Win / macOS / Linux |
 
 **Single-engine binding (resolves §3.2 for this category):**
 
 1. **Raster ↔ raster** (JPG/PNG/WEBP/GIF/BMP/TIFF/ICO any-to-any) → **vips** (GIF
    save via native cgif; **BMP load+save via the required ImageMagick
-   `magicksave`/`magickload` delegate** — libvips has no native BMP save, §3.1; **ICO save
-   = default `magicksave`, `[DEFER: build spike]` with an in-core Rust ICO assembler
-   fallback wrapping vips frames, §3.5.5**).
-2. **→ HEIC** (any raster source) → **vips `heifsave compression=hevc`** (the x265
-   libheif plugin). **HEIC →** any raster target → **vips** (libheif as the HEIC *load*
+   `magicksave`/`magickload` delegate** — libvips has no native BMP save, §3.1; **ICO
+   through the worker's ICONDIR assembler and parser around vips-encoded PNG frames,
+   §3.5.5**).
+2. **→ HEIC** (any raster source) → **vips `heifsave compression=hevc`** (kvazaar,
+   built into libheif). **HEIC →** any raster target → **vips** (libheif as the HEIC *load*
    module). **HEIC → AVIF** → **vips `heifsave compression=av1`** — one vips process.
 3. **→ AVIF** (any raster source) → **vips `heifsave compression=av1`** (libaom via
    libheif — encode). **AVIF →** any raster target → **vips** (**dav1d** as the AVIF
@@ -135,22 +135,21 @@ savers are libvips load/save modules, not separate pipeline stages), never a cha
    is a **build/configuration choice**, not a libaom limitation — libaom *can* decode AV1,
    but ConvertIA **configures libheif to resolve dav1d for AV1 decode** (smaller/faster
    decoder) and uses libaom **only** as the encoder. A §6.1.3 build assertion confirms the
-   staged libheif resolves dav1d for decode (a runtime-plugin enumeration; distinct from
+   staged libheif resolves dav1d for decode (libheif's built-in codec enumeration; distinct from
    the libimagequant guard, which is a lockfile pin/provenance check since libimagequant is
    statically vendored — §3.1 row 1e). Single binary.
 4. **SVG → raster** → the image-worker loads the SVG via **`rsvg::Loader` directly**
-   (NOT via libvips' `svgload` — `svgload` exposes no external-resource toggle, and the
-   T9b LFR control requires loading with **no base URL**, §3.5.5), renders it, and
+   (libvips is built without `svgload`, and the T9b LFR control requires loading with
+   **no base URL**, §3.5.5), renders it, and
    **libvips performs the bitmap save**. Both librsvg and libvips live **inside the one
    image-worker process**, so the whole pair is still **one process** — this satisfies
    the no-chaining rule (the rasteriser is in-process with vips, not a separate pipeline
-   stage we orchestrate). (libvips' native `svgload` module is itself librsvg-backed; we
-   call librsvg directly only to guarantee the no-base-URL security path of §3.5.5.)
+   stage we orchestrate).
 
 > **Single-engine note for HEIC/AVIF encode `[DECIDED — heifsave only]`.** ALL
 > HEIC/AVIF *encoding* is done by **libvips `heifsave`** with its `compression`
-> selector (`hevc` via the x265 libheif plugin, `av1` via libheif's libaom AV1
-> encoder). So `raster→HEIC`, `raster→AVIF`, and the cross-codec `HEIC→AVIF` /
+> selector (`hevc` via kvazaar, `av1` via libaom, both built into libheif). So
+> `raster→HEIC`, `raster→AVIF`, and the cross-codec `HEIC→AVIF` /
 > `AVIF→HEIC` are each **one vips process** — every pair single-engine, one code path,
 > and **only ONE AV1 encoder ships** (libaom). The standalone `heif`/`avif` CLI
 > encoders are **not** bundled (dropped in [IMG-1] [DECIDED]; see *Category-wide →
@@ -223,9 +222,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   explicitly enabled (colour quantisation). `→ PNG` is therefore **not** flagged
   lossy in the matrix.
 - **Edge cases:** **Transparency preserved** (RGBA). **APNG (animated PNG):** as a
-  *source*, libvips can load APNG frames (`n=-1`); animation is **preserved only
-  when the target also supports animation** (→ WEBP/GIF). For a still target the
-  **first frame** is used (note surfaced like other animation-flatten cases). As a
+  *source*, the **first frame** is converted for every target `[DECIDED]`, with the
+  `image_animation_flatten` note (*Animation policy*). As a
   *target*, vips writing APNG is limited — **`[DECIDED]`** animated sources → PNG
   **collapse to the first frame** (APNG *output* not supported v1; see *Format-default
   decisions* item 3).
@@ -279,11 +277,10 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **As target ← sources:** JPG, PNG, WEBP, BMP, TIFF, HEIC, AVIF, ICO, SVG. GIF
   **save uses libvips' native `gifsave` (cgif backend, libvips ≥ 8.12)** `[DECIDED]`
   — **not** the ImageMagick delegate. This is one vips process, gives better GIF
-  quality/size, and **removes ImageMagick from the GIF path** (cgif is MIT). The
-  ImageMagick delegate (`magicksave`) is retained **only** as a compatibility
-  fallback if a needed native saver is unavailable in the bundled vips build.
+  quality/size, and **removes ImageMagick from the GIF path** (cgif is MIT);
+  ImageMagick has no GIF role `[DECIDED]`.
 - **Engine(s):** **vips** (load built-in; **save via native `gifsave`/cgif**, vips
-  ≥ 8.12; ImageMagick `magicksave` fallback only). No patent (LZW patent long
+  ≥ 8.12). No patent (LZW patent long
   expired). **Licence landmine cross-ref `[DECIDED]`:** the cgif `gifsave` palette path
   (and the palette-PNG path, *PNG* entry) depends on **libimagequant**, which **MUST be the
   BSD-2-Clause `lovell/libimagequant` v2.4.x fork — NEVER upstream libimagequant 4.x
@@ -387,28 +384,18 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   **vips `heifsave compression=hevc`**. Included because some users want
   Apple-native HEIC, but **never a default** (compatibility-poor on non-Apple).
 - **Engine(s):** **vips** end-to-end — `heifsave compression=hevc` for encode (via
-  the **x265 libheif plugin**), and the libheif load module for HEIC→raster decode.
-  **Patent flag → §3.4** (HEVC; x265 is GPL-2.0 → ships as a **dynamically-loaded
-  libheif plugin**, never statically linked, per §3.6).
+  **kvazaar**, built into libheif, §3.5.5), and the libheif load module for HEIC→raster
+  decode. **Patent flag → §3.4** (HEVC).
 - **Options/settings:**
-  - *Basic:* **Quality — default `60`** (range 0–100; libheif/x265 mid-quality;
+  - *Basic:* **Quality — default `60`** (range 0–100; a mid-quality setting,
     visually near-transparent for photos at far smaller size than JPEG).
-  - *Advanced:* `lossless` — default **off**; **`effort` (integer 0–9, libvips
-    `heifsave` param; NOT a `preset` string) — default `5`, but exposure is
-    `[DEFER: corpus]`-GATED** (higher = slower/smaller). libvips `heifsave` has **no
-    `preset` string** at the API level: it exposes the speed/size trade-off as the integer
-    `effort`, which libvips maps to the libheif encoder `speed` setting (`speed = 9 -
-    effort`). **x265-path caveat `[DECIDED — gate exposure, do not ship a dead control]`:**
-    libvips currently documents `effort` as primarily honoured by the AV1 encoder; for the
-    HEVC/x265 plugin path it may **not measurably steer** x265 on the bundled build.
-    **Resolution (no-surprise UI):** the HEIC `effort` control is **exposed ONLY IF the
-    `[DEFER: corpus]` spike confirms it measurably steers the bundled x265/HEVC path**; **if
-    the corpus shows `effort` is inert for HEIC, the control is HIDDEN for HEIC targets** (the
-    libheif x265 default applies silently — ConvertIA does **not** show a control that does
-    nothing). This differs from **AVIF** `effort` (libvips-documented as honoured → stays
-    exposed). The §6.1.3 `heifsave effort` capability assertion (arg exists) is necessary but
-    not sufficient — the steer-confirmation is the corpus gate that decides exposure;
-    `chroma` 4:2:0 default; bit depth 8 default (10-bit advanced).
+  - *Advanced:* `lossless` — default **off**; `chroma` 4:2:0 default; bit depth 8 default
+    (10-bit advanced). **No `effort` control `[DECIDED]`:** HEIC encode leaves `heifsave`'s
+    `effort` at its default (AVIF keeps its exposed `effort`). The Advanced options ride
+    libheif's kvazaar encoder: realizability probe at the box that builds the HEIC target,
+    per option — a lossless HEIC reads back pixel-identical, and a non-default chroma or the
+    10-bit depth reads back as requested. An option whose probe fails is not offered for
+    HEIC, without escalation.
 - **Lossy?:** HEIC encode is **lossy by default** (`→ HEIC` flagged → §2.9
   **`image_lossy_codec`**, matching the JPG citation pattern; flip
   `lossless`). HEIC→JPG is lossy (JPEG). HEIC→PNG/TIFF is lossless w.r.t. the
@@ -454,9 +441,10 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **Lossy?:** **Lossy by default** (`→ AVIF` flagged → §2.9 **`image_lossy_codec`**, matching
   the JPG citation pattern; `lossless` available).
   AVIF→JPG lossy; AVIF→PNG/TIFF lossless w.r.t. decoded pixels.
-- **Edge cases:** **Animated AVIF** (`avis`) source: animation preserved → GIF /
-  animated WEBP; first frame for stills (note). **HDR / 10-12-bit / wide gamut:**
-  tone-mapped/down-converted for 8-bit targets (note if HDR dropped).
+- **Edge cases:** **Animated AVIF** (`avis`) source: the **first frame** for every target
+  `[DECIDED]`, with the `image_animation_flatten` note (*Animation policy*). **HDR /
+  10-12-bit / wide gamut:** tone-mapped/down-converted for 8-bit targets (note if HDR
+  dropped).
   **Transparency** (alpha) preserved to alpha targets. ICC/EXIF preserved.
 
 ### ICO
@@ -466,19 +454,16 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **Role:** **both** (favicon/app-icon target; occasionally a source).
 - **As source → targets:** JPG, **PNG★**, WEBP, GIF, BMP, TIFF, HEIC, AVIF. When
   an ICO holds several sizes, the **largest image** is selected as the source
-  pixels (most useful), with the rest discarded (note if >1 size). **vips**.
+  pixels (most useful), with the rest discarded (note if >1 size). **vips** through the
+  worker's ICONDIR parser (§3.5.5).
 - **As target ← sources:** JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, AVIF, SVG —
-  **vips** (ICO save via the ImageMagick `magicksave` delegate **by default**, or the
-  in-core Rust ICO assembler fallback — `[DEFER: build spike]`, §3.5.5/§6.1.3). The classic
-  everyday use is **PNG/JPG/SVG → ICO** to make a favicon/app icon.
-- **Engine(s):** **vips** (ICO load built-in; **ICO save `[DEFER: corpus/build spike]`** —
-  the default path is the ImageMagick `magicksave` delegate (libvips has no native ICO
-  saver), but ImageMagick's ICO encoder has documented trouble with **256px / multi-size**
-  entries, so the multi-size-incl-256px capability is **unverified** until the §6.1.3 build
-  spike confirms it (§3.5.5). **Fallback if the spike fails: an in-core Rust ICO container
-  assembler** wrapping vips-produced per-size PNG/BMP frames — ICO is a trivial container,
-  so this removes ImageMagick from the ICO path entirely while keeping vips as the per-frame
-  encoder. Either way: one vips process for the frames. No patent.
+  **vips** (each size vips-encoded as PNG; the worker's ICONDIR assembler writes the `.ico`,
+  §3.5.5). The classic everyday use is **PNG/JPG/SVG → ICO** to make a favicon/app icon.
+- **Engine(s):** **vips** inside the image worker `[DECIDED]` — libvips has no ICO saver or
+  loader, so a safe-Rust ICONDIR assembler and parser in the worker carry the container:
+  save wraps vips-encoded PNG frames, and load takes the largest entry (a PNG entry through
+  `pngload`, a DIB entry through ImageMagick's `magickload`), all in one worker process
+  (§3.5.5). No patent.
 - **Options/settings:**
   - *Basic:* **Icon sizes** — an `Enum` preset `[DECIDED]`: **standard**
     `[16, 32, 48, 256]` (default — favicons and Windows app icons in one file),
@@ -486,12 +471,12 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
     downscaled to each size (high-quality Lanczos); upscaling beyond the source is
     **skipped** (never invents detail) with a note if the source is smaller than a
     requested size.
-  - No other option: the 256 px entry is always stored as an **embedded PNG**
-    (required for a valid, small 256 entry).
+  - No other option: every entry is stored as an **embedded PNG** (a valid, small 256
+    entry needs it).
 - **Lossy?:** **`→ ICO` is lossy by downscaling** (multiple reduced copies) →
-  **`image_downscale`** (§2.9 — NOT `image_palette`; ICO stores full-colour PNG/32-bit
-  BMP entries, so there is no colour-depth reduction) — though each stored copy is
-  itself losslessly stored (PNG/BMP). ICO→PNG (largest frame) is **not** lossy.
+  **`image_downscale`** (§2.9 — NOT `image_palette`; ConvertIA stores full-colour PNG
+  entries, so there is no colour-depth reduction) — though each stored copy is
+  itself losslessly stored (PNG). ICO→PNG (largest frame) is **not** lossy.
 - **Edge cases:** **Transparency preserved** (ICO supports alpha via PNG/32-bit
   BMP entries). Non-square sources are letter-/pillar-boxed transparently or
   centred — **`[DECIDED]`** default: **pad to square with transparency** (don't crop,
@@ -509,9 +494,9 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   everyday demand to rasterise a vector to HEIC/AVIF; kept off the offered set to
   stay uncluttered.)*
 - **As target ← sources:** **none** (source-only).
-- **Engine(s):** **svg** rasteriser (**librsvg**) — the image-worker loads the SVG via
-  **`rsvg::Loader` directly** (not via libvips `svgload`, which exposes no external-resource
-  toggle), renders it, then the bitmap is saved by **vips** — **one process** for the pair.
+- **Engine(s):** **svg** rasteriser (**librsvg**, the `librsvg` crate) — the image-worker
+  loads the SVG via **`rsvg::Loader` directly** (libvips is built without `svgload`),
+  renders it, then the bitmap is saved by **vips** — **one process** for the pair.
   No scripting, no external/`href` network fetch (offline + security: a remote `<image href>`
   is **not** fetched), **and no out-of-input local-file read** — the **load-bearing control
   is loading the SVG via `rsvg::Loader` with NO `base_file`/base URL** (`read_stream`/
@@ -520,8 +505,9 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   so it refuses **all** local `<image href>`/XInclude reads by construction (and remote
   schemes regardless). **No base-URL/scratch confinement is used** — supplying any base URL
   is exactly what RE-ENABLES the CVE-2023-38633-class resolution surface (the defence is the
-  *absence* of a base URL). **librsvg is pinned ≥ 2.56.3** as a belt-and-suspenders floor,
-  not load-bearing for v1 (§3.5.5 / §6.1.3 version + API + corpus assertions). No patent.
+  *absence* of a base URL). **The `librsvg` crate's floor is ≥ 2.56.3**, a
+  belt-and-suspenders floor, not load-bearing for v1 (§3.5.5 control 2; §6.1.3 API and
+  corpus assertions). No patent.
 - **Options/settings:**
   - *Basic:* **Width** — a `Size` of 0–32 767 px `[DECIDED]`. **0**, the default, is
     the SVG's **intrinsic** width: its explicit `width`/`height` when it has them, else
@@ -543,7 +529,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   **bundled font set (§3.9.3)** — **not** host OS fonts. The librsvg rasteriser runs
   **inside the image-worker process**, which has **no host-font access** (consistent with
   the offline/portable floor and the §2.12 isolation), so its fontconfig is pointed at the
-  bundled Liberation/Carlito/Caladea + Noto subset. A glyph not in the bundled set
+  bundled Liberation/Carlito/Caladea + Noto subset (the `font_dir=` argv key, §3.5.5). A
+  glyph not in the bundled set
   substitutes (a predictable-loss font note may be surfaced) — the substitution is
   deterministic across machines, unlike host-font resolution. **Huge/zero
   intrinsic size:** if no size resolvable, fall back to viewBox @96 DPI; clamp a
@@ -623,7 +610,8 @@ open contradicts "it just works").
   multi-image HEIF.
 - **Preserved** only when the chosen target is animation-capable: GIF↔WEBP (and
   GIF/WEBP passthrough). All animation→animation in v1 is **GIF or animated WEBP**
-  as the destination.
+  as the destination. APNG and animated AVIF are read as their **first frame** for
+  every target `[DECIDED]`.
 - **Collapsed to the first frame** for every still target (JPG/PNG/BMP/TIFF/HEIC/
   AVIF-still/ICO) with a calm inline note: *"Animated — only the first frame is
   converted."* (→ §2.9 catalog).
@@ -637,10 +625,10 @@ open contradicts "it just works").
   even very large rasters within bounded memory; a pathological synthetic size
   (e.g. tiny SVG asked to render at 50 000 px) is rejected up front, never OOMs.
 
-### Format-default decisions (resolved; only the corpus-gated items remain `[DEFER: corpus]`)
+### Format-default decisions (resolved)
 1. **HEIC/AVIF encode code-path — `[DECIDED]`: standardise on libvips `heifsave`.**
    *All* HEIC/AVIF *encoding* uses libvips `heifsave` (`compression=hevc` for HEIC
-   via x265, `compression=av1` for AVIF via libheif's AV1 plugin → **libaom**). One
+   via kvazaar, `compression=av1` for AVIF via **libaom**, both built into libheif). One
    code path; `HEIC↔AVIF` is trivially single-engine; and crucially **only ONE AV1
    encoder ships** (libaom, via libheif) — the standalone `libavif`+aom encoder is
    **not** bundled (it would duplicate an AV1 encoder for no v1 benefit). The
@@ -651,7 +639,8 @@ open contradicts "it just works").
    (and any "unavailable on platform X" honest surfacing) flows from that table.
 3. **APNG output — `[DECIDED]`: collapse to first frame for PNG.** Animated sources →
    PNG collapse to the first frame; "keep the animation" routes to WEBP/GIF. (Animated
-   PNG *input* is supported.) Rationale: libvips APNG *write* is limited, and PNG is the
+   PNG *input* is read as its first frame, *Animation policy*.) Rationale: libvips APNG
+   *write* is limited, and PNG is the
    "single still image" everyday target — animation belongs on WEBP/GIF.
 4. **EXIF GPS / location stripping default — `[DECIDED]`: preserve-all + Advanced strip
    toggle.** v1 preserves metadata (incl. GPS) by default and offers an Advanced
@@ -660,13 +649,8 @@ open contradicts "it just works").
 5. **ICO non-square padding default — `[DECIDED]`: pad to square with transparency**
    (no crop, no distort). Rationale: padding never discards image content, whereas
    centre-crop silently drops pixels.
-6. **`heifsave effort` for HEIC encode** — integer 0–9 (libvips param; NOT a `preset`
-   string). v1 default `effort 5` `[DECIDED]`; `[DEFER: corpus]` whether to lower to
-   `effort 3` for batch speed (and whether the bundled libheif/x265 path measurably
-   honours `effort` — libvips documents it as primarily an AV1 lever; the HEVC steer
-   flows through libheif `speed = 9 - effort`). Revisit against batch timing (§3.8).
+6. **HEIC `effort` — `[DECIDED]`: not exposed.** HEIC encode leaves `heifsave`'s integer
+   `effort` at libvips' default; AVIF keeps its exposed `effort` (default 4).
 7. **JPG default Q = 82 / WEBP default Q = 80 / HEIC&AVIF default Q = 60 —
-   `[DEFER: corpus]`.** These reasoned everyday defaults (above the bare-library
-   defaults) are the v1 starting values; the only residual is confirming them against
-   the real-photo corpus (SSOT *v1 DoD* reliability gate) before locking §1.6 — a
-   measured calibration, not an open design call.
+   `[DECIDED]`, locked.** These everyday defaults sit above the bare-library defaults; the
+   §6.5 corpus gate validates the pairs at these values rather than re-tuning them.
