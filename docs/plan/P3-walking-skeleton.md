@@ -553,8 +553,8 @@ legs for two of P0.4.3's primary named in-core G48 targets — `crate::fs_guard:
 BODIES exist (P3.6/P3.8/P3.41). P3.67 is the STABLE-toolchain replay (`NO libFuzzer harness`);
 this is its instrumented-nightly counterpart, the peer of the DETECT instrumented-nightly leg
 (P9.35), the imgworker-FFI leg (P4.35.1), and the zip-slip leg (P7.50.1) — plus, separately, the
-IPC serde/numeric-overflow legs (P2.126), which are **G16 `proptest`s in `tests/`, NOT
-instrumented-nightly libFuzzer legs** (the trusted WebView→Rust door). Without it, fs_guard + CSV/TSV would have ONLY the stable replay and no box wiring
+IPC serde/numeric-overflow legs (P2.126), which are **G16 `proptest`s in `ipc/mod.rs`
+`ipc_boundary_proptest`, NOT instrumented-nightly libFuzzer legs** (the trusted WebView→Rust door). Without it, fs_guard + CSV/TSV would have ONLY the stable replay and no box wiring
 `cargo +nightly-YYYY-MM-DD fuzz run` for them into `.github/workflows`. Placed at end-of-phase
 (after P3.67/P3.72, the file's established end-of-P3 convention) so it stays a single gap-free
 id (`.73`) rather than re-numbering the whole P3 sequence + every cross-phase reference.

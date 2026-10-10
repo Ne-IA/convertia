@@ -24,9 +24,9 @@
 //! the in-crate `pub(super)`/private reach this harness uses for the narrow public `fuzz_api` surface — the
 //! crate-root module remains the delivered, correct shape). The workspace-root `tests/` dir is likewise not
 //! a cargo target (the P1.6 root manifest is VIRTUAL); it holds the §6.4.5 corpus data. **This is the P2.126
-//! precedent applied unchanged**: the P0.4.3 `IPC_PROPTEST_TARGETS`, contracted identically as "in `tests/`,
-//! NOT under `fuzz/`", were delivered as a `#[cfg(test)]` module inside `src-tauri/src/ipc/mod.rs` and
-//! ratified there.
+//! precedent applied unchanged**: the P0.4.3 `IPC_PROPTEST_TARGETS`, first contracted as "in `tests/`, NOT
+//! under `fuzz/`", were delivered as the `#[cfg(test)]` module `ipc_boundary_proptest` inside
+//! `src-tauri/src/ipc/mod.rs`, which the contract now names as their home.
 //! The crate-root PLACEMENT follows `crate::test_corpus` (P3.61) / `crate::test_volumes` (P3.65): this is
 //! `#[cfg(test)]`-only infrastructure spanning three §0.7 tiers (`detection`, `fs_guard`, `engines`), so
 //! homing it inside any one of them would invert the dependency direction the tiers express. It adds a FILE,
@@ -37,9 +37,9 @@
 //! bodies this phase delivered — `detect` (P3.29), `fs_guard_resolve_identity` (P3.6),
 //! `fs_guard_is_safe_output` (P3.8), `csv_tsv` (P3.41). The remaining two are owned by the boxes that build
 //! their surfaces: `imgworker_ffi` by P4.35.1 and `zip_slip` by P7.50.1, each of which extends
-//! [`InCoreTarget`] with its key in the same commit that stands its target up. G48's replay sentence also
-//! names the command-handler serde boundary; that surface is deliberately OUT of scope here because it is a
-//! G16 `proptest` (P2.126, `crate::ipc`), not a libFuzzer target — it owns no `fuzz/` corpus to replay.
+//! [`InCoreTarget`] with its key in the same commit that stands its target up. The command-handler serde
+//! boundary is not replayed here: it is a G16 `proptest` (`crate::ipc` `ipc_boundary_proptest`), not a
+//! libFuzzer target, and owns no `fuzz/` corpus to replay.
 //!
 //! **Forward note for P3.73 (the corpus LOCATION is load-bearing).** cargo-fuzz writes findings to
 //! `fuzz/artifacts/<target>/` by default, but the P0.5.8 convention this harness implements walks

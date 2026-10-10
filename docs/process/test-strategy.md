@@ -403,7 +403,8 @@ feeding structured JSON through **derived safe-Rust `Deserialize`**), so a `prop
 for robustness is the correct level — malformed input is a `Result::Err` by construction,
 not a panic/UB, and there is no unsafe path for coverage-feedback to reach; coverage-guided
 libFuzzer stays reserved for the six untrusted-byte surfaces above. Both IPC legs are the
-P0.4.3 `IPC_PROPTEST_TARGETS`, in `tests/`, **NOT** under `fuzz/`: **(a)** each
+P0.4.3 `IPC_PROPTEST_TARGETS`, homed in the `#[cfg(test)]` module `ipc_boundary_proptest` of
+`src-tauri/src/ipc/mod.rs`, **NOT** under `fuzz/`: **(a)** each
 `#[tauri::command]` handler's serde boundary — malformed `serde_json` (null-byte strings,
 `MAX_USIZE` arrays, deeply-nested JSON, NaN/Inf) → a structured `Err`, **never a panic**
 (the WebView→Rust boundary the **G29** *structural* Semgrep cannot reach — it proves the
@@ -445,8 +446,8 @@ needed. So: **all platforms run the stable-toolchain replay; Linux + macOS
 additionally run the instrumented `cargo-fuzz` nightly leg.** A fixed crash cannot
 silently regress on any OS, and a **G24 planted-positive** asserts a committed
 crash fixture **fails** the replay if its fix is reverted (the replay is armed, not
-a no-op). The committed corpus/crash fixtures are integrity-pinned by the **G24a**
-fixture manifest (§5).
+a no-op). The committed corpus/crash files are plain git-tracked files (never LFS), pinned
+by git content addressing; `check-fuzz-contract` requires each named bound-firing seed (§3).
 
 **Resource bounds are PINNED** (a decompression-bomb / recursive-quote input must
 not OOM/hang the shared runner and surface as flaky infra — a denial-of-CI vector):
@@ -576,9 +577,9 @@ machine-enumerated invariants:**
    where TIFF strips ICC) with no gate catching the misclassification.
 
 **Plus a pure-logic lossy-disclosure property test** (separate from the
-per-corpus-file integration check): a property test in
-`crate::outcome`/`crate::format_registry` iterates the **complete `FormatId ×
-FormatId` product** asserting `lossy_disclosure(src, tgt) == is_lossy(src, tgt)` —
+per-corpus-file integration check): a property test in the §3.2 registry module
+(P4.92, G32 row) iterates the **complete `FormatId × FormatId` product** asserting the
+disclosure the offer makes agrees with the pair's registered lossy data —
 catching "added a pair but forgot the lossy flag" over the *whole* matrix without a
 corpus file per combination (the §6.4.3 per-corpus-file check only proves it for the
 files present).
@@ -589,14 +590,14 @@ uninitialized memory, an **embedded-timestamp leak** (a privacy concern for an
 offline app), or a randomized path that breaks §2.5 re-run-equivalence. The floor
 is **≥ 1 pair per engine PER OUTPUT-FORMAT CATEGORY** (FFmpeg audio/video/container;
 LibreOffice word-processing/spreadsheet/presentation; libvips/ImageMagick
-per-colour-space — each category enumerated in the corpus manifest so plan-lint
-checks the floor is met; "≥ 1 per engine" was too weak — a different muxer/writer
-can embed a timestamp the first pair did not). **The floor is met PER PLATFORM:** the
-enumerated determinism pairs run on all three native CI legs (§6.4.4) — a category whose
-only pair is §3.4-unavailable on a platform is covered by another available pair in that
-category on that platform; plan-lint checks the per-platform floor (non-determinism can be
-platform-specific — an embedded timestamp / uninitialised padding can appear in one OS'
-encoder build and not another). A **`diffoscope`** (the reserved
+per-colour-space — each category enumerated in the corpus manifest by the box that holds
+its engine's determinism floor, named in the G32 row; "≥ 1 per engine" was too weak — a
+different muxer/writer can embed a timestamp the first pair did not). **The floor is met PER
+PLATFORM:** the enumerated determinism pairs run on all three native CI legs (§6.4.4) — a
+category whose only pair is §3.4-unavailable on a platform is covered by another available
+pair in that category on that platform (non-determinism can be platform-specific — an
+embedded timestamp / uninitialised padding can appear in one OS' encoder build and not
+another). A **`diffoscope`** (the reserved
 **G60** tool) **empty-diff** assertion on the double-run pair is the positive proof:
 `sha256` inequality says outputs *differ*, `diffoscope` localises it to the embedded
 timestamp / PDF XMP `CreateDate` / padding so the leak is **diagnosable**, not just
@@ -652,7 +653,7 @@ content-floor tags); this file owns the **conventions** for *how tests reach it*
 - **Fixture integrity (G24a).** These untrusted-input files are fed to the
   highest-privilege C/C++ decoders, so a poisoned/swapped fixture or a redirected
   LFS pointer must surface as a diff, not a silent substitution. A committed
-  **SHA-256 manifest of every tracked corpus/crash fixture** (and the LFS-resolved
+  **SHA-256 manifest of every tracked `tests/corpus/` fixture** (and the LFS-resolved
   `corpus-large` objects) is verified in CI **before** the corpus runs, plus
   `git lfs fsck` on the Lane-B leg. G24a additionally asserts every corpus path is
   actually `filter=lfs`-tracked per the **effective `git check-attr filter`** (an
@@ -661,10 +662,9 @@ content-floor tags); this file owns the **conventions** for *how tests reach it*
   `.gitattributes` + `.lfsconfig` join the security-critical-file set. **Update
   protocol:** the SHA-256 manifest is **regenerated by the same `stage-corpus` step**
   that adds a fixture, in the SAME commit; G24a fails on a stale manifest (a
-  `git diff --exit-code` of the regenerated manifest), and a plan-lint sub-check
-  asserts every `fuzz/corpus/` + `corpus-large/` path has a manifest entry (an added
-  fixture with no manifest row fails, not silently passes — same discipline as the
-  `engines.lock` SHA rows).
+  `git diff --exit-code` of the regenerated manifest); G24a's bijection leg fails an
+  added corpus fixture with no manifest row. The in-repo `fuzz/corpus/` +
+  `fuzz/crashes/` seeds carry no manifest (git content addressing, §1.5).
 
 ---
 
@@ -699,7 +699,7 @@ tested the conversion.
 
 ---
 
-## 5. Coverage — floors, diff gate, shard-merge (§6.4 · G27/G28)
+## 5. Coverage — floors and diff gate (§6.4 · G27/G28)
 
 Two **separate** coverage gates, both enforced; neither replaces the other.
 
@@ -724,11 +724,10 @@ Two **separate** coverage gates, both enforced; neither replaces the other.
   kernel), and **`crate::isolation`** (the subprocess wrapper) carry a **branch**
   floor via `cargo-llvm-cov --branch`, ratcheting like the line floor — an untested
   platform/error branch in exactly the highest-consequence surfaces is a
-  deterministic failure, not a line-coverage false-green. **Sequencing (P1.54):** the
-  branch metric needs **nightly** (`-Z coverage-options=branch`) and these three
-  modules are **P2/P3** security-kernel code, so the `[branch]` floors land then (with
-  the nightly branch run); the P1.54 **line** tier is live now over the foundation
-  crates. The `_rust_branch_domain` mapping is already wired.
+  deterministic failure, not a line-coverage false-green. **Sequencing:** the branch
+  metric needs **nightly** (`-Z coverage-options=branch`), so the `[branch]` floors are
+  seeded by the nightly branch run the G27 row names (Linux + Windows); the **line**
+  tier is live per push.
 - **Gate scripts are EXCLUDED from the floors** — they are **G24**-self-tested
   instead (positive + negative). The exclusion glob (`scripts/` + `.github/`) is
   wired into the `cargo-llvm-cov` and vitest v8 invocations from first activation
@@ -744,22 +743,15 @@ is the per-push pressure that keeps each commit's *own* new lines tested; the fl
 ratchet is the long-run direction. A change can pass the floor (the tree is already
 high) yet fail the diff gate (its new lines are bare) — both must pass.
 
-### 5.3 Single-leg (Lane A) measurement; 3-OS shard-merge is Lane-B `[Build-Session-Entscheidung: P1.54]`
+### 5.3 Single-leg (Linux) measurement
 
 The **per-push G27/G28 coverage is measured on the Linux leg only**: spec §6.7.1 runs
 the OS-agnostic step-3 unit/property/fault-injection test leg on the Linux runner (only
-compile-sanity fans to the 3-OS matrix), so the per-push floors read a **single Linux
-report** — there is no Lane-A shard-merge. (`check-coverage` reads one
-`cargo llvm-cov --json`/`--lcov` + one Vitest v8 `json-summary`/`lcov`; the per-domain
-roll-up sums covered/count, never averaging per-file percents.)
-
-The **3-OS shard-merge belongs to Lane B** (§6.7.2): the release reliability run
-exercises the integration + property + corpus suites on **all three** legs, where
-per-OS branch divergence matters. There, to avoid a last-writer-wins race, **each leg
-emits a NAMED partial report**, the partials are **merged in a FIXED order**, and the
-floor is applied to the **merged report only**. (Per-OS **branch** coverage of the
-security kernel — `crate::detection`/`fs_guard`/`isolation` — is the P2/P3 refinement
-that lands with those modules + the nightly branch run; see 5.1 bullet 3.)
+compile-sanity fans to the 3-OS matrix), so `check-coverage` reads **one report** (one
+`cargo llvm-cov --json`/`--lcov` + one Vitest v8 `json-summary`/`lcov`), the per-domain
+roll-up sums covered/count and never averages per-file percents, and there is **no
+shard-merge**. Per-OS **branch** coverage of the security kernel
+(`crate::detection`/`fs_guard`/`isolation`) is the nightly branch run (§5.1).
 
 ---
 
@@ -1049,8 +1041,8 @@ mechanical:
    CSV/TSV engine, the imgworker FFI shim) → add/extend a **`cargo-fuzz`** target
    (§1.5) **and** a deterministic bound-firing fixture. *(The `#[tauri::command]`
    serde boundary is NOT an untrusted-byte surface — it is the trusted WebView→Rust
-   door — so it takes a **G16 `proptest`** in `tests/`, never a `cargo-fuzz` target;
-   §1.5.)*
+   door — so it takes a **G16 `proptest`** in `ipc/mod.rs` `ipc_boundary_proptest`, never
+   a `cargo-fuzz` target; §1.5.)*
 5. **A UI flow** → the **E2E** §5.2 walkthrough (§1.6) on the platforms the driver
    supports; **a component/hook** → **Vitest** (§1.2); **anything rendered** → the
    **axe** a11y level (§1.7).

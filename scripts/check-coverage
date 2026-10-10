@@ -6,9 +6,10 @@ Three tiers:
 
   STRUCTURAL FREEZE (live NOW): the committed `coverage-floors.toml` policy is pinned — `[meta].diff_floor`
   (G28, == 80) and `[meta].target_line_floor` (the 50->70 ratchet destination) cannot be silently relaxed,
-  and the BRANCH_FLOOR_DOMAINS contract (the no-harm/detect kernel that MUST carry a branch floor once it
-  lands: crate::detection / crate::fs_guard / crate::isolation) is frozen here. A relaxation reddens the gate
-  (an owner-acked L(-1) edit — coverage-floors.toml is in the L(-1) cage, G71).
+  and the BRANCH_FLOOR_DOMAINS contract (the no-harm/detect kernel that MUST carry a branch floor, seeded
+  by the P9.49 nightly branch act: crate::detection / crate::fs_guard / crate::isolation) is frozen here.
+  A relaxation reddens the gate (an owner-acked L(-1) edit — coverage-floors.toml is in the L(-1) cage,
+  G71).
 
   INCREASE-ONLY DECREASE-GUARD (live the moment any floor exists): the floors ratchet UP only. A commit
   that LOWERS any [line]/[branch] floor vs the prior committed version FAILS (a raise is a deliberate
@@ -29,10 +30,10 @@ Three tiers:
   TOOLING is excluded from the floors AND the diff: a Rust file maps to a product crate only if it lives
   under `src-tauri/src/` (convertia-core) or `crates/imgworker/src/` (convertia-imgworker); the `xtask`
   dev-bin + gate scripts are tooling, not product (_rust_domain -> None). BRANCH coverage needs nightly
-  (`-Z coverage-options=branch`); the pinned floor is stable, so Rust branch data is ABSENT in P1 (the
-  [branch] BRANCH_FLOOR_DOMAINS — crate::detection/fs_guard/isolation — are P2/P3 security-kernel modules
-  that land with the nightly branch-coverage run). TS branch coverage (Vitest v8) IS measured but is not
-  floored in P1 (no [branch] row). The live tier is skipped-with-notice on a leg with no report.
+  (`-Z coverage-options=branch`); the pinned toolchain is stable, so the per-push legs carry no Rust
+  branch data (the [branch] BRANCH_FLOOR_DOMAINS floors — crate::detection/fs_guard/isolation — are
+  seeded by the P9.49 nightly branch act). TS branch coverage (Vitest v8) IS measured but is not floored
+  (no [branch] row). The live tier is skipped-with-notice on a leg with no report.
 
   BOOT-GLUE DIFF EXEMPTION (G28 only, P2.135 — owner decision A): an `AppHandle`-coupled fn (the launch /
   host glue — the §7.8.1 forward_launch_intake funnel, the single-instance / RunEvent::Opened wiring, the
@@ -72,9 +73,9 @@ for _stream in (sys.stdout, sys.stderr):          # the console's codepage is no
 ROOT = Path(__file__).resolve().parents[1]
 FLOORS = ROOT / "coverage-floors.toml"
 
-# the no-harm / detect kernel that MUST carry a BRANCH-coverage floor once it lands (a guard rejecting
-# `../` but not `..\` is 100% LINE-covered by Unix-only tests yet misses the Windows branch). Frozen here,
-# not in the toml (the toml holds only numeric floors). §0.7 crate-module logical names.
+# the no-harm / detect kernel that MUST carry a BRANCH-coverage floor, seeded by the P9.49 nightly branch
+# act (a guard rejecting `../` but not `..\` is 100% LINE-covered by Unix-only tests yet misses the Windows
+# branch). Frozen here, not in the toml (the toml holds only numeric floors). §0.7 crate-module logical names.
 BRANCH_FLOOR_DOMAINS = ("crate::detection", "crate::fs_guard", "crate::isolation")
 DIFF_FLOOR = 80          # G28 — >= 80% on changed lines
 TARGET_LINE_FLOOR = 70   # the 50 -> 70 ratchet destination (informational target)
@@ -92,7 +93,7 @@ TS_DOMAIN = "ui"
 
 # the security-kernel module names behind BRANCH_FLOOR_DOMAINS (strip the `crate::` prefix) — used to map
 # a Rust file under src-tauri/src/<module>/ to its branch-floor domain. Branch data is nightly-only, so
-# this is inert in P1 (the modules are P2/P3 shells); the mapping is ready for when they land.
+# this is inert on the per-push legs; the P9.49 nightly branch act feeds it.
 SECURITY_BRANCH_MODULES = tuple(d.split("::", 1)[1] for d in BRANCH_FLOOR_DOMAINS)
 
 # a unified-diff hunk header: `@@ -a,b +c,d @@` — capture the new-side start (c) + optional length (d).
@@ -237,8 +238,8 @@ def _rust_domain(path: str) -> str | None:
 
 def _rust_branch_domain(path: str) -> str | None:
     """(pure) the `crate::<module>` BRANCH-floor domain for a Rust file under one of the security-kernel
-    modules (BRANCH_FLOOR_DOMAINS), else None. Inert in P1 (those modules are P2/P3 shells + Rust branch
-    data is nightly-only) — ready for when the security kernel + the nightly branch run land."""
+    modules (BRANCH_FLOOR_DOMAINS), else None. Inert on the per-push legs (Rust branch data is
+    nightly-only) — seeded by the P9.49 nightly branch act."""
     p = path.replace("\\", "/")
     if "src-tauri/src/" not in p:
         return None

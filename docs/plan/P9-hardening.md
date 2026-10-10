@@ -258,6 +258,15 @@
 
 ---
 
+### Security-kernel branch coverage (§6.7.1 · G27 — the nightly per-OS branch floor)
+
+- [!extern] **P9.49** [GATE,CI] Seed the G27 branch-coverage floor for `crate::detection` / `fs_guard` / `isolation` — a nightly `--branch` run on Linux + Windows · §6.7.1 §6.4.4 · G27
+  > Co-Pilot act under owner-ack, because every deliverable is caged (L(-1)); the Loop skips and collects it.
+  > Deliverables: the scheduled nightly `-Z coverage-options=branch` job in `.github/workflows/fuzz.yml` on the `gate-tools.toml [toolchain] fuzz_nightly` pin; the `coverage-floors.toml [branch]` rows, seeded below the first measured value per domain; any `check-coverage` ingestion change with its `g24-coverage` legs; the G27 row.
+  > Realizability probe at this act: a Windows nightly `--branch` run over the three modules. If it fails, the floor runs on Linux only and `gate-status.md` gains a `decided` row naming per-OS kernel branch coverage as the accepted residual; the Windows-only branches then rest on the Windows unit tests, without a measured floor.
+
+---
+
 ### The phase-end Co-Pilot hardening sweep — the standing phase-close box
 
 > The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):

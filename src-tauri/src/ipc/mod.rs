@@ -389,15 +389,17 @@ mod ipc_boundary_proptest {
     //! `ipc_serde` and `ipc_numeric_overflow`. These are the P2-scoped PROPTEST half of the in-core fuzz
     //! plane; they live in the test suite (`#[cfg(test)]`), NOT the `fuzz/` libFuzzer tree — the 6
     //! coverage-guided G48 `fuzz_target!` in-core targets live in that separate tree (built across P3–P9),
-    //! and `scripts/check-fuzz-contract` places these two IPC legs in `tests/` by design (its docstring:
-    //! "the IPC proptest legs … land in P2 (tests/, NOT under fuzz/)"). The P2.126 box and the frozen
+    //! and `scripts/check-fuzz-contract` places these two IPC legs in this `#[cfg(test)]` module by design
+    //! (its docstring: "The IPC proptest legs … live in `src-tauri/src/ipc/mod.rs` `ipc_boundary_proptest`
+    //! (a `#[cfg(test)]` module, NOT under fuzz/)"). The P2.126 box and the frozen
     //! `check-fuzz-contract` home the IPC serde boundary in `IPC_PROPTEST_TARGETS` — a G16 proptest in the
     //! test suite, NOT a `fuzz/` libFuzzer target; this module IS that proptest.
     //!
-    //! Leg (a) `ipc_serde` (test-strategy §1.5 pt.5): tauri deserializes each non-runtime command arg via
-    //! `serde_json::from_value`, so feeding arbitrary / malformed JSON to EVERY registered §0.4.1 inbound arg type must
-    //! yield a structured `Result`, never a panic across the Tauri boundary (§0.4.3 `IpcError` is the `Err`
-    //! arm). The runtime-injected `AppHandle` / `Channel<T>` args are not deserialized and are excluded.
+    //! Leg (a) `ipc_serde` (test-strategy §1.5, the IPC-boundary paragraph): tauri deserializes each
+    //! non-runtime command arg via `serde_json::from_value`, so feeding arbitrary / malformed JSON to EVERY
+    //! registered §0.4.1 inbound arg type must yield a structured `Result`, never a panic across the Tauri
+    //! boundary (§0.4.3 `IpcError` is the `Err` arm). The runtime-injected `AppHandle` / `Channel<T>` args
+    //! are not deserialized and are excluded.
     //!
     //! Leg (b) `ipc_numeric_overflow` (§0.4 T10): the single inbound numeric IPC arg — `OptionValue::Int(i64)`
     //! carried in `options: OptionValues` (C4/C5/C6) — is exercised at the P0.4.3 boundary set

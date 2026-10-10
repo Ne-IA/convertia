@@ -26,9 +26,9 @@ convertia-imgworker = 0
 ui = 90
 
 # BRANCH-coverage floors for the security-critical crates only — a guard that rejects `../` but not `..\`
-# is 100 % LINE-covered by Unix-only tests yet misses the Windows branch. EMPTY in P1: Rust branch
-# coverage needs nightly (`-Z coverage-options=branch`) and the BRANCH_FLOOR_DOMAINS modules
-# (crate::detection / crate::fs_guard / crate::isolation) are P2/P3 security-kernel code — the rows are
-# added when those modules + the nightly branch-coverage run land (the mapping is already wired in
-# check-coverage). (TS branch coverage IS measured but is not floored here — no security-kernel TS.)
+# is 100 % LINE-covered by Unix-only tests yet misses the Windows branch. EMPTY until seeded: Rust branch
+# coverage needs nightly (`-Z coverage-options=branch`), so the rows for the BRANCH_FLOOR_DOMAINS modules
+# (crate::detection / crate::fs_guard / crate::isolation) are seeded by the P9.49 act from the first
+# nightly `--branch` measurement (Linux + Windows); the mapping is already wired in check-coverage.
+# (TS branch coverage IS measured but is not floored here — no security-kernel TS.)
 [branch]

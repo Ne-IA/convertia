@@ -3,10 +3,10 @@
 
 The adversarial/decompression-bomb fixtures + the LFS-backed large media are UNTRUSTED-INPUT files fed
 to the highest-privilege Lane-B C/C++ decoders: a poisoned/swapped fixture (or an LFS pointer redirected
-to a tampered object) is an unguarded path to feed a crafted exploit into the test runner, and a swapped
-crash-replay fixture silently masks a regression. So a committed SHA-256 manifest of every tracked corpus
-fixture is verified BEFORE the corpus runs, mirroring the `engines.lock` SHA discipline. This gate is
-that verification (+ the LFS-resolution governance the r7 hardening added).
+to a tampered object) is an unguarded path to feed a crafted exploit into the test runner. So a committed
+SHA-256 manifest of every tracked corpus fixture is verified BEFORE the corpus runs, mirroring the
+`engines.lock` SHA discipline. This gate is that verification (+ the LFS-resolution governance the r7
+hardening added).
 
 The authoritative manifest is the ONE root `tests/corpus/manifest.toml` (spec §6.4.5): one `[[file]]`
 row per fixture carrying `path` (relative to the corpus root), `sha256`, `licence`, `provenance` (and a
@@ -35,8 +35,9 @@ root, §3 "committed in-repo") is sha256-verified directly and is NOT required t
 LFS-tracking assertion (4) binds only the LFS tier (a file whose on-disk content is an LFS pointer) -
 reconciling the G24a row's "filter=lfs-tracked" (the pointer-redirect threat) with the §3 two-tier
 storage split. (ii) the gate scopes its bijection to the §6.4.5 ONE-root-manifest corpus root
-(`tests/corpus/`); the `fuzz/corpus/`+`fuzz/crashes/` fuzz-replay set's integrity is the P0.5.8 fuzz box's
-manifest concern (its files land in P3). (iii) the §6.4.5 ship-integrity leg (c) (corpus never in the app
+(`tests/corpus/`); the in-repo `fuzz/corpus/`+`fuzz/crashes/` seeds are plain git-tracked files (never
+LFS): git content addressing and check-fuzz-contract's named-seed contract pin them, so they carry no
+manifest (a decided scope). (iii) the §6.4.5 ship-integrity leg (c) (corpus never in the app
 bundle) is the G35 test-asset-exclusion sub-check, NOT this gate.
 
 TARGET-ABSENT (the manifest-less-root arm only): a root without `tests/corpus/manifest.toml` ->

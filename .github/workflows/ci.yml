@@ -253,8 +253,8 @@ jobs:
       # install-gate-tools above installs every pinned tool) + llvm-tools-preview ships via
       # rust-toolchain.toml (P1.3). `--no-report` runs the instrumented `cargo test` ONCE, then two cheap
       # `report` passes emit the JSON (per-domain, G27) + lcov (per-line, G28 diff). Branch coverage needs
-      # nightly (`-Z coverage-options=branch`) so it is NOT requested here — Rust branch floors land in
-      # P2/P3 with the security kernel + the nightly run (the [branch] table is empty until then). The TS
+      # nightly (`-Z coverage-options=branch`) so it is NOT requested here — the nightly branch run and the
+      # [branch] floors are the P9.49 act's (the table is empty until then). The TS
       # `test:coverage` script emits coverage/coverage-summary.json (per-domain) + coverage/lcov.info (diff).
       - name: 'P1.54 §6.7.1 step-3: generate coverage reports (Rust cargo-llvm-cov + Vitest v8) — Linux'
         if: runner.os == 'Linux'

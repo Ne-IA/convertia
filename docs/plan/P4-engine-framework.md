@@ -961,7 +961,7 @@
 > off the P3.48 walking-skeleton hard-wire, so the option gates, the lossy-note set and the P4 UX-harness leg have
 > nothing to read. The option-declaration registry the same audit found missing is this seam, so both land here; max+1 convention.
 
-- [ ] **P4.92** [RUST] Make the §1.5 offer registry-driven — per-pair `Target` data and `OptionDecl` sets in the §3.2 registry, C3 and C6 re-cut onto it, the slice hard-wire retired · §1.5 §1.6 §3.2.2 §3.2.3 §0.6 §3.1 · G29
+- [ ] **P4.92** [RUST] Make the §1.5 offer registry-driven — per-pair `Target` data and `OptionDecl` sets in the §3.2 registry, C3 and C6 re-cut onto it, the slice hard-wire retired · §1.5 §1.6 §3.2.2 §3.2.3 §0.6 §3.1 · G29 G32
   needs: P4.4, P2.8, P3.48, P3.49, P4.56.2
   > Gap: §1.5 and §1.6 source the offer, its default and `OptionDecl` from the §3.2 registry, but §3.2.2 `EngineCapability` holds only `{source, target, direction}`, and C3 (`ipc/planning.rs` `resolve_targets`) and C6 (`ipc/conversion.rs` `resolve_slice_target`) still read the P3.48 hard-wire `engines::slice_target` (CSV↔TSV, no options). P4.4 re-cut only the conductor.
   > (1) Per-pair §0.6 `Target` data declared through the §3.2 registry: the display `label`, the §1.5 rule-3 default flag, the ≤1 `lossy` marker, `options: Vec<OptionDecl>` and the rule-5 offered-diagonal flag. Beside it, not on `Target`, sits the per-pair §2.9.1 `LossyKind` set P4.65 renders (the §2.9.2 pair-static layer; each category's §04 *Lossy kinds* table).
@@ -971,6 +971,7 @@
   > (4) `slice_target` and `resolve_slice_target` are deleted; `ipc/slice_round_trip.rs` and the orchestrator test mirrors move to the offer function in the same commit. (5) The registry-level offer and the `UserFacingFormat` roster are exported through the P4.60 `gate_api` façade (§0.7) for the Lane-A guards, which never read the health cache.
   > C3/C6 are the single home of the §3.4 build-time gap marking (`Unavailable` with the `PlatformUnavailable` reason). The degraded-target marking is P4.45's (it `needs:` this box): every C3 call marks a §3.1 degraded target `Unavailable { reason }` from the updatable health cache over the (2) offer, so the deferred macOS check (P4.46.1) reaches the next Confirm→Targets advance.
   > Acceptance: the CSV↔TSV offer comes out byte-identical with the P3.49 C3 unit tests unchanged (G70); P5–P7 register their per-pair data and §04 option shapes (§1.6) through this seam. In-phase consumers: P4.45, P4.60.2, P4.64, P4.64.1, P4.65, P4.79.
+  > Also hosts the G32 lossy-disclosure product property (the G32 row): one registry test over the complete `FormatId × FormatId` product; the exact predicate follows §1.5 and §2.9.1.
 
 ## The §5.2 slice-arm dispatch audit — split from P4.78
 

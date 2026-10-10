@@ -15,8 +15,9 @@ Two tiers, the P0.3.6 / P0.4.1 pattern:
   bare-stem / substring / cross-file masking - the P0.4.1 deny-context lesson); each fixture to a
   committed corpus FILE named by its id; each bound to a committed fuzz config (comment-stripped).
   Skips-with-notice while fuzz/ is absent, fail-closes the moment it lands. The IPC proptest legs
-  (serde-boundary, numeric-overflow) land in P2 (tests/, NOT under fuzz/) so their LIVE assertion is
-  P2-scoped, not fuzz/-gated; their CONTRACT is frozen here.
+  (serde-boundary, numeric-overflow) live in `src-tauri/src/ipc/mod.rs` `ipc_boundary_proptest` (a
+  `#[cfg(test)]` module, NOT under fuzz/), so their live assertion is the `cargo test` suite's, not
+  fuzz/-gated; their CONTRACT is frozen here.
 
 stdlib-only. L(-1) security-critical (matched by scripts/**).
 
@@ -91,9 +92,10 @@ def _box_checked(plan_file: str, box_id: str) -> bool:
     return hit.group(1) == "x"
 
 
-# --- the G16 IPC proptest contracts: the serde-boundary + the per-numeric-IPC-arg overflow legs land in
-#     P2 (P2.126, in tests/ as the C1-C13 commands land - NOT under fuzz/), so their LIVE assertion is
-#     P2-scoped, not part of the fuzz/-gated live tier here; the CONTRACT is frozen now. -------------
+# --- the G16 IPC proptest contracts: the serde-boundary + the per-numeric-IPC-arg overflow legs live in
+#     src-tauri/src/ipc/mod.rs `ipc_boundary_proptest` (a #[cfg(test)] module, NOT under fuzz/), so their
+#     live assertion is the `cargo test` suite's, not part of the fuzz/-gated live tier here; the
+#     CONTRACT is frozen now. ---------------------------------------------------------------------
 IPC_PROPTEST_TARGETS = [
     ("ipc_serde", "each #[tauri::command] serde boundary proptested with malformed serde_json -> structured Err (P2)"),
     ("ipc_numeric_overflow", "each numeric IPC arg proptested at the boundary values -> structured Err (P2)"),
