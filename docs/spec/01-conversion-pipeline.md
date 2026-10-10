@@ -231,10 +231,10 @@ batch grouping (§1.3).
      on untrusted bytes. It is **strictly bounded**: read at most **§-pinned MAX_SVGZ_SNIFF
      = 64 KiB** of inflated output and enforce a **decompression-ratio cap (≤ 100×)**,
      aborting (→ `UnsupportedType`) on either limit — defeats the decompression-bomb class.
-     This sniff stays in-core per the §2.12.4 `[DECIDED]` (resolved in the consolidation
-     pass): the pure-Rust bounded inflate, the text-encoding heuristic, and the Rust ZIP
-     central-directory peek all stay outside the §2.12 isolation boundary (memory-safe,
-     bounded, no third-party C/C++ decoder — see §2.12.4 / the README resolved log). Cross-ref images.md (SVG `.svgz` handling — the worker re-inflates with
+     This sniff stays in-core per the §2.12.4 `[DECIDED]`: the pure-Rust bounded inflate,
+     the text-encoding heuristic, and the Rust ZIP central-directory peek all stay outside
+     the §2.12 isolation boundary (memory-safe, bounded, no third-party C/C++ decoder — see
+     §2.12.4). Cross-ref images.md (SVG `.svgz` handling — the worker re-inflates with
      librsvg's own bounded loader for the actual raster). Other gzip-wrapped content is
      `UnsupportedType` ("detected: gzip archive").
 3. **Text classification** for the magic-less formats (TXT/MD/CSV/TSV/SVG): confirm
@@ -571,7 +571,7 @@ fn resolve_targets(src: UserFacingFormat, platform: Platform) -> TargetOffer;
    omit same→same). **The ONLY v1 diagonal exception is the video "normalize" self-target
    `[DECIDED]`** — **owned by video.md** (the MP4→MP4 / MOV→MOV / MKV→MKV / WEBM→WEBM / M4V→M4V
    normalize/`+faststart` self-target, video.md §"Same-container"); MP3→MP3 and all other
-   audio/image/office same-format diagonals are **NOT v1** (README `[DECIDED]`). The registry
+   audio/image/office same-format diagonals are **NOT v1** `[DECIDED]`. The registry
    encodes which diagonals are offered, and only the video normalize diagonal is enabled in v1.
 
 ### Patent-gapped / unavailable targets `[DECIDED — routing only]`
@@ -1628,35 +1628,3 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   in-run item (the uniform-list property above is what makes ONE lookup enough). (The pre-flight skip is **also**
   shown earlier in the §1.4 confirm summary; appearing again in the final summary is
   intentional, so nothing the user dropped is silently dropped, §1.4/§0.6.)
-
----
-
-## Open items raised by this file (for the README open-questions log)
-
-| ID | Item | Owner | Status |
-|----|------|-------|--------|
-| 1.10-a | Resource budgets: the output ceilings, headroom margin, GIF cap and estimate ceiling, byte budget, scratch ceiling, free-space margin, per-item memory ceiling | §1.10 (co-owned §0.9 + 04) | resolved: the §1.10 constants table (v1 values `[DECIDED]`) |
-| 1.2-sec | Whether the in-core text-encoding heuristic / Rust ZIP central-directory peek / **`.svgz` pure-Rust bounded inflate (flate2 `rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap)** may stay outside the §2.12 isolation boundary | §2.12.4 (raised by §1.2) | **`[DECIDED]` — YES, they stay in-core** (all memory-safe, bounded, no third-party **C/C++** decoder, so they satisfy the §2.12.4 "no C/C++ decoder in-core" absolute). Resolved in the consolidation pass — §2.12.4 / README resolved log. |
-
-### Resolved here with a recommended default (`[REC]`)
-
-- **Engine spawn+kill path** = `process-wrap` (Windows Job Object / POSIX process
-  group), **not** the Tauri shell-plugin `CommandChild::kill` path, so the whole
-  engine *subprocess tree* (esp. LibreOffice `soffice.bin`) dies on cancel/kill.
-  (§1.7 — the sole-owned mechanism; flagged for §0.9/§3.5 alignment.)
-- **Forceful group-kill** in v1 (no cooperative drain); safe because output is
-  temp-then-atomic-rename (§2.1/§2.14). (§1.7)
-- **Kill→wait-for-group-gone→cleanup→continue** ordering (so no descendant holds the
-  temp open on Windows). (§1.7)
-- **Hidden/system ignore list** = dotfiles + `.DS_Store`/`Thumbs.db`/`desktop.ini` +
-  Windows hidden/system attribute (fixed, not user-config). (§1.1)
-- **§1.6 owns a CI-generated consolidated defaults registry** validated against 04 for
-  the DoD "no required choices" gate. **`[DECIDED]` (escalated from `[REC]`):** §6.7.1
-  Lane-A generates the index and fails the build if any §04 pair lacks a default; §6.10
-  row 7 reads "owned by §1.6". (§1.6 / §6.7.1 / §6.10) — *no longer a bare `[REC]`.*
-- **Queue order** = deterministic collected/traversal order; no reordering. (§1.9)
-- **Aggregate progress** = monotonic `(done + active_fraction)/total`. (§1.11)
-- **No hard file-count cap**; bound memory via lightweight records + §5
-  virtualization + §0.9-bounded concurrent decodes. (§1.10)
-- **LibreOffice progress** shown as a staged determinate-looking bar (not a raw
-  spinner) since LO emits no native progress. (§1.11)

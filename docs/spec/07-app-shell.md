@@ -804,7 +804,7 @@ the frozen set — out of v1, parked alongside presets.)
 
 > SSOT origin: *Local, private & offline* (no accounts, no telemetry), *Portable,
 > no installation* (no system pollution), *Future Ideas (Parked)* (presets,
-> remembered settings are explicitly parked). README open-question owner: §7.4.
+> remembered settings are explicitly parked).
 
 ### 7.4.1 Decision
 
@@ -914,7 +914,7 @@ The blob's location/mechanism is §7.4.2; it is
 > SSOT origin: *Local, private & offline* ("no telemetry", "nothing leaves the
 > machine"), *Fail clearly* (no stack traces to the user). Reconcile with §2.11
 > (privacy invariant) and §2.13 (fault model). Feeds §6.8 SECURITY/bug-report
-> path and the §6.5 reliability gate. README owner: §7.5.
+> path and the §6.5 reliability gate.
 
 ### 7.5.1 Decision: a local, opt-in-verbosity log exists `[DECIDED]`
 
@@ -1094,8 +1094,7 @@ visible** (SSOT). The §7.4 persistence design leaves room for a single future
 > gate (one-click open-folder/file) and the only permitted network (user-initiated
 > open-project-page). On the §0.10 capabilities allowlist (opener scope). §2.7
 > fixes *which* path; this owns *how* the shell-out works. §1.12 produces the
-> output→source mapping it consumes; UI entry via §5.3 `OpenActions`. README
-> owner: §7.7.
+> output→source mapping it consumes; UI entry via §5.3 `OpenActions`.
 
 ### 7.7.1 Mechanism: `tauri-plugin-opener` `[DECIDED]`
 
@@ -1430,24 +1429,3 @@ ConvertIA deliberately does **not**, in v1:
 These negatives are intentional scope boundaries, not gaps: output OS-integration
 is **exactly** §7.7 (reveal-in-folder / open-file), input is **exactly** drop +
 picker + keyboard (§1.1/§5) plus the ad-hoc launch-time intake above (§7.8.1).
-
----
-
-## Open items surfaced by this section (for the README log)
-
-> These are now **resolved** (recorded in the README open-questions log); kept here as a
-> trace of where each was decided, not as open calls.
-- **§7.1.1** — second-launch hand-off while a batch is **running**: `[DECIDED]`
-  **refuse-busy** (UI signal = the re-focused window; `BusyNotice`, §5.3, only on a leaked
-  nudge). Owner: §7.1.
-- **§7.2.3** — engine integrity: `[DECIDED]` **hash-on-first-launch + cheap warm-launch
-  check**, with the concrete `engine-integrity.json` marker (config dir, keyed on
-  `app_version`) above. Owner: §7.2 with §3.3.
-- **§7.4.1** — persist the minimal 3-key prefs blob (theme +
-  last-destination-mode + verboseLog) vs strict zero-persistence. `[DECIDED]` ship the blob.
-  Owner: §7.4.
-- **§7.4.2** — prefs file in OS config dir vs beside-binary (portability reading).
-  `[DECIDED]` **OS config dir**. Owner: §7.4 (minor).
-- **§7.5.1/§7.5.3** — ship a local log at all, and the verbose-mode opt-in for
-  full-path/command-line capture. `[DECIDED]` **yes to both**, privacy-by-default,
-  verbose effect = next launch (§7.5.3). Owner: §7.5.

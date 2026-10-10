@@ -1996,8 +1996,7 @@ project, so no maintainer-model doc is warranted yet). `[DEFER: post-v1]` by dem
 
 **Scope split (important):** *registering* a trademark is **out of scope** (SSOT
 *Out of Scope* — no store/cert/vendor process). **Performing the clearance check and
-propagating any required rename** is **in scope** as a release gate — this is the
-distinction the README open-questions log records.
+propagating any required rename** is **in scope** as a release gate.
 
 ### 6.9.1 The clearance check (the gate input)
 

@@ -519,7 +519,7 @@ pair's single owner (decided in `04`), or `None` for a marked cell (§3.4.4a).
   `RTF→markup` pandoc-vs-LO `[DEFER: corpus]`; HEIC/AVIF encode standardised on vips
   `heifsave` `[DECIDED]`) are **owned by their `04` files**, referenced here: whichever
   way the deferred ones resolve, it remains a *single* registry owner — the trait and
-  lookup are unaffected. They feed the README open-questions log via `04`.
+  lookup are unaffected.
 
 ---
 
@@ -2106,29 +2106,6 @@ dominates, so trimming effort is spent where it matters.
   the CJK weight count / SC-vs-all-CJK breadth**, a pure size knob: **[DEFER: tune
   CJK breadth against the §3.9 size measurement once the trimmed builds exist].** The
   *families* are fixed; only how many CJK weights ship is the deferred calibration.
-
----
-
-## 3.x Decision tags summary (for the README open-questions log)
-
-| Item | Tag | Owner | Note |
-|---|---|---|---|
-| Bundle everything, fully offline | `[DECIDED]` | §3.3 | inherited Phase-1 |
-| Copyleft engines = separately-invoked binaries; MIT core clean | `[DECIDED]` | §3.6 | x264/x265/poppler/pandoc invoked, never linked |
-| Engine inventory per category | `[DECIDED]` | §3.1 | fixed by `04-formats/*` |
-| Engines spawned by Rust core (not WebView shell); no `shell:allow-execute` to WebView | `[DECIDED — recommended]` | §3.3.3 / →§0.10 | tighter threat surface + full subprocess control |
-| **AAC ship-bundled all 3 platforms** | `[DECIDED — recommended]` | §3.4 | native FFmpeg AAC, LGPL-clean; one-product requires it |
-| **H.264 ship-bundled all 3 platforms** | `[DECIDED — recommended]` | §3.4 | MP4 default-target depends on it; ~2027 expiry |
-| **HEVC *decode* ship-bundled all 3 platforms (two engines)** | `[DECIDED — recommended]` | §3.4 | **image** HEIC source → libheif+libde265 (LGPL, decode-only, image-worker); **video** HEVC-in-MOV/MKV → FFmpeg native `hevc` decoder (GPL FFmpeg binary, **never** libde265). The video.md decode inventory lists `hevc` and `libdav1d`, so §6.1.3 requires them |
-| **HEVC *encode* (write HEIC) disposition** | **`[DECIDED]`** | §3.4 | ship-bundled-isolated (x265, GPL → separate invoked binary), **behind the §3.4 availability flag** so it can flip to `unavailable` (SSOT exception-1) as a config change. kvazaar (BSD) recorded as the license-clean alternative. |
-| AVIF ship-bundled all 3 platforms | `[DECIDED]` | §3.4 | royalty-free |
-| Drop Ghostscript in v1 | `[DECIDED]` (DEFER re-add to corpus) | §3.1 / §3.6 | poppler-only `PDF→TXT`, no AGPL surface; [DEFER: re-add only if the §6.5 corpus shows poppler failing PDFs GS would salvage] |
-| **FFmpeg licence class = GPL-2.0+** (enables x264) | **`[DECIDED]`** | §3.1 / §3.6.1 | the whole FFmpeg binary is GPL-2.0+, not LGPL; separate invoked binary (aggregation); written-offer-of-source; LGPL component libs dynamically linked beside it |
-| SBOM format = CycloneDX JSON; manifest-driven generation | `[recommended]` | §3.7 | feeds §6.3 release-blocking gate |
-| HEIC/AVIF encode code-path | **`[DECIDED]`** | §3.5.5 / images.md [IMG-1] | libvips `heifsave` (`compression=hevc|av1`) for all HEIC/AVIF encode; **one AV1 encoder (libaom)** ships; standalone heif/avif encoders dropped; x265 ships as a **dynamically-loaded libheif plugin** |
-| GIF native; **BMP requires ImageMagick; ICO-save deferred** | BMP **`[DECIDED]`** / ICO **`[DEFER: build spike]`** | §3.5.5 / images.md / §6.1.3 | native `gifsave` (cgif, MIT); **BMP load+save go ONLY through the REQUIRED ImageMagick `magicksave`/`magickload` delegate** (libvips has no native BMP save at any version; ImageMagick is permissive, not GPL, and cannot be dropped). **ICO save** = default `magicksave` but the multi-size/256px capability is **unverified** — gated on the §6.1.3 build spike, with an **in-core Rust ICO container assembler** (wrapping vips frames) as the fallback that drops ImageMagick from the ICO path |
-| libvips placement = **separate image-worker process** | **`[DECIDED]`** | §3.5.5 → §2.12/§0.9 | resolves the §2.12 T1 isolation + the §2.12.4 "all subprocesses" absolute in one stroke; licence analysis unaffected |
-| Bundled-font baseline | **`[DECIDED]`** (CJK breadth `[DEFER: size]`) | §3.9.3 | Liberation+Carlito+Caladea+curated Noto CJK/RTL subset; shared by docs/sheets/slides; only the CJK weight count is size-tuned |
 
 ---
 
