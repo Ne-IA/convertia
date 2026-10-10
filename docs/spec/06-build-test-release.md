@@ -134,17 +134,19 @@ build-time mechanics that realise them**:
     type before publishing. A cross build that silently came out native would otherwise reach
     `lipo -create` as two `arm64` slices — the same silent single-arch class G30 catches one step
     later, caught here at the step that produced the bytes.
-  - **Engine support files** (non-executable: LibreOffice's `share/`, `program/`
-    libs, fonts, pandoc data) → `bundle.resources`, resolved at runtime via the
+  - **Engine resource trees** (LibreOffice's whole tree — its libraries, its data and the
+    program §3.3.3 spawns from that tree on every OS — plus the fonts and pandoc
+    data) → `bundle.resources`, resolved at runtime via the
     Tauri resource path (§3.5 owns the working-dir/env wiring; §7.2 owns startup
     presence-verification of these files).
-- **Beside-the-exe load-path rewrite (the mechanic §3.5's closing clause depends on)
+- **Beside-the-exe load-path rewrite (the mechanic §3.5's loader-injection strip depends on)
   `[DECIDED]`:** §3.5 clears `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_INSERT_LIBRARIES`/
   `DYLD_LIBRARY_PATH` from the engine environment and §3.3.3 resolves programs by absolute
   bundled path rather than `PATH`, so **no environment channel is left for the dynamic
-  loader**: the only way a component lib shipped *beside* the exe (§3.9.1's v1 preference)
-  resolves is a **relative load path baked into the binary**. Upstream/distro/gyan/BtbN
-  builds carry **absolute** `install_name`/`RUNPATH` entries, so as staged they resolve to
+  loader**: the only way a shared library shipped *beside* the binary that loads it (a
+  resource tree such as LibreOffice's; FFmpeg links its codecs statically, §3.9.1) resolves
+  is a **relative load path baked into the binary**. Upstream/distro builds carry
+  **absolute** `install_name`/`RUNPATH` entries, so as staged they resolve to
   paths that do not exist on the user's machine. `scripts/stage-engines` therefore rewrites
   them, per OS, as a step that runs **after** staging and — on macOS — **after** the
   `lipo -create` merge above, which re-emits the Mach-O and would clobber an earlier rewrite:
@@ -153,15 +155,15 @@ build-time mechanics that realise them**:
     `-change <absolute> @loader_path/<lib>` on the binary that references them. **Per FILE, one
     invocation:** every operation declared for a given file travels together (the tool applies
     them atomically), and a file that both ships as a lib and references others — the ordinary
-    shape in a chain like `libvorbisenc` — carries its `-id` and its `-change`es in that one
+    shape in a chain of libraries — carries its `-id` and its `-change`es in that one
     call. Two different files are two calls; the rule is not "one call for `-id`, one for
     `-change`".
   - **Linux** — `patchelf --set-rpath '$ORIGIN'`, so `DT_RUNPATH` resolves against the
     directory of the binary itself. **Every dynamically-linked file gets its own rewrite, not
     just the top-level executable:** `DT_RUNPATH` is searched only for the DIRECT dependencies
     of the object that carries it and is **not** inherited down the chain (`ld.so(8)`), so on a
-    chain like `ffmpeg → libvorbisenc → libvorbis → libogg` a rewrite applied to `ffmpeg` alone
-    leaves `libvorbisenc`'s own lookup of `libvorbis` unresolved. `DT_RUNPATH` is also consulted
+    chain like `prog → liba → libb` a rewrite applied to `prog` alone
+    leaves `liba`'s own lookup of `libb` unresolved. `DT_RUNPATH` is also consulted
     **after** `LD_LIBRARY_PATH` (unlike the legacy `DT_RPATH`, which precedes it), so on this
     platform the beside-the-exe guarantee rests on §3.5's loader-variable strip holding — that
     strip is the load-bearing precondition here, not a belt-and-braces extra.
@@ -262,7 +264,7 @@ build-time mechanics that realise them**:
 - **Cache hosting mechanism `[DECIDED]`:** the engine-asset cache is **GitHub Actions
   cache** (`actions/cache`) keyed **`<cache_engine>-<cache_version>-<triple>`** (e.g.
   `ffmpeg-7.1-aarch64-apple-darwin`) — a **GROUP** key, not a row key: `ffmpeg`, `ffprobe` and
-  `libmp3lame.so` are three §3.7.2 rows and ONE entry, and the tokens default to the row's
+  `libmp3lame` are three §3.7.2 rows and ONE entry, and the tokens default to the row's
   `id`/`version` so a one-artifact-one-download engine declares neither (§3.7.2 item 1) — with a
   **checksum-verified pinned-upstream-URL fetch**
   as the populate path / fallback on a cache miss. **The actor is `scripts/fetch-engine-assets`**
@@ -301,13 +303,6 @@ build-time mechanics that realise them**:
     (it would taint the MIT core; Rust links statically by default, so this is enforced).
     The enforced property is the link KIND: a dynamic link satisfies LGPL §6 whether the
     shared object is bundled or OS-provided (e.g. the §0.3.1 Linux WebView runtime).
-    The **external FFmpeg component libs** dynamically linked *beside* the FFmpeg binary
-    are verified present as shared objects too. **Only `libmp3lame` is LGPL** (so the §6
-    relinkability-beside-the-GPL-exe obligation applies to it); `libvorbis`/`libogg`/
-    `libopus`/`libvpx` are **BSD-3-Clause** and `libdav1d` is **BSD-2-Clause** (no relink
-    obligation — present-as-shared-object is for SBOM-completeness, not LGPL §6). Each has
-    its own §3.7.2 row (release-blocking if absent); `libvpx` is the VP9/WEBM-target encoder
-    and carries its `PATENTS` text; `libdav1d` is the AV1 decoder for video sources.
   - **(ii) LGPL inside the separate image-worker (libvips/libheif/libde265/librsvg) →
     static LGPL is acceptable AGGREGATION, but carries the LGPL §6 relink obligation.**
     The image-worker is its **own binary** (a separate process, §3.5.5), so a static LGPL
@@ -325,13 +320,15 @@ build-time mechanics that realise them**:
     obligation extends to **x265 itself** (its GPL §3 complete corresponding source + offer),
     not only the LGPL stack — the assertion checks the **pinned x265 source/offer is present**
     alongside the LGPL source, and fails the build if x265's source is missing.
-  - **(iii) FFmpeg-internal static LGPL → aggregation, never fails the assertion.** A
-    static GPL FFmpeg with `libmp3lame` (LGPL) plus the BSD `libvorbis`/`libogg`/`libopus`/
-    `libvpx`/`libdav1d` baked in is GPL-clean (GPL permits static LGPL/BSD) and the whole binary is
-    aggregation (§3.6.1), so it must not fail the assertion for a non-licence reason. v1's
-    stated preference is dynamic-beside-the-exe (carve-out i path), so this carve-out covers
-    the static-FFmpeg alternative without leaving both implied (§3.7.2). Each component still
-    appears as a nested SBOM sub-component of the FFmpeg build.
+  - **(iii) FFmpeg-internal static LGPL → aggregation, never fails the assertion.** FFmpeg
+    is static `[DECIDED]` (§3.9.1): `libmp3lame` (LGPL, its §6 obligation subsumed by the GPL
+    corresponding-source) plus the BSD `libvorbis`/`libogg`/`libopus`/`libvpx`/`libdav1d` and
+    the GPL `libx264`, baked into one GPL binary, are GPL-clean (GPL permits static LGPL/BSD)
+    and the whole binary is aggregation (§3.6.1), so it must not fail the assertion for a
+    non-licence reason. Each component is a §3.7.2 sub-component row and a nested SBOM
+    component of the FFmpeg build (release-blocking if absent); `libvpx` is the
+    VP9/WEBM-target encoder and carries its `PATENTS` text; `libdav1d` is the AV1 decoder for
+    video sources.
 
   Summary: **shared-object / relinkable LGPL is required only where the lib is linked into
   the MIT core (carve-out i); the separate image-worker (ii) and FFmpeg (iii) are
@@ -441,12 +438,11 @@ build-time mechanics that realise them**:
   `--disable-network` where it does not break a needed demuxer). The stage step runs
   **`ffmpeg -protocols`** on the staged binary and **fails the build** if any network
   protocol is present (the SSRF half). It **also** runs **`ffmpeg -demuxers`** and **fails
-  the build** if a playlist/manifest dereferencing demuxer ConvertIA does not need is
-  present (the absolute-file LFR half — local-HLS `hls`, DASH `dash`, and any external-
-  reference playlist demuxer; the `concat` demuxer, if present for a legitimate §04 pair,
-  is only ever invoked with the default `-safe 1`, never `-safe 0`, so it rejects absolute/
-  `..` paths). These are the build-time half of the §3.5.1 control; the argv
-  `-protocol_whitelist file,pipe` + `-safe 1` are the always-on runtime half, and the
+  the build** if a concat, playlist or manifest dereferencing demuxer ConvertIA does not
+  need is present (the absolute-file LFR half — `concat`, local-HLS `hls`, DASH `dash`, and
+  any external-reference playlist demuxer; no §04 pair needs `concat`, §3.5.1). These are
+  the build-time half of the §3.5.1 control; the argv `-protocol_whitelist file,pipe` (with
+  `-safe 0` never passed) is the always-on runtime half, and the
   §6.4.2 adversarial-egress case (zero egress **AND** no out-of-input file read) is the
   runtime proof.
 - **SVG/librsvg external-resource (LFR) corpus assertion `[DECIDED]` (T9b absolute-file

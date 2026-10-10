@@ -1618,9 +1618,10 @@ Offline is enforced **structurally**, not by policy, on two complementary halves
   pandoc includes, or LibreOffice remote/OLE links): that is closed **structurally** by
   **always-on, cheap-tier argv/build controls** independent of the §2.12 OS sandbox, on
   **both** the SSRF half and the absolute-file LFR half — FFmpeg `-protocol_whitelist
-  file,pipe` + network-disabled build (SSRF) **and** concat `-safe 1` (never `-safe 0`) +
-  a curated demuxer set without playlist/manifest dereferencing demuxers (absolute-file
-  LFR), §3.5.1; pandoc `--sandbox` (§3.5.4); LibreOffice profile-hardening with no remote/
+  file,pipe` + network-disabled build (SSRF) **and** a curated demuxer set without the
+  `concat` and the playlist/manifest dereferencing demuxers (absolute-file LFR; `-safe 1`,
+  never `-safe 0`, as defence-in-depth), §3.5.1; pandoc `--sandbox` (§3.5.4); LibreOffice
+  profile-hardening with no remote/
   OLE link auto-update (§3.5.2); **SVG/librsvg — BOTH halves: no remote `<image href>`
   fetch (SSRF) AND the absolute-file LFR half closed by loading the SVG via `rsvg::Loader`
   with NO base URL/`base_file`, so librsvg refuses all local `<image href>`/XInclude
@@ -1666,8 +1667,8 @@ identically with networking disabled. This is a release gate, not a runtime chec
 > **not** by itself prove **T9b** (a bundled engine coerced to reach out by a *crafted*
 > input). T9b is closed structurally by the §3.5.1/§3.5.4/§3.5.2 argv/build controls —
 > **both** the network/SSRF half (FFmpeg `-protocol_whitelist file,pipe` + network-disabled
-> build) **and** the absolute-file LFR half (FFmpeg concat `-safe 1`, never `-safe 0`, +
-> the curated demuxer set without playlist/manifest dereferencing demuxers; pandoc
+> build) **and** the absolute-file LFR half (the curated FFmpeg demuxer set without the
+> `concat` and the playlist/manifest dereferencing demuxers, `-safe 1` as defence-in-depth; pandoc
 > `--sandbox`; LibreOffice link-update-off) — and verified by the **§6.4.2 adversarial-
 > egress case** (a network-trigger input must show **zero egress AND no out-of-input file
 > read**), which runs inside this same packet-monitor / egress-deny window. Cite the argv/

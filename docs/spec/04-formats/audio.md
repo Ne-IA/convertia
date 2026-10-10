@@ -175,8 +175,8 @@ the integer and IEEE-float PCM that WAV (`fmt ` codes `0x0001`/`0x0003`) and AIF
 - **As target ← sources:** WAV, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC, WMA
   (**MP3 is the default target of every other audio source** — the universally
   compatible everyday choice).
-- **Engine:** FFmpeg, encoder **`libmp3lame`** (LAME, SPDX **`LGPL-2.0-or-later`** — bundled
-  as a shared object beside / in the shared FFmpeg binary, §3.1 row 2a / §3.7.2 SBOM row). All
+- **Engine:** FFmpeg, encoder **`libmp3lame`** (LAME, SPDX **`LGPL-2.0-or-later`** — statically
+  linked into the one FFmpeg binary, §3.1 row 2a / §3.7.2 SBOM row). All
   platforms. No patent flag for ConvertIA's purposes (MP3 patents expired 2017).
 - **Options/settings:**
   - *Default (no choice):* **VBR quality `-q:a 2`** (LAME `-V2`, ≈170–210 kb/s

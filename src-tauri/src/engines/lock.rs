@@ -258,7 +258,8 @@ impl PrebuiltCorroboration {
 #[serde(deny_unknown_fields)]
 pub struct EngineRow {
     /// The artifact's identity — the staged file or component this row is ABOUT. Not the project name:
-    /// `libmp3lame.so` and the FFmpeg exe beside it are two artifacts. Unique per triple, not globally.
+    /// `ffmpeg` and `ffprobe` are two artifacts, and `libmp3lame` linked into them is a third. Unique per
+    /// triple, not globally.
     pub id: String,
     /// The §3.8 pinned exact version.
     pub version: String,
@@ -321,8 +322,8 @@ pub struct EngineRow {
     ///
     /// Mode-INDEPENDENT by the (A′) ruling: P4.28's download and P4.28.1's CI compile populate the SAME
     /// key, so the consumer never has to know which mode filled it. Several rows legitimately share one
-    /// token — `ffmpeg`, `ffprobe` and `libmp3lame.so` all ship out of `ffmpeg-7.1-<triple>`, which is
-    /// exactly what `scripts/stage-engines`' `member` field addresses INSIDE an entry.
+    /// token — `ffmpeg`, `ffprobe` and `libmp3lame` all key on `ffmpeg-7.1-<triple>`, and
+    /// `scripts/stage-engines`' `member` field addresses each staged file INSIDE an entry.
     #[serde(default)]
     pub cache_engine: Option<String>,
     /// The §6.1.3 cache-key VERSION token. Defaults to [`EngineRow::version`].
@@ -975,9 +976,9 @@ impl EnginesLock {
                         ("purl", &entry.purl, &first.purl),
                         // §3.6.1's copyleft-isolation class — the field CLAUDE §3's "MIT core clean;
                         // copyleft isolated" guardrail keys on, so higher-stakes than `licence`. It does
-                        // NOT fork per triple: §6.1.3's carve-out iii (dynamic-beside-the-exe vs static
-                        // FFmpeg) changes whether a lib is separately STAGED — i.e. `kind` and the row
-                        // set — while libmp3lame stays `linked` into the FFmpeg binary either way.
+                        // NOT fork per triple: an engine links a component the same way on every
+                        // triple — FFmpeg is static everywhere (§3.9.1, §6.1.3 carve-out iii), so
+                        // libmp3lame is `linked` into the FFmpeg binary on each one.
                         (
                             "linkage",
                             &linkage_token(entry.linkage),

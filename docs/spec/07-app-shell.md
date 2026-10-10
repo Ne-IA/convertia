@@ -298,23 +298,25 @@ present and usable:
 
 - **Presence (out-of-band — iterates the BINARY list, NOT the `trait Engine`
   registry) `[DECIDED]`:** the presence/integrity loop iterates the **§3.3.1 expected
-  bundled-binary list** (the `bundle.externalBin` + resource binaries — `ffmpeg`,
-  `ffprobe`, `soffice`, `pdftotext`, `pandoc`, `convertia-imgworker`), resolving each
-  path (under the Tauri resource dir / sidecar location, §0.7) and confirming the file
-  exists. It does **NOT** iterate the §3.2.3 `trait Engine` registry and does **NOT**
+  bundled-binary list** (the `bundle.externalBin` sidecars — `ffmpeg`, `ffprobe`,
+  `pdftotext`, `pandoc`, `convertia-imgworker` — plus LibreOffice's resource-tree program,
+  §3.3.3), resolving each path (under the Tauri resource dir / sidecar location, §0.7) and
+  confirming the file exists. It does **NOT** iterate the §3.2.3 `trait Engine` registry
+  and does **NOT**
   call `descriptor()` — so an engine `EngineId` that has **no `trait Engine` impl** (the
   non-trait variants `FFprobe` and `ImageMagick`, §0.6) is reached purely through this
   binary list, never through `descriptor()`. The authoritative *list* of expected binaries
   per platform is owned by §3.1/§3.3; §7.2 only consumes it. **The binary name per
   `EngineId` comes from the §3.3.1 externalBin entry** (e.g. `EngineId::FFprobe` →
-  `binaries/ffprobe`), not from any trait method.
+  `binaries/ffprobe`; LibreOffice's is its §3.3.3 per-OS `rel`), not from any trait method.
   - **Names are BARE runtime names, NOT target-triple-suffixed `[DECIDED]`.** The presence
-    loop checks the **bare runtime names** — `ffmpeg`, `ffprobe`, `soffice`, `pdftotext`,
+    loop checks the sidecars' **bare runtime names** — `ffmpeg`, `ffprobe`, `pdftotext`,
     `pandoc`, `convertia-imgworker` — matching the §3.3.3 `current_exe().parent()` resolution
     (Tauri strips the `-<target-triple>` suffix at bundle time; the suffix is a build/stage
     artifact only). **On Windows append `.exe`** to each. Checking the suffixed
     `ffmpeg-x86_64-unknown-linux-gnu` name at runtime would **always report missing** — the
-    loop must use the stripped names that actually ship beside the app exe.
+    loop must use the stripped names that actually ship beside the app exe. LibreOffice's
+    program is checked at its §3.3.3 per-OS `rel` under the resource directory.
   - **`FFprobe` presence-checked, health rolled into FFmpeg `[DECIDED]`.** `ffprobe`
     ships alongside `ffmpeg` (same upstream, same GPL build, §3.1 row 2 / §3.3.1) and is
     the video two-phase probe binary (§3.2.1). It is **presence + integrity checked as its
@@ -351,16 +353,16 @@ present and usable:
   magic for the platform** — **ELF `0x7F 45 4C 46`** (Linux), **PE `MZ` (`0x4D 5A`)**
   (Windows), **Mach-O / fat `0xCA FE BA BE` (fat) or `0xCF FA ED FE` (64-bit thin)**
   (macOS). **The magic-byte check (b) applies ONLY to the EXECUTABLE sidecars `[DECIDED]`**
-  (the §3.3.1 `externalBin` binaries — `ffmpeg`/`ffprobe`/`soffice`/`pdftotext`/`pandoc`/
-  `convertia-imgworker`). **`soffice` magic is platform-conditional `[DECIDED]`:** on
-  **Linux** the bundled `soffice` is a **`#!` shell-script wrapper, NOT an ELF** (it `exec`s
-  the real `soffice.bin` ELF in the program tree), so its magic check is a **shebang check
-  (`0x23 0x21` = `#!`) / script-type check**, **not** the ELF magic (an ELF check on it would
-  always fail); the actual LibreOffice ELF binaries (`soffice.bin` etc.) live in the program
-  tree and are covered by the size-only warm check + first-launch full re-hash like the other
-  program-tree files. On **macOS** `soffice` is a **Mach-O** (standard Mach-O magic applies);
-  on **Windows** `soffice.exe` is a PE. All other executable sidecars use the standard
-  per-platform magic. **Non-binary bundled resources (the bundled fonts §3.9, the
+  (the §3.3.1 `externalBin` binaries — `ffmpeg`/`ffprobe`/`pdftotext`/`pandoc`/
+  `convertia-imgworker` — and LibreOffice's §3.3.3 program). **LibreOffice's program takes the
+  standard magic `[DECIDED]`:** on **Linux** `soffice.bin` is an **ELF**, on **macOS**
+  `LibreOffice.app/Contents/MacOS/soffice` a **Mach-O**, on **Windows** `soffice.exe` a PE.
+  Only where the §3.3.3 realizability probe puts the Linux `program/soffice` **`#!`
+  shell-script wrapper** in its place does that file take a **shebang check (`0x23 0x21` =
+  `#!`)** instead (an ELF check on it would always fail), its `soffice.bin` then counting as
+  an ordinary program-tree file (size-only warm check + first-launch full re-hash). All
+  other executable sidecars use the standard per-platform magic. **Non-binary bundled
+  resources (the bundled fonts §3.9, the
   LibreOffice program-tree data files, NOTICE/licence text) have NO single executable magic**,
   so for them the warm-launch check is **size-only** (size equals `expected_size`); their
   full content is covered by the **first-launch / version-change full re-hash** like every

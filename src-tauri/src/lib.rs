@@ -595,8 +595,9 @@ fn verbose_opt_in(pref_verbose: bool, argv_verbose: bool) -> bool {
 // because this crate ships no `tauri::test` mock harness.
 
 /// [Build-Session-Entscheidung: P2.106.3] §7.2.1 step 3 — the §7.2.3 engine presence + integrity verification
-/// SLOT. The verifier BODY — iterate the §3.3.1 externalBin binary list (`ffmpeg`/`ffprobe`/`soffice`/
-/// `pdftotext`/`pandoc`/`convertia-imgworker`, the bare runtime names + `.exe` on Windows), resolve each
+/// SLOT. The verifier BODY — iterate the §3.3.1 externalBin binary list (`ffmpeg`/`ffprobe`/`pdftotext`/
+/// `pandoc`/`convertia-imgworker`, the bare runtime names + `.exe` on Windows) plus LibreOffice's §3.3.3
+/// resource-tree program, resolve each
 /// **through `crate::engines`'s §3.3.3 resolver over the roots [`publish_program_roots`] published**
 /// — [Corrected by P4.32] this used to say "under the resource dir", which §3.3.3 `[DECIDED]` forbids for an
 /// externalBin sidecar: a sidecar resolves BESIDE THE APP EXE, and only a resources-tree binary hangs off

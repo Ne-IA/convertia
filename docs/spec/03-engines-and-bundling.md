@@ -45,8 +45,8 @@ families:
 | 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | static, inside the image worker (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none |
 | 1d | **ImageMagick** (libvips BMP save delegate — **REQUIRED for BMP**; ICO save is the **default** path but **`[DEFER: build spike]`** §3.5.5; plus GIF fallback) | Images | **BMP load+save (`magickload`/`magicksave` — REQUIRED)**; **ICO save (`magicksave`) — default, multi-size/256px unverified, in-core Rust ICO assembler fallback §3.5.5**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | static, inside the image worker (permissive — no isolation needed); GPL *optional delegates* excluded at build | none |
 | 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **Pin-coupling `[DECIDED]`:** the lovell `libimagequant` v2.4.x fork is **vendored/statically linked inside libvips' `cgif`/`gifsave` path** (the §3.8 floor) — there is **no dynamic soname to resolve at runtime**, so the guard is a **lockfile assertion, not an ABI/soname check**: the **§6.1.3 build assertion verifies the pinned `imagequant`/`libimagequant` ref in `engines.lock` (and any Rust `Cargo.lock` entry) is exactly the `lovell/libimagequant` v2.4.x-fork commit** (NOT upstream 4.x, whose GPLv3 leg would taint the worker), backing the COPYRIGHT-BSD-text check with a provenance check. *(If a future platform build dynamically loads libimagequant, the soname-resolution check is added scoped to that case only.)* | static, inside the image worker (BSD fork only) | none |
-| 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, **WMA *decoders* (decode-only — the sole FFmpeg WMA encoder `wmav2` is low-quality, 2-channel-max legacy, so `→ WMA` is out of v1 per audio.md and the build never invokes a WMA encoder; WMA is a source-only format)**; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264, HEVC and AV1 decode, and the legacy decode-only set → §3.4.3**; MP3, Vorbis, Opus, FLAC, ALAC, PCM, VP9, VP8, AC-3, MP2, MPEG-1, MJPEG, Cinepak → §3.4.2 |
-| 2a | **FFmpeg external codec libraries** — `libmp3lame` (MP3 enc), `libvorbis` + `libogg` (Vorbis/Ogg), `libopus` (Opus enc), `libvpx` (VP9 enc, WEBM target), `libdav1d` (AV1 decode, video sources). v1 ships these as **separate shared objects staged beside the FFmpeg exe** (§3.9.1 dynamic preference) — each is a distinct staged binary, so **each gets its own §3.7.2 `engines.lock`/SBOM row** | Audio, Video | audio.md (`→ MP3`/`→ OGG`/`→ OPUS`), video.md (`→ WEBM`; AV1 sources) | **libmp3lame `LGPL-2.0-or-later`** (triggers the §6.1.3 carve-out-(i)/§3.6.2 relink+offer obligation); **libvorbis / libogg / libopus / libvpx all `BSD-3-Clause`** (libvpx ALSO carries its `PATENTS` grant in `THIRD-PARTY-LICENSES.txt`, like libaom/x264); **libdav1d `BSD-2-Clause`** | linked into the **GPL FFmpeg binary** (separate invoked process) — never the MIT core; LGPL libmp3lame's §6 subsumed by FFmpeg's GPL corresponding-source, offer honoured (§3.6.2) | none for these codecs (MP3/Vorbis/Opus/VP9/AV1 royalty-free, §3.4.2) |
+| 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, `libdav1d`, **WMA *decoders* (decode-only — the sole FFmpeg WMA encoder `wmav2` is low-quality, 2-channel-max legacy, so `→ WMA` is out of v1 per audio.md and the build never invokes a WMA encoder; WMA is a source-only format)**; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; every component library is statically linked into it, §3.6.1, §6.1.3 carve-out (iii)); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6, built from source and statically linked `[DECIDED]` (§3.8, §3.9.1) | **AAC, H.264, HEVC and AV1 decode, and the legacy decode-only set → §3.4.3**; MP3, Vorbis, Opus, FLAC, ALAC, PCM, VP9, VP8, AC-3, MP2, MPEG-1, MJPEG, Cinepak → §3.4.2 |
+| 2a | **FFmpeg external codec libraries** — `libmp3lame` (MP3 enc), `libvorbis` + `libogg` (Vorbis/Ogg), `libopus` (Opus enc), `libvpx` (VP9 enc, WEBM target), `libdav1d` (AV1 decode, video sources). Each is **statically linked into the FFmpeg binary `[DECIDED]`** and is a `kind = "sub-component"` `engines.lock`/SBOM row per triple (§3.7.2 item 4) | Audio, Video | audio.md (`→ MP3`/`→ OGG`/`→ OPUS`), video.md (`→ WEBM`; AV1 sources) | **libmp3lame `LGPL-2.0-or-later`** (its §6 relink obligation is subsumed by FFmpeg's GPL corresponding-source, §6.1.3 carve-out (iii) / §3.6.2); **libvorbis / libogg / libopus / libvpx all `BSD-3-Clause`** (libvpx ALSO carries its `PATENTS` grant in `THIRD-PARTY-LICENSES.txt`, like libaom); **libdav1d `BSD-2-Clause`** | statically linked into the **GPL FFmpeg binary** (separate invoked process) — never the MIT core; LGPL libmp3lame's §6 subsumed by FFmpeg's GPL corresponding-source, offer honoured (§3.6.2) | none for these codecs (MP3/Vorbis/Opus/VP9/AV1 royalty-free, §3.4.2) |
 | 3 | **LibreOffice** (headless `soffice`, Writer+Calc+Impress + PDF export filters; bundled with a baseline open font set, §3.9) | Documents, Spreadsheets, Presentations | `04-formats/documents.md`, `spreadsheets.md`, `presentations.md` (all office↔office + every `*→PDF`) | **MPL-2.0** (+ many bundled components — full set enumerated by the SBOM, §3.7) | **separate invoked binary** (sidecar process) per §3.6 | none |
 | 4 | **poppler** (`pdftotext`) | Documents | `PDF→TXT` | **`GPL-2.0-only OR GPL-3.0-only`** (a valid SPDX expression — *not* the bare `GPL-2.0/GPL-3.0`, which §6.3.3 would reject as unresolved) | **separate invoked binary** (§3.6) | none |
 | 5 | **Ghostscript** **[DECIDED: NOT shipped v1]** (was a PDF read/repair backstop behind poppler; no user-facing pair) | Documents | (malformed-PDF tolerance — dropped) | **AGPL-3.0** | not shipped (`[DEFER: re-add if §6.5 corpus shows GS-salvageable PDFs]`) | none |
@@ -85,8 +85,10 @@ families:
   cross-category). Because it links GPL `libx264` (`--enable-gpl`), the **whole FFmpeg
   binary is GPL-2.0+** (not LGPL) — shipped as a separate invoked binary so aggregation
   keeps the MIT core clean (§3.6.1); its written-offer-of-source obligation is honored
-  (§3.6.2). `ffprobe` ships alongside it (same upstream, same licence) for the
-  §video.md remux-vs-reencode probe.
+  (§3.6.2). It is **built from source with every component library statically linked
+  `[DECIDED]`** (rows 2 and 2a): the curated configure line is the §3.5.1 SSRF floor (§3.8),
+  and no codec shared object ships beside it. `ffprobe` ships alongside it (same upstream,
+  same licence) for the §video.md remux-vs-reencode probe.
 - **LibreOffice** is one binary covering three `04` categories. It is the size
   driver of the whole product (§3.9).
 - **Ghostscript is `[DECIDED: dropped in v1]`** — poppler's own fault tolerance plus a
@@ -98,7 +100,7 @@ Licence-class summary (drives §3.6/§3.7): **MIT** core; **LGPL** (libvips,
 libheif/libde265, librsvg, and the FFmpeg LGPL component lib **`libmp3lame`**); **BSD-3-Clause**
 (the FFmpeg component libs **`libvorbis`/`libogg`/`libopus`/`libvpx`** — `libvpx` also carries
 its `PATENTS` grant); **BSD-2-Clause** (the FFmpeg AV1 decoder **`libdav1d`**) — all the
-FFmpeg component libs are dynamic-linked beside the exe (§3.1 row 2a / §3.7.2); **GPL** (the
+FFmpeg component libs are statically linked into the FFmpeg binary (§3.1 row 2a / §3.7.2); **GPL** (the
 **FFmpeg binary itself** — GPL-2.0+ because it enables x264 —
 plus x264, the **x265 libheif plugin**, poppler, pandoc) **always invoked or
 dynamically-plugin-loaded, never statically linked into the MIT core**, each carrying
@@ -533,20 +535,16 @@ downloaded after the app itself.
 
 | Mechanism | Used for | Tauri config | Resolved at runtime by |
 |---|---|---|---|
-| **`bundle.externalBin`** (sidecars, target-triple-suffixed) | FFmpeg, ffprobe, soffice launcher, pdftotext, pandoc, **`convertia-imgworker`** (the libvips image-worker process, §3.5.5) — the **standalone invoked binaries** (Ghostscript **[DECIDED: dropped]**; **x265 is NOT a sidecar** — it ships as a dynamically-loaded libheif encoder *plugin* under `resources`, §3.1 row 1a) | `"bundle": { "externalBin": ["binaries/ffmpeg", "binaries/ffprobe", "binaries/soffice", "binaries/pdftotext", "binaries/pandoc", "binaries/convertia-imgworker"] }` | spawned by the Rust core (see 3.3.3) |
+| **`bundle.externalBin`** (sidecars, target-triple-suffixed) | FFmpeg, ffprobe, pdftotext, pandoc, **`convertia-imgworker`** (the libvips image-worker process, §3.5.5) — the **standalone invoked binaries** (Ghostscript **[DECIDED: dropped]**; **LibreOffice is NOT a sidecar** — its program runs from its resource tree on every OS, §3.3.3; **x265 is NOT a sidecar** — it ships as a dynamically-loaded libheif encoder *plugin* under `resources`, §3.1 row 1a) | `"bundle": { "externalBin": ["binaries/ffmpeg", "binaries/ffprobe", "binaries/pdftotext", "binaries/pandoc", "binaries/convertia-imgworker"] }` | spawned by the Rust core (see 3.3.3) |
 | **`bundle.resources`** (verbatim files/dirs) | the LibreOffice **program tree + profile template + bundled fonts**, FFmpeg/pandoc data files if any, the NOTICE/third-party-licenses text (§3.7). The image stack (libvips and its codec closure, libheif, librsvg, cgif, libimagequant, MagickCore) links statically into `convertia-imgworker` (`externalBin`); only the bundled fonts, the hardened ImageMagick `policy.xml` of §3.5.5 path (a) and the §3.1 row-1a HEIC encoder plugin (while that row names one) ship as resources for it | `"bundle": { "resources": { "resources/libreoffice/": "engines/libreoffice/", "resources/image/": "engines/image/", "resources/fonts/": "fonts/", "../THIRD-PARTY-LICENSES.txt": "" } }` — `resources/image/` carries only the §3.5.5 path-(a) `policy.xml` (its directory is the bundle policy dir the worker sets `MAGICK_CONFIGURE_PATH` to) and the §3.1 row-1a HEIC-encoder plugin; a source key resolves against `src-tauri/` (hence the `../` on the repo-root licences file), and the `""` target keeps the file name at the resource root | `app.path().resolve(rel, BaseDirectory::Resource)` |
 
-> **Why LibreOffice is `resources`, not `externalBin`.** `externalBin` is for a
+> **Why LibreOffice is `resources`, not `externalBin` `[DECIDED]`.** `externalBin` is for a
 > single self-contained executable that gets the target-triple suffix; LibreOffice
-> is a **directory tree** (the `soffice`/`soffice.bin` launcher plus `program/`,
-> `share/`, type libraries, the bundled font dir). So the **tree ships as a
-> `resources` dir** and the launcher inside it is invoked by absolute path
-> resolved via `BaseDirectory::Resource`. The `externalBin` line for `soffice`
-> above is only the thin launcher where a single-file form exists; on platforms
-> where it isn't single-file, the launcher is reached purely through the resource
-> tree. `[DEFER]` exact split (launcher-as-externalBin vs launcher-in-resources)
-> to the §6.1 packaging step — both are offline and resolve via the PathResolver;
-> it does not change any contract here.
+> is a **directory tree** (its program plus `program/`, `share/`, type libraries, the
+> bundled font dir). So the **tree ships as a `resources` dir**, and on every OS its
+> program is an `EngineProgram::ResourceBin`, spawned by the absolute path §3.3.3
+> resolves via `BaseDirectory::Resource` (the per-OS paths are there). No `soffice`
+> `externalBin` entry exists.
 
 ### 3.3.2 Build-time assembly (cross-ref §6.1)
 
@@ -594,8 +592,8 @@ Rationale (this materially shapes §0.10 and §1.7):
 - **Concrete path resolution `[DECIDED]`.** When the Rust core spawns via
   `tokio::process`, it resolves the bundled program path as follows (so Phase 3 does
   not rediscover it):
-  - **externalBin sidecars** (ffmpeg, ffprobe, pdftotext, pandoc, the soffice
-    launcher where single-file): resolved at runtime by the **bare name** (NO triple
+  - **externalBin sidecars** (ffmpeg, ffprobe, pdftotext, pandoc,
+    `convertia-imgworker`): resolved at runtime by the **bare name** (NO triple
     suffix) **beside the app executable** —
     **`std::env::current_exe()?.parent()` joined with `ffmpeg` / `ffmpeg.exe`** (the
     same `[.exe]` extension rule as the app binary). **The `-<target-triple>` suffix is a
@@ -608,10 +606,22 @@ Rationale (this materially shapes §0.10 and §1.7):
     shell plugin, this manual `current_exe()`-relative resolution (the same location the
     shell plugin's `sidecar()` would compute) is the supported pattern. Resolves to an
     **absolute path**; `PATH` is never relied on (§3.5 env note).
-  - **resources-tree binaries** (the LibreOffice `program/soffice.bin` and the other
-    `bundle.resources` engine files): **`app.path().resolve("engines/libreoffice/program/soffice", BaseDirectory::Resource)`**
-    — an absolute path inside the bundled resource tree. `BaseDirectory::Resource` is
-    correct **here only** (genuine resources-tree binaries), not for externalBin.
+  - **resources-tree binaries** (LibreOffice's program, an `EngineProgram::ResourceBin` on
+    every OS `[DECIDED]`): **`app.path().resolve(rel, BaseDirectory::Resource)`** — an
+    absolute path inside the bundled resource tree. `BaseDirectory::Resource` is
+    correct **here only** (genuine resources-tree binaries), not for externalBin. The
+    per-OS `rel`:
+
+    | OS | `rel` of LibreOffice's program | Executable format |
+    |---|---|---|
+    | Windows | `engines/libreoffice/program/soffice.exe` | PE |
+    | Linux | `engines/libreoffice/program/soffice.bin` | ELF |
+    | macOS | `engines/libreoffice/LibreOffice.app/Contents/MacOS/soffice` | Mach-O |
+
+    Realizability probe at the box that stages LibreOffice: headless `soffice.bin`
+    converts without the environment the `program/soffice` wrapper script sets. If it does
+    not, the Linux `rel` is that wrapper script, checked under §7.2.3's shebang rule,
+    without escalation.
   This is the `EngineProgram::{Sidecar, ResourceBin}` distinction in §3.2's
   `Invocation`. The externalBin/resources placement (§3.3.1/§3.3.2) guarantees the
   file exists beside the app (portable, no install — SSOT *Portable, no installation*).
@@ -619,10 +629,10 @@ Rationale (this materially shapes §0.10 and §1.7):
     `EngineProgram::Sidecar` carries only an `EngineId`, the resolver needs the bare
     binary name per `EngineId`. The convention is a **fixed `EngineId → binary-name`
     table** owned here (Phase-3 does not invent one): `FFmpeg → "ffmpeg"`,
-    `FFprobe → "ffprobe"`, `LibreOffice → "soffice"` (launcher, where single-file —
-    else resolved via the resource tree, §3.3.1), `Poppler → "pdftotext"`,
+    `FFprobe → "ffprobe"`, `Poppler → "pdftotext"`,
     `Pandoc → "pandoc"`, `ImageCore → "convertia-imgworker"` (the libvips image-worker,
-    §3.5.5). The non-trait/non-sidecar `EngineId::ImageMagick` is **not** in this table
+    §3.5.5). **`EngineId::LibreOffice` is not in this table:** its program is a
+    `ResourceBin` (above). The non-trait/non-sidecar `EngineId::ImageMagick` is **not** in this table
     (it is a delegate linked inside the image-worker, never spawned as its own sidecar,
     §3.5.5). **`EngineId::NativeCsvTsv` is also absent from this table** (it is
     `InProcessNative`, §3.5.6 — an in-core pure-Rust engine with **no sidecar binary** to
@@ -644,9 +654,10 @@ the entire app are the **user-initiated** §7.7 open-project-page shell-out. The
 **not** by the degradable §2.12 OS network-deny:
 - **FFmpeg/ffprobe** — a **network-protocol-family-absent build** is the **primary** SSRF
   floor (the argv `-protocol_whitelist file,pipe` is defence-in-depth only — bypassable per
-  CVE-2023-6605's pre-whitelist DASH dereference, §3.5.1) **plus** concat `-safe 1` (never
-  `-safe 0`) + a curated demuxer set without the playlist/manifest dereferencing demuxers
-  (absolute-file LFR half), asserted at §6.1.3 (`ffmpeg -protocols`/`-demuxers`, §3.5.1).
+  CVE-2023-6605's pre-whitelist DASH dereference, §3.5.1) **plus** a curated demuxer set
+  without the `concat` and the playlist/manifest dereferencing demuxers (absolute-file LFR
+  half; `-safe 1`, never `-safe 0`, stays as defence-in-depth), asserted at §6.1.3
+  (`ffmpeg -protocols`/`-demuxers`, §3.5.1).
   Closes the HLS/DASH/concat SSRF & LFR class **structurally at build time** (the network
   family is unbuilt), not by the OS sandbox.
 - **pandoc** — invoked with **`--sandbox`** (its built-in restriction that blocks
@@ -827,7 +838,7 @@ posture as AAC.** This is **load-bearing**: `video.md` makes **MP4 (H.264+AAC) t
 default target of *every* video source**, and §video.md flags that "a platform
 without H.264/AAC encode would have no default target — a product problem." So the
 matrix **must** put H.264 encode at ship-bundled on all three platforms, and it
-does. x264 is GPL → isolated as an invoked binary inside the FFmpeg sidecar (§3.6).
+does. x264 is GPL → statically linked inside the GPL FFmpeg binary, an invoked sidecar (§3.6).
 The ~2027 expiry further de-risks this over v1's (deadline-free) lifetime.
 
 **HEVC decode — ship-bundled everywhere `[DECIDED]`, via TWO engines.** Decoding HEIC
@@ -979,12 +990,12 @@ is concretely:
 
 | Aspect | Windows | macOS | Linux |
 |---|---|---|---|
-| Artifact | portable `.zip` (exe + bundled engine trees; no installer) — **NSIS NOT shipped v1 (§6.1.2 `[DECIDED]`)** | `.app` (and/or `.dmg`) | AppImage / portable dir |
-| Target triples | `x86_64-pc-windows-msvc` (+ `aarch64` `[DEFER]`) | `aarch64-apple-darwin` + `x86_64-apple-darwin` (universal `[DEFER §6.1]`) | `x86_64-unknown-linux-gnu` (musl `[DEFER]`) |
+| Artifact | portable `.zip` (exe + bundled engine trees; no installer) — **NSIS NOT shipped v1 (§6.1.2 `[DECIDED]`)** | `.dmg` holding the universal `.app` (§6.1.2) | AppImage only (§6.1.2) |
+| Target triples | `x86_64-pc-windows-msvc` (arm64 is out of v1, §6.1.2) | `aarch64-apple-darwin` + `x86_64-apple-darwin`, `lipo`-merged into one universal artifact (§6.1.3) | `x86_64-unknown-linux-gnu` (glibc; no musl build; arm64 is out of v1) |
 | WebView runtime | WebView2 (system; **bundle-vs-rely** is §0.3.1, **never download** per offline floor) | WKWebView (system) | WebKitGTK (system; distro drift → §0.3.1) |
 | Engine exe extension | `.exe` suffix on every sidecar | none | none; **executable bit must be set on extraction** (§7.2) |
-| LibreOffice tree | `program\soffice.bin` + `share\` | `LibreOffice.app` contents inside our resources | `program/soffice.bin` + `share/` |
-| Notable | x264/x265/ffmpeg `.exe` are `externalBin` triple-suffixed | code-signing/notarization **out of scope** (SSOT) — unsigned `.app`; the integrity-hash trust substitute (§6.2) applies | AppImage must carry glibc-compatible engine builds (or musl `[DEFER]`) |
+| LibreOffice tree (its program per §3.3.3) | `program\soffice.exe` (it starts `program\soffice.bin`) + `share\` | `LibreOffice.app` inside our resources (program `Contents/MacOS/soffice`) | `program/soffice.bin` + `share/` |
+| Notable | `ffmpeg`/`ffprobe`/`pdftotext`/`pandoc`/`convertia-imgworker` `.exe` are `externalBin` triple-suffixed (x264 is linked inside FFmpeg; LibreOffice is a resource tree, §3.3.1) | code-signing/notarization **out of scope** (SSOT) — unsigned `.app`; the integrity-hash trust substitute (§6.2) applies | AppImage carries glibc-compatible engine builds (no musl build) |
 
 The **supported-OS floor** per platform is **`[DECIDED]` in §0.3.1** (Win10 1809+/11;
 macOS 11+; Ubuntu-22.04-LTS-class WebKitGTK; exact build numbers `[DEFER: §6.4]`).
@@ -1007,18 +1018,35 @@ final user path.
 **Shared invocation conventions (all engines).**
 - **cwd** = the item's kind-2 working sub-directory (§2.14.2); engines that emit beside
   their input (LibreOffice `--outdir`) are pointed into it.
-- **env** = a **minimal, isolated environment** (§2.12): no inherited user env
-  beyond what the engine needs; `LC_ALL=C.UTF-8`/`LANG` set for deterministic
-  text handling; the temp directory and `HOME`/profile (LibreOffice) redirected into that
-  sub-directory;
-  no proxy vars (offline). **`PATH` is *not* relied on** — every program is an
-  absolute resolved bundled path (§3.3.3). The minimal env **explicitly STRIPS the
+- **env `[DECIDED]`** = a **minimal, isolated environment** (§2.12): the cleared environment
+  plus exactly the fixed named keys below, so nothing is inherited from the user's
+  environment and no proxy key exists (offline). A key outside this table is a spec change.
+  **`PATH` is *not* relied on** to find a program — every program is an absolute resolved
+  bundled path (§3.3.3); the Windows `PATH` row below is the §0.11 T3a DLL-search control
+  only.
+
+  | Key | Engines | OS | Value |
+  |---|---|---|---|
+  | `TMPDIR` | every subprocess engine | Linux, macOS | the engine's cwd (above) |
+  | `TEMP`, `TMP` | every subprocess engine | Windows | the engine's cwd |
+  | `LC_ALL` | every subprocess engine | Linux, macOS | `C.UTF-8`, for deterministic text handling |
+  | `SystemRoot` | every subprocess engine | Windows | the core's own `SystemRoot` value |
+  | `PATH` | every subprocess engine | Windows | the directory of the engine's program only (§0.11 T3a) |
+  | `HOME` | LibreOffice | Linux, macOS | the engine's cwd (its profile goes through `-env:UserInstallation`, §3.5.2) |
+
+  FFmpeg, ffprobe, `pdftotext` and pandoc take nothing beyond the every-engine rows; the
+  image worker adds only the keys its §3.5.5 mechanisms name. Realizability probe per
+  engine, on each OS, at the box that stages it: a §6.4.3 conversion runs with exactly
+  these keys. If an engine needs a key the table lacks, that box adds it here by an
+  ordinary spec edit, without escalation.
+- **Loader-injection strip.** The minimal env **explicitly STRIPS the
   dynamic-loader injection variables** so a hostile input cannot coerce a side-load:
   `LD_PRELOAD`, `LD_LIBRARY_PATH` (Linux), `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`
-  (macOS) are cleared; the engine resolves only the bundled shared libs shipped beside
-  it (§3.6.1 / §3.9.1). **That last clause is a build-time obligation, not a hope:** with
-  these variables cleared and `PATH` not relied on, no environment channel is left for the
-  dynamic loader, so a beside-the-exe lib resolves only through a **relative load path baked
+  (macOS) are cleared; the engine resolves only the bundled shared libraries shipped with
+  it (a resource tree such as LibreOffice's; FFmpeg links its codecs statically, §3.9.1).
+  **That last clause is a build-time obligation, not a hope:** with these variables cleared
+  and `PATH` not relied on, no environment channel is left for the dynamic loader, so a
+  beside-the-exe lib resolves only through a **relative load path baked
   into the binary** — and upstream builds carry absolute ones. `scripts/stage-engines`
   rewrites them per OS after staging (macOS `install_name_tool` → `@loader_path`, Linux
   `patchelf --set-rpath '$ORIGIN'`, Windows a recorded no-op); the mechanic is **§6.1.3**'s
@@ -1139,6 +1167,15 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
 - **Global flags (all FFmpeg jobs):** `-nostdin -hide_banner -loglevel error -y`
   — `-y` is safe because the target is the **temp** path (§2.1), never the user
   file; `-nostdin` prevents the classic FFmpeg "consumes the parent's stdin" hang.
+- **Output muxer `[DECIDED]`:** every encode passes `-f <muxer>` before `out_tmp`. The
+  `out_tmp` name ends in `.part` (§2.14.1), from which FFmpeg cannot choose a muxer — it
+  refuses with "Unable to choose an output format" (measured) — and a muxer is never
+  inferred from a file name. Per target: MP3 `mp3`, WAV `wav`, FLAC `flac`, AAC `adts`, M4A
+  and ALAC `ipod`, OGG `ogg`, OPUS `opus`, AIFF `aiff`; MP4 `mp4`, MOV `mov`, MKV
+  `matroska`, WEBM `webm`, M4V `mp4`; GIF `gif`. Each is the muxer FFmpeg itself picks for
+  the target's extension (measured), except M4V: FFmpeg picks `ipod` for `.m4v`, which
+  refuses an HEVC stream (measured), while an M4V output is an MP4-family repackage that
+  may keep one (video.md *HEVC/H.265 default disposition*).
 - **Engine-level network/protocol restriction `[DECIDED — always-on, cheap-tier]`.**
   The bundled GPL FFmpeg ships with the full default protocol set, so a crafted dropped
   file (HLS/`.m3u8`, `-f concat` script, DASH manifest, external-reference box) can make
@@ -1161,9 +1198,8 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
     playlist) absent per the `ffmpeg -demuxers` assertion below. With the network family
     unbuilt, even a pre-whitelist demuxer dereference has no network transport to use.
   - **Argv-level — network/SSRF half (defence-in-depth on top of the build floor):** every
-    FFmpeg/ffprobe invocation additionally prepends **`-protocol_whitelist file,pipe`** (and,
-    where a concat/segment demuxer is legitimately used, the explicit `-f` is pinned and the
-    whitelist is **not** widened to network schemes). This is set **before each input** (the
+    FFmpeg/ffprobe invocation additionally prepends **`-protocol_whitelist file,pipe`**,
+    never widened to network schemes. This is set **before each input** (the
     option is per-demuxer). It is **defence-in-depth** (catches anything the build trim
     missed), **not** the structural floor — the build-time absence of the network protocol
     family is.
@@ -1171,21 +1207,25 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
     `-protocol_whitelist file,pipe` MUST keep `file:` enabled (the input *is* a file), so a
     crafted playlist/manifest/concat-script could otherwise dereference an arbitrary
     **absolute** local file (`file:///etc/passwd`) or a `..`-traversal. This half is closed
-    structurally by **two argv/build controls, not the OS sandbox**:
-    - **`-safe 1` on the concat demuxer (NEVER `-safe 0`):** `-safe 1` is FFmpeg's default
-      and **rejects absolute paths and `..`-traversal** in a concat script (only portable
-      relative names are accepted) — ConvertIA never passes `-safe 0`, so a crafted
-      `-f concat` script cannot read out-of-input absolute files. (Verified against the
-      FFmpeg concat-demuxer docs: a path is "safe" only if it has no protocol spec, is
-      relative, and uses the portable charset; `-safe 0` is the only way to lift this, and
-      we never set it.)
+    structurally by **the curated demuxer set (second bullet), not the OS sandbox**, with
+    `-safe 1` as defence-in-depth:
+    - **`-safe 1` on the concat demuxer (NEVER `-safe 0`) — defence-in-depth:** `-safe 1`
+      is FFmpeg's default and **rejects absolute paths and `..`-traversal** in a concat
+      script (only portable relative names are accepted) — ConvertIA never passes
+      `-safe 0`, so a crafted `-f concat` script cannot read out-of-input absolute files.
+      (Verified against the FFmpeg concat-demuxer docs: a path is "safe" only if it has no
+      protocol spec, is relative, and uses the portable charset; `-safe 0` is the only way
+      to lift this, and we never set it.) The concat demuxer is absent from the curated
+      build (next bullet), so this rule holds should a build ever carry it.
     - **dereferencing demuxers constrained/absent in the curated build:** the playlist/
       manifest demuxers that can open *other* files (local-HLS `.m3u8`, DASH `.mpd`,
       `image2` glob/pattern, external-reference EXTF/`dash`) are either **not enabled** in
       the §6.1.3 `--disable-everything --enable-…` curated build (none is needed for any §04
       pair — ConvertIA converts single self-contained media files, never playlists) **or**
-      invoked only with their non-dereferencing options. A §6.1.3 `ffmpeg -demuxers` build
-      assertion verifies the playlist/segment demuxers ConvertIA does not need are absent.
+      invoked only with their non-dereferencing options. **The `concat` demuxer is absent
+      `[DECIDED]`:** no §04 pair concatenates inputs, and a built-in concat demuxer would
+      auto-probe a crafted `.ffconcat` input. A §6.1.3 `ffmpeg -demuxers` build assertion
+      verifies the concat, playlist and segment demuxers ConvertIA does not need are absent.
   - **Build-time (network protocol family absent — the primary control):** the curated
     FFmpeg build **MUST omit the entire network protocol family** at configure time
     (`--disable-network` preferred wholesale; at minimum no `--enable-protocol=` for
@@ -1200,10 +1240,10 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   Together with the §6.4.2 adversarial-egress case (a network-trigger input must
   show **zero egress AND no out-of-input file read**), this backs the §3.3.4 "nothing
   fetches" claim **structurally on BOTH halves** (SSRF via the network-family-absent build,
-  with the whitelist as defence-in-depth; absolute-file LFR via `-safe 1` + the curated
-  demuxer set) — it does **not** rely on the degradable OS network-deny / §2.12.3
-  FS-restriction tier. The §2.12.3 privilege-drop tier remains defence-in-depth, no longer
-  load-bearing for T9b-LFR.
+  with the whitelist as defence-in-depth; absolute-file LFR via the curated demuxer set —
+  no concat, playlist or manifest demuxer — with `-safe 1` as defence-in-depth) — it does
+  **not** rely on the degradable OS network-deny / §2.12.3 FS-restriction tier. The
+  §2.12.3 privilege-drop tier remains defence-in-depth, no longer load-bearing for T9b-LFR.
 - **Audio (`audio.md`):** decode → encoder per that file's table, e.g.
   - MP3 `-c:a libmp3lame -q:a 2` (VBR default) / `-b:a Nk` (CBR presets);
   - AAC `-c:a aac -b:a 192k` + muxer `adts` (raw `.aac`) or `ipod` (`.m4a`,
@@ -1632,8 +1672,8 @@ source where required), so the MIT core stays clean.
 | **ImageMagick** (GIF/BMP/ICO save delegate) | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | link OK | Permissive like BSD/MPL — no isolation needed. **Build caveat:** exclude GPL *optional delegates*; IM core is permissive. (Listed in the SBOM/NOTICE §3.7.) |
 | **x265** (HEVC encode) | **GPL-2.0-or-later** | **NO — dynamically-loaded libheif *plugin*** | x265 ships as a **separately-built, dynamically-loaded libheif encoder plugin** (`.so`/`.dll`/`.dylib`, libheif `ENABLE_PLUGIN_LOADING`) that `heifsave compression=hevc` loads at runtime. The GPL code is **never statically linked** into the image-worker's libvips or the MIT core; it lives behind libheif's plugin ABI and runs **inside the §0.7 image-worker process** (already a separate process from the core). **Accurate framing `[DECIDED]`: when x265 is loaded, the running image-worker is a GPL *combined work*** (per the FSF, dynamically loading a GPL plugin into a process makes that process's combination a GPL combined work — it is **not** an "LGPL worker with an isolated GPL plugin"). **The aggregation argument that keeps the MIT CORE clean is the *separate process* boundary** (the core invokes the worker as a child process), and that is sound + load-bearing — but **inside** the worker, both the **LGPL relink obligation** (libvips/libheif stack) **AND** the **x265 GPL corresponding-source obligation** apply to the worker-with-x265-loaded. *(A static x265-in-libvips link would taint — hence the plugin form. This replaces the dropped "standalone heif/x265 sidecar" — no such sidecar exists under the [IMG-1] heifsave-only decision.)* |
 | **x264** (H.264 encode) | **GPL-2.0-or-later** (SPDX `GPL-2.0-or-later` — matches x265's form; x264 is GPL-2.0-**or-later**, not `GPL-2.0-only`) | **NO — inside the GPL FFmpeg binary** | reached only via the **FFmpeg binary** (separate invoked process); never linked into the MIT core |
-| **FFmpeg** build | **GPL-2.0+** (enables GPL x264 via `--enable-gpl` → the *whole* binary is GPL-2.0+, not LGPL) | **NO — separate exe** | invoked as `ffmpeg`/`ffprobe` child processes (§3.3.3); aggregation keeps the MIT core clean. **Static OR dynamic FFmpeg is GPL-clean `[DECIDED]`:** a static GPL FFmpeg with the LGPL component libs (libmp3lame/libvorbis/libopus) baked in is aggregation — the GPL's own corresponding-source subsumes LGPL §6 — so it **never** fails the §6.1.3 assertion (carve-out **iii**). v1 ships them **dynamically linked beside the exe** (§3.9.1) as a deliberate engineering preference (smaller diff to swap a component lib), **not** a licence-mandated build rule; when dynamic, §6.1.3 carve-out **i** verifies those component shared objects are present beside the exe. The LGPL **dynamic-link** assertion applies ONLY to an LGPL lib linked into the **MIT core** (carve-out i), never to the separate FFmpeg binary. Written-offer-of-source obligation honored (§3.6.2). |
-| **FFmpeg component libs** (`libmp3lame` LGPL-2.0-or-later; `libvorbis`/`libogg`/`libopus`/`libvpx` BSD-3-Clause; `libdav1d` BSD-2-Clause) | per-component (see §3.1 row 2a / §3.7.2) | **NO — linked into the GPL FFmpeg binary** | reached only through the FFmpeg binary (separate invoked process); never linked into the MIT core. **libmp3lame is LGPL**, so its §6 relink obligation rides along — subsumed by FFmpeg's GPL corresponding-source + written offer (§3.6.2), and each ships its own §3.7.2 SBOM row (release-blocking if absent). **libvpx is the VP9/WEBM-target encoder** and carries its `PATENTS` grant alongside the BSD-3 text, mirroring the x264/libaom patent-text rows. |
+| **FFmpeg** build | **GPL-2.0+** (enables GPL x264 via `--enable-gpl` → the *whole* binary is GPL-2.0+, not LGPL) | **NO — separate exe** | invoked as `ffmpeg`/`ffprobe` child processes (§3.3.3); aggregation keeps the MIT core clean. **Static FFmpeg `[DECIDED]`:** every component library is statically linked into the one GPL binary (§3.8, §3.9.1); the GPL's own corresponding-source subsumes LGPL §6 for the LGPL `libmp3lame` inside it, so the static link **never** fails the §6.1.3 assertion (carve-out **iii**), and no component shared object ships beside the exe. The LGPL **dynamic-link** assertion applies ONLY to an LGPL lib linked into the **MIT core** (carve-out i), never to the separate FFmpeg binary. Written-offer-of-source obligation honored (§3.6.2). |
+| **FFmpeg component libs** (`libmp3lame` LGPL-2.0-or-later; `libvorbis`/`libogg`/`libopus`/`libvpx` BSD-3-Clause; `libdav1d` BSD-2-Clause) | per-component (see §3.1 row 2a / §3.7.2) | **NO — statically linked into the GPL FFmpeg binary** | reached only through the FFmpeg binary (separate invoked process); never linked into the MIT core. **libmp3lame is LGPL**, so its §6 relink obligation rides along — subsumed by FFmpeg's GPL corresponding-source + written offer (§3.6.2), and each ships its own §3.7.2 SBOM row (release-blocking if absent). **libvpx is the VP9/WEBM-target encoder** and carries its `PATENTS` grant alongside the BSD-3 text, mirroring the libaom patent-text row. |
 | **LibreOffice** | MPL-2.0 | **NO — separate sidecar** | invoked `soffice` process; MPL is weak/file-level anyway, but isolation is belt-and-suspenders + the SSOT policy |
 | **poppler**, **pandoc** | GPL | **NO — separate exe** | invoked child processes |
 | **Ghostscript** | **AGPL-3.0** | **NOT shipped v1 [DECIDED]** | dropped (§3.1) so no AGPL surface ships; `[DEFER: re-add only if §6.5 corpus shows GS-salvageable PDFs]` |
@@ -1752,7 +1792,10 @@ gate is **§6.3**. This section produces the *data* those consume.
    the supplier), and the per-artifact **SHA-256** are declared in
    the **build manifest `engines.lock`** (in `src-tauri/`; the single canonical name used by
    §6.3.1/§6.3.2/§6.3.3/§6.8 — there is no `engines.toml`). Every staged shared object
-   (`.dll`/`.dylib`/`.so`, T3a §0.11) gets its own row with its own SHA-256. This manifest
+   (`.dll`/`.dylib`/`.so`, T3a §0.11) gets its own row with its own SHA-256, except inside a
+   prebuilt tree engine `[DECIDED]`: LibreOffice and pandoc get one `engines.lock` row per
+   (archive, triple), and the per-file digests of the archive's staged members live in the
+   §7.2.3 in-bundle manifest and the G37 verify. This manifest
    is the authoritative input — **not** hand-curated prose, so it can't drift from what
    actually ships.
    - **The §6.1.3 cache-GROUP fields `[DECIDED — owner adjudication 2026-09-01, the (A′)
@@ -1835,35 +1878,29 @@ gate is **§6.3**. This section produces the *data* those consume.
    §6.1.3/§6.3.3 build assertion verifies the staged `COPYRIGHT` actually contains the
    **BSD-2-Clause** text and **fails the build** if a GPL leg slipped in — so the SPDX
    id in `engines.lock` is corroborated by the shipped text, not trusted blindly).
-   - **FFmpeg external component libraries — each gets its OWN row `[DECIDED]`.** v1 ships
-     FFmpeg's encoder/codec dependencies as **separate shared objects staged beside the
-     FFmpeg exe** (the §3.9.1 dynamic-beside-the-exe v1 preference), so each is a distinct
-     staged binary and **§3.7.3 requires its own `engines.lock`/SBOM row** (a staged `.so`
-     with no manifest row is release-blocking). The required rows:
+   - **FFmpeg component libraries — each is its OWN `kind = "sub-component"` row per triple
+     `[DECIDED]`.** They are statically linked into the FFmpeg binary (§3.9.1), so no shared
+     object ships for them: each row anchors the pinned source, and its SBOM entry is a nested
+     component of the FFmpeg build (the §6.3.3 completeness gate blocks the release on a
+     missing one). The rows and their licence special cases:
+     - **libx264** — SPDX **`GPL-2.0-or-later`**: the H.264 encoder (`-c:v libx264`, §3.5.1 /
+       video.md), and the reason the whole FFmpeg binary is GPL (§3.6.1).
      - **libmp3lame** — SPDX **`LGPL-2.0-or-later`** (the LAME library; the lame *frontend*
-       differs but only the library ships). Being **LGPL**, it ALSO triggers the §6.1.3
-       carve-out-(i)/§3.6.2 **relinkability/written-offer obligation** for an LGPL component
-       linked into the GPL FFmpeg binary — honoured the same way as the FFmpeg GPL
-       corresponding-source (the GPL's corresponding-source subsumes LGPL §6, but the row +
-       offer must exist). Used by the MP3 encode path (`-c:a libmp3lame`, §3.5.1 / audio.md).
+       differs but only the library ships). Being **LGPL** inside the GPL binary, its §6
+       **relinkability/written-offer obligation** is subsumed by FFmpeg's GPL
+       corresponding-source (§6.1.3 carve-out (iii) / §3.6.2), but the row + offer must
+       exist. Used by the MP3 encode path (`-c:a libmp3lame`, §3.5.1 / audio.md).
      - **libvorbis** — SPDX **`BSD-3-Clause`** (Xiph Vorbis encoder, `-c:a libvorbis`).
      - **libogg** — SPDX **`BSD-3-Clause`** (Ogg container/bitstream framing for Vorbis/Opus
        in `.ogg`).
      - **libopus** — SPDX **`BSD-3-Clause`** (Opus encoder, `-c:a libopus`).
      - **libvpx** — SPDX **`BSD-3-Clause`** **plus its `PATENTS` grant** (carried in
-       `THIRD-PARTY-LICENSES.txt` alongside the BSD-3 text, mirroring the libaom/x264
+       `THIRD-PARTY-LICENSES.txt` alongside the BSD-3 text, mirroring the libaom
        patent-text treatment): the **VP9 encoder for the WEBM target** (`-c:v libvpx-vp9`,
        §3.5.1 / video.md). libvpx is also added to the §3.1 inventory + §3.6.1 aggregation
        table as the WEBM-target encoder.
      - **libdav1d** — SPDX **`BSD-2-Clause`**: FFmpeg's AV1 decoder for video sources
        (`libdav1d`, §3.4.3), a separate link from the image-worker's dav1d row above.
-     **If FFmpeg is instead built statically (§6.1.3 carve-out iii)** so these libs are
-     subsumed into the single GPL FFmpeg binary, the static build's GPL corresponding-source
-     covers them and they need no *separate-staged-binary* row — but their SBOM rows still
-     exist as sub-components of the FFmpeg build (CycloneDX nested components). **v1's stated
-     preference is dynamic-beside-the-exe (§3.9.1), so the separate-staged rows above are the
-     v1 path**; the §6.3.3 manifest-completeness gate is satisfiable either way, never both
-     implied.
    The §6.3.3 attribution-completeness gate fails if any shipped component lacks a row,
    so these must be enumerated or the release blocks.
 5. `tauri build` includes both as resources (§3.3.1).
@@ -1873,7 +1910,8 @@ gate is **§6.3**. This section produces the *data* those consume.
 CI fails the release if any bundled binary/lib/font in the manifest lacks a
 licence-text entry or a source pointer — directly implementing the SSOT
 "missing attribution is release-blocking" rule. The check is **manifest-driven**:
-every `externalBin` + every `resources` engine file must have a manifest row.
+every `externalBin` + every `resources` engine file must have a manifest row, or be a
+staged member of a prebuilt tree engine's per-(archive, triple) row (§3.7.2 item 1).
 
 ---
 
@@ -1935,9 +1973,12 @@ blocker).
     download (the failure the rule exists to prevent).
   - **FFmpeg specifically** (the flagship, worst-case engine): FFmpeg is built from source
     only — the curated `--disable-network --disable-everything` build is the §3.5.1 SSRF
-    floor, which no prebuilt binary satisfies; its anchor is the signed `ffmpeg.org` source
-    tarball (`detached-signature`) + the digest-pinned build container. The chosen mode and
-    anchor are recorded in `engines.lock` and surfaced to the dual review on any change.
+    floor, which no prebuilt binary satisfies — and statically linked `[DECIDED]`: x264 and
+    every §3.1 row-2a library (`libdav1d` for AV1 decode among them) link into the one binary
+    (§3.9.1), each a sub-component row (§3.7.2 item 4). Its anchor is the signed `ffmpeg.org`
+    source tarball (`detached-signature`) + the digest-pinned build container. The chosen
+    mode and anchor are recorded in `engines.lock` and surfaced to the dual review on any
+    change.
     build-gates **G37** references this policy and must name a satisfiable corroboration
     source for every engine, FFmpeg included.
   - **Link-input output anchor `[DECIDED]`.** A from-source library another build links
@@ -2028,7 +2069,7 @@ dominates, so trimming effort is spent where it matters.
 |---|---|---|---|
 | **LibreOffice (headless, trimmed)** | **~250–400 MB** (dominant) | Writer+Calc+Impress program tree + needed type libs; **minimal** build (no help, no UI translations, no dictionaries, no DB/Draw/Math beyond deps) | strip help/l10n/dictionaries (under ~200 MB minimal is reported feasible); drop unused modules; the **bundled font set is a sub-line below** |
 | **Bundled fonts** (LibreOffice + documents/presentations fidelity) | **~30–120 MB** (baseline `[DECIDED]` §3.9.3; CJK breadth `[DEFER: size]`) | Liberation/Carlito/Caladea (metric-compat Arial/Calibri/Cambria/Times/Courier) + broad **CJK + RTL** coverage (Noto-class) | CJK is the size driver; a full Noto CJK is ~100 MB+ — the CJK weight count / breadth is the §3.9.3 deferred size knob and the first lever in the §3.9.2 order |
-| **FFmpeg + ffprobe** (GPL-2.0+ build, the listed codecs incl. x264/vpx) | **~30–80 MB** (two exes + their shared libs) | multimedia binary; v1 ships the LGPL component libs as **dynamically-linked shared objects beside the exe** as an engineering preference (a static FFmpeg is equally GPL-clean aggregation per §6.1.3 carve-out iii — it is **not** a licence-mandated choice, §3.6.1) | drop unused (de)muxers/filters via `--disable-everything --enable-…` to a curated list (the `04` codec set only) |
+| **FFmpeg + ffprobe** (GPL-2.0+ build, the listed codecs incl. x264/vpx/dav1d) | **~30–80 MB** (two statically linked exes) | multimedia binary, built from source with every component library **statically linked `[DECIDED]`** (GPL-clean aggregation, §6.1.3 carve-out iii / §3.6.1): no codec shared object ships beside the exes | drop unused (de)muxers/filters via `--disable-everything --enable-…` to a curated list (the `04` codec set only) |
 | **libvips + image codec stack** (libheif/libde265/x265-plugin/aom/dav1d/librsvg/cgif + **required ImageMagick** delegate) | **~20–40 MB** | image lib + codecs (image-worker process) | exclude unneeded loaders; ImageMagick is **required** (BMP+ICO save) but trimmed to BMP/ICO/GIF delegates with **GPL optional delegates excluded** (§3.6.1) — it cannot be removed |
 | **poppler `pdftotext`** | **~5–15 MB** | PDF text extractor | small |
 | **pandoc** | **~80–220 MB** (version-dependent; pandoc 3.x) | Haskell static binary (notoriously large; the **GHC runtime dominates**, so stripping saves little) | a release/stripped build trims marginally. **pandoc CANNOT be dropped wholesale for v1** — it **owns the `DOCX/ODT/RTF → MD/HTML` markup pairs** that LibreOffice 26.2 Markdown export is **not validated for** (documents.md item 1/2 `[DEFER: corpus]`); dropping it would orphan those pairs. So this is at most a **post-v1 contingency** (re-evaluate once LO Markdown export is corpus-proven for those pairs), **not** a v1 trim knob. It is the **second-biggest single exe** after LibreOffice |
