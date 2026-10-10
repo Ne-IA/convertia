@@ -141,7 +141,9 @@ One line each, with the gate that enforces it:
   tracked file → G69 ([`build-gates.md`](docs/security/build-gates.md) §6 check 26).
 - A change to a source of truth — a gate, a control, a decision, a path, a convention, an enum
   variant, a version pin — that leaves a referencing doc stale, contradictory or orphaned; every doc
-  that references it moves in the same commit → G68, DoD (b).
+  that references it moves in the same commit (a provenance citation — a review tag, a
+  `[Test-Change: …]` tag, "the P<n>.<m> note" or "ruling" — is history resolved through git, not
+  a reference to re-point, [security-concept.md](docs/security/security-concept.md) §6) → G68, DoD (b).
 - An L(-1) edit by the Build-Loop, or any L(-1) edit without the `L-neg1-ack: owner` trailer. The
   files that can silently weaken an enforcement plane (every file under `scripts/` except the
   declared Loop build tools, the hook and CI planes, the supply-chain, secret-scan, toolchain,

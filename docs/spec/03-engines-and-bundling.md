@@ -1713,7 +1713,7 @@ model (SSOT *Distribution & download trust*):
   aggregation case (carve-out iii) covered by the source pointer above.
 - AGPL: not applicable to v1 (Ghostscript dropped, §3.1). If GS is ever re-added
   (`[DEFER]`), the same model applies plus an explicit note; no network service exists
-  so the AGPL §13 remote-interaction clause would not trigger.
+  so the AGPL section 13 remote-interaction clause would not trigger.
 - This obligation completeness is a **release-blocking gate** (§6.3/SSOT *v1 DoD*:
   "a missing attribution is release-blocking, same status as no-harm").
 

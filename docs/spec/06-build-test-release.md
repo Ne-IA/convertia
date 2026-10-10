@@ -667,6 +667,14 @@ not bit-reproducible. **`[DECIDED]`** how far to pursue determinism — **best-e
 NOT a release gate** (the cheap measures above ship; deeper bit-reproducibility is
 `[DEFER: post-v1]`, not an owner-level design call).
 
+**Third-party rebuild recipe `[DECIDED]`.** A committed `docs/reproduce.md` recipe and a build-environment
+lock let an independent party rebuild what ConvertIA compiles and compare it against the published
+hashes: for the Rust core and the WebView bundle, the pinned base-image digest, `rust-toolchain.toml`,
+the Tauri CLI/bundler digest, the exact build command and the expected per-file SHA-256 of the Rust
+core; for each engine built from source (§3.8), its build recipe, the digest-pinned build container
+and its configure-flag entry (§6.1.3). Like the rest of this section it is best-effort, not a release
+gate; G60 publishes the determinism delta of the Rust-core and WebView layer.
+
 ---
 
 ## 6.3 SBOM & licence artifacts `[DECIDED — attribution is a release gate]`

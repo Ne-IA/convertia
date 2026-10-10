@@ -550,7 +550,7 @@ def doc2_cross_reference(ctx: Ctx) -> list[Finding]:
 def doc8_threat_parity(ctx: Ctx) -> list[Finding]:
     """Check 8 (bidirectional): every canonical §0.11 threat class has EXACTLY ONE security-concept
     §5 row, every §5 row is a canonical class, and every §5 row cites a Gnn. Read ONLY from the §5
-    table + the embedded canonical list — never the §7 frozen snapshot."""
+    table + the embedded canonical list."""
     out = []
     sec = ctx.docs.get("docs/security/security-concept.md", "")
     if not sec:
@@ -613,8 +613,8 @@ def doc5_gate_catalogue(ctx: Ctx) -> list[Finding]:
     if missing:
         return missing
     out = []
-    # the catalogue = every Gnn DOCUMENTED in build-gates (a table row, OR a reserved/forward/§8
-    # informational entry — G65/G66/G67 are reserved, not main-table rows, yet legitimately catalogued)
+    # the catalogue = every Gnn DOCUMENTED in build-gates (a table row, OR a reserved-ID map entry —
+    # G65/G66/G67/G18e are reserved, not main-table rows, yet legitimately catalogued)
     catalogue = set(re.findall(r"\bG\d+[a-z]?\b", bg))
     named = sorted(set(re.findall(r"\bG\d+[a-z]?\b", sec)),
                    key=lambda x: (int(re.match(r"G(\d+)", x).group(1)), x))
@@ -726,9 +726,8 @@ def doc6_forbidden_tokens(ctx: Ctx) -> list[Finding]:
 
 
 def doc17_forward_idea_status(ctx: Ctx) -> list[Finding]:
-    """Check 17: a §8 forward-idea entry marked [DEFER] whose gate has SINCE become a real catalogue
-    row must have its [DEFER] removed — a [DEFER]-tagged line that cites a Gnn which IS a plain
-    catalogue row is a stale status."""
+    """Check 17: a live [DEFER]-tagged line anywhere in build-gates.md that cites a Gnn which IS a
+    plain-integer catalogue row is a stale status (the gate gained a row, so it is no longer deferred)."""
     out = []
     bg = ctx.docs.get("docs/security/build-gates.md", "")
     rows = {f"G{m.group(1)}" for m in _GATE_ROW_RE.finditer(bg)}
