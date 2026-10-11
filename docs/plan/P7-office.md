@@ -345,6 +345,7 @@ clusters and `needs:` their cluster's pair boxes.
   needs: P7.49, P7.50
   > for every enumerated document `(source → target)` pair, against every corpus file of its source, on all three platforms: completes (LO exit-0-but-wrote-nothing verified by non-empty output, P7.12); output validated by the MANDATORY structural reader (poppler-opens for PDF + the document→image-or-text OCR `expected_text` content check, NOT a size floor; `unzip`+`[Content_Types].xml` for DOCX; a real reader for ODT/RTF; non-empty/output≠input/size-plausibility for TXT/MD/HTML); no-harm (source `sha256` unchanged, atomic write, no-clobber); fail-clearly on the known-bad fixtures; the §2.9 lossy map fires IFF the §04 matrix flags the pair (`doc_pdf_reflow`/`doc_pdf_to_text`/`doc_to_text`/`doc_simplified`/`doc_html_render`; `TXT→PDF` and `MD→HTML/office` NOT flagged; `MD→PDF` IS flagged `doc_pdf_reflow`); CJK/RTL content-fidelity spot-checks (the §6.4.3 runner is P4-built). G32 lossy-disclosure property holds over the `FormatId×FormatId` product.
   > Holds the G32 (c) determinism floor for LibreOffice word-processing, pandoc and poppler outputs: ≥ 1 pair per engine (§6.4.4, the G32 row).
+  > Includes the G31 mixed-batch state-leak case (test-strategy §1.4): file N malformed, N+1 valid, one shared `soffice` process; the valid outputs equal isolated single-file runs.
 
 ---
 

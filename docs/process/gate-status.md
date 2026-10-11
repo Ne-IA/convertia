@@ -63,9 +63,9 @@ actually happened — for each gate, a planted violation in the now-real target 
 is *enforcing*, not stuck in its bootstrap skip). This log records each flip as a dated committed
 line. Unlike the owner-decidable ratchet ledger above, these are **deterministic, one-time**
 activations (no `informational`↔`required` posture), so the table below deliberately carries **no
-`Status`/`Since` columns** (check 23 governs only the ratchet ledger). The reverse `→ activated in P<n>`
-edges live on the P0 gate rows in [build-gates.md](../security/build-gates.md); this is their closing
-side. **G69** (the structural-map bind of the tracked tree to spec §0.7) activated at **P1.64** — the P1-END
+`Status`/`Since` columns** (check 23 governs only the ratchet ledger). Each gate's current build state
+is the Status cell of its row in [build-gates.md](../security/build-gates.md); this log is the dated
+record of the flips. **G69** (the structural-map bind of the tracked tree to spec §0.7) activated at **P1.64** — the P1-END
 structure-establishment box — and its row is below. Of the two remaining `→ activated in P1`-annotated
 gates, **G23** (the conversion-command→test completeness walk) activated at **P3.63** — re-keyed to the
 §0.4.1 `start_conversion` by the 2026-07-17 P3.63 ruling; its row is in the P3 flips table below.

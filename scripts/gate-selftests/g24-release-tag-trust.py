@@ -5,7 +5,7 @@ Proves the three trust legs behave fail-closed/fail-soft as specified, by import
 gate module and driving its pure + git-based functions:
   - tag_name_from_ref: ref normalization (a non-tag ref must NOT pass);
   - evaluate_check_runs: the green-history parse (the leg-2 logic, on fixture JSON - the live
-    `gh api` call is release/owner-verified, the G56a/P0.2.8 API-introspection exemption);
+    `gh api` call is release/owner-verified, as G56a's live calls are);
   - leg_ancestry: a tag on origin/main passes, a descendant-not-on-origin/main fails
     (real temp git repo);
   - leg_signed_tag: fail-SOFT when the allowed-signers file is absent, fail-CLOSED (unsigned

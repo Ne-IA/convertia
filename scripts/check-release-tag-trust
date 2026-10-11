@@ -13,7 +13,7 @@ arbitrary, red, or unsigned ref. Three legs:
       check-run for the SHA is completed + success/neutral/skipped, and >=1 check-run exists
       (`gh api repos/<repo>/commits/<sha>/check-runs --paginate`). A red / in-flight / check-
       less SHA is rejected. (API-introspection; the parse logic is self-tested on fixtures,
-      the live `gh` call is release/owner-verified - the G56a/P0.2.8 exemption pattern.)
+      the live `gh` call is release/owner-verified, as G56a's live calls are.)
   (3) SIGNED-TAG (fail-SOFT until provisioned, then fail-closed) - the `v*` tag is a signed
       annotated tag verifiable against the committed SSH allowed-signers file
       (`git -c gpg.ssh.allowedSignersFile=<file> verify-tag <tag>`). The allowed-signers file

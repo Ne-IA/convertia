@@ -17,6 +17,12 @@ Two tiers, the same pattern as the supply-chain skeleton (P0.3.6):
   advisory-db is absent — a fresh machine / clean CI runner has none). Skips-with-notice while no
   workspace manifest exists, fail-closes the moment one lands (the G47/G22/G23 bootstrap posture).
   cargo-audit's binary pin + the live audit leg activate in P1 with the lockfile.
+  The `cargo audit` flag set of the pinned cargo-audit 0.22.2 (`cargo-audit audit --help`, measured;
+  re-measured on every bump - the G17 row): `-c/--color`, `-d/--db`, `-D/--deny`, `-f/--file`,
+  `--ignore`, `--no-yanked`, `-n/--no-fetch`, `--stale`, `--target-arch`, `--target-os`,
+  `-u/--url`, `-q/--quiet`, `--format` (terminal, json, sarif), `--json`, `-h/--help`,
+  `-V/--version`, the `bin` subcommand and the global `-v/--verbose`. It has no `--locked`, a
+  cargo built-in of build/test/run/fetch: clap rejects it as an unexpected argument.
 
 stdlib-only. L(-1) security-critical (matched by scripts/**). The configs it freezes
 (rustfmt.toml / clippy.toml) are themselves L(-1).

@@ -2,8 +2,8 @@
 """g24-branch-protection.py - G24 self-test for check-branch-protection (P0.2.8, G56a).
 
 Drives the PURE evaluate_*() functions with fixture JSON (the live `gh api` calls are owner/CI-
-verified - G56a is exempt from the plan-lint check-16 fixture requirement, an API-introspection
-gate). Proves: the ruleset core (ruleset_targets_main; bypass_is_admin_only; evaluate_rulesets -
+verified - an API-introspection gate; this file is its plan-lint check-16 fixture). Proves: the
+ruleset core (ruleset_targets_main; bypass_is_admin_only; evaluate_rulesets -
 required checks subset, admin-only check-bypass, no-bypass history protection, required_signatures
 target-gating), the repo-security (d), workflow-perms (e) and the T2-taint OR-gate (f) all classify
 correctly, and main() handles a missing repo per posture.

@@ -56,9 +56,10 @@ action collected in §5.
 
 **Policy.** A GitHub **tag-protection ruleset on `v*`** restricts release-tag *creation*
 to the owner / a protected actor, with a **minimal, enumerated bypass-actor list** —
-the **tag-ref sibling** of G56a's branch-ref protection. It is asserted via
-`gh api repos/:owner/:repo/rulesets` on **schedule + on tag**, **fail-closed**
-(build-gates **G56b** leg 1).
+the **tag-ref sibling** of G56a's branch-ref protection. Its machine check reads the
+ruleset through `gh api repos/:owner/:repo/rulesets` on **schedule + on tag**, **fail-closed**
+(build-gates **G56b** leg 1, whose Status cell names the box that builds it); until that check
+runs, the owner-provisioned ruleset is the control and no CI leg verifies it.
 
 **Belt-and-suspenders (already authored in P0.2, fail-closed always).** Even with the
 ruleset, the release workflow's **first step** re-checks (G56b leg 2) that the tagged
@@ -109,9 +110,11 @@ signing/release job declares **`environment: release`**, so the secret is **neve
 injected until the owner approves** — the human-in-the-loop on the one irreversible
 action. This turns G56b leg-2's "abort *before reading* the secret" into "secret
 **never injected** without approval" — **strictly additive** to leg 2, not a
-replacement. Asserted via `gh api repos/:owner/:repo/environments/release`
+replacement. Its machine check reads `gh api repos/:owner/:repo/environments/release`
 (`required_reviewers` + the `v*` `deployment_branch_policy` + the `environment:
-release` binding), **fail-closed** (build-gates **G56**).
+release` binding), **fail-closed** (build-gates **G56**, one of the signing-job rules whose
+boxes the row's Status cell names); until that check runs, the owner-provisioned Environment
+is the control and no CI leg verifies it.
 
 ### 4.2 The release-job token scope
 

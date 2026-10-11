@@ -1,8 +1,8 @@
 # scripts/gate-planes.toml - the defense-in-depth enforcement planes + the fail-open/closed
 # policy, as machine-readable config (P0.2.12, G54b). This is the "empty-but-wired contract"
 # the P0.3/P0.4 gates slot into: it is the SOURCE-OF-TRUTH for the plane STRUCTURE + the
-# fail-open policy. The per-gate plane assignment + posture lives in the build-gates.md §5
-# catalogue (kept in sync with this file + security-concept §3 by plan-lint, P0.3.5).
+# fail-open policy. The per-gate plane and posture live in the build-gates.md rows; this file holds
+# the plane structure and the fail-open registry.
 # Validated by scripts/check-gate-planes (G54b - the plane-DEFINITION-integrity sibling of the
 # G54 plane-EXECUTION-integrity gate). L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 #
@@ -74,9 +74,11 @@ mirror = "CI only (assembled in P10)"
 # --- fail-OPEN exceptions (each justified by a covering plane) ---------------
 # The recurring justified patterns (the only sanctioned reasons to fail-open):
 #   (a) a DIFF-SCOPED local leg fail-opens without a diff base; its FULL-TREE L4 mirror is the
-#       fail-closed net (so a missed local diff cannot escape - L4 re-checks the whole tree);
-#   (b) a TARGET-ABSENT gate skips-with-warning while the artifact it inspects does not yet
-#       exist (the P0 "authored now, fail-closes when the target lands" bootstrap posture);
+#       fail-closed net (so a missed local diff cannot escape - L4 re-checks the whole tree). A
+#       diff-only gate with no whole-tree form names its other net instead: the L2 range leg (G74),
+#       the per-domain floor beside a diff floor (G28);
+#   (b) a target-absent leg is not a fail-open: the build-gates Status cell names the box that lands
+#       its target;
 #   (c) a gate with a SCHEDULED fail-soft -> fail-closed transition at a phase boundary
 #       (the CONFIG-introspection gates) is fail-SOFT during the P0 bootstrap and fail-CLOSED
 #       once its phase lands. Such a transition is NO LONGER a prose-only promise: it is bound
@@ -104,11 +106,39 @@ covered_by = "L4"
 reason = "a local plane never downloads an advisory database, so without one each scan skips with a notice naming the fix (a partial OSV database still reds); Lane A's gate-tooling job on Linux warms the RustSec database and refreshes the OSV npm database, then runs both scans fail-closed over the OS-agnostic Cargo.lock and pnpm-lock.yaml (check-js-advisories --require-db reds an absent or partial database; the macOS/Windows legs of the matrix skip the Rust audit the same way and leave the JS scan to the Linux leg) (pattern d)"
 
 [[fail_open]]
-gate = "G56"
-leg = "runner-host + cargo-fuzz pin (check_runner_host / check_fuzz_pin)"
-fail_open_at = "L1/L2/L4"
-covered_by = "P10 / P3+ activation"
-reason = "no secret-reading job and no cargo-fuzz invocation exist until the signing job (P10) / the fuzz harness (P3+); the assertions are authored + self-tested now and fail-CLOSE the moment their target lands (pattern b)"
+gate = "G8"
+leg = "the staged-diff scan without a diff base (check-deferral --diff)"
+fail_open_at = "L1"
+covered_by = "L2 + L4"
+reason = "a commit with no HEAD to diff against (a fresh repo) has no added lines to scan; the full-tree G21 scan (check-deferral --full) at pre-push and on the clean checkout reads the whole production tree fail-closed, so a marker cannot escape (pattern a)"
+
+[[fail_open]]
+gate = "G70"
+leg = "the staged-diff scan without a diff base (check-test-suppression --diff)"
+fail_open_at = "L1"
+covered_by = "L2 + L4"
+reason = "a commit with no HEAD to diff against has no staged test diff to read; the full-tree scan (check-test-suppression --full) at pre-push and on the clean checkout fails closed on an unjustified marker, and a first commit removes no earlier assertion (pattern a)"
+
+[[fail_open]]
+gate = "G74"
+leg = "legs (a) and (c) without a diff base (check-doc-splice: --diff with no HEAD; --range at L4 with an empty or unresolvable push base)"
+fail_open_at = "L1/L4"
+covered_by = "L2"
+reason = "the attachment and deleted-definition legs exist only in a diff and have no whole-tree form; a commit with no HEAD is read again by the L2 range leg of its first push, and an L4 run with no push base (a pull_request, a schedule, a first push) was preceded by the L2 range leg of the push that carried the commits (pattern a)"
+
+[[fail_open]]
+gate = "G74"
+leg = "leg (b) without a local Rust toolchain (check-doc-links)"
+fail_open_at = "L2"
+covered_by = "L4"
+reason = "the rustdoc link build needs cargo; a host without the toolchain skips with a notice, and the L4 gate-tooling matrix builds the docs on all three OS fail-closed (pattern a)"
+
+[[fail_open]]
+gate = "G28"
+leg = "the push-range diff floor with an unresolvable base (check-coverage --base)"
+fail_open_at = "L4"
+covered_by = "the G27 per-domain line floor"
+reason = "a force push or a new ref leaves no range to diff, so the changed-line floor has no lines to read; the per-domain floors the same job enforces still bound the dilution, and the next push's range diff reads the lines it touches (pattern a)"
 
 [[fail_open]]
 gate = "G56a"

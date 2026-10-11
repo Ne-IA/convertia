@@ -24,10 +24,13 @@ rustfmt reflow - re-declares the same attachment owner and must not fire; the re
 residual: the reset is content-blind, so an edit that also touches the line above the
 insertion is outside the modeled pure-insertion class). An added run FAILS iff the
 attachment state is set at its start AND the run DECLARES AN ITEM (an item keyword on any
-run line; in an attribute-led run also the `name!(...)` item-macro form). Runs that only
+run line; in an attribute-led run also the `name!(...)` item-macro form). Recorded residual: a
+plain-led item-macro splice (`define_x!(...);` with no attribute) is not flagged, because a bare
+macro call after an explanatory body comment must not fire. Runs that only
 extend the comment (the repo-mandated `[Build-Session-Entscheidung]`/`[Test-Change]` tag
 inserts - rustc-proven harmless) or only add attributes pass. Over-strict residual: a
-genuinely-new item spliced under a foreign PROSE comment always fires; the fix for a false
+genuinely-new item spliced under a foreign PROSE comment always fires (a nested `fn` added under
+a body-internal comment included); the fix for a false
 positive (move the insertion below the documented item's closing brace, or move a trailing
 end-of-section note onto its own item's line) IS the fix for a true hijack - no escape
 marker.

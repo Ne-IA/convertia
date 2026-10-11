@@ -143,7 +143,9 @@ One line each, with the gate that enforces it:
   variant, a version pin — that leaves a referencing doc stale, contradictory or orphaned; every doc
   that references it moves in the same commit (a provenance citation — a review tag, a
   `[Test-Change: …]` tag, "the P<n>.<m> note" or "ruling" — is history resolved through git, not
-  a reference to re-point, [security-concept.md](docs/security/security-concept.md) §6) → G68, DoD (b).
+  a reference to re-point, [security-concept.md](docs/security/security-concept.md) §6) → G68 for links,
+  orphans, vanished gate or threat ids and the fingerprinted cage (other drift is a G1 review item),
+  DoD (b).
 - An L(-1) edit by the Build-Loop, or any L(-1) edit without the `L-neg1-ack: owner` trailer. The
   files that can silently weaken an enforcement plane (every file under `scripts/` except the
   declared Loop build tools, the hook and CI planes, the supply-chain, secret-scan, toolchain,

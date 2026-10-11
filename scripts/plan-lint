@@ -483,6 +483,31 @@ def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
 #  DOC checks (build-gates.md §6, checks 1..33) — a missing target is a finding (module docstring).
 # =============================================================================================
 _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
+# a catalogue row of any gate id (sub-letter included) and the cell separator: an unescaped `|` (a literal pipe
+# inside a cell is written `\|`)
+_GATE_ROW_ID_RE = re.compile(r"^\| \*\*(G\d+[a-z]?)\*\* \|")
+_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
+
+
+def _gate_row_cells(bg: str) -> dict[str, list[str]]:
+    """(pure) The cells of every `| **Gnn** |` catalogue row, keyed by gate id (the first row of an id): the line
+    split on the unescaped `|`, each cell stripped, the empty edge cells dropped. The schema is seven cells - ID,
+    Gate, Contract, Enforced by, Status, Blocks, Fail mode (build-gates §0 *Status and fail posture*); a row with
+    another count is returned as it is, and the caller decides."""
+    rows: dict[str, list[str]] = {}
+    for line in bg.splitlines():
+        m = _GATE_ROW_ID_RE.match(line)
+        if not m:
+            continue
+        cells = [c.strip() for c in _CELL_SPLIT_RE.split(line)]
+        if cells and not cells[0]:
+            cells = cells[1:]
+        if cells and not cells[-1]:
+            cells = cells[:-1]
+        rows.setdefault(m.group(1), cells)
+    return rows
+
+
 # the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 19 classes
 # (T7a — Windows reserved-name output aliasing — added by the 2026-07-21 P3.73 P0 ruling)
 THREAT_CLASSES = {"T1", "T2", "T2a", "T2b", "T2c", "T3", "T3a", "T4", "T5", "T6",
@@ -670,19 +695,17 @@ def doc22_gate_id_gap_free(ctx: Ctx) -> list[Finding]:
     return out
 
 
-def _gates_in_files(root: Path, *globs: str) -> set[str]:
-    found: set[str] = set()
-    for g in globs:
-        for f in root.glob(g):
-            if f.is_file():
-                found.update(re.findall(r"\bG\d+[a-z]?\b", f.read_text(encoding="utf-8", errors="replace")))
-    return found
+# a scripts/ gate driver named in a row's Enforced-by cell - the custom gates that ship a planted-positive self-test
+_SCRIPT_DRIVER_RE = re.compile(r"`scripts/(?:check|run)-[\w-]+")
 
 
 def doc16_planted_positive(ctx: Ctx) -> list[Finding]:
-    """Check 16: every §5-cited, fail-closed gate that is IMPLEMENTED (a scripts/check-* / run-* driver
-    references it) must have a registered negative self-test fixture in scripts/gate-selftests/. A gate
-    no driver implements owes no fixture; a missing security-concept.md or build-gates.md is a finding."""
+    """Check 16: every gate cited in a security-concept §5 threat row whose catalogue row reads Status `live` or
+    `live-partial (...)`, Fail mode `fail-closed...` and names a `scripts/check-*` / `scripts/run-*` driver in its
+    Enforced-by cell must have a registered self-test - a `scripts/gate-selftests/*.py` naming its id. The row is
+    read by its cells (_gate_row_cells), so a §5-cited row that does not parse to the seven cells is a finding
+    (fail closed); a cited id with no row is check 8's (a gate name resolves there). A missing security-concept.md
+    or build-gates.md is a finding."""
     sec = ctx.docs.get("docs/security/security-concept.md", "")
     bg = ctx.docs.get("docs/security/build-gates.md", "")
     missing = [f for rel, text in (("docs/security/security-concept.md", sec), ("docs/security/build-gates.md", bg))
@@ -694,21 +717,33 @@ def doc16_planted_positive(ctx: Ctx) -> list[Finding]:
     sec5: set[str] = set()
     for m in re.finditer(r"^\| \*\*T\d+[a-z]?\*\*.*$", sec, re.M):
         sec5.update(re.findall(r"\bG\d+[a-z]?\b", m.group(0)))
-    # fail-closed gates (per their build-gates row)
-    fail_closed = {m.group(1) for m in re.finditer(r"^\| \*\*(G\d+[a-z]?)\*\* \|.*fail-closed", bg, re.M)}
-    implemented = _gates_in_files(ctx.root, "scripts/check-*", "scripts/run-*")
-    # Exactly the runner's discovery (2026-09-09): `run-gate-selftests` runs `scripts/gate-selftests/*.py` minus
-    # `_`-prefixed helper modules, so only those count as a self-test - a `.legs` blessed leg-name set carries
-    # gate ids inside leg NAMES and is data, and a `_helper.py` the runner never executes tests nothing.
+    rows = _gate_row_cells(bg)
+    obliged: set[str] = set()
+    for g in sec5:
+        cells = rows.get(g)
+        if cells is None:
+            continue
+        if len(cells) != 7:
+            out.append(Finding("16:planted-positive-coverage", "docs/security/build-gates.md", 0,
+                               f"{g} is cited in a security-concept §5 row, but its catalogue row has {len(cells)} "
+                               "cells, not the seven of the schema - fail-closed"))
+            continue
+        enforced_by, status, fail_mode = cells[-4], cells[-3], cells[-1]
+        if (fail_mode.startswith("fail-closed") and (status == "live" or status.startswith("live-partial"))
+                and _SCRIPT_DRIVER_RE.search(enforced_by)):
+            obliged.add(g)
+    # Exactly the runner's discovery: `run-gate-selftests` runs `scripts/gate-selftests/*.py` minus `_`-prefixed
+    # helper modules, so only those count as a self-test - a `.legs` blessed leg-name set carries gate ids inside
+    # leg NAMES and is data, and a `_helper.py` the runner never executes tests nothing.
     selftested: set[str] = set()
     for f in ctx.root.glob("scripts/gate-selftests/*.py"):
         if f.is_file() and not f.name.startswith("_"):
             selftested.update(re.findall(r"\bG\d+[a-z]?\b", f.read_text(encoding="utf-8", errors="replace")))
-    for g in sorted(sec5 & fail_closed & implemented,
-                    key=lambda x: (int(re.match(r"G(\d+)", x).group(1)), x)):
+    for g in sorted(obliged, key=lambda x: (int(re.match(r"G(\d+)", x).group(1)), x)):
         if g not in selftested:
             out.append(Finding("16:planted-positive-coverage", "scripts/gate-selftests/", 0,
-                               f"{g} is an implemented §5 fail-closed gate but has NO registered self-test fixture"))
+                               f"{g} is a live fail-closed §5 gate driven by a scripts/ gate script but has NO "
+                               "registered self-test fixture"))
     return out
 
 
@@ -2175,18 +2210,15 @@ def doc30_spec_restatement_fidelity(ctx: Ctx) -> list[Finding]:
     return out
 
 # --- check 32: the SAST pin is single-sourced (the 2026-09-24 semgrep-bump class) ------------------------------
-# requirements-ci.txt pins the Semgrep binary (`semgrep==X`, --require-hashes); its own header line, the
-# build-gates G29 row and the P0.4.2 delivered note restate the current pin in prose. More than once
-# (dfda4fb, d6847d0, the 2026-09-24 re-land of Dependabot #33) the bump carried the notes by hand, and a
-# forgotten note is a stale version literal the doc graph cannot see (G68 resolves links, not numbers). This
-# check reads the pin and requires each restating site to name it backticked, so a bump that leaves a note
-# stale reds at L1 (CLAUDE.md §5: a version pin moves with every doc that restates it; DoD item 2).
+# requirements-ci.txt pins the Semgrep binary (`semgrep==X`, --require-hashes) and its own header line names the
+# pin. More than once (dfda4fb, d6847d0, the 2026-09-24 re-land of Dependabot #33) a bump carried prose notes that
+# restated the version by hand, and a forgotten note is a stale version literal the doc graph cannot see (G68
+# resolves links, not numbers). So the docs name the file, never the version: this check reads the pin, requires
+# the header to name it, and reds any doc in the doc set that names a Semgrep version, so a bump touches
+# requirements-ci.txt alone (CLAUDE.md §5: a version pin moves with every doc that restates it).
 _SAST_PIN_RE = re.compile(r"(?m)^semgrep==([0-9][\w.+-]*)")
-_SAST_PIN_SITES = (
-    ("requirements-ci.txt", r"(?m)^# Pinned EXACT-version .*$", "the requirements-ci.txt header line"),
-    ("docs/security/build-gates.md", r"(?m)^\| \*\*G29\*\* \|.*$", "the build-gates G29 row"),
-    ("docs/plan/P0-build-and-security.md", r"(?ms)^- \[.\] \*\*P0\.4\.2\*\*.*?(?=^- \[)", "the P0.4.2 delivered note"),
-)
+# a Semgrep version in a doc: the pip spelling or the backticked dotted form after the tool's name
+_SAST_VERSION_IN_DOC_RE = re.compile(r"semgrep==\d|Semgrep `\d+\.\d+\.\d+`")
 
 
 def _doc_text(ctx: Ctx, rel: str) -> str:
@@ -2198,25 +2230,31 @@ def _doc_text(ctx: Ctx, rel: str) -> str:
 
 
 def doc32_sast_pin_sync(ctx: Ctx) -> list[Finding]:
-    """Check 32: the `semgrep==` pin in requirements-ci.txt is named (backticked, or as `semgrep==X`) in the
-    file's own header line, in the build-gates G29 row and in the P0.4.2 delivered note - the restating sites
-    move with the pin, never after it. A missing requirements-ci.txt, and a requirements file without the
-    pin, are each a finding."""
+    """Check 32: the Semgrep version is single-sourced in requirements-ci.txt - the file pins `semgrep==X`, its own
+    header line names that pin (backticked, or as `semgrep==X`), and no doc in the doc set names a Semgrep version
+    (`semgrep==<digit>...` or Semgrep `` `X.Y.Z` ``). A missing requirements-ci.txt, and a requirements file without
+    the pin, are each a finding."""
     req = ctx.root / "requirements-ci.txt"
     if not req.is_file():
         return _target_missing("32:sast-pin-sync", "requirements-ci.txt")
-    m = _SAST_PIN_RE.search(req.read_text(encoding="utf-8", errors="replace"))
+    text = req.read_text(encoding="utf-8", errors="replace")
+    m = _SAST_PIN_RE.search(text)
     if m is None:
         return [Finding("32:sast-pin-sync", "requirements-ci.txt", 0,
                         "no `semgrep==<version>` pin - the SAST binary pin is this file's reason to exist (G29)")]
     pin = m.group(1)
     out: list[Finding] = []
-    for rel, site_re, label in _SAST_PIN_SITES:
-        site = re.search(site_re, _doc_text(ctx, rel))
-        if site is None or (f"`{pin}`" not in site.group(0) and f"semgrep=={pin}" not in site.group(0)):
-            out.append(Finding("32:sast-pin-sync", rel, 0,
-                               f"the current Semgrep pin `{pin}` (requirements-ci.txt) is not named in {label} - "
-                               "a version pin moves with every doc that restates it (CLAUDE.md §5, DoD item 2)"))
+    header = re.search(r"(?m)^# Pinned EXACT-version .*$", text)
+    if header is None or (f"`{pin}`" not in header.group(0) and f"semgrep=={pin}" not in header.group(0)):
+        out.append(Finding("32:sast-pin-sync", "requirements-ci.txt", 0,
+                           f"the current Semgrep pin `{pin}` is not named in the requirements-ci.txt header line - "
+                           "the header names the pin the file holds"))
+    for rel, doc in sorted(ctx.docs.items()):
+        for lineno, line in enumerate(doc.splitlines(), 1):
+            if _SAST_VERSION_IN_DOC_RE.search(line):
+                out.append(Finding("32:sast-pin-sync", rel, lineno,
+                                   "names a Semgrep version - a Semgrep version is single-sourced in "
+                                   "requirements-ci.txt (name the file, never the version)"))
     return out
 
 

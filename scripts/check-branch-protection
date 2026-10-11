@@ -35,8 +35,8 @@ before CodeQL/G29) stay skip-with-warning even under --enforce, then fail-close 
 lands - the same target-existence flip G56b leg 3 uses.
 
 The pure evaluate_*() / taint_or_gate() functions take parsed JSON and are driven by the G24 self-
-test on fixtures; the LIVE `gh api` calls are owner/CI-verified (G56a is exempt from the plan-lint
-check-16 fixture requirement - an API-introspection gate). The `gh` calls use the workflow
+test on fixtures; the LIVE `gh api` calls are owner/CI-verified (an API-introspection gate: that
+fixture-driven self-test is its plan-lint check-16 fixture). The `gh` calls use the workflow
 GITHUB_TOKEN, which on its default `contents: read` scope CANNOT read the admin-scoped rulesets /
 repo-config endpoints (GitHub exposes no `administration` GITHUB_TOKEN permission, so the elevation
 cannot even be requested) - hence the gate runs fail-SOFT in CI on the default token and is owner-

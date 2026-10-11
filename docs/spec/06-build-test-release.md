@@ -722,7 +722,10 @@ not pass. Concretely:
    entry*).
 2. **Every** SBOM component with a copyleft licence (GPL/LGPL/MPL/AGPL) has its
    licence text present in `THIRD-PARTY-LICENSES.txt` **and** (for GPL-family) a
-   written-offer-of-source entry.
+   written-offer-of-source entry. The bundled fonts (§3.9.3) count here too: the staged
+   Liberation is the OFL-1.1 release (Liberation ≥ 2.00), never the older GPL-2.0 build with
+   the font exception, and each OFL font's reserved-font-name notice ships in
+   `THIRD-PARTY-LICENSES.txt`.
 3. **No** component is missing a resolved SPDX licence id (an `UNKNOWN`/`NOASSERTION`
    licence is a hard fail — forces a human to classify it before ship).
    **`LicenseRef` carve-out `[DECIDED]`:** a CycloneDX/SPDX **`LicenseRef-…`**

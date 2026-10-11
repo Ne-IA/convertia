@@ -1085,12 +1085,27 @@ with tempfile.TemporaryDirectory() as _t16:
     (_r16 / "scripts" / "gate-selftests").mkdir(parents=True)
     (_r16 / "scripts" / "check-x").write_text("# implements G9999\n", encoding="utf-8")
     (_r16 / "scripts" / "gate-selftests" / "g24-x.legs").write_text("a leg naming G9999\n", encoding="utf-8")
-    _c16 = m.Ctx(root=_r16, boxes=[], by_id={}, plan_files=[], gate_ids=set(),
-                 docs={"docs/security/security-concept.md": "| **T1** d | c | G9999 |\n",
-                       "docs/security/build-gates.md": "| **G9999** | x | fail-closed |\n"})
+    # [Test-Change: G7 catalogue-row schema — old-obsolete+new-correct, build-gates §6 item 16] the catalogue
+    # row is read by its seven cells now (Status, Fail mode, Enforced by), no longer by a fail-closed substring
+    # plus a scripts/check-* id scan, so the fixture rows take the seven-cell shape; each leg keeps its assertion.
+    _ROW16 = "| **G9999** | x | c | `scripts/check-x` · L1 | {status} | commit | {fail} |\n"
+
+    def _c16_ctx(status: str = "live", fail: str = "fail-closed", row: str | None = None):
+        return m.Ctx(root=_r16, boxes=[], by_id={}, plan_files=[], gate_ids=set(),
+                     docs={"docs/security/security-concept.md": "| **T1** d | c | G9999 |\n",
+                           "docs/security/build-gates.md": row or _ROW16.format(status=status, fail=fail)})
+    _c16 = _c16_ctx()
     record("16 planted-positive: a gate id inside a NON-.py data file under gate-selftests (a `.legs` "
            "blessed set) does NOT register as a self-test -> caught",
            any("G9999" in f.msg for f in m.doc16_planted_positive(_c16)))
+    record("16 planted-positive: a §5-cited fail-closed row with Status `unbuilt → P1.1` is not obliged -> clean",
+           m.doc16_planted_positive(_c16_ctx(status="unbuilt → P1.1")) == [])
+    record("16 planted-positive: a live row whose Enforced by names no scripts/ driver is not obliged -> clean",
+           m.doc16_planted_positive(_c16_ctx(row="| **G9999** | x | c | `cargo test` · L1 | live | commit "
+                                                 "| fail-closed |\n")) == [])
+    record("16 planted-positive: a §5-cited row of six cells -> caught as a malformed row (fail-closed)",
+           any("6 cells" in f.msg for f in m.doc16_planted_positive(
+               _c16_ctx(row="| **G9999** | x | c | `scripts/check-x` · L1 | live | fail-closed |\n"))))
     (_r16 / "scripts" / "gate-selftests" / "_helper.py").write_text("# a helper the runner never runs: G9999\n", encoding="utf-8")
     record("16 planted-positive: a gate id ONLY in a `_`-prefixed helper module (which run-gate-selftests never "
            "executes) does NOT register as a self-test -> still caught",
@@ -1465,39 +1480,43 @@ record("base-case: the REAL plan passes the format checks (exit 0)", rc_real == 
 broken = ctx([box(bid="P0.1", raw="X", tags=["NOPE"], title="bad.", refs="")])
 record("base-case: a deliberately-broken box yields findings (would exit 1)", len(m.run(broken)) >= 1)
 
-# --- check 32: the SAST pin is single-sourced (requirements-ci.txt vs its header + the G29 row + the P0.4.2 note)
-_BG32 = "| **G29** | SAST | Semgrep `1.168.0` (bumped to `{v}` 2026-08-25) hash-pinned | push |\n"
-_P032 = "- [x] **P0.4.2** [GATE] Wire SAST · G29\n  > **Delivered:** `semgrep==1.168.0` (bumped to `{v}`)\n- [x] **P0.4.3** [GATE] Next\n"
+# --- check 32: the SAST pin is single-sourced (requirements-ci.txt and its header; no doc names a version) --------
+# [Test-Change: G7 SAST-pin single source — old-obsolete+new-correct, build-gates §6 item 32] the check is
+# inverted: the G29 row and the P0.4.2 note no longer restate the pin, so a doc that names a Semgrep version
+# is the finding; the header, no-pin, absent-file and real-repo legs keep their assertions.
 _REQ32 = "# Pinned EXACT-version `semgrep=={h}` + its tree\nsemgrep=={p} \\\n    --hash=sha256:aa\n"
+_DOC32 = {"docs/security/build-gates.md": "| **G29** | SAST | Semgrep, pinned in `requirements-ci.txt` | push |\n",
+          "docs/plan/P0-build-and-security.md": "- [x] **P0.4.2** [GATE] Wire SAST · G29\n  > Semgrep, pinned in `requirements-ci.txt`\n"}
 with tempfile.TemporaryDirectory() as _d32:
     _r32 = Path(_d32)
-    def _c32(req: str | None, v: str = "9.9.9", bg: str | None = None, p0: str | None = None):
+    def _c32(req: str | None, docs: dict[str, str] | None = None):
         if req is None:
             (_r32 / "requirements-ci.txt").unlink(missing_ok=True)
         else:
             (_r32 / "requirements-ci.txt").write_text(req, encoding="utf-8")
-        return m.Ctx(root=_r32, boxes=[], by_id={}, plan_files=[], gate_ids=set(),
-                     docs={"docs/security/build-gates.md": _BG32.format(v=bg or v),
-                           "docs/plan/P0-build-and-security.md": _P032.format(v=p0 or v)})
-    record("32 sast-pin-sync: pin 9.9.9 named in the header, the G29 row AND the P0.4.2 note -> clean",
+        return m.Ctx(root=_r32, boxes=[], by_id={}, plan_files=[], gate_ids=set(), docs=_DOC32 | (docs or {}))
+    record("32 sast-pin-sync: the header names the pin and no doc names a Semgrep version -> clean",
            m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.9"))) == [])
-    _f32 = m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.10", p="9.9.10")))
-    record("32 sast-pin-sync: the pin moved (9.9.10) but both doc notes still say 9.9.9 -> BOTH doc sites flagged",
-           len(_f32) == 2 and {f.file for f in _f32} == {"docs/security/build-gates.md", "docs/plan/P0-build-and-security.md"})
-    record("32 sast-pin-sync: only the P0.4.2 note stale -> exactly that site flagged",
-           [f.file for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.10", p="9.9.10"), bg="9.9.10", p0="9.9.9"))]
-           == ["docs/plan/P0-build-and-security.md"])
-    record("32 sast-pin-sync: the requirements HEADER line stale (`semgrep==9.9.9` above a 9.9.10 pin) -> flagged (the third site)",
-           any(f.file == "requirements-ci.txt" and "header line" in f.msg
-               for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.10"), v="9.9.10"))))
+    record("32 sast-pin-sync: the requirements HEADER line stale (`semgrep==9.9.9` above a 9.9.10 pin) -> flagged",
+           [(f.file, "header line" in f.msg) for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.10")))]
+           == [("requirements-ci.txt", True)])
     record("32 sast-pin-sync: a requirements file WITHOUT a semgrep== pin -> flagged (the file's reason to exist)",
            any("no `semgrep==" in f.msg for f in m.doc32_sast_pin_sync(_c32("requests==2.0.0\n"))))
     # [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] requirements-ci.txt
     # landed, so its absence is a finding, never target-absent.
     record("32 sast-pin-sync: requirements-ci.txt absent -> caught (a missing target is a finding)",
            [f.msg for f in m.doc32_sast_pin_sync(_c32(None))] == ["requirements-ci.txt is missing or empty — fail-closed"])
-record("32 sast-pin-sync: the REAL repo is clean (the live pin is named in all three sites)",
-       m.doc32_sast_pin_sync(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[], gate_ids=set(), docs={})) == [])
+    record("32 sast-pin-sync: a G29 row naming `semgrep==9.9.9` -> flagged (the version is single-sourced)",
+           [(f.file, f.lineno) for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.9"), {
+               "docs/security/build-gates.md": "# gates\n| **G29** | SAST | `semgrep==9.9.9` | push |\n"}))]
+           == [("docs/security/build-gates.md", 2)])
+    record("32 sast-pin-sync: a P0.4.2 note naming Semgrep `9.9.9` -> flagged (the backticked spelling)",
+           [f.file for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.9"), {
+               "docs/plan/P0-build-and-security.md": "- [x] **P0.4.2** [GATE] Wire SAST · G29\n"
+                                                     "  > Semgrep `9.9.9` hash-pinned\n"}))]
+           == ["docs/plan/P0-build-and-security.md"])
+record("32 sast-pin-sync: the REAL repo is clean (the header names the pin; no doc names a Semgrep version)",
+       m.doc32_sast_pin_sync(_real) == [])
 
 # --- check 33: a gate row never defers a leg to an unowned box (shape rule, word window, real-box resolution) --
 _B33 = [box("P4.96"), box("P0.4.1"), box("P4.50")]
