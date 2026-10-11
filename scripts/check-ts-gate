@@ -24,6 +24,26 @@ Two tiers, the same pattern as the Rust contract (P0.4.1) and the supply-chain s
   script together), so a bare manifest no longer arms the whole contract at once — the prior
   package.json-arms-everything posture wrongly demanded the P1.30–P1.35 configs already at P1.2.
 
+  T2 SINK BAN (security-concept §5 T2, the primary T2 sink control; build-gates G5): eslint.config.mjs
+  bans by name the DOM and eval sinks, the APIs that parse a string as unsanitized markup or as code.
+  STRUCTURAL (assert_eslint_sink_ban): each ESLINT_SINK_RULES rule is declared exactly once, at "error"
+  — a flat config replaces a rule's options and severity in a later matching block, so a second,
+  files-scoped declaration could lift a ban for some files — and `noInlineConfig: true` keeps an inline
+  directive from lifting one. LIVE (the pnpm toolchain present): the ARMED CANARY (run_sink_canary)
+  lints the planted fixture SINK_FIXTURE from stdin as SINK_PROBE_AS BEFORE the real run and fails
+  unless every `eslint-must-fire` pin reports its rule at error severity, so a ban dropped, downgraded or
+  narrowed in the config — or an eslint/plugin bump that loosens a rule — reds the gate even on a clean
+  tree (the check-sast prelude discipline). The canary proves the bans at one path, so the SCOPE leg
+  (run_sink_scope) carries that proof to every src/ source file: eslint's own per-file resolution
+  (ESLint#calculateConfigForFile — the config file nearest the file, then each block's files, ignores and
+  basePath) must give each file what it gives SINK_PROBE_AS for the sink rules to read — the same
+  ESLINT_SINK_RULES entries (severity and options), language, language options (the parser and its
+  options, the ECMAScript version, the source type, the globals a rule resolves a name against) and shared
+  settings, noInlineConfig on and no processor — so no narrowed block, nested config file, or scoped linter
+  or language options lift a ban for part of src/. The REAL RUN (run_eslint_tree) then fails on any
+  message, a warning included, and on a src/ source file eslint did not lint (an `ignores` entry or an
+  extension no config block lints), so no WebView file escapes the ban.
+
 WHY contract-only (no config files authored here): spec §0.7 homes `tsconfig.json` / `package.json` /
 `vite.config.ts` in the P1 FRONTEND BUILD, and the eslint/vitest configs import the (P1-installed)
 toolchain — so, unlike the Rust contract's standalone `rustfmt.toml`/`clippy.toml`, the TS config FILES
@@ -88,6 +108,94 @@ ESLINT_REQUIRED_IMPORT_BANS = [
     ("the §5.1 @tauri-apps/api single-IPC-consumer ban (P1.36)", "@tauri-apps/api"),
     ("the §5.1 @tauri-apps/plugin-* single-IPC-consumer ban (P2.95)", "@tauri-apps/plugin-*"),
 ]
+# The T2 DOM/eval sink ban (security-concept §5 T2): the rules eslint.config.mjs must declare EXACTLY ONCE,
+# at "error". Once, because a flat config REPLACES a rule's options and severity in a later matching block:
+# a second, files-scoped declaration could re-declare a rule with fewer banned names, or at a lower
+# severity, for part of src/ while the first stays intact. The canary proves each rule fires on its pinned
+# sinks at one path; the scope leg proves every src/ file's evaluated config carries the same entries (the
+# text freeze below also holds where the live tier cannot run).
+ESLINT_SINK_RULES = [
+    "no-restricted-properties",            # the sink properties (the timers off window and globalThis)
+    "no-restricted-syntax",                # the shapes a property ban cannot see (and the fc.gen ban)
+    "no-restricted-globals",               # the global Function referenced bare, an alias included
+    "no-eval",                             # direct and indirect eval
+    "no-implied-eval",                     # a global timer given a string constant or a string literal or template
+    "@typescript-eslint/no-implied-eval",  # a non-function-typed timer handler, in the forms eslint.config.mjs names
+    "no-new-func",                         # the Function constructor called, constructed or applied
+    "no-script-url",                       # a string or expression-free template starting javascript:
+    "react/no-danger",                     # dangerouslySetInnerHTML, on every component
+    "react/no-danger-with-children",
+]
+# The floor freeze_contract holds: the rules that ban the sinks the G29 rule-(i) Semgrep taint rule lists
+# (innerHTML / outerHTML / insertAdjacentHTML / document.write / writeln, eval, Function, React's __html
+# object) — the minimum the owner decision for T2 requires.
+_RULE_I_SINK_FLOOR = frozenset({"no-restricted-properties", "no-restricted-syntax", "no-eval", "no-new-func",
+                                "react/no-danger"})
+# The planted-positive fixture the armed canary lints (eslint.config.mjs ignores scripts/, so the real run
+# never sees it) and the path it is linted AS: the WebView entry (spec §0.7 load-bearing), so the src/
+# blocks and the type-aware project service apply to it exactly as to the real source. The stdin text
+# stands in for that file in eslint's view only; the probe never writes the file on disk.
+SINK_FIXTURE = "scripts/gate-selftests/eslint-sink-fixture.tsx"
+SINK_PROBE_AS = "src/main.tsx"
+# A fixture line ending in `// eslint-must-fire: <rule-id>[, <rule-id>...]` pins that line: each named rule
+# must report there at error severity (the check-sast `sast-must-fire` pin, for eslint).
+_FIRE_MARK_RE = re.compile(r"//\s*eslint-must-fire:\s*([A-Za-z0-9_@/,\s-]+?)\s*$")
+# The WebView source the scope leg and the real run cover: every file under src/ with a JS-family extension
+# except a declaration file, which carries no code (eslint.config.mjs ignores **/*.d.ts).
+_SRC_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+_DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
+# The scope leg's probe, a Node program read from stdin (`node --input-type=module -`, so no helper file
+# exists; module resolution starts at the repo root, the gate's cwd). For each input file it asks eslint
+# for the evaluated config (ESLint#calculateConfigForFile, the per-file lookup `eslint .` itself uses) and
+# prints {file: null} for a file eslint ignores, else the ESLINT_SINK_RULES entries as eslint normalizes
+# them ([severity, ...options], null when absent), linterOptions.noInlineConfig, whether a processor
+# rewrites the text before the rules read it, and a `context` map of the other evaluated inputs a rule
+# reads: the language and the parser by object identity (one token per object, so another object never
+# compares equal), the settings and every other language option by value (a sha256 of key-sorted JSON in
+# which a function is its identity token). @INPUT@ becomes the JSON {"files": [...], "rules": [...]}.
+_SINK_SCOPE_JS = """\
+const input = @INPUT@;
+const { ESLint } = await import("eslint");
+const { createHash } = await import("node:crypto");
+const eslint = new ESLint();
+const ids = new Map();
+const identity = (value) => {
+  if (!ids.has(value)) ids.set(value, `object#${ids.size}`);
+  return ids.get(value);
+};
+const canonical = (value) =>
+  JSON.stringify(value ?? null, (key, v) =>
+    typeof v === "function"
+      ? identity(v)
+      : v !== null && typeof v === "object" && !Array.isArray(v)
+        ? Object.fromEntries(Object.keys(v).sort().map((name) => [name, v[name]]))
+        : v,
+  );
+const digest = (value) => createHash("sha256").update(canonical(value)).digest("hex");
+const out = {};
+for (const file of input.files) {
+  const config = await eslint.calculateConfigForFile(file);
+  out[file] = config === undefined ? null : {
+    rules: Object.fromEntries(input.rules.map((rule) => [rule, config.rules?.[rule] ?? null])),
+    noInlineConfig: config.linterOptions?.noInlineConfig ?? null,
+    processor: config.processor !== undefined,
+    context: Object.fromEntries([
+      ["language", identity(config.language)],
+      ["settings", digest(config.settings)],
+      ...Object.entries(config.languageOptions ?? {}).map(([key, value]) => [
+        `languageOptions.${key}`,
+        key === "parser" ? identity(value) : digest(value),
+      ]),
+    ]),
+  };
+}
+process.stdout.write(JSON.stringify(out));
+"""
+# The context entries the reference must carry (the five language options eslint evaluates for JavaScript,
+# the language and the settings); a probe output without one of them fails closed. Every other file must
+# carry the reference's context entries exactly, an extra entry included.
+_SINK_SCOPE_CONTEXT = ("language", "settings", "languageOptions.ecmaVersion", "languageOptions.sourceType",
+                       "languageOptions.parser", "languageOptions.parserOptions", "languageOptions.globals")
 # package.json scripts the manifest MUST wire (so L4 CI + a contributor can run each gate). Matched as a
 # tool TOKEN appearing in the scripts block (e.g. a `tsc` script, an `eslint` script).
 PKG_REQUIRED_SCRIPTS = ["tsc", "eslint", "prettier", "vitest"]
@@ -126,6 +234,13 @@ def freeze_contract() -> int:
             "@tauri-apps/plugin-*" in tok for _, tok in ESLINT_REQUIRED_IMPORT_BANS):
         fail("ESLINT_REQUIRED_IMPORT_BANS dropped a §5.1 single-IPC-consumer ban token (@tauri-apps/api "
              "and @tauri-apps/plugin-* are both required) — the cage-B freeze of the IPC-surface ban is gone")
+        problems += 1
+    if not _RULE_I_SINK_FLOOR <= set(ESLINT_SINK_RULES):
+        fail("ESLINT_SINK_RULES dropped a rule that bans a G29 rule-(i) sink (needs "
+             f"{sorted(_RULE_I_SINK_FLOOR)}) — the T2 sink-ban freeze is gutted")
+        problems += 1
+    if not SINK_FIXTURE or not SINK_PROBE_AS:
+        fail("SINK_FIXTURE / SINK_PROBE_AS is empty — the T2 sink-ban armed canary has nothing to lint")
         problems += 1
     if not PKG_REQUIRED_SCRIPTS:
         fail("PKG_REQUIRED_SCRIPTS is empty — the tool-wiring contract is gone")
@@ -349,6 +464,50 @@ def assert_eslint_rules() -> int:
     return problems
 
 
+# The value right after a rule key must be the error severity: "error", 'error' or 2, bare or as the first
+# element of an options array. Any other value — "warn", "off", 0, 1, a variable — is a finding (fail-closed:
+# a severity the scan cannot read is not proven to be an error).
+_ERROR_SEVERITY_RE = re.compile(r"""\s*:\s*\[?\s*(?:"error"|'error'|2(?![\w.]))""")
+_NO_INLINE_CONFIG_KEY_RE = re.compile(r"\bnoInlineConfig\b")
+_NO_INLINE_CONFIG_TRUE_RE = re.compile(r"""\bnoInlineConfig["']?\s*:\s*true\b""")
+
+
+def _quoted_hits(text: str, token: str) -> list["re.Match[str]"]:
+    """Every occurrence of `token` as a whole quoted string — "tok" or 'tok', matched quotes — so
+    "no-implied-eval" never counts inside "@typescript-eslint/no-implied-eval"."""
+    return list(re.finditer(r"""(["'])""" + re.escape(token) + r"\1", text))
+
+
+def assert_eslint_sink_ban() -> int:
+    """The T2 sink-ban freeze (G5): once the eslint flat config lands, each ESLINT_SINK_RULES rule appears
+    as a quoted key EXACTLY ONCE in non-comment text and its value starts with the error severity, and
+    `noInlineConfig` appears exactly once, set `true`. Read over the comment-stripped (strings-kept) text,
+    like assert_eslint_rules, so it holds where the live tier cannot run. The text is not the evaluated
+    config (a computed key or a spread from another module escapes this scan); the live tier reads the
+    evaluated one: the armed canary at SINK_PROBE_AS, the scope leg for every src/ source file."""
+    cfg = _eslint_config()
+    if cfg is None:
+        return 0                                       # eslint flat config lands in P1 — target-absent
+    text = _strip_js_comments(cfg.read_text(encoding="utf-8", errors="replace"))
+    problems = 0
+    for rule in ESLINT_SINK_RULES:
+        hits = _quoted_hits(text, rule)
+        if len(hits) != 1:
+            fail(f"eslint flat config {cfg.name}: the T2 sink rule {rule!r} is declared {len(hits)} times — "
+                 f"it must be declared exactly once (a second declaration replaces its options or severity "
+                 f"for the files it matches)")
+            problems += 1
+        elif not _ERROR_SEVERITY_RE.match(text, hits[0].end()):
+            fail(f"eslint flat config {cfg.name}: the T2 sink rule {rule!r} is not set to \"error\" — a "
+                 f"ban must fail eslint itself, where a warning passes")
+            problems += 1
+    if len(_NO_INLINE_CONFIG_KEY_RE.findall(text)) != 1 or not _NO_INLINE_CONFIG_TRUE_RE.search(text):
+        fail(f"eslint flat config {cfg.name}: `noInlineConfig: true` must appear exactly once — without it "
+             f"an inline eslint-disable directive lifts a T2 sink ban")
+        problems += 1
+    return problems
+
+
 def _present(cands: list[str]) -> bool:
     return any((ROOT / c).is_file() for c in cands)
 
@@ -444,6 +603,250 @@ def _have(tool: str) -> bool:
     return shutil.which(tool) is not None
 
 
+def _eslint_json(args: list[str], stdin: str | None = None) -> tuple[list | None, str]:
+    """Run `pnpm exec eslint <args> --format json` at the repo root and return (results, "") — the parsed
+    result list — or (None, why) when eslint did not produce one: not invocable, an exit other than 0
+    (clean) and 1 (lint findings), or output that is not a JSON list."""
+    exe = shutil.which("pnpm")
+    if exe is None:
+        return None, "pnpm is not on PATH"
+    try:
+        # encoding=utf-8/replace: eslint emits UTF-8; the default Windows cp1252 reader would crash on it
+        p = subprocess.run([exe, "exec", "eslint", *args, "--format", "json"], cwd=str(ROOT), input=stdin,
+                           capture_output=True, encoding="utf-8", errors="replace")
+    except OSError as e:
+        return None, f"cannot invoke eslint ({e})"
+    if p.returncode not in (0, 1):
+        return None, f"eslint exited {p.returncode}: {(p.stderr or p.stdout or '').strip()[:400]}"
+    try:
+        data = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return None, f"eslint printed no JSON result list: {(p.stderr or p.stdout or '').strip()[:400]}"
+    if not isinstance(data, list) or not all(isinstance(r, dict) for r in data):
+        return None, "eslint's JSON output is not a list of file results"
+    return data, ""
+
+
+def _messages(results: list) -> list[dict]:
+    """(pure) Every message dict across an eslint JSON result list."""
+    return [m for r in results for m in (r.get("messages") or []) if isinstance(m, dict)]
+
+
+def parse_must_fire(text: str) -> dict[int, set[str]]:
+    """(pure) 1-based line -> the rule ids its `// eslint-must-fire:` marker pins."""
+    out: dict[int, set[str]] = {}
+    for i, ln in enumerate(text.split("\n"), start=1):
+        m = _FIRE_MARK_RE.search(ln)
+        if m:
+            ids = {p.strip() for p in m.group(1).replace(",", " ").split() if p.strip()}
+            if ids:
+                out[i] = ids
+    return out
+
+
+def unfired_pins(messages: list[dict], pins: dict[int, set[str]]) -> list[tuple[int, str, str]]:
+    """(pure) (line, rule id, why) for every pin whose rule did not report on its line at error severity (2):
+    "not reported" when the rule is silent there, "reported below error severity" when it only warns."""
+    worst: dict[tuple[int, str], int] = {}
+    for m in messages:
+        line, rule, sev = m.get("line"), m.get("ruleId"), m.get("severity")
+        if isinstance(line, int) and isinstance(rule, str) and isinstance(sev, int):
+            worst[(line, rule)] = max(worst.get((line, rule), 0), sev)
+    out = []
+    for line in sorted(pins):
+        for rule in sorted(pins[line]):
+            sev = worst.get((line, rule), 0)
+            if sev != 2:
+                out.append((line, rule, "not reported" if sev == 0 else "reported below error severity"))
+    return out
+
+
+def sink_canary_problems(results: list, pins: dict[int, set[str]]) -> list[str]:
+    """(pure) The armed-canary verdict over the eslint JSON of the fixture lint: a fatal (parse) message, a
+    contract rule the fixture pins on no line (its ban would go unproven), and every unfired pin."""
+    problems: list[str] = []
+    messages = _messages(results)
+    for m in messages:
+        if m.get("fatal"):
+            problems.append(f"the fixture did not lint as {SINK_PROBE_AS}: line {m.get('line')}: "
+                            f"{str(m.get('message', ''))[:300]}")
+    pinned = set().union(*pins.values()) if pins else set()
+    for rule in ESLINT_SINK_RULES:
+        if rule not in pinned:
+            problems.append(f"the fixture pins no line for the T2 sink rule {rule!r}, so its ban is unproven")
+    for line, rule, why in unfired_pins(messages, pins):
+        problems.append(f"{SINK_FIXTURE}:{line}: {rule} {why}")
+    return problems
+
+
+def run_sink_canary() -> int:
+    """The T2 sink-ban ARMED CANARY (live tier): lint SINK_FIXTURE from stdin as SINK_PROBE_AS through the
+    committed config and fail on any sink_canary_problems finding. Runs before the real run, so a ban the
+    config no longer arms reds the gate even when the tree itself is clean."""
+    fixture, probe = ROOT / SINK_FIXTURE, ROOT / SINK_PROBE_AS
+    if not fixture.is_file():
+        fail(f"T2 sink canary: the planted fixture {SINK_FIXTURE} is missing — the ban cannot be proven")
+        return 1
+    if not probe.is_file():
+        fail(f"T2 sink canary: {SINK_PROBE_AS}, the path the fixture is linted as, is missing")
+        return 1
+    text = fixture.read_text(encoding="utf-8", errors="replace")
+    results, why = _eslint_json(["--stdin", "--stdin-filename", SINK_PROBE_AS], stdin=text)
+    if results is None:
+        fail(f"T2 sink canary: {why}")
+        return 1
+    problems = sink_canary_problems(results, parse_must_fire(text))
+    for p in problems:
+        fail(f"T2 sink canary: {p}")
+    if problems:
+        return 1
+    print(f"[G5] T2 sink canary: every eslint-must-fire pin of {SINK_FIXTURE} reported its rule at error "
+          f"severity, linted as {SINK_PROBE_AS}", flush=True)
+    return 0
+
+
+def _repo_rel(path: str) -> str:
+    """A repo-relative POSIX path for an eslint `filePath` (absolute, OS-native); a path outside ROOT, or
+    one that cannot be resolved, is returned POSIX-as-is, so it never matches a src/ entry by accident."""
+    p = Path(path)
+    try:
+        return p.resolve().relative_to(ROOT.resolve()).as_posix()
+    except (ValueError, OSError):
+        return p.as_posix()
+
+
+def _src_sources() -> list[str]:
+    """Every file under ROOT/src with a JS-family extension, declaration files aside, as sorted
+    repo-relative POSIX paths: the WebView source the T2 sink ban must reach. An absent src/ yields none
+    (the frontend is target-absent)."""
+    src = ROOT / "src"
+    if not src.is_dir():
+        return []
+    return [f.relative_to(ROOT).as_posix() for f in sorted(src.rglob("*"))
+            if f.is_file() and f.name.endswith(_SRC_EXTS) and not f.name.endswith(_DECLARATION_SUFFIXES)]
+
+
+def unlinted_sources(linted: set[str]) -> list[str]:
+    """Every _src_sources() file not in `linted` (repo-relative POSIX paths) — a WebView source an
+    `ignores` entry or an unlinted extension would keep outside the T2 sink ban."""
+    return [rel for rel in _src_sources() if rel not in linted]
+
+
+def _sink_scope_configs(files: list[str]) -> tuple[dict | None, str]:
+    """Run the _SINK_SCOPE_JS probe over `files` through `pnpm exec node` at the repo root and return
+    ({file: entry}, "") — or (None, why) when it produced no such mapping: not invocable, a non-zero exit
+    (a config that does not load, or a language option the probe cannot serialize, included), or output
+    that is not a JSON object of objects and nulls."""
+    exe = shutil.which("pnpm")
+    if exe is None:
+        return None, "pnpm is not on PATH"
+    program = _SINK_SCOPE_JS.replace("@INPUT@", json.dumps({"files": files, "rules": ESLINT_SINK_RULES}))
+    try:
+        # the program goes in on stdin, never as an argument: a Windows .CMD shim would re-parse one
+        p = subprocess.run([exe, "exec", "node", "--input-type=module", "-"], cwd=str(ROOT), input=program,
+                           capture_output=True, encoding="utf-8", errors="replace")
+    except OSError as e:
+        return None, f"cannot invoke node ({e})"
+    if p.returncode != 0:
+        return None, f"node exited {p.returncode}: {(p.stderr or p.stdout or '').strip()[:400]}"
+    try:
+        data = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return None, f"the config probe printed no JSON: {(p.stderr or p.stdout or '').strip()[:400]}"
+    if not isinstance(data, dict) or not all(v is None or isinstance(v, dict) for v in data.values()):
+        return None, "the config probe's output is not a file -> config mapping"
+    return data, ""
+
+
+def sink_scope_problems(configs: dict, files: list[str]) -> list[str]:
+    """(pure) The scope verdict over the evaluated per-file configs. SINK_PROBE_AS's entry is the reference
+    the canary proves: each ESLINT_SINK_RULES rule at error severity (2), every _SINK_SCOPE_CONTEXT entry,
+    noInlineConfig true, no processor. Every file in `files` must carry exactly the reference's rule entries
+    (severity and options) and context entries (language, language options, settings), noInlineConfig true
+    and no processor; a file eslint ignores (null), a missing, extra or differing rule or context entry, a
+    noInlineConfig other than true and a processor are each a finding, and so is a reference that is
+    absent, unarmed or without its context."""
+    ref = configs.get(SINK_PROBE_AS)
+    if not isinstance(ref, dict) or not isinstance(ref.get("rules"), dict):
+        return [f"no evaluated config for {SINK_PROBE_AS}, the path the canary proves, so no file can be "
+                f"compared with it"]
+    ref_rules = ref["rules"]
+    ref_context = ref.get("context") if isinstance(ref.get("context"), dict) else {}
+    problems = [f"{SINK_PROBE_AS}: the T2 sink rule {rule!r} is not at error severity in its evaluated config "
+                f"({ref_rules.get(rule)!r})" for rule in ESLINT_SINK_RULES
+                if not (isinstance(ref_rules.get(rule), list) and ref_rules[rule][:1] == [2])]
+    absent = [key for key in _SINK_SCOPE_CONTEXT
+              if not (isinstance(ref_context.get(key), str) and ref_context[key])]
+    if absent:
+        problems.append(f"{SINK_PROBE_AS}: the probe reports no evaluated {absent}, so no file's language, "
+                        f"language options or settings can be compared with it")
+    for rel in dict.fromkeys([SINK_PROBE_AS, *files]):     # the reference's own two flags are checked too
+        cfg = configs.get(rel)
+        if not isinstance(cfg, dict):
+            problems.append(f"{rel}: eslint applies no config to it (an ignores entry, or no block matches "
+                            f"it), so no T2 sink ban reaches it")
+            continue
+        rules = cfg.get("rules") if isinstance(cfg.get("rules"), dict) else {}
+        differing = [rule for rule in ESLINT_SINK_RULES if rules.get(rule) != ref_rules.get(rule)]
+        if differing:
+            problems.append(f"{rel}: the T2 sink rules {differing} differ from {SINK_PROBE_AS}'s evaluated "
+                            f"config, so the canary's proof does not reach this file")
+        context = cfg.get("context") if isinstance(cfg.get("context"), dict) else {}
+        drift = sorted(key for key in {*ref_context, *context} if context.get(key) != ref_context.get(key))
+        if drift:
+            problems.append(f"{rel}: its evaluated {drift} differ from {SINK_PROBE_AS}'s, so the sink rules read "
+                            f"another language setup there and the canary's proof does not reach this file")
+        if cfg.get("noInlineConfig") is not True:
+            problems.append(f"{rel}: noInlineConfig is not on, so an inline directive can lift a T2 sink ban")
+        if cfg.get("processor") is not False:
+            problems.append(f"{rel}: a processor rewrites its text before the T2 sink rules read it")
+    return problems
+
+
+def run_sink_scope() -> int:
+    """The T2 sink-ban SCOPE leg (live tier): every src/ source file must be linted under the evaluated sink
+    rules, language, language options and settings of SINK_PROBE_AS, the path the armed canary proves
+    (sink_scope_problems over the _SINK_SCOPE_JS probe). Fails closed when the probe produces no mapping."""
+    files = _src_sources()
+    configs, why = _sink_scope_configs(sorted(set(files) | {SINK_PROBE_AS}))
+    if configs is None:
+        fail(f"T2 sink scope: {why}")
+        return 1
+    problems = sink_scope_problems(configs, files)
+    for p in problems:
+        fail(f"T2 sink scope: {p}")
+    if problems:
+        return 1
+    print(f"[G5] T2 sink scope: all {len(files)} src/ source files carry the evaluated sink rules, language, "
+          f"language options and settings of {SINK_PROBE_AS}, noInlineConfig on, no processor", flush=True)
+    return 0
+
+
+def run_eslint_tree() -> int:
+    """The G5 real run: `eslint .` through the JSON formatter. Any message fails the gate, a warning
+    included (so an inline directive, which noInlineConfig turns into a warning, cannot pass), and so does
+    a src/ source file eslint did not lint (unlinted_sources)."""
+    results, why = _eslint_json(["."])
+    if results is None:
+        fail(f"G5 eslint: {why}")
+        return 1
+    problems = 0
+    for r in results:
+        rel = _repo_rel(str(r.get("filePath", "")))
+        for m in r.get("messages") or []:
+            if isinstance(m, dict):
+                fail(f"G5 eslint: {rel}:{m.get('line')}:{m.get('column')} "
+                     f"{m.get('ruleId') or '(no rule)'}: {m.get('message')}")
+                problems += 1
+    for rel in unlinted_sources({_repo_rel(str(r.get("filePath", ""))) for r in results}):
+        fail(f"G5 eslint: {rel} is a WebView source eslint did not lint (an ignores entry or an extension "
+             f"no config block lints) — every src/ file must carry the T2 sink ban")
+        problems += 1
+    if problems == 0:
+        print(f"[G5] eslint: {len(results)} files linted, no message; every src/ source file linted", flush=True)
+    return 1 if problems else 0
+
+
 def run_live_tools(full: bool) -> int:
     """P1: the live type-check / lint / format / test invocations through the pinned pnpm toolchain,
     guarded behind a pnpm-present check (skipped with a notice if node/pnpm is not yet installed — the
@@ -456,7 +859,10 @@ def run_live_tools(full: bool) -> int:
     problems = 0
     # G6 (changed-scope at L1) / G13 (whole-project at L2/push) — tsc --noEmit either way
     problems += _run("G6/G13 tsc --noEmit", ["pnpm", "exec", "tsc", "--noEmit"])
-    problems += _run("G5 eslint", ["pnpm", "exec", "eslint", "."])
+    # G5: the T2 sink-ban armed canary first, then its scope over src/, then the real run
+    problems += run_sink_canary()
+    problems += run_sink_scope()
+    problems += run_eslint_tree()
     problems += _run("G5 stylelint", ["pnpm", "exec", "stylelint", "**/*.css"])
     problems += _run("G5 prettier --check", ["pnpm", "exec", "prettier", "--check", "."])
     if full:
@@ -484,8 +890,8 @@ def main(argv: list[str] | None = None) -> int:
               "sources land in P1) — live tsc/eslint/stylelint/prettier/vitest skipped (target-absent)")
         return 0
 
-    live = (assert_tsconfig_strict() + assert_eslint_rules() + assert_toolchain_wiring(manifest)
-            + run_live_tools(args.full))
+    live = (assert_tsconfig_strict() + assert_eslint_rules() + assert_eslint_sink_ban()
+            + assert_toolchain_wiring(manifest) + run_live_tools(args.full))
     # a `2` (missing/malformed config) from the strict/wiring asserts surfaces as a hard fail too
     if live:
         print(f"[G5/G6/G13] {live} TS-gate contract violation(s)", file=sys.stderr)

@@ -1,11 +1,12 @@
 # ConvertIA project-local Semgrep rule — the TS/WebView TAINT-mode ruleset (G29 rule (i)).
 #
-# The T2 taint control for v1 (CodeQL is not adopted, docs/process/gate-status.md); plan-lint
-# check 21 asserts this file. The structural rules (a)/(f) prove the SHAPE of the IPC door, not the
-# FLOW: this rule follows a WebView-controlled value (an `invoke(...)` result, or a DOM event's
-# `.data`) into a dangerous DOM/eval sink within one function. The pinned Semgrep's taint mode does
-# not follow a value across a function or file boundary (measured), the accepted residual of the
-# gate-status.md CodeQL row.
+# The T2 taint defense in depth behind the eslint sink ban (eslint.config.mjs, build-gates G5), which
+# forbids every sink below by name in the WebView code, whatever the flow depth; CodeQL is not adopted
+# (docs/process/gate-status.md); plan-lint check 21 asserts this file. The structural rules (a)/(f)
+# prove the SHAPE of the IPC door, not the FLOW: this rule follows a WebView-controlled value (an
+# `invoke(...)` result, or a DOM event's `.data`) into a dangerous DOM/eval sink within one function.
+# The pinned Semgrep's taint mode does not follow a value across a function or file boundary
+# (measured); the eslint ban does not depend on the flow.
 rules:
   - id: convertia-webview-taint-to-dom-sink
     languages: [typescript]
