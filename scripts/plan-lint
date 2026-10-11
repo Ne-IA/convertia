@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """plan-lint / spec-lint - the doc-consistency gate (G7/G20), P0.3.5.
 
-A single stdlib-only linter over the P0 doc set (CLAUDE.md, SSOT, docs/spec/, docs/security/,
-docs/process/, docs/plan/). It enforces TWO families of checks:
+A single stdlib-only linter over the plan (docs/plan/P*.md) and the doc set (every repo-tracked .md at the
+repo root and under docs/). It enforces TWO families of checks:
 
   * FORMAT checks (_format.md §7) — the plan-box grammar: box parse completeness, marker validity,
     sub-box consistency, header well-formedness, tag validity, reference resolution, needs:-targets
     exist + acyclic, annotation pairing, the l-neg1: route grammar, numbering gap-freeness.
-  * DOC checks 1..33 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
+  * DOC checks (build-gates.md §6 numbers them) — doc-wide consistency: cross-reference validity, heading
     hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
     parity, the G68 doc-graph leg, the G69 struct-map leg, the check-27 gate-posture-transition leg, etc.
 
 Every doc check over a landed target treats a missing target as a finding (fail-closed): a source-of-
 truth document, file or directory that is absent, empty or parses to nothing is reported, never passed
-silently. Check 10 (the P6.4/P6.5 ffmpeg manifests) is the one target-absent check; check 1 is a
-registered no-op; checks 3, 4, 6, 7 and 9 scan whatever their scope holds and have no single target;
-check 31 reads the plan, whose absence exits 2. This file is L(-1) security-critical (G71).
+silently. Checks 3, 4, 6, 7 and 9 scan whatever their scope holds and have no single target (check 7
+reports an unavailable git, which leaves its scope unknown); check 31 reads the plan, whose absence
+exits 2. Checks 1 and 10 are retired: build-gates §6 keeps their numbers, and no function stands behind
+them. This file is L(-1) security-critical (G71).
 
 Three read-only modes answer from the same plan data (build-loop.md Steps 1-2): --next computes the
 _format.md §6 selection over the plan plus the parked set (<git common dir>/parked/, the build-loop.md
@@ -480,7 +481,7 @@ def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  DOC checks (build-gates.md §6, checks 1..33) — a missing target is a finding (module docstring).
+#  DOC checks (numbered by build-gates.md §6) — a missing target is a finding (module docstring).
 # =============================================================================================
 _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
 # a catalogue row of any gate id (sub-letter included) and the cell separator: an unescaped `|` (a literal pipe
@@ -955,7 +956,7 @@ def _read_fp_ledger(root: Path) -> tuple[list[dict], Finding | None]:
 
 
 def doc25_doc_graph(ctx: Ctx) -> list[Finding]:
-    """Check 25 (the G68 leg): (a) no orphan — every tracked doc is linked-to by another doc (the
+    """Check 25 (the G68 leg): (a) no orphan — every doc of the doc set is linked-to by another doc (the
     roots excepted); (b) cross-doc reference resolution — every `[..](relpath)` link to a repo file
     resolves (a dangling link fails; there is no forward-target allowlist); (c) freshness, in two
     axes — (c1) a doc still NAMING a removed/renamed gate-id or threat-class is stale (the
@@ -1015,8 +1016,9 @@ def doc25_doc_graph(ctx: Ctx) -> list[Finding]:
 
 
 def doc4_numbering_gap_free(ctx: Ctx) -> list[Finding]:
-    """Check 4: per doc, numbered headings under a common parent run contiguously (min..max, no gap,
-    no duplicate). Fenced code blocks ignored."""
+    """Check 4: per doc, numbered headings under a common parent run contiguously from their lowest
+    number (no gap); a repeated number collapses into one and is not a finding. Fenced code blocks
+    ignored."""
     out = []
     for rel, text in ctx.docs.items():
         if not rel.startswith(("docs/spec/", "docs/security/", "docs/process/")):
@@ -1036,26 +1038,36 @@ def doc4_numbering_gap_free(ctx: Ctx) -> list[Finding]:
     return out
 
 
-def doc21_taint_xor(ctx: Ctx) -> list[Finding]:
-    """Check 21: EXACTLY ONE of {a committed CodeQL default-setup marker, the scripts/semgrep-rules/
-    rule-(i) taint ruleset} is live (the G56a sub-check (f) owner decision). Neither => the T2 taint
-    depth is uncovered (fail); both => the XOR is violated (fail)."""
-    codeql = bool(list((ctx.root / ".github").glob("**/*codeql*"))) if (ctx.root / ".github").is_dir() else False
-    semgrep = (ctx.root / "scripts" / "semgrep-rules").is_dir()
-    live = int(codeql) + int(semgrep)
-    if live == 2:
-        return [Finding("21:t2-taint-xor", ".github/", 0,
-                        "BOTH a CodeQL marker AND the Semgrep taint ruleset are live — EXACTLY ONE must be (XOR)")]
-    if live == 0:
-        return [Finding("21:t2-taint-xor", "scripts/semgrep-rules/", 0,
-                        "NEITHER a CodeQL marker NOR the Semgrep taint ruleset is live — exactly one must be")]
-    return []                              # live == 1 => the XOR is satisfied
+# Check 21's target: G29 rule (i), the T2 WebView taint rule (CodeQL is not adopted for v1, gate-status.md). Each
+# marker must OPEN a line (leading whitespace allowed), so a comment that mentions it does not count; the YAML
+# spellings with and without quotes all pass.
+_TAINT_RULE_FILE = "scripts/semgrep-rules/project/webview-taint.yaml"
+_TAINT_MODE_RE = re.compile(r"""^[ \t]*mode:[ \t]*["']?taint\b""", re.M)
+_TAINT_RULE_ID_RE = re.compile(r"""^[ \t]*convertia-rule:[ \t]*["']?i["']?[ \t]*(?:#.*)?$""", re.M)
+
+
+def doc21_taint_rule(ctx: Ctx) -> list[Finding]:
+    """Check 21: the G29 rule-(i) file `scripts/semgrep-rules/project/webview-taint.yaml` exists and carries a
+    `mode: taint` line and a `convertia-rule: "i"` line, each where it opens a line. A line check over an L(-1)
+    file (build-gates §0): the rule's YAML validity and its firing are G29's (`check-sast` validates the ruleset
+    and fires the rule-(i) planted positive). A missing or empty file is a finding."""
+    p = ctx.root / _TAINT_RULE_FILE
+    text = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
+    if not text.strip():
+        return _target_missing("21:t2-taint-rule", _TAINT_RULE_FILE)
+    out = []
+    if not _TAINT_MODE_RE.search(text):
+        out.append(Finding("21:t2-taint-rule", _TAINT_RULE_FILE, 0,
+                           "no `mode: taint` line - the T2 WebView rule is not a taint rule"))
+    if not _TAINT_RULE_ID_RE.search(text):
+        out.append(Finding("21:t2-taint-rule", _TAINT_RULE_FILE, 0,
+                           'no `convertia-rule: "i"` line - the file does not declare G29 rule (i)'))
+    return out
 
 
 # =============================================================================================
 #  Doc checks over the product source, the process docs and the gate data — each over a landed
-#  target (a missing target is a finding); check 1 is a registered no-op and check 10 the one
-#  target-absent check.
+#  target (a missing target is a finding).
 # =============================================================================================
 _BL_DOC = "docs/process/build-loop.md"
 
@@ -1064,36 +1076,24 @@ def _bl(ctx: Ctx) -> str:
     return ctx.docs.get(_BL_DOC, "")
 
 
-def doc1_matrix_parity(ctx: Ctx) -> list[Finding]:
-    """Check 1 is a registered no-op: it asserts nothing (format membership is G22's; residual ledger)."""
-    return []
-
-
 def doc7_generated_file_sanity(ctx: Ctx) -> list[Finding]:
-    """Check 7: each generated/committed lock/manifest parses + is non-empty (parse, not regex)."""
+    """Check 7: every tracked `*.lock` file - the `git ls-files` set check 26 reads, so no untracked tree
+    (node_modules/, target/) is walked - is readable and non-empty, whitespace-only counting as empty. No
+    tracked lock leaves nothing to check; an unavailable git leaves the scope unknown and is a finding."""
+    files = _git_ls_files(ctx.root)
+    if files is None:
+        return [Finding("7:generated-file-sanity", ".", 0,
+                        "git ls-files failed — cannot enumerate the tracked *.lock files (fail-closed)")]
     out = []
-    for f in list(ctx.root.glob("*.lock")) + list(ctx.root.glob("**/*-required-*.lock")):
+    for rel in sorted(f for f in files if f.endswith(".lock")):
         try:
-            if not f.read_text(encoding="utf-8").strip():
-                out.append(Finding("7:generated-file-sanity", str(f.relative_to(ctx.root)), 0, "generated file is empty"))
-        except OSError:
-            pass
-    return out                             # every matched lock checked; no generated lock matched -> nothing to parse
-
-
-def doc10_manifest_currency(ctx: Ctx) -> list[Finding]:
-    """Check 10: if a 04-formats/*.md is newer than a generated ffmpeg-*.lock manifest -> stale. The one
-    target-absent doc check: the manifests are created by P6.4/P6.5."""
-    locks = list(ctx.root.glob("**/ffmpeg-*.lock"))
-    if not locks:
-        return []                          # the ffmpeg-*.lock manifests are created by P6.4/P6.5; absent until then
-    fmts = list((ctx.root / "docs" / "spec" / "04-formats").glob("*.md")) if (ctx.root / "docs" / "spec" / "04-formats").is_dir() else []
-    newest_fmt = max((f.stat().st_mtime for f in fmts), default=0)
-    out = []
-    for lk in locks:
-        if newest_fmt > lk.stat().st_mtime:
-            out.append(Finding("10:manifest-currency", str(lk.relative_to(ctx.root)), 0,
-                               "a 04-formats/*.md is newer than this manifest — regeneration needed"))
+            blank = not (ctx.root / rel).read_bytes().strip()
+        except OSError as e:
+            out.append(Finding("7:generated-file-sanity", rel, 0,
+                               f"tracked lock file is unreadable ({e.strerror or e}) — fail-closed"))
+            continue
+        if blank:
+            out.append(Finding("7:generated-file-sanity", rel, 0, "tracked lock file is empty"))
     return out
 
 
@@ -1921,11 +1921,15 @@ def doc27_gate_posture_transition(ctx: Ctx) -> list[Finding]:
 #     the first of ; ) ! ? ( or a '.' NOT followed by a digit (a box-id's own dot survives - see
 #     _FUT_WINDOW_STOP) - an id in a trailing parenthetical (a `needs:` cite) or the next
 #     sentence is NOT the bound;
-#   * a PAST-tense narration ("stayed/remained/was/were dead until X made it live") is history;
+#   * a PAST-tense narration ("stayed/remained/was/were dead until X made it live") is history; an
+#     unguarded past form can still over-flag, and the fix is a one-word reword, the safe direction
+#     (`lands at` is present tense by its own token, so a historical note says "landed at");
 #   * text inside double quotes and inside the repo's bracket tags ([Corrected by ...],
 #     [Build-Session-Entscheidung: ...], [Test-Change: ...], [Raised by ...]) is mention/attribution,
 #     stripped before matching (a SINGLE-quoted mention is NOT stripped - apostrophes make that
 #     unsafe: quote old claims with double quotes or paraphrase them);
+#   * block comments of any kind (`/* ... */`, the `/*!` and `/**` doc forms included) are not scanned:
+#     line-comment runs and `reason` strings are the repo's carriers;
 #   * boundless futurity ("until then", "until those land", "until consumed") names no id and cannot
 #     be mechanically bound - the test-strategy §11.4 surface-(e) audit + the sweep memory own it.
 _RS_COMMENT_LINE = re.compile(r"^\s*//[/!]?(.*)$")
@@ -2060,11 +2064,11 @@ def doc29_stale_liveness(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  Check registry — FORMAT checks live; doc checks 1..33 added incrementally (P0.3.5 + P1.66).
+#  The canonical-string, SAST-pin, gate-row-promise and sweep-binding checks, then the registry.
 # =============================================================================================
 # --- check 30: spec-restatement fidelity (the P4.33 QuarantinedByOs reconcile's class catcher) ---------
-# One canonical user-facing string has ONE home — the §2.8.2 / §2.9.1 tables in 02-guarantees.md — and every
-# other docs/spec/** file - or the SSOT, which outranks the spec - that quotes it must quote it VERBATIM
+# One canonical user-facing string has ONE home — the §2.8.2, §2.9.1 and §2.13.5 tables in 02-guarantees.md —
+# and every other docs/spec/** file - or the SSOT, which outranks the spec - that quotes it must quote it VERBATIM
 # (docs/plan quotes are history, out of scope - a named residual) (whitespace-squashed, the markdown `\"` escape
 # undone). The drift this catches reached `main` once: §7.2.4 restated the QuarantinedByOs row in different
 # words, both texts claimed to be canonical, and no gate compared them. The in-crate bind in `crate::outcome`
@@ -2082,9 +2086,12 @@ def doc29_stale_liveness(ctx: Ctx) -> list[Finding]:
 # feature list, a paraphrase — is description, not restatement, and is left alone (calibrated on the live
 # tree: the §6.2.4 "Open System Settings → Privacy & Security" steps and the presentations matrix's
 # "SmartArt, modern charts, and newer transitions" description are exactly those). Stdlib-only; a
-# 02-guarantees.md that yields no catalog string is a finding.
+# 02-guarantees.md that yields no catalog string is a finding. Frozen (build-gates §6 item 30): no new span
+# rule and no new leg; a false positive is fixed by rewording.
 _CANON_BOLD_RE = re.compile(r'\*\*"(.+?)"\*\*')
-_CANON_SECTIONS = ("### 2.8.2", "### 2.9.1")
+_CANON_SECTIONS = ("### 2.8.2", "### 2.9.1", "### 2.13.5")
+# a catalog section ends at the next heading of its own level or above (`### `, `## `, `# `)
+_CANON_SECTION_END_RE = re.compile(r"^#{1,3} ")
 # A quotation span is the SHORTEST `"…"` run that is word-bounded outside (a `"` glued to a word, like
 # `12"`, is not a quote mark) and crosses no markdown mark (`*`, `|`). It MAY contain inner `"…"` fragments
 # of up to 200 characters, because two catalog strings carry one (`click "Open Anyway" next to`, `The
@@ -2144,17 +2151,18 @@ def _squash_ws(s: str) -> str:
 
 
 def _canonical_strings(guarantees: str) -> list[str]:
-    """Every `**"…"**` literal inside the §2.8.2 and §2.9.1 sections of 02-guarantees.md (a section runs to
-    the next `### ` heading), whitespace-squashed and unescaped the same way a quoting file is (the markdown
-    `\\"` escape undone, curly quotes straightened) so a row and its quotation compare alike; strings
-    shorter than one anchor are not bindable."""
+    """Every `**"…"**` literal inside the §2.8.2, §2.9.1 and §2.13.5 sections of 02-guarantees.md (a section
+    runs to the next heading of its level or above, so the `## 2.14` text after §2.13.5 is not catalog),
+    whitespace-squashed and unescaped the same way a quoting file is (the markdown `\\"` escape undone, curly
+    quotes straightened) so a row and its quotation compare alike; strings shorter than one anchor are not
+    bindable."""
     out: list[str] = []
     lines = guarantees.splitlines()
     for i, line in enumerate(lines):
         if not any(line.startswith(h) for h in _CANON_SECTIONS):
             continue
         j = i + 1
-        while j < len(lines) and not lines[j].startswith("### "):
+        while j < len(lines) and not _CANON_SECTION_END_RE.match(lines[j]):
             j += 1
         out.extend(_squash_ws(m.group(1)).replace('\\"', '"').replace("\u201c", '"').replace("\u201d", '"')
                    for m in _CANON_BOLD_RE.finditer("\n".join(lines[i:j])))
@@ -2162,16 +2170,16 @@ def _canonical_strings(guarantees: str) -> list[str]:
 
 
 def doc30_spec_restatement_fidelity(ctx: Ctx) -> list[Finding]:
-    """Check 30: every quotation of a §2.8.2/§2.9.1 canonical string in a docs/spec/** file or the SSOT (a `"…"` span
-    carrying any five consecutive tokens of it — or, for a string of nine tokens or fewer, one token off;
-    tokens are case-folded, punctuation-stripped words) must be verbatim (squashed, `\\"` unescaped). An
+    """Check 30: every quotation of a §2.8.2/§2.9.1/§2.13.5 canonical string in a docs/spec/** file or the SSOT (a
+    `"…"` span carrying any five consecutive tokens of it — or, for a string of nine tokens or fewer, one token
+    off; tokens are case-folded, punctuation-stripped words) must be verbatim (squashed, `\\"` unescaped). An
     empty or missing catalog is a finding."""
     out: list[Finding] = []
     source = "docs/spec/02-guarantees.md"
     canon = _canonical_strings(ctx.docs.get(source, ""))
     if not canon:
         return _target_missing("30:spec-restatement-fidelity", source,
-                               f"the §2.8.2/§2.9.1 canonical-string catalog in {source}")
+                               f"the §2.8.2/§2.9.1/§2.13.5 canonical-string catalog in {source}")
     for rel, text in sorted(ctx.docs.items()):
         # The SSOT is in scope: it OUTRANKS the spec, so a drifted quotation there is the worse home (the round-15
         # finding); docs/plan quotes are history (blockquote-wrapped, partial) - out of scope, a named residual.
@@ -2204,7 +2212,7 @@ def doc30_spec_restatement_fidelity(ctx: Ctx) -> list[Finding]:
             if not _restates(spans, s) and not (short and any(_short_drift(st, s) for st in spans)):
                 continue
             out.append(Finding("30:spec-restatement-fidelity", rel, 0,
-                               "quotes a §2.8.2/§2.9.1 canonical string but NOT verbatim - the catalog "
+                               "quotes a §2.8.2/§2.9.1/§2.13.5 canonical string but NOT verbatim - the catalog "
                                f"row reads: \"{s}\" (one string, one home: quote it exactly, or paraphrase "
                                "without a five-word run of it)"))
     return out
@@ -2270,13 +2278,12 @@ def doc32_sast_pin_sync(ctx: Ctx) -> list[Finding]:
 # tokens do not count - inside the same sentence), not merely somewhere on the same line or in a comma-joined
 # neighbour clause. Hard-wrapped paragraphs (§6 items, notes) are joined before the sentence split so a wrap
 # cannot hide the phrase from its owner (test-strategy §11.4 (g)). The adjective list is the declared vocabulary
-# of deferral in this catalogue; growing it is a one-line edit with a leg (the 2026-09-24 sweep found G17, G56,
-# G37 and G19 with it).
+# of deferral in this catalogue, and it is frozen (build-gates §6 item 33): no new adjective and no new leg.
 # Scope: the catalogue's gate ROWS (`| **Gnn** |` table rows) and its §6 numbered check items - the places a leg
 # is promised; generic process prose ("a follow-up box if structural") is not a promise and is not scanned.
 # Named residuals: a deferral spelled WITHOUT a listed adjective ("the Lane-B box that wires staging", "the
-# release box", "a P10 box") passes - the vocabulary is enumerated, not inferred, and grows by an adjective plus a
-# leg here (a number word between the adjective and the noun, "the next two boxes", is the same gap; emphasis,
+# release box", "a P10 box") passes - the vocabulary is enumerated, not inferred, and frozen (a number word
+# between the adjective and the noun, "the next two boxes", is the same gap; emphasis,
 # backticks and parentheses around the adjective or the noun are tolerated - up to three markers before the
 # adjective, after it and before the noun, so bold-italic passes too; after the noun only an underscore run of
 # up to three is consumed before the word-boundary lookahead, because `_` is the one marker that is a word
@@ -2285,7 +2292,7 @@ def doc32_sast_pin_sync(ctx: Ctx) -> list[Finding]:
 # only (any resolvable id inside the window owns the phrase, a parenthetical one included), not verified against
 # the box's content; non-deferral prose that fits the shape ("each engine gets its own box") reds. Escape hatch:
 # NONE by design - the remedy for a false positive is rewording (a row states facts, not a deferral), never a
-# marker; the remedy for a vocabulary miss is a new adjective + leg.
+# marker; a vocabulary miss is the named residual above.
 _DEFERRAL_ADJECTIVES = ("later", "future", "subsequent", "next", "follow-on", "follow-up", "later-phase", "own",
                         "separate", "dedicated", "owning", "acquisition", "staging", "stage-slot")
 _ROW_PROMISE_RE = re.compile(
@@ -2412,7 +2419,7 @@ DOC_CHECKS = {
     "2:cross-reference-validity": doc2_cross_reference,
     "3:heading-hierarchy": doc3_heading_hierarchy,
     "4:numbering-gap-free": doc4_numbering_gap_free,
-    "21:t2-taint-xor": doc21_taint_xor,
+    "21:t2-taint-rule": doc21_taint_rule,
     "5:gate-catalogue-integrity": doc5_gate_catalogue,
     "6:forbidden-tokens": doc6_forbidden_tokens,
     "17:forward-idea-status": doc17_forward_idea_status,
@@ -2423,10 +2430,8 @@ DOC_CHECKS = {
     "22:gate-id-gap-freeness": doc22_gate_id_gap_free,
     "25:doc-graph": doc25_doc_graph,
     "26:struct-map": doc26_struct_map,
-    # checks over landed targets (a missing target is a finding); 1 is a registered no-op, 10 target-absent
-    "1:matrix-parity": doc1_matrix_parity,
+    # checks over landed targets (a missing target is a finding); checks 1 and 10 are retired (build-gates §6)
     "7:generated-file-sanity": doc7_generated_file_sanity,
-    "10:manifest-currency": doc10_manifest_currency,
     "12:ipc-surface-drift": doc12_ipc_surface_drift,
     "13:plugin-surface-drift": doc13_plugin_surface_drift,
     "28:app-event-surface-drift": doc28_app_event_surface_drift,
@@ -2444,7 +2449,7 @@ DOC_CHECKS = {
     "32:sast-pin-sync": doc32_sast_pin_sync,
     "33:gate-row-promise": doc33_gate_row_promise,
 }
-CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # doc checks 1..33
+CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # the doc checks keep their build-gates §6 numbers
 
 
 def run(ctx: Ctx, only: str | None = None, max_per_check: int | None = None) -> list[Finding]:
@@ -2458,16 +2463,24 @@ def run(ctx: Ctx, only: str | None = None, max_per_check: int | None = None) -> 
 
 
 def load_docs(root: Path) -> dict[str, str]:
-    """The doc-wide set: root CLAUDE.md/README.md + every .md under docs/ (relpath -> text)."""
+    """The doc set: every repo-tracked .md at the repo root (CLAUDE.md, README.md, CONTRIBUTING.md, SECURITY.md,
+    ...) + every repo-tracked .md under docs/ (relpath -> text), the root group first, each group sorted. The
+    tracked set is the `git ls-files` set checks 7 and 26 read, so an untracked or ignored file (a local scratch
+    note) is never a doc, and a tracked path missing from the working tree is not read. With git unavailable
+    the set is every such .md on disk - a superset of the tracked set, never a skip - and checks 7 and 26
+    report the unavailable git."""
+    tracked = _git_ls_files(root)
+    if tracked is None:
+        rels = [f.name for f in root.glob("*.md")]
+        if (root / "docs").is_dir():
+            rels += [str(f.relative_to(root)).replace("\\", "/") for f in (root / "docs").rglob("*.md")]
+    else:
+        rels = [f for f in tracked if f.endswith(".md") and ("/" not in f or f.startswith("docs/"))]
     docs: dict[str, str] = {}
-    for top in ("CLAUDE.md", "README.md"):
-        f = root / top
+    for rel in sorted(r for r in rels if "/" not in r) + sorted(r for r in rels if "/" in r):
+        f = root / rel
         if f.is_file():
-            docs[top] = f.read_text(encoding="utf-8", errors="replace")
-    dd = root / "docs"
-    if dd.is_dir():
-        for f in sorted(dd.rglob("*.md")):
-            docs[str(f.relative_to(root)).replace("\\", "/")] = f.read_text(encoding="utf-8", errors="replace")
+            docs[rel] = f.read_text(encoding="utf-8", errors="replace")
     return docs
 
 

@@ -2,17 +2,16 @@
 """g24-branch-protection.py - G24 self-test for check-branch-protection (P0.2.8, G56a).
 
 Drives the PURE evaluate_*() functions with fixture JSON (the live `gh api` calls are owner/CI-
-verified - an API-introspection gate; this file is its plan-lint check-16 fixture). Proves: the
-ruleset core (ruleset_targets_main; bypass_is_admin_only; evaluate_rulesets -
-required checks subset, admin-only check-bypass, no-bypass history protection, required_signatures
-target-gating), the repo-security (d), workflow-perms (e) and the T2-taint OR-gate (f) all classify
-correctly, and main() handles a missing repo per posture.
-stdlib-only. Exit 0 = all held; 1 = a self-test failed.
+verified - an API-introspection gate, so this file is its planted positive). Proves: the ruleset core
+(ruleset_targets_main; bypass_is_admin_only; evaluate_rulesets - required checks subset, admin-only
+check-bypass, no-bypass history protection, required_signatures target-gating), the repo-security (d)
+and workflow-perms (e) evaluators classify correctly, the transient-retry classifier, and main()
+handles a missing repo per posture. Sub-check (f) is retired (plan-lint check 21 asserts the G29
+rule-(i) file). stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import importlib.machinery
 import importlib.util
 import sys
-import tempfile
 from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
@@ -143,36 +142,10 @@ record("(e) write -> hard", any("must be 'read'" in x for x in m.evaluate_workfl
 record("(e) can_approve true -> hard", any("can_approve" in x for x in m.evaluate_workflow_perms(
     {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": True})))
 
-# --- taint_or_gate (f), returns (hard, soft) --------------------------------------------------
-record("(f) CodeQL configured -> ok", m.taint_or_gate("ok", "configured", False, False) == (None, None))
-record("(f) Semgrep ruleset present -> ok", m.taint_or_gate("notfound", None, True, False) == (None, None))
-record("(f) CodeQL+Semgrep both -> ok", m.taint_or_gate("ok", "configured", True, False) == (None, None))
-_r = m.taint_or_gate("notfound", None, False, False)
-record("(f) CodeQL 404 (not configured) + no semgrep -> target-absent soft", _r[0] is None and _r[1] is not None)
-_r = m.taint_or_gate("error", None, False, False)
-record("(f) CodeQL READ-ERROR + no semgrep, P0 -> soft (unverifiable)",
-       _r[0] is None and _r[1] is not None and "could not read" in _r[1])
-_r = m.taint_or_gate("error", None, False, True)
-record("(f) CodeQL READ-ERROR + no semgrep, --enforce -> HARD (unverifiable)", _r[0] is not None and _r[1] is None)
-record("(f) CodeQL READ-ERROR but semgrep present -> ok (OR short-circuits)",
-       m.taint_or_gate("error", None, True, True) == (None, None))
-
-# --- semgrep_taint_ruleset_present ------------------------------------------------------------
-with tempfile.TemporaryDirectory() as td:
-    d = Path(td)
-    (d / "r.yml").write_text("rules:\n  - id: x\n    mode: taint\n", encoding="utf-8")
-    record("semgrep dir with a `mode: taint` rule -> present", m.semgrep_taint_ruleset_present(d))
-with tempfile.TemporaryDirectory() as td:
-    d = Path(td)
-    (d / "r.yml").write_text("rules:\n  - id: x\n    pattern: foo\n", encoding="utf-8")
-    record("semgrep dir without a taint rule -> absent", not m.semgrep_taint_ruleset_present(d))
-with tempfile.TemporaryDirectory() as td:
-    d = Path(td)
-    (d / "decoy.yml").write_text("# a rule that mentions taint in a comment, no mode\n"
-                                 "rules:\n  - id: taint-lookalike\n    pattern: foo\n", encoding="utf-8")
-    record("semgrep DECOY (comment/id mention 'taint', no `mode: taint`) -> absent",
-           not m.semgrep_taint_ruleset_present(d))
-record("semgrep dir missing -> absent", not m.semgrep_taint_ruleset_present(Path(td) / "nope"))
+# [Test-Change: G56a sub-check (f) retired — old-obsolete+new-correct, build-gates §6 item 21] the (f) taint
+# OR-gate (CodeQL default setup or a Semgrep `mode: taint` file) and its Semgrep-dir probe are gone from the
+# script: plan-lint check 21 asserts the G29 rule-(i) file (its comment-decoy legs moved there) and CodeQL is
+# not adopted for v1 (gate-status.md), so the taint_or_gate and semgrep_taint_ruleset_present legs retire.
 
 # --- api_json transient-retry classification (the spurious-red-main guard, G56a) --------------
 # A transient gh/network failure (TLS/connection hiccup, 5xx/429) is retried before the gate

@@ -68,14 +68,18 @@
 - [ ] **P6.3** [BUILD] Assert the FFmpeg GPL license posture — `--enable-gpl`, hard-fail `--enable-nonfree`/`libfdk_aac` · §3.6.1 §6.1.3 · G38
   needs: P6.1, P0.7.4
   > the §6.1.3 configure-flag / whole-binary-license assertion: assert the staged FFmpeg was built `--enable-gpl` (x264 ⇒ whole binary GPL-2.0+) and HARD-FAIL on `--enable-nonfree`/`--enable-libfdk-aac` (nonfree taint = non-redistributable, distinct from the x264 GPL relicense); record the configuration line. The native built-in `aac` encoder is the license-clean choice. → executes the P0.7.4 per-engine build-assertion policy for FFmpeg (`needs: P0.7.4`, the assertion-policy home, `[x]` before the loop).
-- [ ] **P6.4** [BUILD] Build + assert the curated decoder/muxer coverage (generated `ffmpeg-required-decoders.lock`) · §6.1.3 §3.4.3 · G38
+- [ ] **P6.4** [BUILD] Build + assert the curated decoder/muxer coverage (generated `ffmpeg-required-decoders.lock`) · §6.1.3 §3.4.3 · G19 G38
   needs: P6.1
+  l-neg1: same-push
   > generate `ffmpeg-required-decoders.lock` from the §04 decode-inventory tables (§6.1.3), run `ffmpeg -decoders`/`-muxers` on the staged binary, and FAIL the build if any required decoder/muxer is absent; `ffmpeg -decoders` names map through the inventory's name column.
   > **The allowed-decoders golden [Co-Pilot ruling 2026-09-15 — owner may overturn]:** no box generates `ffmpeg-allowed-decoders.lock`, which G38 treats as a generated manifest and P6.43 consumes. This box owns its generator beside `ffmpeg-required-decoders.lock`; the source of the allowed set is decided at the fill against G38 and vuln-response.
-- [ ] **P6.5** [BUILD] Build + assert the curated ENCODER coverage (generated `ffmpeg-required-encoders.lock`) · §6.1.3 · G38
+  > Caged part: an `ARTIFACTS` entry in `scripts/check-generated-drift` for each manifest this box generates, so G19 regenerates and diffs it.
+- [ ] **P6.5** [BUILD] Build + assert the curated ENCODER coverage (generated `ffmpeg-required-encoders.lock`) · §6.1.3 · G19 G38
   needs: P6.1
+  l-neg1: same-push
   > generate `ffmpeg-required-encoders.lock` by parsing the §04 TARGET matrices, run `ffmpeg -encoders` on the staged binary, FAIL the build if any required encoder is absent.
   > Floor must include native `aac`, `alac`, `flac`, `pcm_s16le`/`pcm_s16be`/`pcm_s24le`/`pcm_s24be`/`pcm_f32le`, `libmp3lame`, `libvorbis`, `libopus`, `libx264`, `libvpx-vp9`, `mov_text`. A `--disable-everything` trim cannot silently drop a needed encoder.
+  > Caged part: an `ARTIFACTS` entry in `scripts/check-generated-drift` for `ffmpeg-required-encoders.lock`, so G19 regenerates and diffs it.
 - [ ] **P6.6** [BUILD] Assert the network-protocol-family-ABSENT curated build (the primary SSRF floor) · §3.5.1 §6.1.3 §0.11 · G38 G42
   needs: P6.1
   > the §3.5.1 LOAD-BEARING structural SSRF floor (T9b): assert the network protocol family (`http`/`https`/`tcp`/`tls`/`rtmp`/`rtsp`/`hls`-fetch/`srtp`) is ABSENT at configure time (`--disable-network` preferred wholesale; no `--enable-protocol=` for the network family), proven by `ffmpeg -protocols` on the staged binary — the build FAILS if any network protocol is present. With the network family unbuilt, even a pre-whitelist demuxer dereference (CVE-2023-6605 class) has no transport.

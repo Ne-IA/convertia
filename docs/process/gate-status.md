@@ -24,7 +24,7 @@ is a dated committed line, not a buried catalogue footnote; a `decided` row for 
 never had a registered posture (G59, Miri, UBSan) is not in the check-23
 `_OWNER_DECIDABLE_GATES` map; a decision that replaced a registered posture keeps its key
 with the value `decided`, so a silent re-promotion reds check 23).
-Each box that introduces such a gate appends its row in the **same commit** — P0.4.5 (this file and the four over-assurance rows), P0.5.10 (`cargo-mutants`), P0.7.6 (G59), P0.7.7 (G17b), P0.7.14 (G64 and the flip protocol) and P0.7.15 (G65); the Miri and UBSan rows and the four forward-idea decline rows (none a registered posture, so all outside the check-23 map) came with the owner-decision commits that declined them.
+Each box that introduces such a gate appends its row in the **same commit** — P0.4.5 (this file and the four over-assurance rows), P0.5.10 (`cargo-mutants`), P0.7.6 (G59), P0.7.7 (G17b), P0.7.14 (G64 and the flip protocol) and P0.7.15 (G65); the Miri and UBSan rows, the four forward-idea decline rows and the CodeQL row (none a registered posture, so all outside the check-23 map) came with the owner-decision commits that declined them.
 
 **Status values.** `informational` (runs, never blocks the build) · `required`
 (blocks the build) · `decided` (a one-time adopt/decline owner decision). **A flip edits
@@ -52,6 +52,7 @@ rather than an invisible drift.
 | Gate-infrastructure resource bounds *(ReDoS / huge-diff adversarial-input self-tests)* | decided | 2026-10-10 | — | declined for v1: a pathological commit subject or diff can at worst hang a CI gate job until its `timeout-minutes` bound (asserted per job by G56), which fails the job — a denial of CI, never a false green |
 | **G18e** — npm package-name trust allowlist *(reserved id)* | decided | 2026-10-10 | — | declined for v1: a typosquat hosted on the pinned registry passes G18c, the accepted T2 JS name-trust residual (security-concept §5 T2); the closure — a committed name+scope allowlist diffed against `pnpm-lock.yaml`, or Socket CLI as a corroborator — is not built |
 | Startup-integrity binding *(`build.rs` manifest digest + a signed-`SHA256SUMS` startup read)* | decided | 2026-10-10 | — | declined for v1: startup integrity stays a damage check, not tamper resistance (the T3 residual, security-concept §5 T3); the authenticity floor is the minisign-signed `SHA256SUMS` the user verifies (spec §6.2) |
+| CodeQL `javascript-typescript` code scanning *(the alternative to G29 rule (i))* | decided | 2026-10-11 | — | declined for v1: the T2 WebView taint control is the G29 rule-(i) Semgrep taint rule (`scripts/semgrep-rules/project/webview-taint.yaml`, whose file plan-lint check 21 asserts). Accepted residual (T2): a WebView value reaching a DOM/eval sink across a function or file boundary — the pinned Semgrep's taint mode follows a flow within one function (measured), where CodeQL's data flow crosses both |
 
 ## P1 gate-activation flips (deterministic gates: bootstrap-skip → fail-closed)
 

@@ -3,8 +3,9 @@
 
 FORMAT-check coverage: for each format check (_format.md §7), a CLEAN box yields no finding and a VIOLATING
 box IS flagged (so no check is green-by-vacuity). Plus the base-case golden invariant: the real plan
-passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..33
-get their own legs as they are built. stdlib-only. Exit 0 = all held; 1 = a self-test failed.
+passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. Each doc check (build-gates §6)
+has its own legs; a retired check keeps its §6 number and has none. stdlib-only. Exit 0 = all held; 1 = a
+self-test failed.
 """
 import contextlib
 import hashlib
@@ -500,6 +501,70 @@ record("5 gate-catalogue: a gate named in security-concept absent from build-gat
                                    "docs/security/build-gates.md": "| **G2** | x |\n"})) != [])
 record("6 forbidden-tokens: strikethrough -> caught",
        m.doc6_forbidden_tokens(dctx({"a.md": "this is ~~struck~~ text\n"})) != [])
+# --- check 7: every tracked *.lock is readable and non-empty, enumerated through `git ls-files` ----------------
+# [Test-Change: G7 check 7 tracked-lock scope — new-test:the check reads the git index instead of two globs and
+# had no planted leg, build-gates §6 item 7]
+record("7 generated-file: the REAL repo's tracked *.lock files are all non-empty -> clean",
+       m.doc7_generated_file_sanity(_real) == [])
+with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as _t7:
+    _r7 = Path(_t7)
+    _pgit(_r7, "init", "-q")
+    (_r7 / "sub").mkdir()
+    (_r7 / "a.lock").write_bytes(b"[[package]]\nname = \"x\"\n")
+    (_r7 / "sub" / "x.lock").write_bytes(b" \n\t\n")
+    (_r7 / "untracked.lock").write_bytes(b"")
+    _pgit(_r7, "add", "a.lock", "sub/x.lock")
+    _c7 = m.Ctx(root=_r7, boxes=[], by_id={}, plan_files=[], docs={}, gate_ids=set())
+    record("7 generated-file: a whitespace-only tracked lock in a subdirectory -> caught, and only it (a non-empty "
+           "tracked lock and an empty UNTRACKED one are not findings)",
+           [(f.file, f.msg) for f in m.doc7_generated_file_sanity(_c7)] == [("sub/x.lock", "tracked lock file is empty")])
+    (_r7 / "a.lock").unlink()                        # still in the index, so the read fails
+    record("7 generated-file: a tracked lock that cannot be read (in the index, gone from disk) -> caught as "
+           "unreadable, fail-closed, beside the empty one - never skipped",
+           [(f.file, f.msg.partition(" (")[0], f.msg.endswith(") — fail-closed"))
+            for f in m.doc7_generated_file_sanity(_c7)]
+           == [("a.lock", "tracked lock file is unreadable", True), ("sub/x.lock", "tracked lock file is empty", False)])
+_saved_ls7 = m._git_ls_files
+try:
+    m._git_ls_files = lambda root: None
+    _git_down7 = m.doc7_generated_file_sanity(_real)
+finally:
+    m._git_ls_files = _saved_ls7
+record("7 generated-file: an unavailable git -> caught (the scope is unknown, fail-closed), and the stub is restored",
+       any("git ls-files failed" in f.msg for f in _git_down7) and m._git_ls_files is _saved_ls7)
+# --- the doc set: every repo-tracked .md at the root and under docs/ (load_docs) ------------------------------
+record("load_docs: the doc set carries every tracked root-level .md (CONTRIBUTING.md, SECURITY.md) beside the "
+       "docs/ tree", {"CLAUDE.md", "README.md", "CONTRIBUTING.md", "SECURITY.md", "docs/security/build-gates.md"}
+       <= set(m.load_docs(ROOT)))
+with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as _tdo:
+    _rdo = Path(_tdo)
+    _pgit(_rdo, "init", "-q")
+    (_rdo / "docs" / "sub").mkdir(parents=True)
+    (_rdo / "other").mkdir()
+    (_rdo / ".gitignore").write_bytes(b"temp.md\n")
+    for _rel in ("GUIDE.md", "temp.md", "docs/a.md", "docs/sub/b.md", "docs/draft.md", "other/c.md"):
+        (_rdo / _rel).write_bytes(b"# doc\n")
+    _pgit(_rdo, "add", ".gitignore", "GUIDE.md", "docs/a.md", "docs/sub/b.md", "other/c.md")
+    record("load_docs: an ignored root scratch file and an unadded docs/ draft are no docs - the set is the tracked "
+           ".md at the root, then under docs/, each sorted; a tracked .md elsewhere is out of scope",
+           list(m.load_docs(_rdo)) == ["GUIDE.md", "docs/a.md", "docs/sub/b.md"])
+    _saved_lsd = m._git_ls_files
+    try:
+        m._git_ls_files = lambda root: None
+        _disk_docs = list(m.load_docs(_rdo))
+    finally:
+        m._git_ls_files = _saved_lsd
+    record("load_docs: an unavailable git reads every .md on disk at the root and under docs/ (a superset, never a "
+           "skip), and the stub is restored",
+           _disk_docs == ["GUIDE.md", "temp.md", "docs/a.md", "docs/draft.md", "docs/sub/b.md"]
+           and m._git_ls_files is _saved_lsd)
+    (_rdo / "docs" / "sub" / "b.md").unlink()        # still in the index, gone from the working tree
+    try:
+        _gone_docs = list(m.load_docs(_rdo))
+    except OSError:
+        _gone_docs = None
+    record("load_docs: a tracked .md missing from the working tree is not read - no crash, no entry",
+           _gone_docs == ["GUIDE.md", "docs/a.md"])
 record("8 threat-parity: a §5 table missing classes -> caught",
        m.doc8_threat_parity(dctx({"docs/security/security-concept.md": "| **T1** d | c | G48 |\n"})) != [])
 record("9 inventory: a C99 IPC command -> caught",
@@ -1152,21 +1217,38 @@ record("registry: every DOC_CHECKS key has its numbered item in build-gates.md �
        "definition is a dangling cross-reference - the check-31 r1 P1 catcher)",
        all(m.re.search(rf"^{k.split(':')[0]}\. \*\*", _real.docs.get("docs/security/build-gates.md", ""), m.re.M)
            for k in m.DOC_CHECKS))
-# [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] the old leg read the real
-# repo under a "neither live -> skip" label while the real repo has the Semgrep ruleset (exactly one live);
-# neither live is now a finding (§6 item 21: "not both, not neither"), so each arm gets its own root.
-record("21 t2-taint-xor: the real repo (the Semgrep taint ruleset live, no CodeQL marker) -> clean",
-       m.doc21_taint_xor(_real) == [])
+record("registry: the retired checks 1 and 10 keep their numbered §6 items, marked retired, and have no DOC_CHECKS key",
+       not any(k.split(":")[0] in ("1", "10") for k in m.DOC_CHECKS)
+       and all(m.re.search(rf"^{n}\. \*\*[^*\n]* — retired\*\*", _real.docs.get("docs/security/build-gates.md", ""), m.re.M)
+               for n in (1, 10)))
+# [Test-Change: G7 check 21 rule-file assertion — old-obsolete+new-correct, build-gates §6 item 21] the XOR
+# over a CodeQL marker and the Semgrep ruleset directory retired with the G56a (f) OR-gate (CodeQL is not
+# adopted for v1, gate-status.md): check 21 now asserts the G29 rule-(i) file and its two marker lines, so the
+# NEITHER/BOTH legs give way to the real file, its absence and one comment-only decoy per marker.
+record("21 t2-taint-rule: the REAL repo (the rule-(i) file with its `mode: taint` and rule-id lines) -> clean",
+       m.doc21_taint_rule(_real) == [])
 with tempfile.TemporaryDirectory() as _t21:
     _r21 = Path(_t21)
     _c21 = m.Ctx(root=_r21, boxes=[], by_id={}, plan_files=[], docs={}, gate_ids=set())
-    record("21 t2-taint-xor: NEITHER a CodeQL marker NOR the Semgrep ruleset live -> caught",
-           any("NEITHER" in f.msg for f in m.doc21_taint_xor(_c21)))
     (_r21 / ".github").mkdir()
-    (_r21 / ".github" / "codeql-default-setup").write_text("CodeQL javascript-typescript\n", encoding="utf-8")
-    (_r21 / "scripts" / "semgrep-rules").mkdir(parents=True)
-    record("21 t2-taint-xor: BOTH a CodeQL marker AND the Semgrep ruleset live -> caught (XOR)",
-           any("BOTH" in f.msg for f in m.doc21_taint_xor(_c21)))
+    (_r21 / ".github" / "codeql-default-setup").write_bytes(b"CodeQL javascript-typescript\n")
+    record("21 t2-taint-rule: the rule file absent, a CodeQL default-setup marker present -> caught (a missing target "
+           "is a finding; CodeQL is no alternative)",
+           [f.msg for f in m.doc21_taint_rule(_c21)]
+           == ["scripts/semgrep-rules/project/webview-taint.yaml is missing or empty — fail-closed"])
+    _f21 = _r21 / "scripts" / "semgrep-rules" / "project" / "webview-taint.yaml"
+    _f21.parent.mkdir(parents=True)
+    _f21.write_bytes(b"rules:\n  - id: decoy\n    # mode: taint\n    pattern: foo($X)\n"
+                     b"    metadata:\n      convertia-rule: \"i\"\n")
+    record("21 t2-taint-rule: `mode: taint` only in a comment -> caught (the mode line, and only it)",
+           [f.msg for f in m.doc21_taint_rule(_c21)]
+           == ["no `mode: taint` line - the T2 WebView rule is not a taint rule"])
+    _f21.write_bytes(b"rules:\n  - id: decoy\n    mode: taint\n    pattern-sources: []\n"
+                     b"    metadata:\n      # convertia-rule: \"i\"\n      convertia-rule: \"a\"\n")
+    record("21 t2-taint-rule: rule (i) named only in a comment, the file declaring rule (a) -> caught (the rule-id "
+           "line, and only it)",
+           [f.msg for f in m.doc21_taint_rule(_c21)]
+           == ['no `convertia-rule: "i"` line - the file does not declare G29 rule (i)'])
 # --- check 24: p0-completion.md run_url is an immutable Actions-run URL (P0.6.10) --------------------
 # The stub is BORN-GREEN: run_url holds the pattern-valid placeholder run `0` until the P0-exit commit
 # fills the real run id. check 24 reddens ANY run_url: token that is not an Actions-run URL, so a non-URL
@@ -1466,11 +1548,33 @@ record("30 restatement: docs/plan is OUT of scope (history quotes - the named re
            "docs/plan/P5-images.md": "> \"Could not launch it - click \"Open Anyway\" beside it, then try again.\"\n"})) == [])
 # [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] the catalog landed, so a
 # 02-guarantees.md yielding no canonical string is a finding, never a clean skip.
+# [Test-Change: G7 check 30 §2.13.5 catalog — old-obsolete+new-correct, build-gates §6 item 30] the message names
+# the §2.13.5 app-level fault catalog beside §2.8.2 and §2.9.1, since its lines are canonical strings too.
 record("30 restatement: a missing catalog (no catalog section) -> caught (a missing target is a finding)",
        [f.msg for f in m.doc30_spec_restatement_fidelity(dctx({"docs/spec/05-ui-ux.md": "This file looks damaged and could not\n"}))]
-       == ["the §2.8.2/§2.9.1 canonical-string catalog in docs/spec/02-guarantees.md is missing or empty — fail-closed"])
+       == ["the §2.8.2/§2.9.1/§2.13.5 canonical-string catalog in docs/spec/02-guarantees.md is missing or empty — fail-closed"])
 record("30 restatement: non-vacuity - the REAL 02-guarantees.md yields a full catalog (>= 50 canonical strings)",
        len(m._canonical_strings((ROOT / "docs/spec/02-guarantees.md").read_text(encoding="utf-8"))) >= 50)
+# [Test-Change: G7 check 30 §2.13.5 catalog — new-test:the app-level fault lines joined the catalog, build-gates §6
+# item 30] the §2.13.5 rows are canonical, and a catalog section ends at the next heading of its level or above
+_g30f = ("# t\n### 2.13.5 App-level fault catalog\n"
+         "| `EngineMissing` | **\"ConvertIA can't start because one of its built-in tools is missing.\"** |\n"
+         "## 2.14 Temp space\n**\"A bold quoted line under the next section is not catalog text.\"**\n"
+         "### 2.14.1 n\n")
+record("30 restatement: a §2.13.5 app-level fault line is canonical - a drifted quotation of it is caught, a "
+       "verbatim one is clean",
+       m.doc30_spec_restatement_fidelity(dctx({"docs/spec/02-guarantees.md": _g30f,
+           "docs/spec/07-app-shell.md": "it shows \"ConvertIA can't start because one of its tools is missing.\"\n"})) != []
+       and m.doc30_spec_restatement_fidelity(dctx({"docs/spec/02-guarantees.md": _g30f,
+           "docs/spec/07-app-shell.md": "it shows \"ConvertIA can't start because one of its built-in tools is "
+                                        "missing.\"\n"})) == [])
+record("30 restatement: a catalog section ends at the next `## ` heading - a bold quoted line under it is not "
+       "canonical",
+       m._canonical_strings(_g30f) == ["ConvertIA can't start because one of its built-in tools is missing."])
+record("30 restatement: the REAL catalog reads the four §2.13.5 lines (EngineMissing, BundleDamaged, "
+       "ScratchUnavailable, WebviewFault)",
+       sum(1 for s in m._canonical_strings((ROOT / "docs/spec/02-guarantees.md").read_text(encoding="utf-8"))
+           if s.startswith(("ConvertIA can't start because", "ConvertIA couldn't open its window"))) == 4)
 record("30 restatement: the REAL spec set passes (every cross-file quotation is verbatim)",
        m.doc30_spec_restatement_fidelity(m.build_ctx(ROOT)) == [])
 
@@ -1706,15 +1810,23 @@ with tempfile.TemporaryDirectory() as _tmt:
            _msgs(m.doc27_gate_posture_transition(_cmt())) == [_miss("scripts/gate-planes.toml")])
     record("missing target: 33 gate-row-promise - no build-gates.md -> caught",
            _msgs(m.doc33_gate_row_promise(_cmt())) == [_miss(_BGD)])
-    record("missing target: 10 manifest-currency - no ffmpeg-*.lock -> NO finding (the one target-absent check, P6.4/P6.5)",
-           m.doc10_manifest_currency(_cmt()) == [])
-    # the posture over the whole registry: an empty root with no docs and no boxes leaves exactly the documented
-    # no-target set silent - 1 (registered no-op), 3/4/6/7/9 (scope scans), 10 (target-absent), 31 (the plan,
-    # whose absence exits 2 in main) - and every other doc check reports a missing target
-    _silent = {cid for cid, fn in m.DOC_CHECKS.items() if not fn(_cmt())}
-    record("missing target: registry - on an empty root only checks 1, 3, 4, 6, 7, 9, 10 and 31 report nothing",
-           _silent == {"1:matrix-parity", "3:heading-hierarchy", "4:numbering-gap-free", "6:forbidden-tokens",
-                       "7:generated-file-sanity", "9:inventory-parity", "10:manifest-currency", "31:sweep-binding"})
+    # [Test-Change: G7 checks 1 and 10 retired — old-obsolete+new-correct, build-gates §6 items 1, 7 and 10] check 1
+    # (a registered no-op) and check 10 (the mtime heuristic; each ffmpeg-*.lock joins G19's regenerate-and-diff at
+    # its box) have no function, so their legs and set members go; check 7 reads the git index, so the empty root
+    # is an empty git index here (its unavailable-git leg is under check 7).
+    # The posture over the whole registry: an empty root with no docs, no boxes and an empty git index leaves
+    # exactly the documented no-target set silent - 3/4/6/7/9 (scope scans) and 31 (the plan, whose absence exits
+    # 2 in main) - and every other doc check reports a missing target.
+    _saved_ls_reg = m._git_ls_files
+    try:
+        m._git_ls_files = lambda root: []
+        _silent = {cid for cid, fn in m.DOC_CHECKS.items() if not fn(_cmt())}
+    finally:
+        m._git_ls_files = _saved_ls_reg
+    record("missing target: registry - on an empty root only checks 3, 4, 6, 7, 9 and 31 report nothing",
+           _silent == {"3:heading-hierarchy", "4:numbering-gap-free", "6:forbidden-tokens",
+                       "7:generated-file-sanity", "9:inventory-parity", "31:sweep-binding"}
+           and m._git_ls_files is _saved_ls_reg)
     (_rmt / "scripts").mkdir()
     (_rmt / "scripts" / "gate-planes.toml").write_text('[[fail_open]]\ngate = "G71"\n', encoding="utf-8")
     record("missing target: 27 posture - a gate-planes.toml without a [[posture_flag]] row -> caught",

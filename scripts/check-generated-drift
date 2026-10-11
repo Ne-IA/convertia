@@ -16,7 +16,8 @@ this framework:
 
 The framework + its validators + the self-test were authored in P0; each codegen target is registered
 in the ARTIFACTS registry (with its exact regen command + path + validator) when its producing code
-lands. Registered: the tauri-specta `bindings.ts` (P1.28) - the registry is complete at that entry: v1
+lands. Registered: the tauri-specta `bindings.ts` (P1.28). Each ffmpeg-*.lock security manifest joins
+ARTIFACTS at the box that first generates it (the box's caged part). Nothing else is a drift artifact: v1
 ships no CLI (CLAUDE.md §1), so the `--help` capture has no producer, and the §7.2.3 in-bundle hash
 manifest will be per-build output whose committed copy is a placeholder `stage-engines` overwrites
 (P4.41's rulings (3)/(5)/(7); the box is unbuilt), so it is not a drift artifact (retired 2026-09-24,
@@ -75,10 +76,10 @@ VALIDATORS = {
 }
 
 # Each artifact: {"name", "regen": [argv...], "path": "<repo-relative>", "validator": <key>}. Populated
-# as each producer lands (v1 registers one: the CLI `--help` capture P0 anticipated has no v1 producer, and
-# the asset manifest - to be produced by stage-engines' stage_all tail per P4.41 (3) - will be per-build output
-# (P4.41 (5)), guarded by the placeholder invariant P4.41 (7) builds, not a drift artifact; build-gates G19,
-# 2026-09-24).
+# as each producer lands: the bindings below, and each ffmpeg-*.lock security manifest at the box that first
+# generates it. The CLI `--help` capture P0 anticipated has no v1 producer, and the asset manifest - to be
+# produced by stage-engines' stage_all tail per P4.41 (3) - will be per-build output (P4.41 (5)), guarded by
+# the placeholder invariant P4.41 (7) builds, not a drift artifact (build-gates G19, 2026-09-24).
 # A registered artifact whose `path` is missing after regen is a misconfiguration (exit 2).
 ARTIFACTS: list[dict] = [
     # P1.28: the §0.4.5 tauri-specta Rust->TS IPC bindings (producer: convertia-core's

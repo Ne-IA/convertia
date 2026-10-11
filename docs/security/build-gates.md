@@ -41,8 +41,9 @@
 - **Structural parsing over regex.** A gate that consumes a generated or structured file
   (JSON, TOML, YAML, a lockfile, an SBOM) parses it (`tomllib`, `json`, `serde_json`, a real
   YAML reader), never a regex, and a gate that cannot resolve or parse its input fails closed in
-  CI. One named exception: G56 reads the workflow files with a stdlib line reader over a frozen
-  dialect (see *Gates over L(-1) inputs* below).
+  CI. Two named exceptions, both over L(-1) inputs (see *Gates over L(-1) inputs* below): G56 reads
+  the workflow files with a stdlib line reader over a frozen dialect, and plan-lint check 21 matches
+  two marker lines of the G29 rule-(i) file, whose YAML G29's own run validates.
 - **Diff-reading discipline.** Every gate that parses `git diff` output (G8/G21, G28, G70,
   G74) reads one pinned shape: `a/` and `b/` prefixes forced, blank context lines kept, hunks
   unmerged, paths from the repo root, no external driver and no textconv, every file read as
@@ -146,7 +147,7 @@ and the review record. The commit-message shape is Step 6; G12 checks the traile
 | **G4** | Lint — Rust *(mirror)* | `cargo clippy -D warnings` with the no-panic policy — `unwrap_used`/`expect_used`/`panic` denied in production crates and `indexing_slicing` in `crate::detection`, allow-listed in `#[cfg(test)]`, an item-level escape only with a `// PANIC:` justification — because the §1.2 detect path runs untrusted bytes outside the §2.12 boundary, where a stray `.unwrap()` is an in-core DoS (T5; G48 finds the residue). Non-exhaustive matches (`wildcard_enum_match_arm`) are denied on the dispatch enums `FormatId`/`EngineProgram`/`PatentDisposition` and the error taxonomy, so a new variant without its arms is a compile error, and `arithmetic_side_effects` is denied on the IPC command-handler module (a `MAX_USIZE` field deserializes cleanly, then overflows a preflight estimate — T10), backstopping the G16 IPC `proptest`. `check-rust-lint-contract` freezes `clippy.toml` and the `REQUIRED_ATTRS` deny set and asserts each at its module root. | `scripts/check-rust-lint-contract` (L1 L2 L4) · `scripts/gate-selftests/g24-rust-lint-contract.py` | live | commit | fail-closed |
 | **G5** | Lint — TS/React *(mirror)* | `eslint` (flat config) and `stylelint`. `check-ts-gate` freezes the project-local rules the config must carry — `@typescript-eslint/no-explicit-any`, the `fc.gen()` shrink-wrapper ban (paired with G9 (f)) and the single-IPC-consumer import ban on `@tauri-apps/api` and `@tauri-apps/plugin-*`, matched quote-delimited so the ban's own `message:` cannot satisfy it (`eslint.config.mjs` is outside the L(-1) cage, so this freeze keeps the ban from being deleted) — plus the tsconfig strict flags and the per-tool wiring (a tool's config and its package script land together). | `scripts/check-ts-gate` (L1 L2 L4) · `scripts/gate-selftests/g24-ts-gate-contract.py` | live | commit | fail-closed |
 | **G6** | Type-check (fast) *(mirror full at L2)* | `tsc --noEmit` over the changed scope at L1 (the whole project is G13), with the strict-flag contract — `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `noFallthroughCasesInSwitch` — frozen by `check-ts-gate`; `cargo check` is implicit in clippy (G4). | `scripts/check-ts-gate` (L1) · `scripts/gate-selftests/g24-ts-gate-contract.py` | live | commit | fail-closed |
-| **G7** | Doc-consistency `plan-lint`/`spec-lint` *(mirror)* | `scripts/plan-lint` (stdlib-only) runs the `_format.md` §7 format checks and the §6 doc checks over the plan and the doc set; any finding fails, and a missing landed target is a finding (check 10 is the one target-absent check). `--quiet` at L1. Read-only modes answer from the same plan data: `--next` (the `_format.md` §6 selection over the plan and the parked set; exit 1 when nothing is buildable), `--show <id>` (a box with its closure) and `--report owner-acts --phase <n>` (a phase's owner acts by `needs:` closure and `l-neg1:` route); a mode exits 2 on a usage error, a malformed plan or a malformed parked set. | `scripts/plan-lint` (`--quiet` L1; L2 L4 as G20) · `scripts/gate-selftests/g24-plan-lint.py` | live | commit | fail-closed |
+| **G7** | Doc-consistency `plan-lint`/`spec-lint` *(mirror)* | `scripts/plan-lint` (stdlib-only) runs the `_format.md` §7 format checks and the §6 doc checks over the plan and the doc set; any finding fails, and a missing landed target is a finding. `--quiet` at L1. Read-only modes answer from the same plan data: `--next` (the `_format.md` §6 selection over the plan and the parked set; exit 1 when nothing is buildable), `--show <id>` (a box with its closure) and `--report owner-acts --phase <n>` (a phase's owner acts by `needs:` closure and `l-neg1:` route); a mode exits 2 on a usage error, a malformed plan or a malformed parked set. | `scripts/plan-lint` (`--quiet` L1; L2 L4 as G20) · `scripts/gate-selftests/g24-plan-lint.py` | live | commit | fail-closed |
 | **G8** | Deferral / dead-marker gate *(mirror)* | A new production line — the product source under `src/` and `src-tauri/src/` plus the §0.7 outliers `build.rs`/`index.html`/`vite.config`, never tests, fuzz, docs or the gate tooling — carries no hard marker (`TODO`/`FIXME`, `unimplemented!`/`todo!`/`unreachable!`/`dbg!`/`println!`/`compile_error!`, `console.log`, `: any`/`as any`, an inline `style=`/`style:`) and no soft deferral phrase in comment text (stub, placeholder, phase 2, later, for now, temporary, not yet, will add, comes in P<n>, deferred to, once <phase>, currently absent), unless a `[Build-Session-Entscheidung: <box-id>]` tag sits within ±6 lines; a bare `[!extern]` suppresses only in `docs/plan/*.md`, never in production code. The comment extractor is string-aware. The full-tree mirror is G21; diff reading per §0; the recorded residual is in the script. | `scripts/check-deferral` (`--diff` L1) · `scripts/gate-selftests/g24-deferral.py` | live | commit | fail-closed; fail-open leg: L1 without a diff base (G21 is the full-tree net) |
 | **G9** | Repo-invariant grep gate *(mirror)* | A committed, non-empty invariant set, each a forbidden pattern with its scope and one carved-out home: (a) no hardcoded colour outside `design/tokens.css`; (b) no qualified `std`/`tokio` `process::Command::new` outside `crate::isolation` (the bare form is G29's); (c) no `unsafe impl Send/Sync` outside the FFI module; (d) no raw `127.0.0.1`/`localhost` literal in first-party Rust/TS outside `#[cfg(test)]` — the one carve-out is the bundled LibreOffice config trees `bundle/LibreOffice/**`, `bundle/LibreOffice.app/**`, `bundle/libreoffice/**`; (e) no `cargo vet update`/`sync`/`import` invocation in a workflow or a `scripts/` file (prose and string mentions are told apart from invocations per file type; the Python-string residual is covered by G18a's `imports.lock` drift check); (f) no `fc.gen(` outside the approved shrink-wrapper in TS tests; (g) no path-qualified upward intra-doc link across the spec §0.7 tiers in `src-tauri/src` doc comments, with the tier map bound to §0.7's Logical-modules block and to the module directories (fail-closed); (h) no assigned-never-read plain local in a gate-plane Python script; (i) every gate-plane Python script pins its console streams to UTF-8 at entry. The CSP/capability invariant is G47 (it parses, not greps). Residuals: (g) reads a `super::` chain as crate-rooted (exact while no submodule shares a tier-module name; a collision over-flags); three fail-safe over-flags — (e) folds a YAML literal block scalar's lines into one logical line and reads a `\` before trailing whitespace as a line continuation, and (d) reads `cfg(not(not(test)))` as production. | `scripts/check-repo-invariants` (L1 L4) · `scripts/gate-selftests/g24-repo-invariants.py` | live | commit | fail-closed |
 | **G10** | Fastpath self-tests | The `test-*-fastpath-pattern` smoke tests prove each fastpath detector skips and runs where it must (positive and negative cases); `test-docs-only-fastpath-pattern.py` also pins the `lefthook.yml` wiring — exactly the six heavy toolchain pre-push legs (§4) run behind `fastpath-docs-only \|\|`, each running its own gate script in the one accepted shape, and no L1 command and no other L2 command consults the detector. They run through the G24 canary, so an edit to a detector or to `lefthook.yml` arms them at L2. | `scripts/run-gate-selftests` (`--changed` L2; L4) · `scripts/gate-selftests/test-docs-only-fastpath-pattern.py` | live | push | fail-closed |
@@ -187,7 +188,7 @@ and the review record. The commit-message shape is Step 6; G12 checks the traile
 | **G61** | Defaults-registry "no required choices" guard *(mirror — Lane-A, §6.7.1 step 4a)* | An engine-free Rust bin generates the §1.6 consolidated `OptionDecl.default` index from every §04 `(source, target)` matrix and the registered `OptionDecl` set, and fails the build when a §04-offered pair lacks a default for any declared option — the single machine-checkable home of the SSOT v1-DoD "no required choices" rule (spec §1.6, §6.7.1 step 4a, §6.10 row 7). The values stay owned by §04; this is the verified index, not a second source of truth. It runs on every push (Lane A), skips with a notice until the first offered pair and its `OptionDecl` set are registered, then fails closed; its self-test deletes a `default` from an offered pair's declared option (must fail) beside a complete registry (must pass). Distinct from G22 and the §6.4.3a corpus↔pair bijection. | the `OptionDecl.default` guard bin · L2 L4 (Lane A) · its self-test lands with it | unbuilt → P4.60.2, P4.95 | push | fail-closed |
 | **G22** | Schema/membership parity *(mirror)* | Every supported format is in the §04 category matrices AND has a corpus fixture AND has a round-trip test. The authoritative supported-format set is the compiled `UserFacingFormat` registry (§0.6 `FormatId`, §3.2), never a markdown scrape of `docs/spec/04-formats/`, which under-counts the set (a fail-open); the full §04↔registry↔corpus bijection is the Rust guard `scripts/check-corpus-coverage.rs` (§6.4.3a). `check-completeness` freezes the membership logic and its self-test; its live run skips with a notice until that guard lands. v1 is English-only with no i18n runtime, so there is no locale-key parity (the inverse is G57). | `scripts/check-completeness` (L1 L2 L4) · `scripts/gate-selftests/g24-completeness.py` | live-partial (the frozen membership logic; the §04↔registry↔corpus run → P4.60, P4.95) | push | fail-closed |
 | **G23** | "every X has a Y" completeness *(mirror)* | Every §0.4.1 conversion command — the named set `_CONVERSION_COMMANDS = {start_conversion}` in `scripts/check-completeness` — declared with `#[tauri::command]` is referenced by a partner test (a `tests/` file or a `*_test(s).rs`), found by a tracking-aware walk over `git ls-files -z` (stage the test in the same commit); a word-boundary match keeps `start_conversion_extended` from covering it, and an unavailable git fails closed. A spec act that adds a conversion command to §0.4.1 extends the keyed set and its self-test legs in the same owner-acked commit — no check syncs the set (plan-lint check 12 rejects an unenumerated `#[tauri::command]` but does not grow it). Per-pair test completeness is G22 and §6.4.3a, not this walk. | `scripts/check-completeness` (L1 L2 L4) · `scripts/gate-selftests/g24-completeness.py` | live | push | fail-closed |
-| **G68** | Doc-graph integrity & freshness *(mirror)* | plan-lint check 25 over the repo-tracked doc set (`CLAUDE.md`, `README.md`, every `.md` under `docs/`): (1) no orphan — every doc is linked from another doc, the index roots excepted; (2) every repo-relative link resolves, with no forward-target allowlist; (3) freshness — a doc that still names a gate id or threat class the catalogue or the canonical §0.11 set no longer carries fails, and each source region in the L(-1) ledger `scripts/doc-fingerprints.toml` (the `l-neg1-cage` binding over `scripts/l-neg1-files.toml`) is re-hashed, so a changed source fails until its describing docs are re-verified and the fingerprint re-blessed in the same owner-acked commit (a missing, unparseable or seed-less ledger fails closed). The SAST version pin is single-sourced by check 32. Any other described-the-old-way drift — an enum variant, a path, a convention — is a G1 review item under CLAUDE.md §5's same-commit rule, not a check. The out-of-repo memory channel is not a node. Fail-closed over the docs that exist; it does not duplicate the precise parity checks 8, 14 and 22. | `scripts/plan-lint` check 25 (L1 L2 L4) · `scripts/gate-selftests/g24-plan-lint.py` | live | push | fail-closed |
+| **G68** | Doc-graph integrity & freshness *(mirror)* | plan-lint check 25 over the doc set (every repo-tracked `.md` at the repository root and under `docs/`): (1) no orphan — every doc is linked from another doc, the index roots excepted; (2) every repo-relative link resolves, with no forward-target allowlist; (3) freshness — a doc that still names a gate id or threat class the catalogue or the canonical §0.11 set no longer carries fails, and each source region in the L(-1) ledger `scripts/doc-fingerprints.toml` (the `l-neg1-cage` binding over `scripts/l-neg1-files.toml`) is re-hashed, so a changed source fails until its describing docs are re-verified and the fingerprint re-blessed in the same owner-acked commit (a missing, unparseable or seed-less ledger fails closed). The SAST version pin is single-sourced by check 32. Any other described-the-old-way drift — an enum variant, a path, a convention — is a G1 review item under CLAUDE.md §5's same-commit rule, not a check. The out-of-repo memory channel is not a node. Fail-closed over the docs that exist; it does not duplicate the precise parity checks 8, 14 and 22. | `scripts/plan-lint` check 25 (L1 L2 L4) · `scripts/gate-selftests/g24-plan-lint.py` | live | push | fail-closed |
 | **G69** | Structural-map integrity *(mirror)* | Spec [§0.7](../spec/00-architecture.md) "Physical tree" is the repository's directory map (directories only). Asserts both ways that the `git ls-files`-derived directory set, minus the committed out-of-scope set (`target/`, `node_modules/`, `dist/`, `.git/`), equals the §0.7 directory set: a tracked directory with no row fails, and a row with no tracked file beneath it fails. A new directory's row lands in the commit that adds its first tracked file (a Loop-editable spec edit). Also asserts every path on §0.7's *Load-bearing files* list is tracked. A missing, unparseable or empty tree block, a missing or empty load-bearing list or an unavailable `git` fails closed. `CLAUDE.md` §1a points to §0.7 and carries no map. | `scripts/plan-lint` check 26 (L1 L2 L4) · `scripts/gate-selftests/g24-plan-lint.py` | live | push | fail-closed |
 | **G70** | Test-suppression-marker gate (the "no green-by-rewrite" mechanical signal leg) *(mirror)* | A diff that adds a test-suppression marker in test scope (`*.test.*`/`*.spec.*`, `.rs` under `tests/`, a `#[cfg(test)]` block) — the Rust `#[ignore]`, `#[cfg(ignore)]`, always-false `#[cfg(any())]`, `#[cfg_attr(…, ignore)]` and `#[should_panic]`, and the TS/JS `.skip`, `.only`, `.skipIf`/`.runIf`, `.todo` and `xfail` forms plus the `x`- and `f`-prefixed `it`/`describe` calls — or that removes or comments out an assertion, or deletes a test file, fails unless a `[Test-Change: <box-id> — old-obsolete+new-correct, §ref]` tag (or the net-new `[Test-Change: <box-id> — new-test:<reason>, §ref]`) carrying a real `P<n>` box id sits within ±6 lines; a removed assertion's window spans its contiguous deletion run, and a deleted file needs a tag on an added line that names that file. It flags and requires justification, never forbids; whether a rewrite is legitimate or swallows a regression is the G1 test-integrity item (§1). Doctrine: [test-strategy.md](../process/test-strategy.md) §8. The full-tree mirror enforces marker presence; diff reading per §0; the residuals are in the script. | `scripts/check-test-suppression` (`--diff` L1; `--full` L2 L4) · `scripts/gate-selftests/g24-test-suppression.py` | live | commit (L1, new markers) / push (L2 + L4 full tree) | fail-closed; fail-open leg: L1 without a diff base (the full-tree mirror is the net) |
 | **G71** | L(-1) security-critical-file change-control — owner-ack pre-push gate (owner decision D1; "the loop never edits the cage") *(mirror)* | For every commit of the push range whose diff touches an L(-1) file, the body carries a trailer matching `^L-neg1-ack: owner$` — the only escape; there is no check-off or `[!extern]` exemption, since that would waive the ack on exactly the files it guards. The cage is `scripts/l-neg1-files.toml`, itself caged: every file under `scripts/` except the declared Loop build tools, the hook and CI planes (`lefthook.yml`, `.github/**`), the supply-chain, secret-scan and toolchain trust configs, the text-hygiene and lint policies, the caged ratchets, the Tauri capabilities, the pinned engine manifest, the G53 negative fixture and the security/process docs; no prose enumerates it, and the G68 fingerprint on the file forces a re-read of its descriptions at every cage edit. Every run also audits the cage: each glob matches ≥ 1 tracked path unless declared in `AUDIT_DECLARED_TARGETLESS` with its reason, and a declared glob whose target lands is flagged too (the dead-glob class). Loop-tool escapes: `[[loop_tool]]` entries (exact path + reason) are the only uncaged `scripts/` files, each driven from outside by a caged canary; a gate-shaped, nested or extension-bearing escape is refused and stays caged, and a dead or orphan escape fails. Monotone rule: a ratchet the Loop moves as ordinary box work (the §0.8 floors in the root `Cargo.toml` and `package.json`) is uncaged data named by a `[[monotone]]` entry (`file`, dotted `table`, `raise-only`, `semver`); for every commit naming the file, the table is compared with the commit's first parent, and lowering or removing a key needs the trailer while adding or raising needs none (an unreadable after-state counts as removal, a non-semver changed value and a failed git read as a weakening, a parent without the table constrains nothing); an entry whose file a pattern cages is refused, an untracked file or a missing table fails like a dead glob, and a malformed entry makes the cage unreadable. The Build-Loop never edits an L(-1) file: it parks the box and the owner-acked Co-Pilot makes the caged edit (security-concept §2, build-loop Step 7); the gate audits the trailer, not the owner's intent, independent of `Dual-Review:`. `--enforce` makes it fail-closed; the `[[posture_flag]]` registry and plan-lint check 27 keep that flag wired ([gate-status.md](../process/gate-status.md)). | `scripts/check-l-neg1-ack --enforce` (L2; `--base` L4 with `fetch-depth: 0`) · `scripts/gate-selftests/g24-l-neg1-ack.py` | live | push | fail-closed |
@@ -203,7 +204,7 @@ and the review record. The commit-message shape is Step 6; G12 checks the traile
 | **G54** | Gate-plane integrity assertion (hooks installed + not redirected + push-from-stale-base) | The effective hooks dir — `core.hooksPath` when set, else `git rev-parse --git-path hooks` — must hold a lefthook-managed hook for every git hook `lefthook.yml` declares as a top-level block key (column 0, plain or quoted; pre-commit and pre-push always), so a `core.hooksPath` redirect to a non-lefthook dir (which silently disables every local hook without `--no-verify`, the bypass §0 forbids) fails, a declared hook setup-dev has not installed fails with the setup-dev fix, and a `lefthook.yml` that is not UTF-8 fails closed; at pre-push `origin/main` must be an ancestor of HEAD (`git merge-base HEAD origin/main == origin/main`), so a push from a stale local base cannot overwrite a gate fix already pushed (the verifying half of the build-loop Step 0 gate-currency fetch). `python3 -P scripts/setup-dev` is the one hook installer (`lefthook install`, then the quote repair of the path lefthook writes unquoted into each hook, then an `sh -n` parse check of each) and is mandatory after clone: a clone without it has no local protection (documented in CONTRIBUTING.md and DEVELOPMENT.md, not enforceable). `lefthook.yml` sets `no_auto_install: true` (G54b leg (6)), so no lefthook run re-installs the hooks after a config change and writes the unquoted path back over setup-dev's repair. The clean-checkout re-run of the L1/L2 gates is G25. | `scripts/check-gate-plane` (L1; `--pre-push` L2) · `scripts/gate-selftests/g54-gate-plane.py` | live | commit / push | fail-closed; fail-open leg: push-from-stale-base when `origin/main` is unknown |
 | **G54b** | Gate-plane CONFIG integrity *(mirror)* | `scripts/check-gate-planes` (stdlib `tomllib`) validates `scripts/gate-planes.toml`, the source of truth for the enforcement-plane structure and the fail-open policy: `default_posture == "fail-closed"`; the seven planes `L(-1)`/`L0`–`L5` each defined once with id/name/trigger/enforcement/mirror and no unknown key (a mis-scoped inline `fail_open` is rejected, not absorbed); every fail-open exception a `[[fail_open]]` array-of-tables row naming `gate`/`fail_open_at`/`covered_by`/`reason`, with `fail_open_at` naming only defined planes and `covered_by` naming no plane that is itself in `fail_open_at` (a plane cannot cover its own fail-open; a plane-shaped token must resolve, a non-plane phase reference is allowed); every `[[posture_flag]]` row naming an existing script and existing plane files, a `--` flag and a `P<n>` phase (whether a due flip is wired is plan-lint check 27). Leg (5), Python isolation: every Python interpreter token in a plane file (`lefthook.yml`, `.github/workflows/*.yml`/`*.yaml`, `.github/actions/**/action.yml`/`.yaml`; comment text excluded, quote-aware) is followed by `-P`, so a file placed beside a gate cannot shadow a module the gate imports before its own code runs; a missing `lefthook.yml`, zero workflow files or a plane file that is not UTF-8 fails closed, and the canary runner sets `PYTHONSAFEPATH=1` for every self-test process. Leg (6), no hook auto-sync: `lefthook.yml` sets `no_auto_install: true` once, at its top level, because a lefthook re-install writes lefthook's own path unquoted into each hook and on a repo path with spaces or parentheses every hook then fails to parse (measured with the pinned lefthook 2.1.9); an absent key, any other value, a key only indented or commented out, a second top-level key and a missing or non-UTF-8 `lefthook.yml` fail closed. Residual: the leg reads the committed `lefthook.yml` only, so a per-clone `lefthook-local.yml` (merged over it by lefthook) can set the key back. The plane-definition sibling of G54's plane-execution check. | `scripts/check-gate-planes` (L1 L4) · `scripts/gate-selftests/g24-gate-planes.py` | live | commit | fail-closed |
 | **G56** | CI runner-host integrity *(mirror)* | `scripts/check-ci-supply-chain`, a stdlib line reader over a frozen YAML dialect (§0 *Gates over L(-1) inputs*; anything outside it is refused fail-closed), asserts what zizmor (G50) and actionlint (G49) do not: (1) `dependabot.yml` declares github-actions, cargo, npm and pip, each with a directory and a schedule (so the action pins, the two scanned dependency graphs and the pip gate-tool layer all get bump PRs, reviewed, never auto-merged); (2) no `id-token:` permission anywhere — the release attestation job's `id-token: write` (G59) is the one exception it will admit; (3) a push workflow cancels in progress and a release workflow never does; (4) a per-job `timeout-minutes`; (5) read-only permissions; (6) a job that reads a CI secret (`MINISIGN_SECRET_KEY`, `MINISIGN_PASSWORD`, `ANTHROPIC_API_KEY` — the last present in no CI job, principle 11) runs on a literal GitHub-hosted label under `step-security/harden-runner` with `egress-policy: block`, so the signing job never shares a host with the untrusted corpus/fuzz jobs (spec §6.1.4, §6.7.2); (7) every `cargo … fuzz` names the date-pinned nightly; (8) a secret-reading job that compiles sets `CARGO_NET_OFFLINE=true` after an explicit `cargo fetch --locked`, so a `build.rs` or proc-macro cannot phone home (egress is bounded, in-process behaviour is not; a per-crate cap is declined, gate-status.md); (9) every `container:`/`image:` value is digest-pinned; (10) no job pairs an engine-asset cache restore with `scripts/stage-engines` (G37's restore → verify → stage order, until the sanctioned verify step exists); (11) every `actions/cache*` `uses:` pins one SHA, and every `uses` key sits on a plain block step line; (12) the caged action-pin inventory `scripts/action-pins.toml` — one row per remote or local action and per nested action, written by the uncaged `scripts/record-action-pins` — binds every workflow `uses:`, nested pin and image (`pinact` and the reserved G67 Scorecard leg only corroborate); residual: the caged `g24-record-action-pins.py` drives the recorder from outside over the shapes its docstring lists, and the rest of the recorder rests on its own `--selftest` and the Co-Pilot's review of the inventory rows at each action re-land (roles §5a); (13) every apt call (`apt-get`/`apt`/`aptitude`/`apt-fast`) in a workflow `run:` value runs under coreutils `timeout` with a positive literal duration placed after the last privilege switch (`sudo timeout <s> apt-get`), or carries `--no-download` — apt's own acquire timeouts are idle timeouts, which a trickling transfer never trips (a compile-sanity apt step hung 25 min under them), and `timeout <s> sudo apt-get` cannot signal the root apt-get; an apt call inside a quoted string, a called script or another tool, and a privilege switch hidden in a variable, are the script's named residuals. The signing-job rules land with the signing job: the `environment: release` read (required reviewers, a `v*` deployment policy, the job's binding); the secret-in-log lint — GitHub masks only the exact registered string, so a transformed secret (base64, a substring, a here-doc, an xtrace expansion, a debug environment dump) reaches the public log: no `set -x`/`set -o xtrace`, no echoed or piped secret-named variable, `::add-mask::` for a derived value — with a post-run scan of the job log for the G2 secret shapes; the cache-hygiene rules over every cache feeding the signed bytes (the Cargo registry and build cache, the pnpm store, any `sccache`, the vendored gate tools, the fuzz corpus): no writable shared cache in the secret job (disabled, or read-only under a key derived only from the committed lockfiles and the pinned toolchain), no fork-PR `restore-keys` bleed into the release or `main` namespace, and a `--locked`/`--frozen-lockfile` build from a cold or verified tree; the `pull_request_target` rule (no such trigger without an Environment required-reviewers gate, or a handler that reads PR metadata only and never checks out or runs `head_ref` code; any such trigger is reviewed like an `engines.lock` SHA edit); `cancel-in-progress: false` on the G42/G42b job group; `--appimage-extract-and-run` on a Linux AppImage step; and an active probe proving harden-runner blocks (its Community tier silently degrades to no enforcement above a weekly run ceiling) — a known-blocked connection must fail inside the signing job, and a probe that connects is a release-blocking fail (harden-runner exposes no enforcement output at its pinned version; one added upstream is preferred over the probe). The untrusted-corpus leg restores no gate-tool cache — it installs the checksum-verified tools fresh — so a cache entry a prior corpus job poisoned cannot pre-seed the tools that would catch the next finding. The named residuals are in the script, one per dialect refusal. | `scripts/check-ci-supply-chain` (L2 L4) · `scripts/gate-selftests/g24-ci-supply-chain.py`, `scripts/gate-selftests/g24-record-action-pins.py` | live-partial (checks 1–13; the signing-job rules → P10.6, P10.7; the corpus-leg tool rule → P10.61) | pre-push + push (workflow glob) / red `main` | fail-closed |
-| **G56a** | GitHub branch-protection / required-status-checks config *(L4-authored; runs in CI on schedule + every push)* | In the direct-to-`main` model the only thing that turns a red CI run into a block is GitHub repo config, invisible to the codebase and silently relaxable in the UI, so the gate reads it through the API and fails if: (a) the required-status-checks ruleset on `main` does not cover the agreed checks or lets more than the repo-admin role bypass it (a ruleset, because classic required checks block every direct push, admins included — GH006); (b) the `non_fast_forward` and `deletion` rules are missing or carry any bypass actor; (c) a non-admin actor can bypass the required checks; (d) secret scanning and push protection are not enabled; (e) the default workflow permissions are not read-only with `can_approve_pull_request_reviews == false`; (f) neither CodeQL default setup nor the G29 rule-(i) taint ruleset is present (plan-lint check 21 holds exactly one); (g) `main` lacks a `required_signatures` rule. On push and schedule it runs `--enforce` with the fine-grained `REPO_ADMIN_READ_TOKEN` (Administration: Read; the default `GITHUB_TOKEN` holds no admin scope); a fork PR runs fail-soft on the default token, because secrets are withheld there and a code PR cannot alter the rulesets. | `scripts/check-branch-protection` (`--enforce` L4 push + schedule; fail-soft on a fork PR) · `scripts/gate-selftests/g24-branch-protection.py` | live | push + schedule | fail-closed; fail-open leg: a fork-PR run (secrets withheld) |
+| **G56a** | GitHub branch-protection / required-status-checks config *(L4-authored; runs in CI on schedule + every push)* | In the direct-to-`main` model the only thing that turns a red CI run into a block is GitHub repo config, invisible to the codebase and silently relaxable in the UI, so the gate reads it through the API and fails if: (a) the required-status-checks ruleset on `main` does not cover the agreed checks or lets more than the repo-admin role bypass it (a ruleset, because classic required checks block every direct push, admins included — GH006); (b) the `non_fast_forward` and `deletion` rules are missing or carry any bypass actor; (c) a non-admin actor can bypass the required checks; (d) secret scanning and push protection are not enabled; (e) the default workflow permissions are not read-only with `can_approve_pull_request_reviews == false`; (f) retired, its letter not reused; (g) `main` lacks a `required_signatures` rule. On push and schedule it runs `--enforce` with the fine-grained `REPO_ADMIN_READ_TOKEN` (Administration: Read; the default `GITHUB_TOKEN` holds no admin scope); a fork PR runs fail-soft on the default token, because secrets are withheld there and a code PR cannot alter the rulesets. | `scripts/check-branch-protection` (`--enforce` L4 push + schedule; fail-soft on a fork PR) · `scripts/gate-selftests/g24-branch-protection.py` | live | push + schedule | fail-closed; fail-open leg: a fork-PR run (secrets withheld) |
 | **G56b** | Release-tag trust gate (the secret-bearing `v*` trigger that G56a does NOT cover) *(L5-authored; runs in CI on tag-creation, and the policy half on schedule)* | The minisign release job — the only holder of `MINISIGN_SECRET_KEY`/`MINISIGN_PASSWORD` — fires on a `v*` tag, which G56a's branch rulesets do not cover. Three legs: (1) a tag-protection ruleset on `v*` restricts release-tag creation to the owner with a minimal, enumerated bypass set, read through the rulesets API on schedule and on tag; (2) the release workflow's first step aborts before any secret is read unless the tagged commit is an ancestor of `origin/main` and every check-run of `main` for that exact SHA completed green (≥ 1 check-run); (3) the tag is a signed annotated tag that `git verify-tag` accepts against the committed SSH `.github/allowed_signers` (L(-1)) — distinct from the DCO sign-off text on contributors' commits (spec §6.7.1). Legs 1 and 2 are the load-bearing controls, leg 3 the cheap belt and braces ([release-pipeline-trust.md](../process/release-pipeline-trust.md)). | `scripts/check-release-tag-trust` (L5, the release workflow's guard job) · `scripts/gate-selftests/g24-release-tag-trust.py` | live-partial (the ancestry, green-history and signed-tag legs; the tag-ruleset leg → P10.4) | tag-creation + schedule | fail-closed; fail-open leg: signed-tag (leg 3) while the allowed-signers file is absent |
 
 **Fastpath / skip (L2 only).** Six heavy toolchain pre-push legs — `rust-lint-contract --full`,
@@ -271,7 +272,7 @@ via a detector that defaults to *run* on ambiguity. No L1 command and no other L
 | **G26** | Engine-side corpus fault-injection (T1 through the §2.12 boundary) | The §6.4.2 fixed adversarial corpus — truncated, 0-byte, fuzzed-header and decompression-bomb inputs — runs through the §2.12 isolation boundary into the real engines: one plain message per item, no crash, the batch continues. The engine-side T1 control: in-process `cargo-fuzz` cannot reach the isolated C/C++ engines, so coverage-guided fuzz is G48 (in-core) and the engine-subprocess fuzz the reserved G65. Its non-adversarial set also proves that, for every staged engine, ≥ 1 input yields output passing the G31 structural readers (`ffprobe`, `vipsheader`, poppler, `unzip` + `[Content_Types].xml`, the `csv` crate) — not only "no crash" — and an `engines.lock`↔fixture bijection requires ≥ 1 fault-injection fixture per staged engine (ImageMagick, the densest-CVE decoder, included). The corpus jobs (and the G65 engine fuzz) bound memory, disk and wall-clock at host level — a cgroup or `ulimit -v`/`-f`/`-t`, `systemd-run --scope -p MemoryMax=…` or `docker --memory --pids-limit`, plus the G56 `timeout-minutes` — so a corpus-induced OOM or disk fill is a contained finding, not a lost runner read as flaky infra. | the §6.4.3 runner over the §6.4.5 adversarial corpus · L4 · — | unbuilt → P4.38, P9.34 | red `main` | fail-closed |
 | **G27** | Coverage — per-domain floors | Separate floors per domain — per crate for Rust (`cargo-llvm-cov`) and per package for TS (vitest v8) — measured on line coverage; the gate fails if ANY domain is below its floor, never averaged (averaging lets a well-covered module hide a bare one). The floors live in the tracked `coverage-floors.toml` (L(-1)), ratcheting 50 % → 70 %, increase-only: a commit that lowers, removes or retypes a floor fails (the authoritative decrease guard is the L4 `workflow-security` leg over the push range, full history), and a raise is a deliberate committed change, never automatic. The three security-critical crates — `crate::detection` (in-core untrusted bytes), `crate::fs_guard` (the no-harm kernel) and `crate::isolation` (the subprocess wrapper) — carry an additional BRANCH floor (`cargo-llvm-cov --branch`), ratcheting the same way, because line coverage misses an untested branch: a `fs_guard` guard that rejects `../` but not `..\` has full line coverage from Unix tests alone. The branch metric needs nightly, so the branch floors are seeded from a nightly branch run on Linux and Windows. Coverage is measured once, on the Linux leg (spec §6.7.1 runs the OS-agnostic test leg there). Gate scripts are excluded from the floors (G24 self-tests them) by a `scripts/` + `.github/` exclusion wired into both invocations, and the G48 crash-corpus replay does not count toward the Rust floor. | `scripts/check-coverage` (the floor freeze L1 L2 L4; the per-domain floors L4 Linux; `--base` the decrease guard L4) · `scripts/gate-selftests/g24-coverage.py` | live-partial (the line floors and the decrease guard; the branch floors → P9.49) | red `main` | fail-closed |
 | **G28** | Coverage — diff gate | The executable product lines a push changes must be ≥ 80 % covered (`diff_floor` 80, frozen in `coverage-floors.toml`), read from the per-line lcov reports (`cargo llvm-cov --lcov`, the vitest `lcov` reporter) against the range diff scoped to the product paths (diff reading per §0), so new code cannot dilute the floor. An `AppHandle`-coupled fn — one whose signature names an `AppHandle` type: the §7.8.1 intake funnel, the single-instance and `RunEvent::Opened` wiring — cannot be reached by `cargo test` (no `tauri::test` harness by decision; its proof is the source-scan pins, the §1.6 E2E and the §6.6 walkthrough, test-strategy §1.1a), so its changed lines are exempt from this diff floor only: found structurally by paren-counting the signature, fail-closed on a declaration or an unbalanced body, logged every run, and still counted in the G27 per-domain floor. A scope refinement, not a floor relaxation. | `scripts/check-coverage --base` (L4 Linux, push) · `scripts/gate-selftests/g24-coverage.py` | live | red `main` | fail-closed; fail-open leg: an unresolvable push base |
-| **G29** | SAST / static security | Unsafe policy (primary): `#![deny(unsafe_code)]` at the root of every first-party crate (the core and `convertia-imgworker`); the core's unsafe is confined to `src-tauri/src/platform/**` and the image worker's to `crates/imgworker/src/ffi.rs`, each block `// SAFETY:`-justified (the `ALLOWED_UNSAFE_MODULES` list names modules, never the FFI calls inside them; spec §6.3.4) — `forbid` cannot be overridden by an allow-listed module, so it is reserved for a pure-logic crate with zero unsafe. Semgrep (pinned with `--require-hashes` in `requirements-ci.txt`) runs offline over committed rulesets only (`--config scripts/semgrep-rules/`, never a live registry pack): the vendored community packs `p/rust`, `p/typescript`, `r/bash` (the registry has no `p/bash`), `p/python` and `p/owasp-top-ten`, re-validated (`semgrep --validate`) on every rule or version change, and the project-local rules — (a) a `#[tauri::command]` taking a WebView path without an adjacent `fs_guard` validation; (b) an engine spawn without `.env_clear()`/`.envs([])` in its chain, or an engine argv missing its safety flags: pandoc `--sandbox` plus a `--resource-path` whose value is the per-job scratch variable (an absolute, `~/`, `/home/`, `%APPDATA%` or `%USERPROFILE%` value fails), `soffice` with a per-job `-env:UserInstallation=file://<scratch>` and no `--accept` (which would open the UNO loopback socket), FFmpeg `-protocol_whitelist file,pipe`, and an image-engine spawn carrying `MAGICK_CONFIGURE_PATH` (written for a staged `policy.xml`; the decided route compiles the policy into the worker, §3.5.5, and the fallback route's `policy_dir=` argv key falls under this engine-argv rule); (c) `process::Command` built outside `crate::isolation`; (d) on macOS every spawn in the macOS isolation module preceded by the standalone `stage_for_tcc` staging call (§3.5.0, §7.2.6) — an armed tripwire whose in-scope production set is empty by design, paired with the `t11_seam_pin` source pin (the seam's macOS-cfg arm must call `stage_for_tcc`), while the behavioural proof is the G31 macOS first-accessor leg; (e) retired, its letter not reused; (f) no `name` override on a `#[tauri::command]`, so the function name is the IPC name plan-lint check 12 diffs (`rename_all` is permitted); (g) no `std::net`/`tokio::net` use outside the empty `scripts/semgrep-rules/net-allow-list.txt` — the per-push proof that first-party Rust opens no socket (T9a); (h) every opener call passes a compile-time constant; (i) the TS/WebView taint ruleset (`mode: taint`: WebView values reaching DOM/eval sinks or an IPC path/argv argument); (j) no `libc::socket`/`connect`/`bind` or `nix::sys::socket` outside that allow-list, closing (g)'s FFI path. Every project rule ships a planted-positive fixture with per-line both-direction pins (`sast-must-fire`, `sast-clean`) armed first in the same job, so a Semgrep bump that loosens or breaks a rule reds; a text↔matcher census fails any `Command::new` the matcher did not see (closing the macro-argument form a `;`-bounded grep misses), and grep backstops cover macro-nested spawns and temp dirs. `shellcheck` runs over every committed `.sh`. No `unsafe` census tool runs (`cargo-geiger` declined, gate-status.md). The Windows DLL search order is outside `.env_clear()` (G37b's minimal `PATH`). Residual: a spawn nested in an outer suppressed span's argument subtree is counted by the census but its hardening is not judged (recorded in `process-isolation.yaml`). | `scripts/check-unsafe-policy` (L1 L2 L4) and `scripts/check-sast` (L4 `sast`, Linux) · `scripts/gate-selftests/g24-unsafe-policy.py`, `scripts/gate-selftests/g24-sast.py` | live | red `main` (Semgrep + unsafe-policy + shellcheck block) | fail-closed |
+| **G29** | SAST / static security | Unsafe policy (primary): `#![deny(unsafe_code)]` at the root of every first-party crate (the core and `convertia-imgworker`); the core's unsafe is confined to `src-tauri/src/platform/**` and the image worker's to `crates/imgworker/src/ffi.rs`, each block `// SAFETY:`-justified (the `ALLOWED_UNSAFE_MODULES` list names modules, never the FFI calls inside them; spec §6.3.4) — `forbid` cannot be overridden by an allow-listed module, so it is reserved for a pure-logic crate with zero unsafe. Semgrep (pinned with `--require-hashes` in `requirements-ci.txt`) runs offline over committed rulesets only (`--config scripts/semgrep-rules/`, never a live registry pack): the vendored community packs `p/rust`, `p/typescript`, `r/bash` (the registry has no `p/bash`), `p/python` and `p/owasp-top-ten`, re-validated (`semgrep --validate`) on every rule or version change, and the project-local rules — (a) a `#[tauri::command]` taking a WebView path without an adjacent `fs_guard` validation; (b) an engine spawn without `.env_clear()`/`.envs([])` in its chain, or an engine argv missing its safety flags: pandoc `--sandbox` plus a `--resource-path` whose value is the per-job scratch variable (an absolute, `~/`, `/home/`, `%APPDATA%` or `%USERPROFILE%` value fails), `soffice` with a per-job `-env:UserInstallation=file://<scratch>` and no `--accept` (which would open the UNO loopback socket), FFmpeg `-protocol_whitelist file,pipe`, and an image-engine spawn carrying `MAGICK_CONFIGURE_PATH` (written for a staged `policy.xml`; the decided route compiles the policy into the worker, §3.5.5, and the fallback route's `policy_dir=` argv key falls under this engine-argv rule); (c) `process::Command` built outside `crate::isolation`; (d) on macOS every spawn in the macOS isolation module preceded by the standalone `stage_for_tcc` staging call (§3.5.0, §7.2.6) — an armed tripwire whose in-scope production set is empty by design, paired with the `t11_seam_pin` source pin (the seam's macOS-cfg arm must call `stage_for_tcc`), while the behavioural proof is the G31 macOS first-accessor leg; (e) retired, its letter not reused; (f) no `name` override on a `#[tauri::command]`, so the function name is the IPC name plan-lint check 12 diffs (`rename_all` is permitted); (g) no `std::net`/`tokio::net` use outside the empty `scripts/semgrep-rules/net-allow-list.txt` — the per-push proof that first-party Rust opens no socket (T9a); (h) every opener call passes a compile-time constant; (i) the TS/WebView taint rule (`mode: taint`: an `invoke()` result or a DOM event value reaching a DOM/eval sink within one function; plan-lint check 21 asserts its file); (j) no `libc::socket`/`connect`/`bind` or `nix::sys::socket` outside that allow-list, closing (g)'s FFI path. Every project rule ships a planted-positive fixture with per-line both-direction pins (`sast-must-fire`, `sast-clean`) armed first in the same job, so a Semgrep bump that loosens or breaks a rule reds; a text↔matcher census fails any `Command::new` the matcher did not see (closing the macro-argument form a `;`-bounded grep misses), and grep backstops cover macro-nested spawns and temp dirs. `shellcheck` runs over every committed `.sh`. No `unsafe` census tool runs (`cargo-geiger` declined, gate-status.md). The Windows DLL search order is outside `.env_clear()` (G37b's minimal `PATH`). Residual: a spawn nested in an outer suppressed span's argument subtree is counted by the census but its hardening is not judged (recorded in `process-isolation.yaml`). | `scripts/check-unsafe-policy` (L1 L2 L4) and `scripts/check-sast` (L4 `sast`, Linux) · `scripts/gate-selftests/g24-unsafe-policy.py`, `scripts/gate-selftests/g24-sast.py` | live | red `main` (Semgrep + unsafe-policy + shellcheck block) | fail-closed |
 | **G30** | Cross-platform build matrix | Native builds on Windows, macOS and Linux runners, never a cross-compile (§6.1.1), with the universal macOS bundle assembled by `lipo`. Tauri does not `lipo` sidecars (§6.1.3), so a single-arch sidecar named `*-universal-apple-darwin` would ship and crash on the other architecture: every staged universal sidecar under `src-tauri/binaries/` and `src-tauri/resources/` must carry both `arm64` and `x86_64` slices, read by a stdlib parse of the Mach-O fat header — the cputypes `lipo -info` reports, runnable on every OS (a thin, single-arch or non-Mach-O fat-named file fails, and an arch-count bound rejects a `0xCAFEBABE` impostor). `check-build-matrix` freezes the native-OS set, the arch pair and the suffix; the per-push 3-OS `compile-sanity` job builds the app on each OS. | `scripts/check-build-matrix` (L1 L2 L4) and the `compile-sanity` job (L4, 3-OS) · `scripts/gate-selftests/g24-build-matrix.py` | live-partial (the 3-OS compile-sanity build and the slice assertion over any staged sidecar; the release build legs → P10.8, P10.10) | red `main` | fail-closed |
 | **G31** | Per-pair corpus + reliability | Real-file round-trips per `(source → target)` pair per platform, each output re-detected through §1.2 and validated by a real per-format structural reader, never a bare magic sniff or "file exists" (spec §6.4.3): `ffprobe` decodable with the right codec (A/V); `vipsheader` decode with nonzero dimensions (images); poppler opens (PDF); `unzip` plus a well-formed `[Content_Types].xml` (OOXML); for CSV/TSV a real RFC-4180 parse with the `csv` crate, the corpus's leading `=`/`+`/`@` injection cells preserved literally as text. Per pair also: the output is non-empty and plausible against the source (e.g. DOCX→PDF > 1 KB, a lossless PNG→BMP within ~10× of it); `sha256(output) != sha256(input)` when the formats differ (no passthrough); a text-bearing source's PDF yields nonzero `pdftotext` text and an image-heavy PDF ≥ 1 `pdfimages` image; an image output shows pixel variance (a self-contained non-blank check, not PSNR/SSIM); and every document→image pair's fixture carries a required `expected_text` in the corpus manifest (a fixture without it fails the manifest lint) that the raster must contain, read by OCR (`tesseract <out.png> - --psm 6`) or by `pdftotext` where a PDF intermediate exists — never a size floor, which passes a correctly sized raster of wrong content; the OCR leg may run at L4 only, with a committed minimum confidence. AVIF/HEIC outputs are decoded again by `ffprobe`, a decoder family other than the producing libheif/libvips (a pair is skipped, never false-passed, when the staged FFmpeg lacks the decoder), and animated WEBP by `ffprobe`, never `dwebp`. The hosted security assertions, each once its input phase exists: on macOS the Rust core PID is the first accessor of a TCC-protected source and the engine receives a kind-2 scratch path (T11, §3.5.0/§7.2.6); T8 — outputs written into a dropped source folder mid-run never join the run's set, and a second instance's drop into a shared folder never grows the frozen set (§2.4.2, §2.4.3); T9b sentinels inside the G42/G42b window — a `.docm`/`.xlsm`/`.pptm` `AutoOpen`/`Workbook_Open` macro canary is not created, a `WEBSERVICE()` `.xlsx` makes no egress and no out-of-input read, a crafted BMP or an SVG with an MSL/URL coder reference reaches nothing, and a pandoc source with `$include(sentinel)` or `.. include:: /etc/passwd` under `--sandbox` yields output without the sentinel; a mixed batch through one shared `soffice` process (file N malformed, N+1 valid) gives valid outputs identical to isolated single-file runs while the malformed files fail cleanly; a dropped symlink or junction is resolved before the engine sees it — the engine receives the resolved real path and the frozen set records the resolved identity, so a link dropped with its target converts once, and a non-convertible target fails clearly (T7, §2.8); a held handle on the publish target drives the bounded Windows retry to recovery or a clean `WriteFailed` (§2.1.2); the §2.12.3 privilege-drop tier demonstrably fires per platform (a denied syscall, socket or out-of-sandbox access), recorded as applied or degraded in the release evidence; a hanging, child-spawning sidecar is reaped by the §0.9 Job-Object/process-group kill with no orphan and handle counts back at baseline; an engine past its §1.10 per-item memory ceiling is killed to a clean `Failed(TooBig)` and the batch continues; plus the fs-safety, membership, freeze, redaction, temp-mode and resource-budget assertions (T2a/T2b/T4/T9b/T10). | the §6.4.3 per-pair runner and the hosted security tests in `cargo test` · L4 · — | live-partial (the hosted security assertions and the native CSV/TSV round-trips in cargo test; the per-pair runner → P4.59, the Lane-B reliability gate → P10.61) | red `main` | fail-closed |
 | **G32** | Source-unchanged + output-validity invariant | Replaces a naive A→B→A round-trip, which most of the one-way or lossy catalogue makes trivially true or always false: (a) SOURCE-UNCHANGED — `sha256(source_before) == sha256(source_after)` on every corpus file (the no-harm proof, T2/T7); (b) OUTPUT-VALIDITY — the output passes G31's real structural reader, not a magic sniff. Everything asymmetric rests on (a)+(b): there is no tolerance band, only structural validity. The literal byte-stable A→B→A check covers only the truly lossless invertible set (e.g. PNG→BMP→PNG, FLAC↔WAV where the pair exists), machine-enumerated in a `tests/corpus/manifest.toml` section with a one-line rationale per pair: a listed pair that does not round-trip exactly fails, and so does a pair added without a rationale, so a lossy pair (PNG→TIFF→PNG, where TIFF strips ICC) cannot be misclassified silently. A lossy-disclosure property test in the §3.2 registry module (`crate::engines`) iterates the complete `FormatId × FormatId` product and asserts the disclosure the offer makes agrees with the pair's registered lossy data, beyond the corpus files present. (c) DETERMINISM — the same source and settings twice give `sha256(out1) == sha256(out2)` for ≥ 1 pair per engine per output-format category — FFmpeg audio, video and container; LibreOffice word processing, spreadsheet and presentation, with the pandoc, poppler and native CSV/TSV pairs; libvips/ImageMagick per colour space — each category enumerated in the corpus manifest and run on all three native CI legs (§6.4.4) by the per-engine floor boxes the Status cell names; a category whose only pair is §3.4-unavailable on a platform is covered by another pair in it there. A `diffoscope` (G60) empty diff on the double-run pair is the positive proof and localises a leak (an embedded timestamp, a PDF XMP `CreateDate`, padding); a known-non-deterministic encoder (VP9 rate control, AVIF variable encode) is a documented manifest exception that keeps (b), and every excepted pair must actually differ at listing time, else the vacuous exception is removed. Non-determinism signals uninitialised memory, a timestamp leak (a privacy concern offline) or a randomised path breaking §2.5 re-run equivalence. Runs at L4 on a schedule; one extra conversion per corpus file. | the §6.4.3 per-pair runner, the `crate::engines` registry test and the per-engine floor tests · L4 · — | unbuilt → P4.59, P4.92, P5.64, P6.42, P6.80, P7.51, P7.62, P7.69, P10.61 | red `main` | fail-closed |
@@ -354,132 +355,82 @@ the §6.6 walkthrough — see G42/G33b.)
 
 ## 6. The `plan-lint` / `spec-lint` doc-consistency gate (G7/G20)
 
-A single **stdlib-only** script (no third-party deps → runs anywhere instantly),
-treating our canonical docs as machine-checkable truth. Exit codes: `0` none,
-`1` ≥1 finding (**any** severity), `2` no plan box found or a usage error. CLI: `--check <ids>`,
-`--json`, `--quiet`, `--max-per-check N`; read-only modes `--next`, `--show <id>`, `--report owner-acts
---phase <n>` (exit 0 answered, 1 nothing buildable, 2 a usage error, a malformed plan or a malformed
-parked set). Three call sites: L1 (`--quiet` on glob),
-L2 (full), L4. **A missing target is a finding:** every check over a landed target reports its
-absent, empty or unparseable source-of-truth target as a finding, never a skip; check 10 is the one
-target-absent check (its manifests are created by P6.4/P6.5), check 1 is a registered no-op, checks
-3, 4, 6, 7 and 9 scan whatever their scope holds, and check 31 reads the plan itself (no plan box
-exits `2`).
+A single **stdlib-only** script that treats the canonical docs as machine-checkable truth. Exit codes:
+`0` none, `1` ≥1 finding (**any** severity), `2` no plan box found or a usage error. CLI: `--check <id>`,
+`--json`, `--quiet`, `--max-per-check N`; the read-only modes `--next`, `--show <id>` and `--report
+owner-acts --phase <n>` (exit 0 answered, 1 nothing buildable, 2 a usage error, a malformed plan or a
+malformed parked set). Call sites: L1 (`--quiet`, every commit), L2 (full), L4. The doc set is every
+repo-tracked `.md` at the repository root and under `docs/`: the `git ls-files` set, so an untracked or
+ignored file is no doc (with `git` unavailable, every such `.md` on disk, and checks 7 and 26 report the
+unavailable `git`). **A missing target is a finding:** every check over a landed target reports its
+absent, empty or unparseable source-of-truth target as a finding, never a skip; checks 3, 4, 6, 7 and 9
+scan whatever their scope holds, and check 31 reads the plan itself (no plan box exits `2`). A retired
+check keeps its number and its line below, with no function behind it.
 
-**Base-case meta-check (plan-lint is itself a script the autonomous loop can edit, so "plan-lint
-still works" must be PROVEN each run, not assumed; r5):** a committed **golden fixture repo-state
-that MUST make plan-lint exit 1** is run in the L4 self-test prelude (alongside the G24 gate-script
-planted-positives) — so "plan-lint still detects a planted doc-consistency violation" is proven on
-every clean-checkout run. This is the doc-linter analogue of G24's planted-positive discipline and
-the one base-case answer to "the loop blunted its own consistency gate and self-attested green".
+**Base case.** The G24 canary [`g24-plan-lint.py`](../../scripts/gate-selftests/g24-plan-lint.py) drives
+each check over fixtures, planted violations included, and asserts that the real repo exits 0, so a check
+blunted into silence reds the canary: on every L4 run, and at L2 when the push range touches the gate
+plane.
 
-Invariant checks (initial set; expanded during P0 review):
-1. **Membership / matrix parity** — every format named in prose ∈ the README
-   support matrix, and every matrix row has a code registry entry + a fixture + a
-   round-trip test (ties G22).
-2. **Cross-reference validity** — every `§X.Y` / internal anchor resolves.
-3. **Heading hierarchy** — no skipped levels.
-4. **Numbering gap-freeness** — sub-sections run min→max, no gaps.
-5. **Gate-catalogue integrity (ONE-directional)** — every gate **named in
-   security-concept.md** exists here as a `Gnn` row (the catalogue is the
-   **superset**; membership, not phrasing). It is **not** bidirectional: this
-   catalogue legitimately defines gates (G3/G5/G6/G10/G19/G22/G23/G27/G28/… and
-   many more) that security-concept.md never names because they are
-   quality/structural gates, not security controls — a "vice-versa over the whole
-   catalogue" check would always fail on a clean checkout and make the P0 exit
-   criterion unsatisfiable. The reverse direction, **where it matters** (every §5
-   threat row cites a real `Gnn`), is owned by check 8, which is correctly
-   bidirectional but scoped to the §5 threat rows.
-6. **No forbidden tokens** — banned stamps/strikethrough/stale-dates in doc bodies.
-7. **Generated-file structural sanity** — when validating a generated file, parse
-   it (not regex) and assert non-empty/well-formed.
-8. **§0.11 ↔ §5 threat-map parity (bidirectional)** — every spec §0.11 class
-   (`T1, T2, T2a, T2b, T2c, T3, T3a, T4, T5, T6, T7, T7a, T8, T9a, T9b, T10, T11, T12, T13` —
-   **19** classes) has exactly one row in security-concept.md §5, and every §5 threat row cites
-   a `Gnn` that exists in this catalogue. Fails the build if a class loses its row or a row
-   loses its gate (so the mapping can never silently drift). The class set is read only from
-   the §5 table and plan-lint's canonical `THREAT_CLASSES` set.
-9. **Inventory parity (membership checks)** — every IPC command named in prose ∈ the
-   §0.4.1 **explicit enumerated set** (treated as a SET, **not** a contiguous
-   range — `C2` is split into **C2a `pick_for_intake` / C2b `pick_destination`**, so a
-   range check would miss them); every engine
-   id in prose ∈ §3.1; the §0.4 error taxonomy (incl. the `QuarantinedByOs` kind) and
-   the fixed-set enums (`FormatId`, `EngineProgram`, `PatentDisposition`, the
-   lossy-catalog) are internally consistent across the files that reference them.
-10. **Generated-security-manifest currency** — if any `04-formats/*.md` is **newer**
-    than the generated `ffmpeg-required-decoders.lock` / `ffmpeg-required-encoders.lock` /
-    `ffmpeg-allowed-decoders.lock` (the G38 security-assertion manifests), fail "regeneration
-    needed": a format change that updated the spec but left the generated security manifest
-    stale is a security-relevant drift. **The L1/L2 plan-lint leg uses the cheap `git
-    log --format=%ct` mtime heuristic (stdlib-only, early-warning); but because these are
-    SECURITY manifests that bound the T1 surface, the AUTHORITATIVE proof at L4 is
-    regenerate-and-`git diff --exit-code`** (run the codegen, fail if the committed manifest
-    differs — the mtime heuristic can pass on a same-timestamp-wrong-content file, which a
-    regenerate-and-diff cannot, the same discipline G19 uses for codegen). The mtime stays the
-    cheap L1 leg. **Non-vacuous-artifact leg (r6 — a regenerate-and-diff PASSES on an empty-but-in-sync
-    golden: a codegen bug emitting an EMPTY `ffmpeg-allowed-decoders.lock` would be committed empty,
-    regenerate to empty, diff clean, and silently disable the entire T1 FFmpeg-decoder-allow-list
-    surface-expansion gate G38 — the `paths: {}` failure mode on a security manifest):** after
-    regenerate-and-diff, assert each generated security manifest (the ffmpeg golden, the SBOM, the
-    corpus manifest) parses to a **non-empty structure with ≥1 expected entry**, so an empty golden
-    fails CLOSED (ties G19's non-empty sanity).
-11. **Span-bound currency** — the security-vs-quality boundary prose ("every gate
-    except G1") never claims a numeric span narrower than `max(Gnn)` in this catalogue,
-    so a frozen `G2–Gxx` bound can never silently drift below a newly-added gate.
-12. **IPC command-surface drift** *(glob-scoped to `src-tauri/`, L2 pre-push)* — the set
-    of registered `#[tauri::command]` function names equals **exactly** the committed golden of
-    §0.4.1 commands (an AST/grep diff; the golden holds the registered set — a §0.4.1 row may lead
-    its code, and the golden gains the command with the box that registers it), so a spurious `#[tauri::command]` (a new WebView-reachable
-    surface) is a deterministic gate failure, not a dual-review-only catch. (G22/G23 are
-    format-matrix-scoped, not IPC-surface-scoped, so this closes the IPC drift they miss.)
-    **`name` caveat:** Tauri allows a `name` override on
-    `#[tauri::command]`, so the registered IPC name can differ from the Rust function name;
-    a function-name diff would then pass while the real IPC surface drifted. ConvertIA makes
-    it **project policy (a G29 Semgrep rule) that a `name` override on `#[tauri::command]`
-    is FORBIDDEN**, so the function name IS always the IPC name and this check's function-name
-    diff is sound. (**`rename_all` is PERMITTED** — it renames only the camelCase ARG keys, not
-    the command name, and tauri-specta requires it for flat camelCase command args; this check's
-    regex matches both the bare and the parenthesized `#[tauri::command(…)]` form — tolerating the
-    interleaved `#[specta::specta]` — so a `rename_all` command is never invisible to the diff, P2.22.)
-13. **Tauri plugin-surface drift** — the set of `tauri-plugin-*` crates in `Cargo.lock`
-    equals an explicit committed allowlist (**single-instance, dialog, opener, log** — tauri-plugin-store
-    retired 2026-09-29, §7.4.2 — note that **dialog/opener/single-instance are deliberately
-    Rust-side-ONLY with ZERO capability-file grants**, §0.10 lines 1359/1488: a `tauri-plugin-*` crate's presence in
-    `Cargo.lock` does NOT imply a WebView capability entry); the one **forced-transitive-INERT
-    exception is `tauri-plugin-fs`** — a mandatory transitive dep of `tauri-plugin-dialog` (which
-    re-exports `tauri_plugin_fs::FilePath` + uses `FsExt` across its picker API, not feature-disableable):
-    a TYPE library only that §0.10 grants the WebView NO fs plugin, **allowed in the closure ONLY while it
-    stays inert — asserted NOT `.plugin()`-registered in `src-tauri/src`** (the fs: capability surface is
-    independently denied by G47, the §0.10 `no fs:default` posture). Any OTHER unlisted `tauri-plugin-*`
-    fails **two independent structural presence-enforcers — `check-supply-chain` (the supply-chain
-    guard's own Cargo.lock scan, no cargo binary) + plan-lint check 13** (the latter additionally forbidding
-    a forced-inert-`fs` `.plugin()` registration in `src-tauri/src`) — of the deny-all-except-allowlist
-    (which `cargo-deny [bans]` cannot express natively, having no deny-pattern-with-exceptions), failing at
-    L2/push before a capability JSON exists and closing the `cargo add` → G47 window; `cargo-deny [bans]`
-    (G18) *additionally* hard-blocks the two specifically-dangerous plugins (`-updater`/`-http`).
-    **Two INDEPENDENT assertions (the prior single "`Cargo.lock` set == capability-file plugin
-    blocks" cross-check was logically unsatisfiable — it would hard-fail every clean checkout,
-    because only `log` of the four allowlisted plugins carries a capability block while
-    dialog/opener/single-instance carry none by §0.10 decision):** **(a)** the `Cargo.lock`
-    `tauri-plugin-*` set == the committed allowlist (above), modulo the `tauri-plugin-fs`
-    forced-transitive-inert exception (present-but-never-`.plugin()`-registered); **(b)** every permission entry in
-    every `capabilities/*.json` references only a plugin on the committed allowlist (a
-    capability granting an off-allowlist plugin fails). The two are checked separately so
-    (b) closes no real threat the deny-all-except-allowlist doesn't already close, but it can
-    never produce the guaranteed false-positive the old phrasing did.
-14. **DoD-list parity (machine invariant, not a prose promise)** — the 8-point Definition-of-Done
-    exists in three copies (the canonical `build-loop.md` list, the G1 bullet in §1 here, and the
-    P0.6 transcription); extract the ordered DoD items from all three and assert **the lettered
-    sequence (a)-(h) is identical IN ORDER modulo whitespace (r7 — not merely the same SET: the
-    8-point DoD is ordered, so a reordered copy must also fail)**, so a drift (the exact "8 vs 9 DoD points"
-    class a prior gap-check had to fix) is a deterministic gate failure, not a dual-review-only
-    catch. Stdlib-only (the loop reads `build-loop.md` and would otherwise silently operate on
-    stale thresholds).
-15. **Build-loop cadence-number parity** — the loop's cadence thresholds appear verbatim in
-    `build-loop.md` as EXACT integers with EXPLICIT comparison operators (r7 — never a tilde or
-    prose form the loop could misread): `== 1 box per iteration` (§7, the iteration unit) and
-    `>= 3 consecutive push failures` (§6, a hard-stop class). The session box counters are
-    retired: the loop runs unattended and stops only on the build-loop §6 list. Stdlib-only.
+Each item: what the check catches, its scope, its posture when its target is missing, and its function.
+
+1. **Matrix parity — retired** — format membership is G22's (`scripts/check-completeness`); no function.
+2. **Cross-reference validity** — a `§` reference in a doc of the doc set that resolves to no numbered
+   heading of `docs/spec/`, `docs/security/` or `docs/process/`, and an intra-doc `#anchor` link whose
+   slug names no heading of its own doc; fenced blocks are skipped. A reference resolves when it equals a
+   heading number, is the parent of one or extends one, so a reference under a numbered heading passes
+   even when its own sub-heading is missing (named residual). An empty heading set is a finding.
+   `doc2_cross_reference`.
+3. **Heading hierarchy** — a heading that skips a level (H2 → H4) in a doc of the doc set; fenced blocks
+   are skipped. `doc3_heading_hierarchy`.
+4. **Numbering gap-freeness** — numbered headings under one parent number that do not run contiguously
+   from their lowest number, per doc in `docs/spec/`, `docs/security/` and `docs/process/`; fenced blocks
+   are skipped, and a repeated number is not a finding (named residual). `doc4_numbering_gap_free`.
+5. **Gate-catalogue integrity (one-directional)** — a `Gnn` named in security-concept.md that this
+   catalogue never mentions (a row, the reserved-id map or any other mention counts). The catalogue is the
+   superset: it carries quality gates the security concept never names, and the threat-row direction is
+   check 8's. A missing security-concept.md or build-gates.md is a finding. `doc5_gate_catalogue`.
+6. **Forbidden tokens** — a markdown strikethrough (a double-tilde span within one line) in a doc of the
+   doc set; fenced blocks are skipped. `doc6_forbidden_tokens`.
+7. **Generated-file sanity** — a tracked `*.lock` file (the `git ls-files` set, so no untracked tree is
+   walked) that is empty, whitespace-only or unreadable; an unavailable `git` is a finding.
+   `doc7_generated_file_sanity`.
+8. **Threat-map parity (bidirectional)** — a class of plan-lint's `THREAT_CLASSES` set (the spec §0.11
+   classes) without exactly one security-concept §5 row (a line opening with the bold class id), a §5 row
+   outside that set, a §5 row that cites no `Gnn`, and a cited `Gnn` this catalogue never mentions. A
+   missing security-concept.md or build-gates.md is a finding. `doc8_threat_parity`.
+9. **Inventory parity** — an IPC command token (`C`, a number, an optional letter) in `docs/spec/` or
+   `docs/security/`, fenced blocks skipped, that is not in plan-lint's `IPC_COMMANDS` set, the §0.4.1
+   commands (bare `C2` passes as the picker-family alias). Engine ids, the error taxonomy and the
+   fixed-set enums are outside this check. `doc9_inventory_parity`.
+10. **Security-manifest currency — retired** — each `ffmpeg-*.lock` security manifest joins G19's
+    regenerate-and-diff `ARTIFACTS` registry at the box that first generates it, as that box's caged part;
+    no function.
+11. **Span-bound currency** — a span from `G2` to a higher gate id (written with `..`, a dash, `to` or
+    `through`) in this catalogue or security-concept.md that stops below the highest plain-integer row,
+    unless a rejection cue (`rather than`, `instead of`, `frozen`, `not`, `never`, `avoid`, `like`) stands
+    within 45 characters before it. A catalogue without rows is a finding. `doc11_span_bound`.
+12. **IPC command-surface drift** — a `#[tauri::command]` function in `src-tauri/src` (the bare or the
+    parenthesized attribute, interleaved attributes such as `#[specta::specta]` tolerated) whose name is not
+    in the committed golden `src-tauri/ipc-commands.golden`: a WebView-reachable command nobody declared.
+    One direction only; a core unit test pins the golden's own content. G29 rule (f) forbids a `name`
+    override, so the function name is the IPC name (`rename_all`, which renames only the argument keys, is
+    permitted). A missing `src-tauri/src` or golden is a finding. `doc12_ipc_surface_drift`.
+13. **Tauri plugin-surface drift** — a `tauri-plugin-*` crate in `Cargo.lock` (its `name =` lines) outside
+    `_PLUGIN_ALLOW`, the §0.10 granted plugins, other than `tauri-plugin-fs`, the type-only dependency
+    `tauri-plugin-dialog` forces; that one may never be registered, so its `init`/`Builder` or a
+    `.plugin(…)` naming it anywhere in `src-tauri/src`, comments included, is a finding. The crate set only:
+    capability entries are G47's, `check-supply-chain` is a second enforcer over the same lock, and
+    `cargo-deny [bans]` (G18) blocks the updater and HTTP plugins outright. A missing `Cargo.lock` or
+    `src-tauri/src` is a finding. `doc13_plugin_surface_drift`.
+14. **DoD-list parity** — a copy of the Definition of Done whose lettered items differ in count or order
+    from `_DOD_LETTERS`: build-loop.md §5 (canonical), the G1 `Definition-of-Done` bullet in §1 and the
+    P0.6.5 box, each copy's in-order run of lettered markers read in isolation (the box up to its first
+    `Delivered` note). A missing build-loop.md, G1 bullet or P0.6.5 box is a finding. `doc14_dod_parity`.
+15. **Build-loop cadence parity** — a `_HARDSTOP_PHRASES` string absent from build-loop.md: the §7
+    iteration unit and the §6 push-failure stop, each an exact integer behind an explicit comparison
+    operator, so the loop never runs on a fuzzy or stale threshold (the G24 canary holds each phrase unique
+    there). A missing build-loop.md is a finding. `doc15_hard_stop_parity`.
 16. **Planted-positive coverage** — every gate cited in a security-concept §5 threat row whose
     catalogue row reads Status `live` or `live-partial (…)`, Fail mode `fail-closed…` and names a
     `scripts/check-*` or `scripts/run-*` driver in its Enforced-by cell has a
@@ -488,282 +439,99 @@ Invariant checks (initial set; expanded during P0 review):
     parse to the seven cells is a finding (fail closed). Residual: one planted positive proves a gate
     armed, not complete over its variant class; variant coverage is each self-test's own scope and
     the G1 test-integrity item. `doc16_planted_positive`.
-17. **Stale-deferral status (a catalogue row carries no live deferral tag)** — a live `[DEFER]` /
-    `[DEFER: post-v1]` tag on a line of this catalogue that also cites a plain-integer catalogue
-    row (`| **Gnn** |`) is stale and fails the build: a gate that gained a row is no longer
-    deferred, and its status is carried by the row (and, for an owner-decided gate, by its
-    gate-status row). A line that names the tag as resolved ("promoted", "removed", "adopted",
-    "no longer", …) is history prose and passes. The canonical case is attest-build-provenance
-    (**G59**), which once carried three contradictory statuses across the catalogue, the plan and
-    the security concept. Stdlib-only.
-18. **Named-build-loop-procedure presence (so "currently absent" cannot survive into the final docs)** —
-    every build-loop.md procedure that P0.6 names as a deliverable (initially: the **crash-recovery
-    procedure** and the **dual-review divergence-resolution rule**) must actually exist in
-    `build-loop.md`: a canonical verbatim phrase for each (check-15 style) must appear there, else the
-    build fails. Together with the G8 deferral-vocabulary scan now including "currently absent" (so a
-    leftover annotation fails G8 once the docs exist), this turns "the loop cannot safely operate without
-    these two procedures" from a prose note into a machine invariant. Stdlib-only.
-19. **Reviewer-rubric presence + sourced-verbatim + canonical-phrase coverage (r6 — the one piece of the
-    G1 quality-amplifier the autonomous loop can silently weaken).** The self-trust story is "every Gnn
-    except G1 is the real control; G1 is a quality amplifier whose auditable-smell spot-audit is the
-    backstop" — but the loop's single biggest leverage point, the **review PROMPT/RUBRIC the two reviewers
-    are given** (what they critique for: spec-conformance, the SPEC-CONTRADICTION-above-P0 class, severity
-    ranking, divergence handling), was nowhere pinned as a committed drift-guarded artifact, so a loop that
-    silently edits or under-specifies its own review prompt can blunt the amplifier the spot-audit depends
-    on. This check asserts the reviewer rubric exists as a **committed fenced canonical block INSIDE `build-loop.md`**
-    (the home DECIDED in r7 — NOT a separate `docs/process/review-rubric.md`, so the "seven P0 docs" exit
-    criterion stays exact), is **non-empty**, the prompt the loop EMITS is **sourced from it verbatim**, and it
-    contains the canonical **SPEC-CONTRADICTION-class + divergence-resolution** phrases P0.6 promises (the same
-    canonical-verbatim-phrase discipline as checks 15/18). The rubric block joins the L(-1) security-critical-file
-    set. Stdlib-only.
-20. **Recorded reviewer-family decision present in `build-loop.md` (r6 — the one non-deterministic control's
-    open residual is now forced to a recorded decision, not left open).** security-concept §2 states Opus+Sonnet
-    share lineage so "both GO, 0 findings" is a CORRELATED signal and says the same-vendor choice is "an owner
-    call recorded here, not silently assumed" — but it was neither closed nor decided. This check asserts
-    `build-loop.md` carries the **verbatim recorded owner decision** (either "one reviewer is a different model
-    family" + the IDs, OR an explicit owner ACCEPTANCE of the correlated residual) **plus a concrete spot-audit
-    cadence** (e.g. every Nth box / every phase boundary), so the autonomous loop cannot silently ignore it.
-    Stdlib-only.
-21. **T2-taint-depth XOR (r7 — machine-enforces the G56a sub-check (f) owner decision so it is not doc-only).**
-    The inter-procedural taint depth for the T2/WebView surface is owner-decidable between two sanctioned
-    options — CodeQL `javascript-typescript` default-setup (G56a sub-check (f) leg i) OR the G29 rule (i)
-    Semgrep `mode: taint` ruleset (leg ii) — and **exactly one must be live, not both, not neither**. This check
-    asserts **EXACTLY ONE** of {a committed `codeql-default-setup` marker file recording the CodeQL choice, the
-    presence of the G29 rule-(i) taint ruleset under `scripts/semgrep-rules/` with its registered planted-positive}
-    is true — so neither a "both enabled" duplication nor a "neither, T2 taint silently uncovered" gap can survive,
-    and the G56a sub-check (f) OR-gate can never be left permanently red by an undocumented choice. Stdlib-only.
-22. **Gate-ID space gap-freeness (r7 — closes the catalogue-integrity hole the "every Gnn is the real control"
-    thesis rests on).** check 5 is one-directional (catalogue ⊇ security-concept) and check 4 targets sub-section
-    HEADINGS, not gate IDs, so NOTHING asserted the catalogue's own integer ID space is gap-free-or-annotated —
-    and the catalogue silently jumped G60→G64 (G61/G62/G63 absent) and omitted any note for the deleted G40.
-    This check enumerates every `| **Gnn** |` integer table row (the plain-integer rows only — a sub-letter id
-    like `G33a` does NOT by itself satisfy its integer), computes `max(Gnn)`, and asserts **every integer
-    `N` in `2..max(Gnn)` is EITHER a plain table row OR carries a documented vacated/reserved/deleted/split note** in the
-    "Vacated / reserved gate IDs" blockquote (or the G34 note), so a fill-pass author can never collide with or
-    misread an invisible ID. An integer present ONLY as sub-letter rows (`G33` → `G33a`/`G33b`, with no plain
-    `| **G33** |` row) MUST carry a `split` note, so it is never invisible. A new gap (an inserted-then-removed gate) fails the build unless its note is added in
-    the same commit. Stdlib-only.
-23. **Owner-decidable posture decision-log presence (r7 — a silent status flip is invisible).** Every entry
-    of plan-lint's `_OWNER_DECIDABLE_GATES` registry — the informational-then-ratcheted gates (`cargo-mutants`
-    G15-leg, G17b, G64) and the owner decisions that replaced a registered posture (`cargo-acl`/cackle, Kani,
-    `cargo-careful`, `cargo-geiger` declined for v1; G65 decided) — has a dated, well-formed row in
-    `docs/process/gate-status.md` whose status agrees with the registry value; without it a silent
-    informational→required flip (or the reverse, or a decided gate's re-promotion) had no audit trail. This
-    check asserts that **every registered owner-decidable gate has a dated status entry in a
-    committed `docs/process/gate-status.md`** and that the entry's status agrees with the gate's effective
-    posture (mirroring the dual-review correlated-residual recorded-decision pattern and
-    plan-lint check 17's stale-deferral check), so a status change is a dated committed line, never an
-    invisible flip. **Delivered (P0.4.5):** the ledger lands (`docs/process/gate-status.md`) with the four
-    over-assurance contracts; `plan-lint` check 23 gains its real logic — `_OWNER_DECIDABLE_GATES` (the
-    effective-posture registry, seeded with the four, appended by each box that flips a posture) + the ledger-table parse +
-    presence/well-formedness/posture-agreement assertions; a flip edits BOTH the ledger row AND the registry in
-    one owner-acked commit. Stdlib-only.
-24. **P0-completion-record format (r7)** — assert the `run_url:` field of
-    `docs/process/p0-completion.md` matches
-    `https://github.com/Ne-IA/convertia/actions/runs/<id>` (the immutable
-    Actions-run URL recording the P0-completion gate run); a missing file, or a
-    record without the `run_url:` field, is a finding (fail-closed).
-    Stdlib-only. (Promotes the r7 unnumbered P0-completion URL-format check to a
-    numbered §6 check, so the plan's `check 24` reference resolves.)
-25. **Doc-graph integrity & freshness (the G68 leg — generalizes checks 2/5/8 from
-    single-source assertions to the WHOLE doc graph).** The general "no
-    source-of-truth drifts from the doc graph" net, in three parts: **(a) no
-    orphan** — every **repo-tracked** `.md` under `docs/` (+ the root governance docs
-    `CLAUDE.md`/`README.md`, and `CONTRIBUTING.md` once it lands — the "over the docs
-    that EXIST" hedge means a not-yet-authored doc is out of scope, not a false-fail)
-    is reachable by a link from its proper index ([`docs/spec/README.md`](../spec/README.md)
-    for the spec category files, [`docs/plan/README.md`](../plan/README.md) for the
-    plan phase files, `CLAUDE.md §9` + the process/security docs' own `## References`
-    for the process/security docs), so a doc linked from nowhere fails; **(b)
-    cross-doc resolution** — every INTER-document reference across the **repo-scoped**
-    graph (`CLAUDE.md` ↔ SSOT ↔ `docs/spec/` ↔ `docs/security/` ↔ `docs/process/` ↔
-    `docs/plan/`) resolves to a real file/heading/anchor (the inter-document edges
-    check 2's spec-internal `§X.Y` resolution does not span); **(c) freshness** — when
-    an authoritative source changes (a `Gnn`, an enum variant, a path, a version pin,
-    a convention, a decision), every doc that DESCRIBES it the old way fails (the gates→`.md`
-    case is one instance), asserted via a per-source content-fingerprint the
-    describing doc was reasoned against, the same fingerprint discipline the G29
-    suppression ledger uses. It does NOT subsume the precise single-source parity
-    checks (8/14/22) — it is the graph-wide orphan/resolution/described-the-old-way
-    net no single check spans. **Scope note:** the out-of-repo `~/.claude` memory
-    channel (`MEMORY.md` + the memory files) is NOT a node here — it lives outside
-    `git ls-files` and a repo-scoped gate cannot reach it; its population is audited
-    once, manually, in P0.1.7, so this check names only nodes it can resolve.
-    Stdlib-only; fail-closed from P0 over the docs that exist (the doc graph is live
-    from the seven P0 docs). This is the G68 implementation; G68 is its catalogue row.
-26. **Structural-map integrity (the G69 leg).** Parse the spec [§0.7](../spec/00-architecture.md)
-    "Physical tree" block (a fenced tree-art block that lists directories only, not a regex over
-    prose) and assert it is **bidirectional with the tracked tree**: the `git ls-files`-derived
-    directory set, minus the committed out-of-scope set (`target/`/`node_modules/`/`dist/`/`.git/`),
-    equals the §0.7 directory set — a tracked directory with no row fails, and a row with no tracked
-    file beneath it fails. A new directory's row lands in the commit that adds its first tracked file
-    (a Loop-editable spec edit). Also assert that every path on §0.7's *Load-bearing files* list is
-    tracked. A missing, unparseable or empty tree block, a missing or empty load-bearing list, or an
-    unavailable `git` fails closed; the check has no skip branch. `CLAUDE.md` §1a points to §0.7 and
-    carries no map. Stdlib-only. This is the G69 implementation; G69 is its catalogue row.
-27. **Gate-posture-transition integrity (the G71/P1 prevention).** For every
-    `[[posture_flag]]` gate in [`scripts/gate-planes.toml`](../../scripts/gate-planes.toml)
-    — a gate whose enforcement depends on a CLI flag with a SCHEDULED fail-soft →
-    fail-closed transition at a phase boundary — assert that once its
-    `fail_closed_after_phase` is **complete** (every plan box of that phase is `[x]`),
-    the gate is **actually invoked with its `enforce_flag` in EVERY `plane` file**
-    (`lefthook.yml` + `.github/workflows/ci.yml`) **AND** no `[[fail_open]]` row still
-    excuses its soft posture; while the phase is incomplete the soft posture must be
-    justified (a `fail_open` row) or already wired. This closes the defect class that
-    let **G71**'s `--enforce` flip be promised in prose (security-concept §2, the old
-    `[[fail_open]]` row, the `ci.yml` step name) yet — owned by no box and verified by
-    no check — **silently never happen through all of P1**. The `[[posture_flag]]`
-    registry SHAPE is validated by **G54b** (`check-gate-planes`); this leg (plan-lint
-    check 27) does the phase-aware WIRING assertion. Stdlib-only; a missing
-    `gate-planes.toml` or an empty `[[posture_flag]]` registry is a finding, as is a
-    due-but-unwired flip (or unparseable config). **(P1.66.)**
-28. **App-event-surface drift (the §0.4.2-event analog of check 12's §0.4.1 command-surface
-    drift)** *(glob-scoped to `src-tauri/src`)* — the set of `app://` event names that appear as
-    **double-quoted string literals** in `src-tauri/src` equals **exactly** the closed §0.4.2
-    three-event set (`app://fault`, `app://intake`, `app://close-requested`), and every such literal
-    lives **only** in the `crate::ipc::events` constants module (`src-tauri/src/ipc/mod.rs`) — so a
-    **fourth** `app://` event (the §0.4.2 events are a closed surface, the WebView's only Rust→WebView
-    signal channel) **OR** a **raw `app://` literal that bypasses the `events::APP_*` constants** is a
-    deterministic gate failure, not a dual-review-only catch. The allow-set is an **independent
-    hardcoded list** (not derived from the source), so a drifted const is caught too — the same
-    independent-list discipline check 12's golden uses. A backtick ``app://…`` doc-comment mention is
-    prose, not a literal, and is deliberately **not** matched (the §0.4.2 doc-comments use backticks
-    throughout); a `format!("app://{}", …)` dynamic name **is** matched (its value is not in the closed
-    set → caught). The IN-CORE payload-registration / no-`any` side (each event's §0.4.2 payload authored
-    + registered via `.types()`) is **P2.41's `cfg(test)` cross-check** — the §0.4.1-command analog of the
-    Rust golden test check 12 pairs with. Under the loose **G23** completeness-family label the P2.41 box
-    uses (like check 12, this is a plan-lint check, not its own `Gnn` row). Stdlib-only; a missing
-    `src-tauri/src` is a finding.
-29. **Stale-liveness / futurity-comment integrity** *(glob-scoped to `src-tauri/src` + `crates` +
-    `xtask/src`)* — the mechanical form of the `stale-liveness-futurity-claims` sweep method (the
-    P4.23 L(-1) hand-off; a G68-family leg for the `.rs` comment plane G68 cannot reach): a `.rs`
-    comment run or lint-`reason` string asserting **present-tense dead-ness bounded by a plan box**
-    ("stays dead until P4.32 wires it", "no production caller until P6.10", "once P2.34 lands")
-    **fails** once that box is `[x]` in `docs/plan/P*.md`. Comment runs are JOINED before matching
-    (the claim routinely spans two comment lines — how the P4.23 hand sweeps twice reported a false
-    zero) and `reason = "…"` strings are scanned as blocks of their own; the bound id is captured
-    **from the construction itself** (a 45-char window truncated at the first of `;)!?(` or a `.` NOT followed by a digit — a box-id's own dot must survive; the naive `.`-inclusive class truncated every id at its own dot and left the check green-but-blind, the arming bug the g24 positive legs caught) — never a
-    whole-block id-intersect, which the calibration measured as hopeless (attribution tags +
-    historical ids near futurity vocabulary yield ~100 candidates). Past-tense narration,
-    double-quoted mentions, and the repo's bracket tags (`[Corrected by …]`,
-    `[Build-Session-Entscheidung: …]`, `[Test-Change: …]`, `[Raised by …]`) are history/attribution
-    and do not fire (per the construct guards below; an unguarded past form can still over-flag —
-    the fix is a one-word reword, the safe direction) — per construct: `dead-until` guards the PRE-verb past forms
-    ("stayed/remained/was/were dead until X made it live"), `once P<id>` guards the POST-id past
-    verb ("once P4.4 landed" is history, "once P4.4 lands" is a claim — the R1 review's probe), and
-    `lands at` is present-tense by its own token, so historical narration rewords to "landed at"
-    (one word, and the reworded sentence is the better sentence). Recorded residuals: boundless futurity
-    ("until then", "until those land", "until consumed") names no id and cannot be mechanically
-    bound — it stays with the test-strategy §11.4 surface-(e) audit + the sweep memory; single-quoted
-    mentions are NOT stripped (apostrophes make that unsafe — quote old claims with double quotes or
-    paraphrase); block comments of ANY kind (`/* … */`, incl. the `/*!`/`/**` doc forms) are not scanned —
-    line-comment runs + `reason` strings are the repo's actual carriers (measured 2026-08-30: 17
-    plain block comments in first-party Rust, none a liveness carrier, zero block DOC comments);
-    the planted `tests/g53-fixture` tree and the fuzz harness are deliberately out of scope. Calibrated 2026-08-30 against the live tree: 21 raw candidates → 14 genuinely stale
-    constructions, 15 sites corrected in the arming commit (one boundless "until those land" found
-    manually beside a flagged sibling; one instance was P4.24-fresh), 3 false-positive shapes now
-    guarded (parenthetical window, past tense, quoted mention). Stdlib-only; a missing scope
-    root (`src-tauri/src`, `crates`, `xtask/src`) is a finding. **(2026-08-30, Co-Pilot — the fourth-wall
-    companion: G9 invariant (g) closes the qualified upward doc-link escape the same day.)**
-30. **Spec-restatement fidelity** *(scoped to `docs/spec/**` and the SSOT — the one document that outranks
-    the spec, where the round-15 review found a drifted quotation surviving; `docs/plan` quotes are
-    history, blockquote-wrapped and partial — a named residual)* — one canonical user-facing string has
-    ONE home, the §2.8.2 / §2.9.1 tables in `02-guarantees.md`; every quotation of one in another spec
-    file or the SSOT (a `"…"` span carrying any five consecutive tokens of it — words case-folded with their
-    punctuation stripped, so a case- or punctuation-only difference cannot hide a run; a sliding
-    anchor, seeing a change wherever some five-token run excludes it; a string of nine tokens or fewer
-    has positions every run shares, so its quotations are judged by token similarity as well: the same
-    length within one token and all but one token in common) must be **verbatim** — whitespace-squashed,
-    the markdown `\"` escape undone — on the catalog row and on the quotation alike, so a row carrying an
-    escaped inner quote compares like its quotation. A canonical string shorter than the five-word
-    anchor is not bindable
-    and is out of scope — today `"That conversion isn't available."` and `"All {n} files converted."`
-    (53 of the 55 literals are in scope). Bold or plain prose sharing the words (the §6.2.4 macOS
-    steps, a format matrix's feature list) is description, not restatement, and is left alone. Every
-    string quoted verbatim — the exact string between two quote marks — is blanked out of a file's text
-    BEFORE its spans are cut, so a correct quotation leaves no span whatever its inner shape, while
-    authored text inside the same marks is not verbatim and stays visible; a run or a one-word-off
-    match found in what remains belongs to a drifted quotation — a second, drifted quotation in a file
-    that also quotes the string correctly included (a shared tail between two strings, the
-    CleanupResidue / residue-annotation lines, vanishes with the verbatim one). A span is the SHORTEST word-bounded `"…"` run that crosses no
-    `*`/`|` mark and is at most 400 characters; it may contain inner `"…"` fragments of up to 200
-    characters, because two catalog strings carry one (`click "Open Anyway" next to`, `The output
-    name "{name}"`) — the check's first cut forbade an inner quote and thereby saw neither string
-    (the round-1 G1 finding); its second blanked the span text instead of the body and fired on a
-    correct `"{name}"` quotation, whose fragment opens with a non-word character and splits the span
-    (the round-2 G1 finding); the nested-drift, historical-replay and `"{name}"` legs pin both. The
-    class the QuarantinedByOs drift belonged to was this: §7.2.4 restated the row in different words,
-    both texts claimed to be canonical, and no gate compared them (the in-crate `include_str!` bind in
-    `crate::outcome` covers the three cross-file sites it enumerates; this is the general rule over
-    the files that crate does not read) — the pre-reconcile §2.8.2/§7.2.4 pair replays as a finding.
-    A paraphrase sharing no five-word run is left alone. Stdlib-only; an empty or missing catalog is
-    a finding. Named residuals (each measured; none occurs in `docs/spec`
-    today): a drifted quotation whose inner fragment exceeds 200 characters, or that carries a `*`/`|`
-    inside the marks, or that is set in underscore italics (`_"…"_` — `_` is a word character, so the
-    mark does not open), or whose closing mark is glued to a word, cuts no span and is not seen; a
-    two-token change to a string of nine tokens or fewer that leaves no five-token run intact is a
-    paraphrase to both rules; a canonical string of nine tokens or fewer that itself carries an inner
-    quote would split its quotation into two halves too short for either rule — none exists, and the
-    canary pins that precondition on the real catalog (the round-12 review). Curly quotes
-    (U+201C/U+201D) are normalised to `"` before the spans are
-    cut, so a curly-quoted quotation is judged like a straight one. 28 `30 restatement` legs in `g24-plan-lint.py` (a drifted ending, a
-    drifted opening word, a verbatim
-    hard-wrapped + escaped quotation, a drifted quotation keeping its inner quote, the historical
-    §7.2.4 drift, a verbatim + drifted second quotation, the verbatim and the drifted `"{name}"`
-    shapes, a 120-character inner fragment, an out-of-scope paraphrase and a `docs/plan` file, a run
-    shared with another verbatim-quoted string, a bold-prose run between two unrelated quote marks,
-    one leg per span-shape clause — glued mark, emphasis mark, table cell, the 400-character cap — a
-    mid-word drift of a short string, a short quotation that is prose, a verbatim string with authored
-    text inside the same marks, a one-word + case + punctuation drift of a short string (the 05-ui-ux
-    shape), a curly-quoted drift, an escaped catalog row quoted verbatim and drifted, a missing catalog,
-    the catalog's non-vacuity, the short-inner-quote precondition on the real catalog, the SSOT in scope
-    (drifted / verbatim) and `docs/plan` out of it, the real spec set).
-    **(2026-09-07, Co-Pilot — the residual the P4.33 reconcile named.)**
-31. **Phase-boundary sweep binding** *(scoped to `docs/plan/P*.md`, phases ≥ 2)* — the 2026-09-09
-    scoping of the `[!extern]` STOP to the blocked `needs:` closure (build-loop.md §3 step 1) carves
-    out ONE box per phase: the standing phase-end Co-Pilot hardening-sweep box, which blocks its whole
-    successor phase (test-strategy §11.3). That carve-out was a semantic classification carried in
-    prose ("is THIS `[!extern]` the sweep box?"); this check binds it in plan data — for every phase
-    with boxes: exactly one box whose title starts with `Run the phase-end Co-Pilot hardening sweep`,
-    marked `[!extern]` until executed (or `[x]`), followed in document order only by boxes that
-    `needs:` it (the final phase's RC sign-off), and named in `needs:` by the successor phase's first
-    box `P<n+1>.1` — so the boundary stop follows from the plan, never from prose alone. Fail-closed
-    on a retitled sweep box (it reads as "0 sweep boxes"). 8 `31 sweep` legs in `g24-plan-lint.py`
-    (the bound shape, no sweep, two sweeps, `P<n+1>.1` without the edge, a box after the sweep without
-    the edge, an open `[ ]` sweep, an absent `P<n+1>.1`, the real plan). **(2026-09-09, Co-Pilot — the catcher the
-    throughput commit's r2 review asked for.)**
-
+17. **Stale-deferral status** — a line of this catalogue, fenced blocks skipped, that carries a `[DEFER`
+    tag and the id of a plain-integer row: a gate with a row is no longer deferred, and its status is its
+    row's (for an owner-decided gate, also its gate-status row's). A line with a resolution cue (promoted,
+    removed, former, no longer, carried, adopted, resolved, was, reconcil…) is history and passes. A
+    catalogue without rows is a finding. `doc17_forward_idea_status`.
+18. **Named build-loop procedures** — a `_NAMED_PROCEDURE_PHRASES` string absent from build-loop.md: the
+    header and load-bearing sub-rules of the crash-recovery procedure (§9) and of the dual-review
+    divergence-resolution rule (§3 Step 5), so neither can be gutted to a bare header (the G24 canary holds
+    each phrase unique there). A missing build-loop.md is a finding. `doc18_named_procedure`.
+19. **Reviewer rubric** — the G1 reviewer rubric absent as a committed, non-empty fenced block in
+    build-loop.md (the block carrying `_RUBRIC_MARKER`), or a `_RUBRIC_PHRASES` string missing from that
+    block: the critique dimensions, the class-closure and test-integrity substance, the divergence handling
+    and the SPEC-CONTRADICTION class (the G24 canary holds each phrase unique in the block). Whether the
+    loop emits the block verbatim is the G1 review's to judge. A missing build-loop.md is a finding.
+    `doc19_reviewer_rubric`.
+20. **Reviewer-family decision** — a `_REVIEWER_FAMILY_PHRASES` string absent from build-loop.md: the
+    recorded owner decision on the reviewers' shared lineage (the accepted correlated-lineage residual, its
+    spot-audit cadence and the open flip to a different family; the G24 canary holds each phrase to the
+    decision blockquote). A missing build-loop.md is a finding. `doc20_reviewer_family`.
+21. **T2 taint rule present** — `scripts/semgrep-rules/project/webview-taint.yaml`, G29 rule (i), missing
+    or empty, or without a `mode: taint` line or a `convertia-rule: "i"` line, each matched only where it
+    opens a line, so a comment does not count. That rule is the T2 WebView taint control for v1; CodeQL is
+    not adopted ([gate-status.md](../process/gate-status.md)). A line check over an L(-1) file (§0): the
+    rule's validity and its firing are G29's. `doc21_taint_rule`.
+22. **Gate-id gap-freeness** — an integer `N` from 2 to the highest plain-integer row that is neither a
+    plain-integer row (a sub-letter row such as `G33a` does not count for its integer) nor annotated; an id
+    is annotated when it stands within 60 characters before or 500 after a `vacated`, `reserved`,
+    `deleted`, `split`, `never used` or `never assigned` keyword anywhere in this catalogue (named residual:
+    the window is file-wide, not confined to the reserved-id map). A catalogue without rows is a finding.
+    `doc22_gate_id_gap_free`.
+23. **Owner-decidable posture log** — a key of `_OWNER_DECIDABLE_GATES` (the informational-then-ratcheted
+    gates and the owner decisions that replaced a registered posture) without a row of the
+    [gate-status.md](../process/gate-status.md) ledger table, the table whose header names `Status` and
+    `Since`, whose status agrees with the key's value, and a ledger row whose status is not
+    `informational`, `required` or `decided` or whose `Since` is not a real ISO date. A flip edits the row
+    and the registry in one owner-acked commit. A missing gate-status.md is a finding. `doc23_ratchet_log`.
+24. **P0-completion record** — a `run_url:` in [p0-completion.md](../process/p0-completion.md) that is not
+    an Actions-run URL `https://github.com/Ne-IA/convertia/actions/runs/<id>`; a missing record or a record
+    without the field is a finding. `doc24_p0_completion`.
+25. **Doc-graph integrity and freshness** — the G68 implementation, over the doc set: (a) an orphan, a
+    doc no other doc links to (the index roots `CLAUDE.md`, `README.md`, the SSOT and the spec and plan
+    READMEs excepted); (b) a repo-relative link whose target path does not exist (fenced blocks and inline
+    code skipped; an `#anchor` on it is not resolved); (c1) a doc other than this catalogue that names a
+    `Gnn` this catalogue never mentions or a threat class outside `THREAT_CLASSES`; (c2) a source region of
+    the L(-1) ledger `scripts/doc-fingerprints.toml` whose sha256 differs from its recorded fingerprint, so
+    its describing docs are re-verified and the fingerprint re-blessed in one owner-acked commit (a
+    missing, unparseable or seed-less ledger is a finding). Any other described-the-old-way drift is a G1
+    review item. A catalogue without gate ids is a finding. `doc25_doc_graph`.
+26. **Structural-map integrity** — the G69 implementation: the spec [§0.7](../spec/00-architecture.md)
+    "Physical tree" block (directories only) and the `git ls-files` directory set, minus `target/`,
+    `node_modules/`, `dist/` and `.git/`, differ in either direction, or a path on §0.7's *Load-bearing
+    files* list is untracked. A missing, unparseable or empty tree block, a missing or empty load-bearing
+    list and an unavailable `git` are findings; there is no skip branch. `doc26_struct_map`.
+27. **Gate-posture transitions** — a `[[posture_flag]]` row of
+    [`scripts/gate-planes.toml`](../../scripts/gate-planes.toml) (a gate with a scheduled fail-soft →
+    fail-closed flip) whose `fail_closed_after_phase` is complete (every box of that phase `[x]`) while
+    its script is not invoked with its `enforce_flag` on a non-comment line of every `planes` file, or
+    while a `[[fail_open]]` row still excuses it; before that phase completes, the soft posture needs a
+    `[[fail_open]]` row or the wiring. An under-specified row is a finding, and G54b validates the
+    registry's shape. A missing or unparseable `gate-planes.toml` or an empty registry is a finding.
+    `doc27_gate_posture_transition`.
+28. **App-event surface drift** — a double-quoted `"app://…"` literal in `src-tauri/src`, comments
+    included, that names an event outside `_APP_EVENTS_ALLOWED` (the closed §0.4.2 set, an independent
+    list) or that sits outside the `crate::ipc::events` constants module (`src-tauri/src/ipc/mod.rs`); a
+    backtick mention is prose and passes, and a `format!("app://{}", …)` name is caught. The payload side
+    is a core `cfg(test)` cross-check. A missing `src-tauri/src` is a finding.
+    `doc28_app_event_surface_drift`.
+29. **Stale liveness and futurity comments** — a `.rs` comment run or lint-`reason` string under
+    `src-tauri/src`, `crates` or `xtask/src` that asserts present-tense dead-ness bounded by a plan box
+    ("stays dead until P4.32 wires it", "once P2.34 lands") whose box is `[x]`; comment runs are joined
+    before matching, and the bound id is read from the construction itself. The constructs, the window and
+    the named residuals are the check's comment block in plan-lint. A missing scope root is a finding.
+    `doc29_stale_liveness`.
+30. **Spec-restatement fidelity** — a quotation, in a `docs/spec/**` file or the SSOT, of a canonical
+    user-facing string that is not verbatim. The canonical strings are the bold quoted literals of the
+    §2.8.2, §2.9.1 and §2.13.5 catalogs in `02-guarantees.md` (one string, one home); a quotation is a
+    `"…"` span carrying any five consecutive tokens of one or, for a string of nine tokens or fewer, its
+    one-token-off form (tokens case-folded, punctuation stripped). `docs/plan` quotes are history and out
+    of scope (named residual); the span rules and the other named residuals are the check's comment block in
+    plan-lint. An empty or missing catalog is a finding. Frozen: no new vocabulary or legs; a false
+    positive is fixed by rewording. `doc30_spec_restatement_fidelity`.
+31. **Phase-boundary sweep binding** — over `docs/plan/P*.md`, phases 2 and up: a phase without exactly
+    one box titled with `_SWEEP_TITLE` (the standing phase-end sweep), a sweep box neither `[!extern]` nor
+    `[x]`, a box after the sweep box in its file that does not `needs:` it, and a successor phase whose
+    first box `P<n+1>.1` is absent or does not `needs:` the sweep box (test-strategy §11.3). A retitled
+    sweep box counts as none. `doc31_sweep_binding`.
 32. **SAST-pin single source** — `requirements-ci.txt` pins `semgrep==` and its header line names
     that pin; no doc in the plan-lint doc set names a Semgrep version (`semgrep==X` or Semgrep
     `` `X.Y.Z` ``), so a version bump touches `requirements-ci.txt` alone. A missing
     `requirements-ci.txt`, or one without the pin, is a finding. `doc32_sast_pin_sync`.
-33. **Gate-row promise ownership** *(scoped to this catalogue's gate rows + §6 items)* — a row here that
-    defers a leg to a box or phase it only describes — a deferral adjective (later, future, subsequent, next,
-    follow-on, follow-up, later-phase, own, separate, dedicated, owning, acquisition, staging, stage-slot;
-    markdown emphasis, backticks or parentheses around the adjective or the noun tolerated - up to three
-    markers before the adjective, after it and before the noun, up to three underscores after it) before the
-    noun box(es) or phase(s); a hyphenated `box-id` is not one — names the owning `P<n>.<m>` box within a few
-    words of the phrase (4 before / 10 after, words not punctuation, in the same sentence), and the id must
-    resolve to a real plan box; an id elsewhere on the line does not own it, and hard-wrapped paragraphs are
-    joined first. The class: G17 promised its `osv-scanner`-over-`pnpm-lock.yaml` leg as "later boxes" from
-    P0.4.1 until P4.96 owned it on 2026-09-24, four phases in which the JS graph ran unscanned — the phase
-    audits read spec sentences and code comments (test-strategy §11.4 (e)), never this catalogue, so surface
-    (g) and this check now cover it; the 2026-09-24 sweep behind it found three more orphans (the G56
-    transitive-action-pin half → P4.97, the G37 Lane-B verify step → P10.62, the G19 manifest promise →
-    retired: the manifest is per-build output, P4.41 (5)/(7), and v1 ships no CLI). Named residuals: a
-    deferral spelled without a listed adjective ("the Lane-B box that wires staging", "the release box", "a
-    P10 box") passes — the vocabulary is enumerated, not inferred, and grows by an adjective plus a leg (a
-    number word between the adjective and the noun, "the next two boxes", is the same gap); any resolvable id
-    inside the window owns the phrase, even a parenthetical one, so ownership is by name, not verified;
-    non-deferral prose that happens to fit the shape (an "own" or "later" before the noun with no deferral
-    meant) reds and is reworded — there is no escape-hatch marker by design. 59 `33 gate-row-promise` legs in
-    `g24-plan-lint.py` (an unowned promise, an owned one, the id in another sentence, the id one word past a
-    period or past a semicolon, an id at word eleven after and an id at word five before the phrase, the
-    comma-joined and em-dash-joined evasions, an unresolvable id, the word-counted window and its
-    punctuation-padded form, one leg per adjective, the plural, phase-noun and adjective-phase-number-noun
-    shapes, emphasis / backticks / parentheses on the adjective and on the noun, underscore emphasis on the
-    noun, bold-italic on the adjective and on the noun (asterisks and underscores), the article before an
-    emphasised, backticked, parenthesised or bold-italic adjective and each of the four articles, the
-    hyphenated non-fire, the acquisition and staging shapes, a wrapped owned and a wrapped unowned paragraph,
-    the "future" spelling, generic prose not scanned, the real catalogue).
-    **(2026-09-24, Co-Pilot.)**
+33. **Gate-row promise ownership** — in this catalogue's gate rows and §6 items, a deferral phrase (a
+    word of `_DEFERRAL_ADJECTIVES` before the noun box or phase, markdown markers tolerated) whose sentence
+    names no real plan box `P<n>.<m>` within 4 words before or 10 after it; hard-wrapped paragraphs are
+    joined first. The vocabulary, the window and the named residuals are the check's comment block in
+    plan-lint. A missing catalogue is a finding. Frozen: no new vocabulary or legs; a false positive is
+    fixed by rewording. `doc33_gate_row_promise`.
