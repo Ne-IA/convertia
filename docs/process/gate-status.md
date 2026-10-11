@@ -24,15 +24,7 @@ is a dated committed line, not a buried catalogue footnote; a `decided` row for 
 never had a registered posture (G59, Miri, UBSan) is not in the check-23
 `_OWNER_DECIDABLE_GATES` map; a decision that replaced a registered posture keeps its key
 with the value `decided`, so a silent re-promotion reds check 23).
-Each box that introduces such a gate appends its row in the **same commit**:
-
-- **P0.4.5** (this file's creator) — the four over-assurance tools (declined for v1).
-- **P0.5.10** — `cargo-mutants` (scoped mutation testing), the fifth ledger row (appended by this box).
-- **P0.7.6** — **G59** (build-provenance attestation), a one-time **`decided`** adopt row — recorded here so the adopt is dated; NOT a ratcheting posture, so it is deliberately absent from the check-23 `_OWNER_DECIDABLE_GATES` map.
-- **P0.7.14** — **G64** (privilege-drop-tier ratchet) + the formal flip protocol.
-- **P0.7.15** — **G65** (engine-subprocess coverage-guided fuzz), a reserved-not-row id registered `informational`, now `decided` (scheduled-only).
-- **P0.7.7** — **G17b** (bundled-engine CVE awareness), `informational` per-push; owner flips →`required` via the CVSS ≥ 7-on-an-actively-exercised-§04-path release escalation.
-- **The retired P0 forward-idea lists** — four one-time **`decided`** decline rows (TruffleHog verified mode, the gate-infrastructure resource bounds, the G18e npm name-trust allowlist, the startup-integrity binding), recorded when build-gates.md dropped those lists; not ratcheting postures, so absent from the check-23 map.
+Each box that introduces such a gate appends its row in the **same commit** — P0.4.5 (this file and the four over-assurance rows), P0.5.10 (`cargo-mutants`), P0.7.6 (G59), P0.7.7 (G17b), P0.7.14 (G64 and the flip protocol) and P0.7.15 (G65); the Miri and UBSan rows and the four forward-idea decline rows (none a registered posture, so all outside the check-23 map) came with the owner-decision commits that declined them.
 
 **Status values.** `informational` (runs, never blocks the build) · `required`
 (blocks the build) · `decided` (a one-time adopt/decline owner decision). **A flip edits
@@ -80,11 +72,8 @@ gates, **G23** (the conversion-command→test completeness walk) activated at **
 **G22** (the format-membership mirror gate) is NOT a row here yet, by design: it activates when its
 §04-matrix / corpus / round-trip targets stand up (the **P4.60** bijection guard onward), so it adds
 its row then. (The continuously-active scanners G8 / G29 are a different class — they have no bootstrap skip to flip: each scans the real tree on every push, and its G24 self-test proves it armed.
-**G71 was originally grouped here too — and that misclassification is exactly why its scheduled fail-soft
-→ fail-closed flip was missed through all of P1: it is NOT a continuously-active scanner but a
-posture-flag gate with a due P1 transition. P1.66 corrected it — the flip is wired and its row is below,
-now mechanically guarded by the `[[posture_flag]]` registry + plan-lint check 27 so it can never silently
-un-flip again.**)
+**G71 is not one of them but a posture-flag gate: its flip row is below, and the `[[posture_flag]]`
+registry + plan-lint check 27 keep it from silently un-flipping.**)
 
 | Gate | Activated-in | Now-real target (P-box) | Negative self-test — a planted violation MUST fail | Flipped |
 |---|---|---|---|---|
@@ -109,43 +98,18 @@ was the presence of their rows.
 |------|--------------|-------------------------|-----------------------------------------------------|---------|
 | **G23** — conversion-command→test completeness walk (RE-KEYED: the P0.4.11 `convert_*` premise could never match the real §0.4.1 command — spec §0.4 invariant 1 forbids a per-item-target command class; the 2026-07-17 P3.63 ruling, owner-acked L(-1)) | P3.63 (test landed FIRST — d1892ab — then the re-key, so the flip was live AND green) | `scripts/check-completeness` keyed to `_CONVERSION_COMMANDS = {start_conversion}`; the partner suite `src-tauri/src/orchestrator/run_conversion_e2e_tests.rs` genuinely drives the C6 path | `g24-completeness` — a conversion command with NO partner-test reference MUST fail (e2e planted positive); the retired `convert_*` shape is ignored and the pre-re-key "`start_conversion` is ignored" leg is INVERTED (32 legs) | 2026-07-18 |
 
-### G48 macOS-sanitizer refinement — owner decision, 2026-07-22 (the P3.73 first-run validation, rounds 3–6)
+### G48 macOS sanitizer posture — owner decision, 2026-07-22
 
-The instrumented-nightly plan authored "ASAN on the Linux **+ macOS** legs"; the P3.73 first-run
-validation proved `aarch64-apple-darwin` ASAN **upstream-broken under BOTH Apple linkers**, each
-refuted empirically on the real runner: **(a)** ld-prime rejects the ASAN'd rlibs at LINK
-(`ld: initializer pointer has no target`, first victim `tauri_utils`'s cgu; the
-`MACOSX_DEPLOYMENT_TARGET=12.0` chained-fixups hypothesis carried min-version 12.0.0 on the round-4
-link line and failed identically); **(b)** `-ld_classic` cures the link, but the ASAN **runtime**
-SEGVs at process start (`flockfile`, from dyld `start`) — on compiler-rt of nightly-2026-06-16 AND
-the bumped nightly-2026-07-14 (the bounded full-restoration one-shot; rust#101247/#121624/#146367 —
-a long tail of distinct open upstream bugs, no single pending fix). Linux ran end-to-end green with
-full ASAN in every round.
-
-**Owner ruling («die sauberste und vollständigste Lösung, nie parken»):** the macOS leg runs
-**sanitizer-less coverage-guided** (`-s none`; sancov instrumentation + the panic/hang/OOM oracle
-stay; `-ld_classic` stays for the sancov module-ctors) — Linux keeps **full ASAN** over the same
-shared-code in-core targets, so the memory-error oracle is retained where it works. The re-arm is
-**self-healing, not a prose deferral** (the check-27 arming philosophy): a per-run **ASAN canary**
-in `fuzz.yml` (one target × 30 s, expected-fail, exit-0-wrapped) emits a `::warning::` annotation on
-its FIRST green run — the loud, mechanical signal to restore `-s address` on macOS and retire the
-canary. Doc-sync landed same-commit: the G48 row, test-strategy §6.4.2, the four
-`fuzz/fuzz_targets/*.rs` comments, the `fuzz.yml` header, the P3.73 Resolution note (which also
-records the P4.35.1 imgworker-FFI forward-question). **The posture is GATE-BACKED** (the R6 opus P3,
-adopted same-commit): `check-fuzz-contract` gained the sanitizer-posture leg — the SAN split
-expression (Linux arm `'address'`) is frozen, every `-s` token in `fuzz.yml` is allowlisted
-(`"${SAN}"` / the canary's `address`), and the canary marker is asserted — so a careless workflow
-edit can neither silently flip Linux to `-s none` nor drop the re-arm canary. The leg is
-BINDING-TIED (the `SAN` env key must be defined exactly once AND bound to the frozen split — a
-decoy copy of the expression in another key does not count) and uses a whole-file sanitizer-VALUE
-**denylist** (forbid `none`/`leak`/`memory`/`thread` as any-spelling quote-normalized `-s`/
-`--sanitizer` value) rather than an allowlist scoped to a detected `fuzz run` line — because two
-R6-confirm dual-review rounds found the invocation-line-detection evadable (a substring-vs-binding
-decoy, glued/long/quoted value spellings, and finally hoisting the `fuzz run` subcommand into a
-shell variable). The denylist needs no invocation detection, so it cannot be hidden, and it is
-FP-safe (a `-s`-glued prose substring like `dbus -sys stack` resolves to `ys`, not a forbidden
-value). 21 new g24 legs, 50 total. Not an `informational`↔`required` flip — G48 stays a required scheduled plane; this entry
-records the macOS-oracle SCOPE decision + its re-arm mechanism.
+ASAN on `aarch64-apple-darwin` is upstream-broken under both Apple linkers (ld-prime rejects the
+instrumented rlibs at link; under `-ld_classic` the ASAN runtime SEGVs at process start;
+rust#101247/#121624/#146367), so the macOS fuzz leg runs **sanitizer-less coverage-guided** (`-s none`;
+sancov, the panic/hang/OOM oracle and `-ld_classic` for the sancov module constructors stay) while
+Linux keeps **full ASAN** over the same in-core targets. A per-run **ASAN canary** in `fuzz.yml`
+(expected-fail, exit-0-wrapped) emits a `::warning::` on its first green run: the signal to restore
+`-s address` on macOS and retire the canary. `check-fuzz-contract`'s sanitizer-posture leg binds the
+`SAN` key to the frozen split (Linux `'address'`), denylists every ASAN-dropping `-s`/`--sanitizer`
+value whole-file and asserts the canary marker. This is a scope decision on the macOS oracle, not an
+`informational`↔`required` flip: G48 stays a required scheduled plane.
 
 ## P4 gate-activation flips (new deterministic legs, live fail-closed at landing)
 
@@ -194,23 +158,14 @@ mutants at tree `96984a4`; sharded runs extrapolate to 45–55 min on a 32-CPU h
 1 h on a 4-CPU runner, the suite's fixed waits dominating), so it runs as a background job
 of the sweep session, never per push.
 
-**First informational pass (P3.72, 2026-07-21 — the activation).** Run at tree `7238e62`
-with the pinned `cargo-mutants` 27.1.0 (`scripts/gate-tools.toml`, the 3b4fc5d pin):
-**182 mutants** over the three kernel modules — **111 caught, 39 missed**
-(`crate::fs_guard` 29, `crate::detection` 10, `crate::outcome` 0), 32 unviable,
-0 timeout. The decrease-only [`max_survived_mutants.toml`](../../max_survived_mutants.toml)
-ratchet is initialised at those counts (repo root, **L(-1)** — cage entry + the
-`l-neg1-cage` fingerprint re-blessed in the same owner-acked P3.72 commit, the
-coverage-floors P0.4.8 pattern). Survivor clusters (the full report lives in the run's
-`mutants.out`): the fs_guard publish arms (`publish_noreplace`/`publish_link_fallback`)
-and the `detection::viable_agreement` comparison operators. The run was the windows-x86_64
-local first pass, and the publish arms compile only on Linux and macOS, so that run reports
-their mutants missed whatever the tests assert: survivor counts are per platform (the
-`max_survived_mutants.toml` header). Baseline byproducts of the activation: the
-environment-fragile ephemeral-specimen test corrected (`7238e62`, `[Test-Change: P3.72]`)
-and the g24-coverage real-repo specimen re-pointed post-split (`25d96e6`). Posture
-unchanged: `informational`; the owner flips to `required` at **0** for
-`crate::fs_guard` + `crate::detection`.
+**First informational pass (P3.72, 2026-07-21 — the activation).** At tree `7238e62` with the
+pinned `cargo-mutants` 27.1.0: **182 mutants** — **111 caught, 39 missed** (`crate::fs_guard` 29,
+`crate::detection` 10, `crate::outcome` 0), 32 unviable, 0 timeout; the decrease-only
+[`max_survived_mutants.toml`](../../max_survived_mutants.toml) ratchet (repo root, **L(-1)**) is
+initialised at those counts. The survivors cluster in the fs_guard publish arms
+(`publish_noreplace`/`publish_link_fallback`, which compile only on Linux and macOS, so this
+windows-x86_64 pass reports them missed — counts are per platform) and the
+`detection::viable_agreement` comparison operators.
 
 ## Bundled-engine CVE awareness — G17b (P0.7.7 · §3.4.3 §6.5 · G17b G17)
 

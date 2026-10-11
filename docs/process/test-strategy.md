@@ -40,7 +40,7 @@ real file), `crate::isolation` (the confined subprocess wrapper), and
 against a **real temp filesystem** and a **real isolated subprocess**, never a
 fake. **Engine-*internal* behaviour** (does LibreOffice actually render this DOCX,
 does FFmpeg actually remux this MP4) is the domain of the **per-pair integration
-level (§2.3 / spec §6.4.3)** with the **real engine** against the **real corpus**;
+level (§1.4 / spec §6.4.3)** with the **real engine** against the **real corpus**;
 it is *not* mocked there either. The split is: the safety layer is unit/property-
 tested with a real FS + a real subprocess; the engines are integration-tested for
 real; nothing that the level is meant to prove is ever stubbed. (spec §6.4.1
@@ -88,7 +88,7 @@ so per pair the integration level additionally asserts:
    (`tesseract <out.png> - --psm 6`, or `pdftotext` where a PDF intermediate
    exists) to **contain** it. (Scope the OCR leg to L4 with a committed
    min-confidence threshold if per-push cost bites — it stays a content check.)
-   **No v1 subject (2026-09-15):** no §04 matrix offers a document- or
+   **No v1 subject:** no §04 matrix offers a document- or
    presentation-to-image pair (P4.59), so this rule binds once one is added.
 
 **Break the circular decode for the headline formats (G31).** AVIF/HEIC outputs
@@ -129,40 +129,20 @@ always includes the §0.2 output-validity bar.
 
 ### 1.1 Unit — Rust core (the guarantees layer · §6.4.1 · G15)
 
-Pure-logic tests on the §0.7 modules, **no engines, no real FS where avoidable**.
-Each is the §6.4.1 contract made executable:
+**Owns:** the spec §6.4.1 pure-logic contracts on the §0.7 modules, **no engines, no
+real FS where avoidable** — output naming (§2.2), no-clobber and resolved identity
+(§2.1/§2.3), the frozen source set (§2.4), re-run equivalence (§2.5), the detection
+table with its misnamed-extension fixtures (§1.2), batch grouping (§1.3), target
+resolution and the defaults registry (§1.5/§1.6), and the error-taxonomy mapping with
+the `catch_unwind` panic boundary (§2.8/§2.13; the **T5** core-fault leg) → spec
+§6.4.1 · G15.
 
-- **Output naming contract (§2.2):** base-name-kept + target-extension; `(1)`/`(2)`
-  numbering before the extension; never hashed / `_converted`; path-limit →
-  fail-clearly (no truncation). **Property-tested** with adversarial names (Unicode,
-  emoji, RTL, spaces, dots, max-length).
-- **No-clobber & resolved identity (§2.1/§2.3):** exclusive-create semantics;
-  symlink/junction/hardlink resolution; de-dup of the frozen set by resolved
-  identity; refusal to write through a link onto a frozen source.
-- **Frozen source set (§2.4):** files appearing after the freeze are never
-  ingested; outputs landing in a source folder don't expand the batch (the
-  data-structure leg of **T8** — the live-path leg is the **G31** integration
-  sub-test, §2.3).
-- **Re-run / equivalence (§2.5):** equality on (resolved source + target +
-  effective settings); safe fallback to silent numbering when undeterminable.
-- **Detection (§1.2):** the magic-byte classification table — every §04 signature
-  (JPEG SOI, PNG, RIFF/WEBP, EBML matroska-vs-webm, ISO-BMFF `ftyp` brand, OLE2
-  DOC/XLS/PPT disambiguation, ZIP-OPC content-type DOCX/XLSX/PPTX/ODF-mimetype,
-  ADTS-vs-MP3, Ogg Vorbis-vs-Opus, ASF WMA-vs-WMV, CSV/TSV delimiter sniff) gets a
-  fixture asserting the user-facing type, **including misnamed-extension fixtures**
-  (`.jpg` that is PNG; `.m4a` that is ALAC) and the "detected-but-unsupported" /
-  "uncertain" outcomes. **Backed by a committed KAT:** a `tests/detect-kat.toml`
-  pins each canonical / ambiguous file to its exact `FormatId`, read by the G15
-  unit test, so a `quick-xml` bump or a detect refactor that changes an ambiguous
-  result is caught at **L2** before the L4 corpus sees it.
-- **Batch grouping (§1.3):** one-source-format-per-batch; mixed-drop pre-flight
-  refusal lists the found formats; cross-category targets attach to the *source*.
-- **Target resolution (§1.5) + defaults registry (§1.6):** for **every** §04
-  source format, exactly **one** pre-highlighted default; the "no required choices"
-  invariant asserted against the §1.6 registry.
-- **Error-taxonomy mapping (§2.8/§2.13):** each failure kind maps to its catalog
-  string; the worker-thread panic boundary (`catch_unwind`) surfaces a clean
-  per-item failure, not a poisoned pool (the **T5** core-fault leg).
+- **Detection is backed by a committed KAT:** a `tests/detect-kat.toml` pins each
+  canonical / ambiguous file to its exact `FormatId`, read by the G15 unit test, so a
+  `quick-xml` bump or a detect refactor that changes an ambiguous result is caught at
+  **L2** before the L4 corpus sees it.
+- **The frozen-set unit test is the data-structure leg of T8;** the live-path leg is
+  the **G31** integration sub-test (§6).
 
 > **No-panic discipline is a compile-time invariant, not a test.** `crate::detection`
 > runs untrusted bytes **outside** the §2.12 isolation boundary (security principle
@@ -255,32 +235,13 @@ harness). Conventions:
   **NEVER retried to pass** (§7). A flaky property is a determinism bug to fix, not
   a count to lower.
 
-The §6.4.2 cases this level owns:
+**Owns:** the spec §6.4.2 cases — atomicity under interruption (the kill lands in the
+post-`sync_all()`-pre-`rename` window on all 3 OS, G15), the no-harm fuzz (the **T2/T7**
+source-unchanged invariant of G32 (a) over generated batches), the four §2.7
+divert/fallback scenarios, out-of-disk / too-big, malformed / adversarial inputs
+(backed by the §3 fixture files) and cancellation → spec §6.4.2 · G15/G16/G31/G32(a).
+The memory-pressure case is this file's own:
 
-- **Atomicity under interruption (§2.1):** a conversion killed mid-write **never**
-  leaves a truncated visible file — only a discardable temp artifact, cleaned on
-  next run (§2.6). The kill is injected **specifically in the
-  post-`sync_all()`-pre-`rename` window** via a `#[cfg(test)]` fence in
-  `crate::fs_guard::atomic_publish`, on **all 3 OS**, to exercise the §2.1.3
-  two-state invariant at the exact critical boundary. Cross-volume path (source on
-  USB → output in Downloads, §2.14) exercises copy→fsync→atomic-rename *within* the
-  destination volume. **macOS staged-source-copy case:** kill the app between the
-  §3.5.0 staged source copy and the engine spawn, then assert the §2.6.3 startup
-  sweep reclaims the staged copy *and* its `run-<RunId>/` dir.
-- **No-harm fuzz:** randomized batches assert **source bytes byte-identical
-  before/after** every run (the **T2/T7** no-harm proof, also the standing G32(a)
-  invariant), including the same-source==same-target re-encode (§2.1) and the
-  divert/fallback path (§2.7).
-- **Divert / fallback (§2.7):** each concrete unwritable/ephemeral case — (a)
-  read-only mount, (b) network share (flips read-only mid-run for the §2.7.2
-  late-divert), (c) OS-ephemeral temp dir, (d) cross-volume destination — asserts
-  the output lands at the §2.7.3 divert target (or fails clearly when the divert
-  target is itself ephemeral), the original is untouched, and the late-divert
-  re-checks (link-safety §2.3.3 + path-limit §2.2.3 + per-volume free-space
-  §2.14.4) all run.
-- **Out-of-disk / too-big (§1.10/§2.8):** a constrained-FS harness proves the item
-  fails fast + clearly, the batch continues, free space returns to ~baseline
-  (§2.6); a cleanup that itself fails is **never** reported as a clean success.
 - **Low-memory / memory-pressure (§1.10 low-memory policy):** a **memory-constrained-host**
   harness (cap available RAM, run a large batch) asserts the app **degrades gracefully** —
   the effective §0.9 degree drops toward serial, the high-memory watermark pauses NEW item
@@ -288,12 +249,6 @@ The §6.4.2 cases this level owns:
   stays bounded — **no OOM-crash, no UI freeze**; a single over-budget item is killed to
   `Failed(TooBig)` while the batch continues. `[DEFER: corpus]` for the exact constrained-RAM
   number (calibrated like the §1.10 budgets).
-- **Malformed / adversarial inputs (§2.12/§2.13):** truncated, 0-byte,
-  fuzzed-header, encrypted/DRM, and decompression-bomb-shaped inputs each produce
-  **one plain message**, no crash, no app wedge, batch continues — backed by
-  **explicit fixtures** (§3), not only a property concept.
-- **Cancellation (§1.7/§1.11):** mid-batch cancel keeps finished items, discards
-  the in-flight one with no partial leftover, never touches originals.
 
 The cross-cutting security cases (log-redaction, temp ownership + mode-bits,
 T9b/T8/T7/T10 sentinels) are property/integration tests homed in §6 with their
@@ -301,34 +256,14 @@ gate refs.
 
 ### 1.4 Integration — per-pair conversions (the real engines · §6.4.3 · G31/G32)
 
-The heart of the reliability gate (§6.5). For **every** `(source→target)` pair
-across §04 (images/audio/video/documents/spreadsheets/presentations + the
-cross-category extract-audio and to-GIF ops), on **each native platform** (§1.6 /
-spec §6.4.4), against the §6.4.5 corpus:
-
-- the conversion **completes with exit success** and produces a **valid file of the
-  target format** — proven by the §0.2 **structural reader** (G31), reinforced by
-  the **non-trivial / content-bearing** sub-assertions and the **cross-library
-  decode** for AVIF/HEIC/animated-WEBP;
-- **content-fidelity spot-checks:** CJK/RTL text survives doc/sheet/slide
-  conversions (§2.10); image orientation baked upright; audio tags/cover-art
-  round-trip where supported; video chose the **lossless remux** path when codecs
-  already fit;
-- **lossy disclosure** fires **iff** the pair is flagged lossy in §04 (and, for
-  video, on the *planned* remux-vs-reencode disposition, not the static pair);
-- **patent-gapped pairs (§3.4):** on a platform where §3.4 marks a target
-  unavailable, the test asserts it is **absent/disabled** (honest unavailability),
-  not a failure.
-
-**The pair set is non-circular (§6.4.3a · the bijection guard).**
-`scripts/check-corpus-coverage.rs` (a `cargo xtask`-style Rust bin, run in Lane A,
-no engines) asserts a **bijection** between the §04 pair matrices and the corpus
-`manifest.toml` `covers` lists: every required pair has ≥ 1 backing corpus file,
-and every `covers` 2-tuple names a real §04 pair (a `harness_fixture` same-format diagonal excepted, §6.4.3a). A pair literally **cannot be
-declared `reliable`** without a corpus file whose `covers` names it. (It also
-enforces the content-floor tags — `cjk-body`, `rtl-body`, `non-ascii-encoding`,
-`non-latin-tags`, `representative-av`, `real-image` — so the corpus is *content*-
-complete, not just pair-complete; spec §6.4.5.)
+The heart of the reliability gate (§6.5). **Owns:** every `(source→target)` pair across
+§04 (+ the cross-category extract-audio and to-GIF ops) on each native platform
+(§6.4.4) against the §6.4.5 corpus — the §0.2 structural reader with its non-trivial
+sub-assertions and cross-library decode, the content-fidelity spot-checks, lossy
+disclosure **iff** the pair is flagged lossy, honest unavailability for the §3.4
+patent-gapped pairs, and the non-circular pair set (the §6.4.3a corpus↔pair bijection
+guard `scripts/check-corpus-coverage.rs` with the §6.4.5 content-floor tags) → spec
+§6.4.3 / §6.4.3a · G31/G32/G26.
 
 **Mixed-batch state-leak (G31, r7).** The corpus covers single malformed inputs +
 T8 self-feeding, but a batch where file N is malformed and N+1 is valid through a
@@ -350,57 +285,21 @@ in-process Rust and cannot reach them — their adversarial coverage is the **G2
 fixed corpus fault-injection *through* the boundary, and the reserved **G65** weekly
 scheduled black-box engine-subprocess fuzz (gate-status.md; P9.36)).
 
-**The invariant: "never panic / abort / UB on arbitrary bytes."** `cargo-fuzz`
-(libFuzzer) targets (**G48**), on the **Linux + macOS nightly** legs (date-pinned
-`nightly-YYYY-MM-DD`), with **AddressSanitizer ON on Linux** (explicit, never
-silently dropped) and — `[REFINED 2026-07-22, owner-ruled; the P3.73 rounds-3–6
-empirics + gate-status G48 entry]` — **sanitizer-less coverage-guided on macOS**:
-ASAN on `aarch64-apple-darwin` is upstream-broken under BOTH Apple linkers
-(ld-prime rejects the instrumented rlibs at link; under `-ld_classic` the ASAN
-runtime SEGVs at process start on two compiler-rt generations —
-rust#101247/#121624/#146367), so the macOS leg keeps the sancov-guided
-panic/hang/OOM oracle while a **per-run ASAN canary** in `fuzz.yml` emits the loud
-re-arm signal the first time upstream heals (nothing parked on a prose reminder).
-Miri and UBSan legs are not part of v1 (declined, gate-status.md). The targets:
-
-1. **`crate::detection`/sniff** on a hostile ZIP/OLE2/gzip/svgz/XML corpus — no
-   panic/abort; the §1.2 decompression-ratio cap (≤ 100×) and `MAX_SVGZ_SNIFF`
-   (≤ 64 KiB) bounds **actually fire**; the XML reader has **DTD/external-entity
-   resolution disabled by construction** (`quick-xml`/`roxmltree` with entity
-   resolution off — defeats XXE / billion-laughs in the `xl/workbook.xml` / ODS
-   `content.xml` peek).
-2. **`crate::fs_guard::resolve_identity`** on untrusted PATHS (null bytes,
-   overlong UTF-8, max-length, symlink chains, `..`, **and the Windows device /
-   reserved-name / drive-relative / UNC / trailing-dot-space classes** — re-homed
-   here by the 2026-07-21 P3.73 P0 ruling: §2.3.1 makes this the untrusted-path
-   fn) — no panic, structured `Err`, **never `Ok` on a null-byte path**
-   (**T7+T2a**).
-3. **`crate::fs_guard::is_safe_output`** — the §2.3.3 **no-clobber verdict** over
-   an untrusted OUTPUT path (the P3.73 P0 ruling: the Windows classes are item 2's,
-   not this fn's — `Ok(Safe)` against an empty frozen set is contract-correct) —
-   no panic; **never `Ok(Safe)` on an unresolvable/NUL target** (its fallback is
-   gated on exactly `NotFound`/`NotADirectory`; own bound-firing seed
-   `nul_output_path`).
-4. **the in-core CSV/TSV native engine** (§3.5.6 — memory-safe ≠ panic/OOM-safe:
-   gigabyte quoted fields, recursive quoting, NUL bytes) — no panic, bounded output
-   relative to input, clear failure beyond a column floor.
-5. **archive-entry-name (zip-slip) target** — a crafted OPC/ODF/ZIP whose
-   central-directory entry names carry `../`, absolute paths, NUL/overlong-UTF-8:
-   the in-core peek never resolves or writes outside its bounded buffer and never
-   escapes the per-job scratch root.
-6. **`convertia-imgworker`'s own Rust→FFI surface** linked against the staged
-   `libvips`/`libheif`/`librsvg`, **ASAN on** (subject at its P4.35.1 build time to
-   the same macOS-ASAN upstream constraint the 2026-07-22 refinement above records —
-   that box decides against the then-current upstream state) — the densest unsafe
-   surface in the product (the first Rust touching untrusted image bytes across the
-   C/C++ boundary). **ASAN-coverage honesty:** the staged engines are pre-compiled
-   `.so`/`.dylib`/`.dll` that **cannot** be ASAN-instrumented, so ASAN here catches
-   **Rust-side heap violations + FFI-boundary crossings only, NOT bugs inside
-   libvips/libheif/librsvg** — a valuable boundary test, *not* a decoder-internals
-   fuzz (that is the reserved **G65** weekly scheduled engine-subprocess fuzz,
-   gate-status.md; P9.36). A full-internals fuzz would need a from-source ASAN build
-   asserted same-version as the `engines.lock` pin (an owner-decidable upgrade, not
-   the default — the G48 row).
+**The invariant: "never panic / abort / UB on arbitrary bytes."** **Owns:** the six
+`cargo-fuzz` (libFuzzer) targets — `crate::detection`/sniff, `fs_guard::resolve_identity`,
+`fs_guard::is_safe_output`, the in-core CSV/TSV engine, the archive-entry-name (zip-slip)
+target and `convertia-imgworker`'s Rust→FFI surface (ASAN sees the Rust side and the FFI
+crossings, never the decoder internals) — with their per-target invariants, the
+date-pinned Linux + macOS nightly legs (AddressSanitizer on Linux; sanitizer-less
+coverage-guided on macOS behind a per-run ASAN re-arm canary), the pinned libFuzzer
+resource bounds and the deterministic **G16** bound-firing fixtures → the G48 row · spec
+§6.4.2 (the in-core detector fuzz harness) / §2.12.4 · the gate-status G48 entry. Miri
+and UBSan legs are not part of v1 (declined, gate-status.md). The five Windows
+dangerous-path classes seed `resolve_identity` (§2.3.1's untrusted-path fn), never
+`is_safe_output`, whose §2.3.3 contract is the pure no-clobber verdict (`Ok(Safe)` against
+an empty frozen set is correct); its invariant is no panic and **never `Ok(Safe)` on an
+unresolvable or NUL target** (the fallback is gated on exactly
+`NotFound`/`NotADirectory`; own bound-firing seed `nul_output_path`).
 
 **The IPC boundary is a `proptest` contract (G16), NOT a libFuzzer target.** It is the
 TRUSTED WebView→Rust type door (the app's own bundled, CSP-locked, no-network frontend
@@ -421,43 +320,18 @@ IPC-handler module makes unchecked arithmetic a compile warning. *(If a future c
 ships a hand-written `Deserialize` with non-trivial logic — none exists in v1's derived-serde
 IPC — that specific deserializer could merit its own fuzz target.)*
 
-**Bound-firing is STRUCTURALLY proven, not fuzzer-hoped.** libFuzzer "no crash"
-cannot distinguish "cap fired" from "cap code never reached", so deterministic
-**G16 saved-corpus fixtures** assert each bound: a gzip exactly **101× compressed**
-⇒ bounded `Err`, not a full inflate; an svgz exactly **`MAX_SVGZ_SNIFF + 1`** ⇒ the
-sniff stops at the limit; a **NUL-byte path** and a **`PATH_MAX`+1 path** ⇒ `Err`
-(every platform incl. Windows); a ZIP whose entry is `../../etc/passwd` ⇒ the OPC
-peek produces only a *detection result*, reading/writing nothing at the traversal
-path. **Windows dangerous-path classes** get ≥ 1 deterministic fixture each: device
-paths (`\\.\`, `\\?\`), reserved names (`CON`/`NUL`/`COM1-9`/`LPT1-9` with any
-extension — `CON.jpg` opens the console device), drive-relative (`C:foo`), UNC, and
-trailing dots/spaces.
-
 **Crash-corpus persistence + cross-platform replay.** Every libFuzzer-found crash
-is minimized and committed under tracked `fuzz/corpus/` + `fuzz/crashes/`. The
-deterministic replay is a **plain `cargo test` replay suite — the crate-root
-`#[cfg(test)]` module `crate::fuzz_replay`** (`src-tauri/src/fuzz_replay.rs`;
-corrected 2026-07-20, the P3.67 homing ruling — re-dated 2026-07-21, the P3.87
-bin+lib split: NOT a cargo `tests/`-dir integration target — at the ruling
-`convertia-core` was a binary crate with no `lib.rs` (no library for a
-`tests/`-dir target to link), and the P3.87 split lib is deliberately
-**minimal-pub**, so a `tests/`-dir target STILL cannot reach
-`crate::detection`/`fs_guard`; the in-crate homing stands; the P2.126
-IPC-proptest precedent) — that feeds
-every corpus/crash file directly to the
-target function with **no libFuzzer harness** — so it compiles and runs on **all
-platforms incl. Windows under the stable toolchain**, no nightly/instrumentation
-needed. So: **all platforms run the stable-toolchain replay; Linux + macOS
-additionally run the instrumented `cargo-fuzz` nightly leg.** A fixed crash cannot
-silently regress on any OS, and a **G24 planted-positive** asserts a committed
-crash fixture **fails** the replay if its fix is reverted (the replay is armed, not
-a no-op). The committed corpus/crash files are plain git-tracked files (never LFS), pinned
+is minimized and committed under tracked `fuzz/corpus/` + `fuzz/crashes/`, and a
+**plain `cargo test` replay suite — the crate-root `#[cfg(test)]` module
+`crate::fuzz_replay`** (`src-tauri/src/fuzz_replay.rs`; in-crate because the minimal-pub
+library keeps `crate::detection`/`fs_guard` out of a `tests/`-dir target's reach) feeds
+every file to its target function with **no libFuzzer harness**: all platforms run that
+stable-toolchain replay, Linux + macOS add the instrumented nightly leg, and a **G24
+planted-positive** asserts a committed crash fixture **fails** the replay if its fix is
+reverted. The committed corpus/crash files are plain git-tracked files (never LFS), pinned
 by git content addressing; `check-fuzz-contract` requires each named bound-firing seed (§3).
 
-**Resource bounds are PINNED** (a decompression-bomb / recursive-quote input must
-not OOM/hang the runner and surface as flaky infra — a denial-of-CI vector):
-every fuzz leg pins **`-rss_limit_mb`**, **`-max_len`**, **`-timeout`** (per input),
-**`-max_total_time`** (per job), plus the **G56** `timeout-minutes`. A libFuzzer
+**Resource bounds are PINNED** on every fuzz leg (the G48 row). A libFuzzer
 **OOM or timeout is a FINDING** (minimized + committed to `fuzz/crashes/`),
 **never retried**.
 
@@ -467,15 +341,14 @@ crate root + a single narrowly allow-listed FFI module.
 
 ### 1.6 E2E — the real window (§6.4.6 · runs on the G30 platform matrix)
 
-A headed driver run drives the **built app** through the **real platform WebView**
-via **`tauri-driver`** (a WebDriver endpoint), client = **WebdriverIO v9** (the
-JS/Node client — chosen because the a11y contrast gate uses `@axe-core/webdriverio`,
-a JS-only package a Rust webdriver crate cannot drive). The run exercises the full
-§5.2 flow per platform: empty → intake → collected/confirm → target + default →
-destination shown → progress → summary → open-folder. The empty/Idle step also
-asserts the **"all conversion happens locally, on your machine"** reassurance line
-is present (a cheap string-presence check so the offline reassurance can't silently
-drop, SSOT *Offline/privacy*).
+**Owns:** the **built app** driven through the **real platform WebView** — the full §5.2
+flow per platform with the Idle offline-reassurance line asserted: `tauri-driver` +
+WebdriverIO v9 on Windows and Linux (Linux under `Xvfb` against the extracted ELF
+binary, Windows with the runner-matched `msedgedriver`), the defined degraded macOS
+smoke (a synthetic `argv` conversion through the launch-intake path), the file-picker
+path standing in for the non-automatable native drop, and the §6.6 human walkthrough
+for what automation cannot synthesise (the native drop, the macOS WebView flow,
+Gatekeeper/quarantine recovery, TCC prompts) → spec §6.4.6 (with §6.4.4).
 
 **Gate relationship (no dedicated E2E `Gnn`).** E2E has **no own gate id**: **G30**
 is the cross-platform *build* matrix (native-per-platform build + the macOS universal
@@ -486,65 +359,19 @@ assertion — the E2E *result* is the CI job's, not a `Gnn` lookup. (Adopting a
 dedicated id would need a spec §6.4.6-family contract first, then an id from the
 vacant range — the same rule §9 states for the vacated G34.)
 
-**Platform reality (the driver differs · spec §6.4.6):**
-
-- **Windows + Linux** = full `tauri-driver` WebDriver. **Linux runs under `Xvfb`**
-  (`xvfb-run -a …`; WebKitGTK will not initialise without an X/Wayland display) and
-  points `tauri:options.application` at the **extracted ELF binary** (the AppImage
-  is a self-mounting wrapper WebDriver cannot launch) — the binary name is resolved
-  **dynamically** from the case-sensitive Tauri `productName`, not hardcoded, then
-  `rm -rf squashfs-root/` after. **Windows**: `msedgedriver` is matched to the
-  runner's WebView2/Edge build.
-- **macOS** = the **defined degraded smoke test** — `tauri-driver` has **no
-  WKWebView driver** (Apple's `safaridriver` automates Safari, not an embedded
-  WKWebView). CI launches the built app, drives a **synthetic `argv` conversion** of
-  one corpus file through the launch-intake path (§7.8/§1.1), and asserts (a) the
-  window/process is present, (b) the expected output file appears, (c) exit 0. The
-  full WebView UX flow on macOS is the **§6.6 human walkthrough** (which also tests
-  Sequoia Gatekeeper + per-sidecar quarantine recovery + TCC prompts).
-
-**What automation cannot synthesise (kept honest):** the OS-level **native
-file-drop** (§5.4) is **not** automatable by WebDriver, so the automated E2E uses
-the **file-picker path** (C2a `pick_for_intake`, which fills the *same* §7.8.1
-funnel → `PendingIntake` → C1 `drain_intake` completion door as a drop); the
-native drop is validated in the **§6.6 human
-walkthrough**. **macOS TCC** prompts cannot be answered headlessly, so the smoke
-leg writes only to a `TMPDIR` (no prompt fires); the TCC exercise is **§6.6**. Plain
-**Playwright cannot drive a Tauri WebView** (it is not a CDP target) and is not the
-E2E driver here.
-
 ### 1.7 a11y — axe (§6.4.6a · G33a per-push / G33b release)
 
 The DoD **basic-a11y** gate (keyboard path + readable contrast/sizes, WCAG 2.1 AA
 per §5.6) has an automated half here and a human half (§6.6). **Critical + serious
 = 0 blocks** — any axe violation at the configured impact level **fails the build**.
 
-> **Bootstrap (P0 only).** G33a is **fail-open / skip-with-warning in P0** (the
-> rendered React tree does not exist yet) and **fail-closed from P1 onward**, once the
-> tree exists — the identical bootstrap annotation `G47`/`G27`/`G22`/`G23`/`G57` carry,
-> so the P0 green-L4 exit criterion is not blocked by a gate targeting absent code, and
-> the gate is never silently fail-open once its target lands.
-
-- **ARIA/role/focus (per-push · G33a):** **`vitest-axe`** (axe-core ^4.4 under
-  jsdom, pinned `vitest-axe@0.1.0`) over the rendered React tree — ARIA role/state
-  validity (the §5.6 `radiogroup`/`radio` tiles carry valid `aria-checked`),
-  focus-order / roving-tabindex sanity, labelled controls. Lane-A, no WebDriver.
-  **jsdom limitation: it cannot compute contrast** (no CSS/layout), so the contrast
-  rule does **not** run here.
-- **WCAG-AA contrast (release-tier · G33b):** **`@axe-core/webdriverio`** against
-  the **live WebView** (the §1.6 `tauri-driver` session), `color-contrast` ≥ 4.5:1
-  normal / ≥ 3:1 large + UI components, in **both** Light and Dark themes (§5.5),
-  on the **Linux + Windows** legs only. **macOS is the acknowledged automated gap**
-  (no WKWebView driver) — its contrast check is the **§6.6 human walkthrough**'s
-  readable-contrast item, recorded in `docs/usability-floor.md` (an explicit gap,
-  not a silent skip).
-- **Text size** is not an axe rule: the minimum-body-text-size half (body ≥
-  `--text-base` = 16px, §5.5) is the **§6.6 walkthrough**'s job (an optional
-  computed-`font-size` belt-and-suspenders assertion MAY ride the
-  `@axe-core/webdriverio` session).
-
-The rendered colours come from the §5.5 design tokens; this level is what makes the
-§5.6 "WCAG 2.1 AA" claim verifiable rather than aspirational.
+**Owns:** ARIA role/state validity, focus order and labelled controls under `vitest-axe`
+on jsdom, per push (G33a); WCAG-AA `color-contrast` in both themes via
+`@axe-core/webdriverio` on the live Linux + Windows WebView, release-tier (G33b); the
+text-size half is the §6.6 walkthrough's → spec §6.4.6a · G33a/G33b. **macOS is the
+acknowledged automated gap** for contrast (no WKWebView driver) — its contrast check is
+the **§6.6 human walkthrough**'s readable-contrast item, recorded in
+`docs/usability-floor.md` (an explicit gap, not a silent skip).
 
 ### 1.8 Visual regression — see §9
 
@@ -561,59 +388,19 @@ A naive "A→B→A byte-stable / within tolerance" round-trip is **methodologica
 vacuous** for this catalogue: most pairs are **one-way** (HEIC→JPG has no
 JPG→HEIC), and where a reverse exists it is usually lossy (XLSX→CSV→XLSX routes the
 reverse through LibreOffice) — so a blanket round-trip is either trivially-true
-under *any* tolerance or always-false. **G32 replaces it with three sharp,
-machine-enumerated invariants:**
+under *any* tolerance or always-false. **G32 replaces it with sharp,
+machine-enumerated invariants** — there is no tolerance band, only structural validity.
 
-1. **(a) SOURCE-UNCHANGED** — `sha256(source_before) == sha256(source_after)` on
-   **every** corpus file (the no-harm proof, **T2/T7**). This is also the property
-   test of §1.3's no-harm fuzz — the same invariant, asserted both per-corpus-file
-   (the CI gate) and over generated batches (the property).
-2. **(b) OUTPUT-VALIDITY** — the produced output passes the §0.2 **real structural
-   reader** of G31 (not magic-sniff). Everything asymmetric rests on (a)+(b).
-   **"Tolerance" is no longer an undefined fudge** — there is no tolerance band,
-   only structural validity.
-3. **The literal A→B→A byte-stable check is scoped to the small truly-invertible
-   lossless set** (e.g. PNG→BMP→PNG, FLAC↔WAV where the pair exists) — and that set
-   is **MACHINE-ENUMERATED, not a prose promise**: a committed section in
-   `tests/corpus/manifest.toml` lists every byte-stable pair + a one-line
-   rationale; **G32 reads it and FAILS** if a listed pair does not round-trip
-   exactly, **or** if a pair was added without a rationale. So the Build-Loop cannot
-   assert a round-trip for a pair that is *not* truly lossless (e.g. PNG→TIFF→PNG,
-   where TIFF strips ICC) with no gate catching the misclassification.
-
-**Plus a pure-logic lossy-disclosure property test** (separate from the
-per-corpus-file integration check): a property test in the §3.2 registry module
-(P4.92, G32 row) iterates the **complete `FormatId × FormatId` product** asserting the
-disclosure the offer makes agrees with the pair's registered lossy data —
-catching "added a pair but forgot the lossy flag" over the *whole* matrix without a
-corpus file per combination (the §6.4.3 per-corpus-file check only proves it for the
-files present).
-
-**Plus conversion-output DETERMINISM (c)** — run the same source + same settings
-**twice** and assert `sha256(out1) == sha256(out2)`. Non-determinism signals
-uninitialized memory, an **embedded-timestamp leak** (a privacy concern for an
-offline app), or a randomized path that breaks §2.5 re-run-equivalence. The floor
-is **≥ 1 pair per engine PER OUTPUT-FORMAT CATEGORY** (FFmpeg audio/video/container;
-LibreOffice word-processing/spreadsheet/presentation; libvips/ImageMagick
-per-colour-space — each category enumerated in the corpus manifest by the box that holds
-its engine's determinism floor, named in the G32 row; "≥ 1 per engine" was too weak — a
-different muxer/writer can embed a timestamp the first pair did not). **The floor is met PER
-PLATFORM:** the enumerated determinism pairs run on all three native CI legs (§6.4.4) — a
-category whose only pair is §3.4-unavailable on a platform is covered by another available
-pair in that category on that platform (non-determinism can be platform-specific — an
-embedded timestamp / uninitialised padding can appear in one OS' encoder build and not
-another). A **`diffoscope`** (the reserved
-**G60** tool) **empty-diff** assertion on the double-run pair is the positive proof:
-`sha256` inequality says outputs *differ*, `diffoscope` localises it to the embedded
-timestamp / PDF XMP `CreateDate` / padding so the leak is **diagnosable**, not just
-"differs". For known-non-deterministic encoders (VP9 rate-control, AVIF variable
-encode) the exception is **documented in the corpus manifest** and the byte-level
-check skipped — but a **non-vacuous-exception guard** asserts every excepted pair
-actually produces **different** `sha256` at listing time (if it is in fact
-deterministic the exception is **vacuous and must be removed** — the pair became
-deterministic after an upgrade, or the exception was masking a real
-embedded-timestamp leak that should be **fixed**, not excepted). Run at **L4 on a
-schedule**; per-corpus-file cost is one extra conversion.
+**Owns:** (a) source-unchanged on every corpus file (the **T2/T7** no-harm proof) and (b)
+output validity by the §0.2 structural reader; the literal A→B→A check only over the
+lossless-pair section of `tests/corpus/manifest.toml` (a listed pair that does not
+round-trip exactly, or one added without its rationale, fails); the pure-logic
+`FormatId × FormatId` lossy-disclosure property in the §3.2 registry module; and (c)
+conversion-output determinism — the same source and settings twice give the same
+`sha256`, ≥ 1 pair per engine per output-format category on all three native legs, run
+by the per-engine determinism boxes the G32 row names, with the `diffoscope` (**G60**)
+empty-diff proof and the non-vacuous-exception guard over the documented
+non-deterministic encoders, at L4 on a schedule → the G32 row · spec §6.4.4.
 
 > **Round-trip is therefore both:** a **property** (the `FormatId × FormatId`
 > lossy-disclosure product + the no-harm fuzz over generated batches) **and a CI
@@ -637,38 +424,17 @@ content-floor tags); this file owns the **conventions** for *how tests reach it*
   (`tests/corpus/manifest.toml`); `scripts/check-corpus-coverage.rs` reads exactly
   that file, asserts every `[[file]].path` exists on disk, and runs the bijection
   (§1.4). A manifest entry referencing a missing file fails Lane A.
-- **Malformed / adversarial / bomb fixtures are FILES, not concepts.** The §6.4.2
-  malformed/adversarial cases are backed by **explicit committed fixtures** (§6.4.5):
-  truncated / 0-byte / fuzzed-header / encrypted-DRM per format, **and the
-  decompression / decompression-bomb set** — an **svgz bomb**, a **ZIP-bomb-in-OPC
-  DOCX**, a **deeply-nested PDF flate stream** — so the bomb case is a real input
-  fed to the real decoder, not a property abstraction. Plus the **two deterministic
-  bound-firing fixtures** (gzip exactly 101× compressed; svgz exactly
-  `MAX_SVGZ_SNIFF + 1`) so a removed cap is caught structurally (§1.5, G16/G48), and
-  the **adversarial / security sentinel** fixtures of §6 (zip-slip entry names,
-  macro-canary office files, `WEBSERVICE()`/external-data, remote-`href` SVG,
-  input-side symlinks/junctions).
-- **Storage split (§6.4.5).** Small synthetic + CC0 files are **committed in-repo**
-  (so the per-push fast lane and the §6.4.3a guard always have them); larger
-  real-world media live in an **LFS-backed `corpus-large`** fetched **only** for the
-  full Lane-B run — never required for the per-push fast lane. Corpus files **must
-  be redistributable** (public-domain / CC0 / self-produced / synthetic); a synthetic
-  equivalent that reproduces the same structural property is used where a real
-  artifact can't be licensed, and noted in the manifest.
-- **Fixture integrity (G24a).** These untrusted-input files are fed to the
-  highest-privilege C/C++ decoders, so a poisoned/swapped fixture or a redirected
-  LFS pointer must surface as a diff, not a silent substitution. A committed
-  **SHA-256 manifest of every tracked `tests/corpus/` fixture** (and the LFS-resolved
-  `corpus-large` objects) is verified in CI **before** the corpus runs, plus
-  `git lfs fsck` on the Lane-B leg. G24a additionally asserts every corpus path is
-  actually `filter=lfs`-tracked per the **effective `git check-attr filter`** (an
-  un-tracking `.gitattributes` edit surfaces as a mismatch, not a skip) and that
-  `.lfsconfig` (if present) names only the canonical GitHub LFS endpoint;
-  `.gitattributes` + `.lfsconfig` join the security-critical-file set. **Update
-  protocol:** the SHA-256 manifest is **regenerated by the same `stage-corpus` step**
-  that adds a fixture, in the SAME commit; G24a fails on a stale manifest (a
-  `git diff --exit-code` of the regenerated manifest); G24a's bijection leg fails an
-  added corpus fixture with no manifest row. The in-repo `fuzz/corpus/` +
+- **Owns:** the fixture files and their integrity — the malformed / adversarial /
+  decompression-bomb fixtures as committed files (truncated / 0-byte / fuzzed-header /
+  encrypted-DRM per format; the two bound-firing fixtures are §1.5's, the security
+  sentinels §6's), the storage split (small synthetic + CC0 files in-repo, real-world
+  media in the LFS-backed `corpus-large` for Lane B only, every file redistributable or
+  a noted synthetic equivalent) and the committed SHA-256 fixture manifest with its
+  LFS-governance legs → spec §6.4.2 / §6.4.5 · G24a.
+- **Update protocol:** the SHA-256 manifest is **regenerated by the same
+  `stage-corpus` step** that adds a fixture, in the SAME commit; G24a fails on a stale
+  manifest (a `git diff --exit-code` of the regenerated manifest); G24a's bijection leg
+  fails an added corpus fixture with no manifest row. The in-repo `fuzz/corpus/` +
   `fuzz/crashes/` seeds carry no manifest (git content addressing, §1.5).
 
 ---
@@ -710,35 +476,14 @@ Two **separate** coverage gates, both enforced; neither replaces the other.
 
 ### 5.1 Global floor ratchet 50% → 70%, per-domain (G27)
 
-- **Per-domain = per-crate (Rust) / per-package (TS)**, the general floor measured on
-  **LINE coverage** by **`cargo-llvm-cov`** (Rust, the LLVM line metric) and **vitest
-  v8** (TS). The gate **fails if ANY domain is below its floor — never averaged**
-  (averaging lets a well-covered module hide a bare one). The **branch** metric is a
-  *separate, additional* floor scoped to exactly three crates (bullet 3 below) — it is
-  **not** the general per-domain floor.
-- **Ratchet 50% → 70%, increase-only.** The floor lives in a **tracked file**; a
-  commit that **lowers** it fails; a raise is a deliberate committed config change
-  (no auto-increment). The file is created at **0%** in P0 (no app code yet) and
-  **enforces from P1** (annotated `→ activated in P1`) so it does not trip on the
-  empty P0 tree.
-- **A BRANCH-coverage floor on the three security-critical crates.** Line coverage
-  is the wrong metric where the consequence is a missed **branch**: a `fs_guard`
-  path-traversal check that rejects `../` but not `..\` has 100% *line* coverage with
-  only Unix tests yet leaves the Windows-separator branch untested. So
-  **`crate::detection`** (in-core untrusted bytes), **`crate::fs_guard`** (the no-harm
-  kernel), and **`crate::isolation`** (the subprocess wrapper) carry a **branch**
-  floor via `cargo-llvm-cov --branch`, ratcheting like the line floor — an untested
-  platform/error branch in exactly the highest-consequence surfaces is a
-  deterministic failure, not a line-coverage false-green. **Sequencing:** the branch
-  metric needs **nightly** (`-Z coverage-options=branch`), so the `[branch]` floors are
-  seeded by the nightly branch run the G27 row names (Linux + Windows); the **line**
-  tier is live per push.
-- **Gate scripts are EXCLUDED from the floors** — they are **G24**-self-tested
-  instead (positive + negative). The exclusion glob (`scripts/` + `.github/`) is
-  wired into the `cargo-llvm-cov` and vitest v8 invocations from first activation
-  (code-enforced, not a prose promise that would otherwise inflate the initial P1
-  percentage). The **G48 saved-crash-corpus replay does NOT count** toward the Rust
-  floor (a replay is not a coverage source).
+**Owns:** the per-domain **LINE** floor (per crate / per package, `cargo-llvm-cov` +
+vitest v8; any domain below its floor fails — **never averaged**, so a well-covered
+module cannot hide a bare one), its increase-only 50% → 70% ratchet in the tracked
+`coverage-floors.toml`, the separate **BRANCH** floor on `crate::detection` /
+`fs_guard` / `isolation` (seeded by the nightly branch run; the line tier is live per
+push), the code-enforced exclusion of the gate scripts (`scripts/` + `.github/`,
+**G24**-self-tested instead) and the **G48** crash-corpus replay counting toward no
+floor → the G27 row.
 
 ### 5.2 Diff-coverage gate ≥ 80% on changed lines (G28)
 
@@ -778,10 +523,7 @@ property/integration tests on **G31** / **G15** / **G16**:
   default per-user profile ACL** ("no explicit broadening" — the machine-trust
   SYSTEM/Administrators principals retain their inherited ACEs, just as `0o700`
   never excludes root on POSIX), closing the
-  world-readable-`%TEMP%`-of-decoded-plaintext hole
-  *(corrected 2026-07-20 — the P3.71.2 pre-fill ruling: this bullet formerly
-  asserted "only to the current-user SID" and offered "an explicit restrictive
-  DACL at create", a mechanism §2.14.1's mode-bits block decided against)*. **+ a
+  world-readable-`%TEMP%`-of-decoded-plaintext hole. **+ a
   cleanup-on-fault/kill sub-case** (the per-job kind-2 scratch is removed after a
   forced engine kill mid-conversion) **+ a Windows AV-lock sub-case** — an AV
   scanner can hold scratch files open after process exit, failing `remove_dir_all`
@@ -790,11 +532,7 @@ property/integration tests on **G31** / **G15** / **G16**:
   `CleanupResidue` (never a silent leak, never an in-process retry spin), and the
   §2.6.3 sweep / opportunistic reclaim removes it after the handle releases
   — the publish-path §2.1.2 in-process AV-retry is deliberately NOT mirrored on
-  the cleanup path (reclaim has a decided asynchronous home) *(corrected
-  2026-07-20 — the P3.71.4 pre-fill ruling: this bullet formerly asserted
-  "retries-after-release or schedules `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`,
-  mirroring the §2.1.2 publish-path AV-retry" — a mechanism spec §2.6.4 decided
-  against, and one requiring administrator rights)*.
+  the cleanup path (reclaim has a decided asynchronous home).
 - **Adversarial-egress / out-of-input read (§0.11 T9b · G42/G42b release; pulled
   forward to the per-push L4 leg on G31):** an adversarial-network corpus — HLS
   `.m3u8` / DASH `.mpd` / `-f concat` script / external-reference-box MP4 (FFmpeg),
