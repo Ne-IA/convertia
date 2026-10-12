@@ -492,6 +492,70 @@ def dctx(docs):
 record("2 cross-ref: a dangling §99.99 -> caught",
        any("99.99" in f.msg for f in m.doc2_cross_reference(
            dctx({"docs/spec/s.md": "# x\n## 5 foo\n", "docs/security/y.md": "ok §5, bad §99.99\n"}))))
+# --- check 2, the doc-qualified leg: a `§` right after a doc name resolves among THAT doc's numbered headings ----
+# [Test-Change: G7 check 2 doc-qualified leg — new-test:the leg is new, build-gates §6 item 2] The incident it replays:
+# citations of `security-concept §0`, a section that doc never had, passed because the doc-set-wide rule finds a §0.x
+# heading in the spec. The fixture keeps that shape: the spec has §0.1 and §2.4, the named doc §1-§6.
+_Q2 = {"docs/spec/00-architecture.md": "# 00\n## 0.1 a\n## 2.4 b\n",
+       "docs/security/security-concept.md": "# SC\n" + "".join(f"## {i}. s{i}\n" for i in range(1, 7)),
+       "docs/process/test-strategy.md": "# TS\n## 1. a\n## 11. b\n### 11.2 c\n",
+       "docs/process/gate-status.md": "# Gate status\n\nNo numbered heading.\n",
+       "docs/spec/README.md": "# Spec\n", "README.md": "# Repo\n"}
+_Q2_SC0 = "§0 resolves to no numbered heading of docs/security/security-concept.md"
+
+
+def _q2(line: str) -> list[str]:
+    return [f.msg for f in m.doc2_cross_reference(dctx({**_Q2, "docs/process/x.md": line + "\n"}))]
+
+
+record("2 qualified: `security-concept §0` against a §1-§6 doc -> caught, while the same §0 after `spec` passes the "
+       "doc-set-wide rule (the incident replay)",
+       _q2("pinned (security-concept §0)") == [_Q2_SC0] and _q2("pinned (spec §0)") == [])
+record("2 qualified: `security-concept §5` and `security-concept.md §4.2` (under its §4) -> clean",
+       _q2("see security-concept §5 and security-concept.md §4.2") == [])
+record("2 qualified: the link form `[..](../security/security-concept.md#anchor) §0` -> caught, its `§5` -> clean",
+       _q2("[the concept](../security/security-concept.md#4-principles) §0") == [_Q2_SC0]
+       and _q2("[the concept](../security/security-concept.md) §5") == [])
+record("2 qualified: `test-strategy.md §99` -> caught against test-strategy.md, once (the doc-set-wide rule does not "
+       "repeat it)",
+       _q2("see test-strategy.md §99") == ["§99 resolves to no numbered heading of docs/process/test-strategy.md"])
+record("2 qualified: the code form `` `test-strategy.md` §12 `` -> caught, `` `test-strategy.md` §11.2 `` -> clean",
+       _q2("see `test-strategy.md` §12") == ["§12 resolves to no numbered heading of docs/process/test-strategy.md"]
+       and _q2("see `test-strategy.md` §11.2") == [])
+record("2 qualified: bold markers in the gap (`security-concept **§0**`, `[..](..) **§0**`) -> caught",
+       _q2("security-concept **§0**") == [_Q2_SC0]
+       and _q2("[`security-concept.md`](../security/security-concept.md) **§0**") == [_Q2_SC0])
+record("2 qualified: a stem whose doc has no numbered heading (`gate-status §2`) -> caught",
+       _q2("gate-status §2") == ["§2 names docs/process/gate-status.md, which has no numbered heading"])
+record("2 qualified: `spec §2` (no doc is named spec) and README (an ambiguous stem) -> left to the doc-set-wide rule",
+       _q2("spec §2") == [] and _q2("[spec](../spec/README.md) §0.1 and README §2.4") == [])
+record("2 qualified: a doc-qualified `§` inside inline code is an example -> not resolved against the doc",
+       _q2("the incident was `security-concept §0` here") == [])
+
+
+def _q2l(text: str) -> list[tuple[int, str]]:
+    return [(f.lineno, f.msg) for f in m.doc2_cross_reference(dctx({**_Q2, "docs/process/x.md": text}))]
+
+
+# [Test-Change: G7 check 2 doc-qualified leg — new-test:a hard wrap in the gap, build-gates §6 item 2] the doc set
+# holds doc-qualified references wrapped between the doc name and its `§`, in paragraphs and in blockquotes, so the
+# leg reads the line above; each finding names the `§` line.
+record("2 qualified: a hard wrap in the gap (`security-concept` ending one line, `§0` opening the next) -> caught on "
+       "the `§` line, in the link and code forms too; a wrapped `§5` -> clean",
+       _q2l("pinned (security-concept\n§0) here\n") == [(2, _Q2_SC0)]
+       and _q2l("see [the concept](../security/security-concept.md)\n**§0**\n") == [(2, _Q2_SC0)]
+       and _q2l("see `security-concept.md`\n  §0\n") == [(2, _Q2_SC0)]
+       and _q2l("pinned (security-concept\n§5) here\n") == [])
+record("2 qualified: a hard wrap inside a blockquote (`> … security-concept` / `> §0`) -> caught on the `§` line",
+       _q2l("> pinned (security-concept\n> §0)\n") == [(2, _Q2_SC0)])
+record("2 qualified: a heading or a blank line above, or a fenced block between, qualifies no `§` that opens the next "
+       "line -> the doc-set-wide rule",
+       _q2l("### on security-concept\n§0 x\n") == [] and _q2l("security-concept\n\n§0 x\n") == []
+       and _q2l("security-concept\n```\ncode\n```\n§0 x\n") == [])
+record("2 qualified: a `§` of the line above is resolved once, on its own line, never again from the next line",
+       _q2l("pinned (security-concept §0)\nand §5 here\n") == [(1, _Q2_SC0)])
+record("2 qualified: the REAL doc set -> clean (every doc-qualified `§` resolves in the doc it names)",
+       m.doc2_cross_reference(_real) == [])
 record("3 heading-hierarchy: H1->H3 skip -> caught",
        m.doc3_heading_hierarchy(dctx({"a.md": "# T\n\n### skip\n"})) != [])
 record("4 numbering: a gap (0.1,0.3) -> caught",
@@ -565,8 +629,44 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as _tdo:
         _gone_docs = None
     record("load_docs: a tracked .md missing from the working tree is not read - no crash, no entry",
            _gone_docs == ["GUIDE.md", "docs/a.md"])
-record("8 threat-parity: a §5 table missing classes -> caught",
-       m.doc8_threat_parity(dctx({"docs/security/security-concept.md": "| **T1** d | c | G48 |\n"})) != [])
+# --- check 8: the class set is the spec §0.11 table, read at every run ---------------------------------------------
+# [Test-Change: G7 check 8 spec-derived classes — old-obsolete+new-correct, build-gates §6 item 8] plan-lint no longer
+# embeds the class set: the classes are the spec §0.11 rows, so every check-8 fixture carries a §0.11 table, and the
+# missing-class leg names the class it expects (with no table, the unreadable-table finding alone would satisfy the
+# old `!= []` assertion).
+_A11 = "docs/spec/00-architecture.md"
+_T11 = "# 00\n## 0.11 Threats\n\n| # | Threat |\n|---|---|\n| T1 | a |\n| T2 | b |\n"
+_SC8, _BG8 = "docs/security/security-concept.md", "docs/security/build-gates.md"
+_TBL11 = ("the spec §0.11 threat-class table (the `| Tn |` rows under `## 0.11` of docs/spec/00-architecture.md) is "
+          "missing or empty — fail-closed")
+
+
+def _m8(docs) -> list[str]:
+    return [f.msg for f in m.doc8_threat_parity(dctx(docs))]
+
+
+record("8 threat-parity: a §5 table missing a spec §0.11 class -> caught (T2 has no row)",
+       _m8({_A11: _T11, _SC8: "| **T1** d | c | G48 |\n", _BG8: "| **G48** | x |\n"})
+       == ["spec §0.11 class T2 has NO §5 row"])
+# T13 is a real class this fixture table omits: a check that tests membership against any set other than the table it
+# reads, such as a fixed list of the real classes, lets it through, so the T13 plants here and in check 25 (c1) pin
+# that the class set is the table; T99 is in no set at all.
+record("8 threat-parity: a §5 row whose class the spec §0.11 table lacks -> caught, T13 (a real class this fixture "
+       "table omits) and T99",
+       _m8({_A11: _T11, _SC8: "| **T1** d | c | G48 |\n| **T2** d | c | G48 |\n| **T13** d | c | G48 |\n"
+                              "| **T99** d | c | G48 |\n", _BG8: "| **G48** | x |\n"})
+       == ["§5 row T13 is not a spec §0.11 class", "§5 row T99 is not a spec §0.11 class"])
+record("8 threat-parity: a class with two §5 rows -> caught",
+       _m8({_A11: _T11, _SC8: "| **T1** d | c | G48 |\n| **T2** d | c | G48 |\n| **T2** e | c | G48 |\n",
+            _BG8: "| **G48** | x |\n"}) == ["threat class T2 has 2 §5 rows (expected exactly 1)"])
+record("8 threat-parity: the REAL spec §0.11 table and security-concept §5 agree both ways -> clean",
+       m._spec_threat_classes(_real) is not None and m.doc8_threat_parity(_real) == [])
+record("8/25 threat classes: the `| Tn |` rows of the §0.11 section count, an H3 inside it and a padded cell "
+       "included; a fenced row and the rows above and below the section do not",
+       m._spec_threat_classes(dctx({_A11: "# 00\n## 0.10 Before\n| T97 | above |\n## 0.11 Threats\n| # | Threat |\n"
+                                          "|---|---|\n| T1 | a |\n|  T2a  | b |\n```\n| T98 | fenced |\n```\n"
+                                          "### 0.11.1 Sub\n| T3 | c |\n## 0.12 After\n| T99 | below |\n"}))
+       == {"T1", "T2a", "T3"})
 record("9 inventory: a C99 IPC command -> caught",
        m.doc9_inventory_parity(dctx({"docs/spec/a.md": "the C99 command\n"})) != [])
 # [Test-Change: P0.3.5 — old-obsolete+new-correct, §0.4.1 C17/C18 prefs door] the §0.4.1 rows C17
@@ -603,6 +703,18 @@ record("25 forward-allowlist: a dangling link to an UNREGISTERED target -> still
            dctx({"docs/spec/README.md": "[x](gone.md) — but this is planned for later\n"}))))
 record("25 code-span: a link inside an inline `code` span -> NOT flagged",
        not any("dangling" in f.msg for f in m.doc25_doc_graph(dctx({"docs/a.md": "example `[x](nope.md)` here\n"}))))
+# [Test-Change: G7 check 25 (c1) spec-derived classes — new-test:the threat-name axis reads check 8's §0.11 table,
+# build-gates §6 item 25]
+_f25 = [f.msg for f in m.doc25_doc_graph(dctx({_A11: _T11, _BG8: "| **G2** | x |\n",
+                                                "docs/x.md": "T13, T99 and T2 here\n"}))]
+record("25 freshness (c1): a doc naming T13 (a real class this fixture §0.11 table omits) and T99 -> both caught; "
+       "the table's T2 -> clean",
+       [s for s in _f25 if "names threat class" in s]
+       == ["freshness: names threat class T13 which is not a spec §0.11 class",
+           "freshness: names threat class T99 which is not a spec §0.11 class"])
+_f25n = [f.msg for f in m.doc25_doc_graph(dctx({_BG8: "| **G2** | x |\n", "docs/x.md": "T99 here\n"}))]
+record("25 freshness (c1): no spec §0.11 class table -> caught once (fail-closed), and no per-name finding",
+       _f25n.count(_TBL11) == 1 and not any("names threat class" in s for s in _f25n))
 
 # --- check 13: §0.10 plugin-surface — granted allowlist + the forced-transitive-INERT fs handling -----
 record("13 plugin-surface: a granted plugin (dialog) -> clean",
@@ -1137,7 +1249,7 @@ record("25-fp: the floor is exactly the cage binding (the retired §0.7 seed is 
 record("8 threat-parity: a §5 row citing a non-catalogue gate -> caught",
        any("G9999" in f.msg for f in m.doc8_threat_parity(
            dctx({"docs/security/security-concept.md": "| **T1** d | c | G9999 |\n",
-                 "docs/security/build-gates.md": "| **G2** | x |\n"}))))
+                 "docs/security/build-gates.md": "| **G2** | x |\n", _A11: _T11}))))
 
 # checks reading the filesystem (16/21): exercise on the REAL repo (built ctx) — both clean today
 _real = m.build_ctx(ROOT)
@@ -2036,8 +2148,13 @@ record("missing target: 5 gate-catalogue - security-concept.md alone missing, th
        _msgs(m.doc5_gate_catalogue(dctx({_BGD: "| **G2** | x |\n"}))) == [_miss(_SEC)]
        and _msgs(m.doc5_gate_catalogue(dctx({_SEC: "uses G2\n"}))) == [_miss(_BGD)])
 record("missing target: 8 threat-parity - security-concept.md missing -> caught; build-gates.md missing -> caught beside the row checks",
-       _msgs(m.doc8_threat_parity(dctx({_BGD: "| **G2** | x |\n"}))) == [_miss(_SEC)]
-       and _miss(_BGD) in _msgs(m.doc8_threat_parity(dctx({_SEC: "| **T1** d | c | G48 |\n"}))))
+       _msgs(m.doc8_threat_parity(dctx({_BGD: "| **G2** | x |\n", _A11: _T11}))) == [_miss(_SEC)]
+       and _miss(_BGD) in _msgs(m.doc8_threat_parity(dctx({_SEC: "| **T1** d | c | G48 |\n", _A11: _T11}))))
+record("missing target: 8 threat-parity - no spec §0.11 class table (no file; no `## 0.11`; a section without rows) -> "
+       "caught once each, the §5 gate cells still checked",
+       all(_msgs(m.doc8_threat_parity(dctx({_SEC: "| **T1** d | c | G9999 |\n", _BGD: "| **G2** | x |\n", **arch})))
+           == [_TBL11, "§5 row T1 cites G9999 which is NOT a documented build-gates gate"]
+           for arch in ({}, {_A11: "# 00\n## 0.10 Other\n| T1 | a |\n"}, {_A11: "# 00\n## 0.11 Threats\nprose only\n"})))
 _CAT = "the build-gates `| **Gnn** |` catalogue"
 record("missing target: 11 span-bound / 17 forward-idea / 22 gate-id-gap - a build-gates.md with no Gnn row -> each caught",
        all(_msgs(fn(dctx({_BGD: "# gates, no rows\n"}))) == [_miss(_BGD, _CAT)]

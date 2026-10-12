@@ -517,10 +517,23 @@ def _gate_row_cells(bg: str) -> dict[str, list[str]]:
     return rows
 
 
-# the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 19 classes
-# (T7a — Windows reserved-name output aliasing — added by the 2026-07-21 P3.73 P0 ruling)
-THREAT_CLASSES = {"T1", "T2", "T2a", "T2b", "T2c", "T3", "T3a", "T4", "T5", "T6",
-                  "T7", "T7a", "T8", "T9a", "T9b", "T10", "T11", "T12", "T13"}
+# The threat-class set has one home, the spec §0.11 table (00-architecture.md, `_ARCH_DOC`); checks 8 and 25 (c1)
+# read it at every run, so a class added to or removed from the table needs no edit here.
+_THREAT_SECTION_HDR = re.compile(r"^## 0\.11\b")
+_THREAT_ROW_RE = re.compile(r"^\|\s*(T\d+[a-z]?)\s*\|")
+_THREAT_TABLE = "the spec §0.11 threat-class table (the `| Tn |` rows under `## 0.11` of docs/spec/00-architecture.md)"
+
+
+def _spec_threat_classes(ctx: Ctx) -> set[str] | None:
+    """(pure) The threat classes of the spec §0.11 table: the first cell of each `| Tn |` row between the
+    `## 0.11` heading of docs/spec/00-architecture.md and the next heading of level 2 or higher, fenced blocks
+    skipped. None when the section is absent or holds no class row; each caller reports that as its missing
+    target, so neither check passes against an empty set."""
+    section = _section_text(ctx.docs.get(_ARCH_DOC, ""), _THREAT_SECTION_HDR)
+    classes = {m.group(1) for _, line in _strip_fenced(section) if (m := _THREAT_ROW_RE.match(line))}
+    return classes or None
+
+
 # the §0.4.1 enumerated IPC command SET (a set, not a contiguous range — C2 is split into C2a/C2b)
 IPC_COMMANDS = {"C1", "C2a", "C2b", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14",
                 "C15", "C16", "C17", "C18"}
@@ -541,17 +554,37 @@ def _slug(text: str) -> str:
     return re.sub(r"\s+", "-", t).strip("-")
 
 
+_HEADING_NUM_RE = re.compile(r"^#{1,6}\s+(\d+(?:\.\d+)*)\b")
+_SECTION_REF_RE = re.compile(r"§(\d+(?:\.\d+)*)")
+# Check 2's doc-qualified leg. A `§` written right after a doc name names a section of THAT doc: the link form
+# `[text](path.md) §N` (the path's file name), `` `stem.md` §N ``, `stem.md §N` and `stem §N`, with `*` emphasis
+# markers allowed on either side of the gap. `stem` is the file-name stem of exactly one doc of the set; README,
+# which several docs share, is skipped, and any other word before a `§` leaves it to the doc-set-wide rule. A hard
+# wrap may fall in the gap: the doc name ends the line above, and the `§` opens the next line after its
+# indentation and blockquote markers (`>`); a heading is a block of its own and qualifies no `§` below it.
+_QUALIFIED_LINK_RE = re.compile(r"\]\((?P<path>[^)\s#]+\.md)(?:#[^)\s]*)?\)\**\s+\**§(?P<num>\d+(?:\.\d+)*)")
+_QUALIFIED_NAME_RE = re.compile(r"(?<![\w-])(?P<stem>[\w-]+)(?:\.md)?`?\**\s+\**§(?P<num>\d+(?:\.\d+)*)")
+_LINE_LEAD_RE = re.compile(r"[ \t]*(?:>[ \t]*)*")
+_HEADING_LINE_RE = re.compile(r"#{1,6}\s")
+
+
+def _heading_numbers(text: str) -> set[str]:
+    """(pure) The numbers of a doc's numbered headings (`## 3. …`, `### 6.4.2 …`), fenced blocks skipped."""
+    return {m.group(1) for _, line in _strip_fenced(text) if (m := _HEADING_NUM_RE.match(line))}
+
+
 def _section_numbers(ctx: Ctx) -> set[str]:
     """All heading numbers declared across the spec/security/process doc set (the § targets)."""
     nums: set[str] = set()
     for rel, text in ctx.docs.items():
-        if not (rel.startswith(("docs/spec/", "docs/security/", "docs/process/"))):
-            continue
-        for _, line in _strip_fenced(text):
-            m = re.match(r"^#{1,6}\s+(\d+(?:\.\d+)*)\b", line)
-            if m:
-                nums.add(m.group(1))
+        if rel.startswith(("docs/spec/", "docs/security/", "docs/process/")):
+            nums |= _heading_numbers(text)
     return nums
+
+
+def _resolves(num: str, nums: set[str]) -> bool:
+    """(pure) A § number resolves when it equals a heading number, is the parent of one or extends one."""
+    return any(a == num or a.startswith(num + ".") or num.startswith(a + ".") for a in nums)
 
 
 def _doc_slugs(text: str) -> set[str]:
@@ -559,45 +592,97 @@ def _doc_slugs(text: str) -> set[str]:
             for _, line in _strip_fenced(text) if re.match(r"^#{1,6}\s+\S", line)}
 
 
+def _doc_stems(docs: dict[str, str]) -> dict[str, str]:
+    """(pure) File-name stem -> doc path, for each stem exactly one doc of the set carries."""
+    by_stem: dict[str, list[str]] = {}
+    for rel in docs:
+        by_stem.setdefault(posixpath.splitext(posixpath.basename(rel))[0], []).append(rel)
+    return {stem: rels[0] for stem, rels in by_stem.items() if len(rels) == 1}
+
+
+def _qualified_refs(line: str, stems: dict[str, str], above: str = "") -> dict[int, tuple[str, str]]:
+    """(pure) The doc-qualified `§` references of one line, keyed by the `§` offset: (the named doc, the
+    number). `above` is the doc's line just above it (fenced lines are never one): a doc name that ends it
+    qualifies a `§` that opens this line after its indentation and blockquote markers (a hard wrap in the
+    gap), unless it is a heading. A `§` inside inline code is an example, not a reference, and is left out."""
+    lead = _LINE_LEAD_RE.match(line).end()
+    if _HEADING_LINE_RE.match(above):
+        above = ""
+    joined = f"{above}\n{line[lead:]}"
+    shift = len(above) + 1 - lead                       # an offset in `joined` minus the same offset in `line`
+    code = [m.span() for m in _INLINE_CODE.finditer(line)]
+    refs: dict[int, tuple[str, str]] = {}
+    for m in _QUALIFIED_LINK_RE.finditer(joined):
+        stem = posixpath.splitext(posixpath.basename(m.group("path")))[0]
+        refs.setdefault(m.start("num") - 1 - shift, (stem, m.group("num")))
+    for m in _QUALIFIED_NAME_RE.finditer(joined):
+        refs.setdefault(m.start("num") - 1 - shift, (m.group("stem"), m.group("num")))
+    # a `§` of the line above maps before `lead`: it was resolved on its own line
+    return {pos: (stems[stem], num) for pos, (stem, num) in refs.items()
+            if pos >= lead and stem in stems and not any(a <= pos < b for a, b in code)}
+
+
 def doc2_cross_reference(ctx: Ctx) -> list[Finding]:
-    """Check 2: every spec-internal §X.Y reference resolves to a real heading number, and every
-    intra-doc `[..](#slug)` anchor resolves to a heading slug in the SAME doc."""
+    """Check 2: every `§X.Y` reference resolves to a real heading number - a doc-qualified one
+    (_qualified_refs) among the numbered headings of the doc it names, any other among those of docs/spec/,
+    docs/security/ and docs/process/ - and every intra-doc `[..](#slug)` anchor resolves to a heading slug in
+    the SAME doc. Fenced blocks are skipped."""
+    chk = "2:cross-reference-validity"
     out = []
     nums = _section_numbers(ctx)
     if not nums:
-        return _target_missing("2:cross-reference-validity", "docs/spec/",
+        return _target_missing(chk, "docs/spec/",
                                "the numbered-heading set of docs/spec/, docs/security/ and docs/process/ (the § targets)")
+    stems = _doc_stems(ctx.docs)
+    doc_nums: dict[str, set[str]] = {}
     for rel, text in ctx.docs.items():
         slugs = _doc_slugs(text)
+        above_ln, above = 0, ""
         for ln, line in _strip_fenced(text):
-            for s in re.findall(r"§(\d+(?:\.\d+)*)", line):
-                if not any(a == s or a.startswith(s + ".") or s.startswith(a + ".") for a in nums):
-                    out.append(Finding("2:cross-reference-validity", rel, ln,
-                                       f"§{s} resolves to no heading number in spec/security/process"))
+            qualified = (_qualified_refs(line, stems, above if above_ln == ln - 1 else "")
+                         if "§" in line else {})
+            above_ln, above = ln, line
+            for target, s in qualified.values():
+                if target not in doc_nums:
+                    doc_nums[target] = _heading_numbers(ctx.docs[target])
+                if not doc_nums[target]:
+                    out.append(Finding(chk, rel, ln, f"§{s} names {target}, which has no numbered heading"))
+                elif not _resolves(s, doc_nums[target]):
+                    out.append(Finding(chk, rel, ln, f"§{s} resolves to no numbered heading of {target}"))
+            for m in _SECTION_REF_RE.finditer(line):
+                if m.start() not in qualified and not _resolves(m.group(1), nums):
+                    out.append(Finding(chk, rel, ln,
+                                       f"§{m.group(1)} resolves to no heading number in spec/security/process"))
             for anc in re.findall(r"\]\(#([A-Za-z0-9._-]+)\)", line):
                 if anc not in slugs:
-                    out.append(Finding("2:cross-reference-validity", rel, ln,
+                    out.append(Finding(chk, rel, ln,
                                        f"intra-doc anchor #{anc} resolves to no heading in this doc"))
     return out
 
 
 def doc8_threat_parity(ctx: Ctx) -> list[Finding]:
-    """Check 8 (bidirectional): every canonical §0.11 threat class has EXACTLY ONE security-concept
-    §5 row, every §5 row is a canonical class, and every §5 row cites a Gnn. Read ONLY from the §5
-    table + the embedded canonical list."""
+    """Check 8 (bidirectional): every class of the spec §0.11 table (_spec_threat_classes) has EXACTLY ONE
+    security-concept §5 row, every §5 row is a §0.11 class, and every §5 row cites a Gnn the build-gates
+    catalogue documents. A missing security-concept.md or build-gates.md is a finding, and so is a §0.11
+    section that is absent or holds no class row."""
     out = []
     sec = ctx.docs.get("docs/security/security-concept.md", "")
+    classes = _spec_threat_classes(ctx)
     if not sec:
-        return _target_missing("8:threat-map-parity", "docs/security/security-concept.md")
+        out.extend(_target_missing("8:threat-map-parity", "docs/security/security-concept.md"))
+    if classes is None:
+        out.extend(_target_missing("8:threat-map-parity", _ARCH_DOC, _THREAT_TABLE))
+    if not sec:
+        return out
     # §5 rows carry the threat-id INSIDE the first cell (`| **T1** <desc> | control | **Gnn** |`),
     # not in its own cell like the G-rows — match `| **Tn**` then the rest of the row.
     rows: dict[str, list[str]] = {}
     for m in re.finditer(r"^\| \*\*(T\d+[a-z]?)\*\*(.*)$", sec, re.M):
         rows.setdefault(m.group(1), []).append(m.group(2))
-    for t in sorted(THREAT_CLASSES):
+    for t in sorted(classes or ()):
         if t not in rows:
             out.append(Finding("8:threat-map-parity", "docs/security/security-concept.md", 0,
-                               f"canonical threat class {t} has NO §5 row"))
+                               f"spec §0.11 class {t} has NO §5 row"))
         elif len(rows[t]) > 1:
             out.append(Finding("8:threat-map-parity", "docs/security/security-concept.md", 0,
                                f"threat class {t} has {len(rows[t])} §5 rows (expected exactly 1)"))
@@ -605,9 +690,9 @@ def doc8_threat_parity(ctx: Ctx) -> list[Finding]:
     if not catalogue:                  # a §5 row's gate cannot be resolved without the catalogue
         out.extend(_target_missing("8:threat-map-parity", "docs/security/build-gates.md"))
     for t, txts in rows.items():
-        if t not in THREAT_CLASSES:
+        if classes is not None and t not in classes:
             out.append(Finding("8:threat-map-parity", "docs/security/security-concept.md", 0,
-                               f"§5 row {t} is not in the canonical 19-class set"))
+                               f"§5 row {t} is not a spec §0.11 class"))
             continue
         cited = re.findall(r"\bG\d+[a-z]?\b", txts[0])
         if not cited:
@@ -1000,6 +1085,9 @@ def doc25_doc_graph(ctx: Ctx) -> list[Finding]:
     documented_gates = set(re.findall(r"\bG\d+[a-z]?\b", ctx.docs.get("docs/security/build-gates.md", "")))
     if not documented_gates:                           # the gate-name axis has nothing to resolve against
         out.extend(_target_missing("25:doc-graph", "docs/security/build-gates.md"))
+    threat_classes = _spec_threat_classes(ctx)         # check 8's reading of the spec §0.11 table
+    if threat_classes is None:                         # the threat-name axis has nothing to resolve against
+        out.extend(_target_missing("25:doc-graph", _ARCH_DOC, _THREAT_TABLE))
     for rel, text in ctx.docs.items():
         if rel == "docs/security/build-gates.md":
             continue                                   # the catalogue is the authoritative gate source
@@ -1009,10 +1097,11 @@ def doc25_doc_graph(ctx: Ctx) -> list[Finding]:
                     if g not in documented_gates:
                         out.append(Finding("25:doc-graph", rel, ln,
                                            f"freshness: names {g} which is no longer a documented gate (stale after rename/removal)"))
-            for tn in re.findall(r"\bT\d+[a-z]?\b", line):
-                if tn not in THREAT_CLASSES:
-                    out.append(Finding("25:doc-graph", rel, ln,
-                                       f"freshness: names threat class {tn} which is not in the canonical §0.11 set"))
+            if threat_classes is not None:
+                for tn in re.findall(r"\bT\d+[a-z]?\b", line):
+                    if tn not in threat_classes:
+                        out.append(Finding("25:doc-graph", rel, ln,
+                                           f"freshness: names threat class {tn} which is not a spec §0.11 class"))
     # (c2) FRESHNESS — the content-fingerprint axis (the same-name drift c1 cannot see); fail-closed
     # on a missing/unparseable ledger so the freshness assertion can never silently no-op.
     entries, fatal = _read_fp_ledger(ctx.root)

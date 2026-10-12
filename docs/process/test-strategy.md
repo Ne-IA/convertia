@@ -905,7 +905,7 @@ plus its background jobs.
    or more §0.7 modules or add an IPC command, event or engine are attacked first.
    **Session-local tooling is not repo tooling:** nothing un-pinned enters the repo; a probe
    that becomes a *permanent* test lands as normal code under the existing gates and the
-   pin-and-verify discipline (security-concept §0).
+   pin-and-verify discipline (security-concept §4 principle 10).
 
 **Findings.** A regression or a broken invariant of a delivered contract is fixed, with
 tests, before the box flips (normal commits: the DoD, G1 and §8 apply). A gap in a

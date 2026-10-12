@@ -41,8 +41,8 @@ freezes the JS supply-chain posture (stdlib only):
 Scope note: once pnpm-lock.yaml exists (P1.2.2) the lockfile resolution scan + the onlyBuiltDependencies
 count + the §0.8 floor are LIVE; the `.npmrc` posture is enforced regardless. The covered surface is the
 committed-config install/source-substitution surface of the PINNED pnpm (10.13.1, §0.8) - a pnpm
-major-version bump is itself a pinned-version change (security-concept §0 pin-and-verify) that triggers
-a re-audit of this gate against the new pnpm config surface. `.npmrc` is L(-1)
+major-version bump is itself a pinned-version change (security-concept §4 principle 10, pin and verify)
+that triggers a re-audit of this gate against the new pnpm config surface. `.npmrc` is L(-1)
 (scripts/l-neg1-files.toml, G71) - relaxing the pin / lockdown is an owner-ack + Dual-Review change.
 
 Exit: 0 = posture OK (+ the live checks pass); 1 = a relaxation / a foreign-or-non-registry

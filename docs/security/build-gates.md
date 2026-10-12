@@ -377,11 +377,17 @@ Each item: what the check catches, its scope, its posture when its target is mis
 
 1. **Matrix parity — retired** — format membership is G22's (`scripts/check-completeness`); no function.
 2. **Cross-reference validity** — a `§` reference in a doc of the doc set that resolves to no numbered
-   heading of `docs/spec/`, `docs/security/` or `docs/process/`, and an intra-doc `#anchor` link whose
-   slug names no heading of its own doc; fenced blocks are skipped. A reference resolves when it equals a
-   heading number, is the parent of one or extends one, so a reference under a numbered heading passes
-   even when its own sub-heading is missing (named residual). An empty heading set is a finding.
-   `doc2_cross_reference`.
+   heading: a doc-qualified one, a `§` right after a doc name (`[text](path.md) §N`, `` `stem.md` §N ``,
+   `stem.md §N` or `stem §N`; `*` emphasis markers and a hard wrap allowed in the gap, the name ending a line
+   that is no heading and the `§` opening the next after its blockquote markers; `stem` being the file-name
+   stem of exactly one doc of the set), against that doc alone, so a doc without a numbered heading fails it;
+   any other against `docs/spec/`, `docs/security/` and `docs/process/`. Also an intra-doc `#anchor` link whose
+   slug names no heading of its own doc. Fenced blocks are skipped. A reference resolves when it equals a
+   heading number, is the parent of one or extends one, so a reference under a numbered heading passes even
+   when its own sub-heading is missing (named residual). Named residuals: a stem several docs share
+   (README), a later `§` of a list or range, a `§§` span and a doc-qualified `§` inside inline code (an
+   example) fall to the doc-set-wide rule; doc-qualified refs in code, TOML and YAML comments are outside
+   the doc set, fixed by sweep, not linted. An empty heading set is a finding. `doc2_cross_reference`.
 3. **Heading hierarchy** — a heading that skips a level (H2 → H4) in a doc of the doc set; fenced blocks
    are skipped. `doc3_heading_hierarchy`.
 4. **Numbering gap-freeness** — numbered headings under one parent number that do not run contiguously
@@ -396,10 +402,12 @@ Each item: what the check catches, its scope, its posture when its target is mis
 7. **Generated-file sanity** — a tracked `*.lock` file (the `git ls-files` set, so no untracked tree is
    walked) that is empty, whitespace-only or unreadable; an unavailable `git` is a finding.
    `doc7_generated_file_sanity`.
-8. **Threat-map parity (bidirectional)** — a class of plan-lint's `THREAT_CLASSES` set (the spec §0.11
-   classes) without exactly one security-concept §5 row (a line opening with the bold class id), a §5 row
-   outside that set, a §5 row that cites no `Gnn`, and a cited `Gnn` this catalogue never mentions. A
-   missing security-concept.md or build-gates.md is a finding. `doc8_threat_parity`.
+8. **Threat-map parity (bidirectional)** — a class of the spec §0.11 table (the first cell of each
+   `| Tn |` row under `## 0.11` of `00-architecture.md`, read at every run, so plan-lint holds no copy)
+   without exactly one security-concept §5 row (a line opening with the bold class id), a §5 row that is
+   not a §0.11 class, a §5 row that cites no `Gnn`, and a cited `Gnn` this catalogue never mentions. A
+   missing security-concept.md or build-gates.md is a finding, and so is a §0.11 section that is absent or
+   holds no class row. `doc8_threat_parity`.
 9. **Inventory parity** — an IPC command token (`C`, a number, an optional letter) in `docs/spec/` or
    `docs/security/`, fenced blocks skipped, that is not in plan-lint's `IPC_COMMANDS` set, the §0.4.1
    commands (bare `C2` passes as the picker-family alias). Engine ids, the error taxonomy and the
@@ -483,11 +491,12 @@ Each item: what the check catches, its scope, its posture when its target is mis
     doc no other doc links to (the index roots `CLAUDE.md`, `README.md`, the SSOT and the spec and plan
     READMEs excepted); (b) a repo-relative link whose target path does not exist (fenced blocks and inline
     code skipped; an `#anchor` on it is not resolved); (c1) a doc other than this catalogue that names a
-    `Gnn` this catalogue never mentions or a threat class outside `THREAT_CLASSES`; (c2) a source region of
-    the L(-1) ledger `scripts/doc-fingerprints.toml` whose sha256 differs from its recorded fingerprint, so
-    its describing docs are re-verified and the fingerprint re-blessed in one owner-acked commit (a
-    missing, unparseable or seed-less ledger is a finding). Any other described-the-old-way drift is a G1
-    review item. A catalogue without gate ids is a finding. `doc25_doc_graph`.
+    `Gnn` this catalogue never mentions or a threat class outside the spec §0.11 table (check 8's reading;
+    an absent or row-less table is a finding); (c2) a source region of the L(-1) ledger
+    `scripts/doc-fingerprints.toml` whose sha256 differs from its recorded fingerprint, so its describing
+    docs are re-verified and the fingerprint re-blessed in one owner-acked commit (a missing, unparseable
+    or seed-less ledger is a finding). Any other described-the-old-way drift is a G1 review item. A
+    catalogue without gate ids is a finding. `doc25_doc_graph`.
 26. **Structural-map integrity** — the G69 implementation: the spec [§0.7](../spec/00-architecture.md)
     "Physical tree" block (directories only) and the `git ls-files` directory set, minus `target/`,
     `node_modules/`, `dist/` and `.git/`, differ in either direction, or a path on §0.7's *Load-bearing

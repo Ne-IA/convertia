@@ -4,7 +4,7 @@
 Reads scripts/gate-tools.toml, downloads each pinned tool for the CURRENT
 platform from its allow-listed origin, verifies the pinned SHA-256, and installs
 it under .gate-tools/bin/. A SHA-256 MISMATCH IS A HARD FAILURE (exit 1) - that
-is the security control (security-concept s0, build-gates s0 / G24 / G54): a
+is the security control (security-concept §4 principle 10, build-gates §0 / G24 / G54): a
 poisoned or typosquatted gate tool both misses real findings AND can read CI
 secrets, so every gate tool is pinned by exact version and verified by content.
 

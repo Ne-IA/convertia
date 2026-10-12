@@ -2124,8 +2124,9 @@ expectations and identifies what dominates, so trimming effort is spent where it
   Carlito + Caladea** (metric-compat Arial/Calibri/Cambria/Times/Courier) **+ a
   curated Noto subset: Noto Sans/Serif CJK-SC/TC/JP/KR "Regular" weights + Noto Sans
   Arabic/Hebrew**. This is the single biggest fidelity lever for documents/
-  spreadsheets/presentations (their font items — `documents.md` §5 `[DECIDED]`,
-  `presentations.md` [PRES-2] `[DECIDED]` — all resolve to this baseline). The **only residual is
+  spreadsheets/presentations (their font items — `documents.md` *Open / deferred decisions*
+  item 5 `[DECIDED]`, `presentations.md` [PRES-2] `[DECIDED]` — all resolve to this
+  baseline). The **only residual is
   the CJK weight count / SC-vs-all-CJK breadth**, a pure size knob: **[DEFER: tune
   CJK breadth against the §3.9 size measurement once the trimmed builds exist].** The
   *families* are fixed; only how many CJK weights ship is the deferred calibration.

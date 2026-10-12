@@ -1,7 +1,7 @@
 # scripts/gate-tools.toml — the PINNED GATE-TOOL MANIFEST (P0.2.1).
 #
 # Every gate / SAST / SBOM / lint tool is pinned by EXACT version and verified by
-# SHA-256 at install (security-concept §0; build-gates §0). `scripts/install-gate-tools`
+# SHA-256 at install (security-concept §4 principle 10; build-gates §0). `scripts/install-gate-tools`
 # reads this file, downloads each tool for the current platform from its
 # allow-listed `origin`, verifies the pinned `sha256`, and a MISMATCH IS A HARD
 # FAILURE — that is the security control (a poisoned/typosquatted gate tool both
@@ -38,7 +38,7 @@ fuzz_nightly = "nightly-2026-07-14"   # cargo-fuzz G48; invoked as `cargo +night
 # --- lefthook — the L1/L2/L3 git-hook plane executor (G54) ---------------------
 # A poisoned lefthook can silently no-op EVERY local hook (the core.hooksPath-bypass
 # equivalent), so it is pinned + checksum-verified like every other tool and carries
-# the G24 wrong-checksum self-test (security-concept §0, build-gates §0/G54).
+# the G24 wrong-checksum self-test (security-concept §4 principle 10, build-gates §0/G54).
 # lefthook.yml's `no_auto_install: true` (G54b leg (6)) keeps `lefthook run` from re-installing
 # the hooks - measured on 2.1.9; a version bump re-measures it on a repo path with spaces and
 # parentheses (change lefthook.yml, run a hook, the setup-dev-repaired hooks stay byte-identical).

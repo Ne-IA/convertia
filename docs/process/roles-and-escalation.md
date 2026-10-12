@@ -56,7 +56,7 @@ are deliberately given **different amounts of the security/gate corpus**:
   **NOT inline** the whole gate/security corpus into the session (no context
   ballast). On a red CI it looks the gate up; it does not carry the catalogue.
 - **The Co-Pilot holds the FULL picture.** The complete gate catalogue (`G1..Gnn`),
-  the threat model (security-concept §0.11/§5), and the cross-phase security view are
+  the threat model (spec §0.11, security-concept §5), and the cross-phase security view are
   the Co-Pilot's to carry — it is the home of the strategic / high-level security
   review, so it reasons over the corpus the loop only samples.
 

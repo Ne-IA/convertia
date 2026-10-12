@@ -1,5 +1,5 @@
 # requirements-yamllint.txt - the pip-installed yamllint linter for the §6.7.1 Lane-A
-# YAML/config-hygiene leg (P1.52.3), HASH-PINNED (security-concept §0).
+# YAML/config-hygiene leg (P1.52.3), HASH-PINNED (security-concept §4 principle 10).
 #
 # Install with:  python -m pip install --require-hashes -r requirements-yamllint.txt
 #

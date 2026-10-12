@@ -1,7 +1,7 @@
 # rust-toolchain.toml — the pinned Rust toolchain (P0.2.1 · spec §0.8).
 #
 # Pins the DEFAULT stable channel EXACTLY so the build is never a moving target
-# (security-concept §0 "pin everything"; build-gates §0 "asserted not-floating").
+# (security-concept §4 principle 10 "pin and verify"; build-gates §0 "asserted not-floating").
 # rustup verifies its own download signatures, so no sha256 is pinned here.
 #
 # The date-pinned NIGHTLY used by cargo-fuzz (G48) is deliberately NOT a second
