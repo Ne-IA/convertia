@@ -1495,6 +1495,8 @@ convertia/
 │  └─ semgrep-rules/               # the G29 SAST rule corpus
 │     ├─ fixtures/                 # planted-positive SAST fixtures
 │     │  └─ engines/               # engine-arg SAST fixtures
+│     │     ├─ libreoffice/        # the (b3a) fixture under the LibreOffice module directory
+│     │     └─ pandoc/             # the (b2) fixture under the pandoc module directory
 │     ├─ project/                  # first-party Semgrep rules
 │     └─ vendor/                   # vendored Semgrep rule packs
 └─ .github/                        # CI (Lane A §6.7.1) + release (Lane B §6.7.2) workflows + dependabot; SHA-pinned actions

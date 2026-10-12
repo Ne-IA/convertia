@@ -32,6 +32,13 @@ CI job, immediately before the real scan):
      refined paths-scoped rule (d) binds to; a mac-cfg elsewhere in isolation would dodge (d)'s
      scope. Text-level over comment-blanked source (a cfg mention in a normal string still counts:
      over-strict, fails-safe). Target-absent -> no-op.
+  4b. ARGV CONTRACT (the G29 (b) presence half, semgrep-independent): engine argv is a `Vec<OsString>` built
+     by plan(), so each engine's safety flags are asserted by plan() tests in an inline `mod argv_contract`
+     test module of the engine module. Per ARGV_CONTRACT engine: while the plan box that builds its argv is
+     `[ ]`, `[!]` or `[!extern]` the engine is dormant (a notice); once it is `[x]` - or the plan does not
+     resolve it, fail-closed - exactly one such block must exist across the engine module, and a string
+     literal inside it must start with each of the engine's flags. The ABSENCE half is the Semgrep rules
+     (b2)/(b3a) in project/engine-argv.yaml.
   5. shellcheck over ALL committed *.sh (actionlint only shellchecks workflow `run:` steps, G49) — runs
      AFTER the semgrep legs (it is semgrep-independent, so it also runs when semgrep is absent locally).
   6. (retired) cargo-geiger - declined for v1 (docs/process/gate-status.md); no leg.
@@ -72,8 +79,27 @@ NET_BAN_RULE_IDS = {"convertia-net-ban-std-tokio", "convertia-net-ban-raw-socket
 # a same-count swap passes silently. This frozen tag set is the external anchor: the `convertia-rule`
 # metadata tags declared across project/*.yaml MUST equal it, and every tag MUST fire on a planted-positive.
 # Tag "e" is retired 2026-09-29 and never reused: its single-store-name rule guarded the WebView `store:`
-# grant, which §0.10 removed (G47 exact tokens).
-EXPECTED_RULE_TAGS = frozenset({"a", "b1", "b2", "b3a", "b3b", "b4", "b5", "c", "d", "f", "g", "h", "i", "j"})
+# grant, which §0.10 removed (G47 exact tokens). Tags "b3b", "b4" and "b5" are retired and never reused: their
+# chain-shaped presence rules matched a `Command::new` in the engine module, where none exists (engine argv is a
+# `Vec<OsString>` built by plan(), and the sole `Command::new` lives in `crate::isolation`), so they bound
+# nothing; the presence half is ARGV_CONTRACT below, and b5's `MAGICK_CONFIGURE_PATH` has no home on the §3.5.5
+# decided route, which compiles the ImageMagick policy into the worker.
+EXPECTED_RULE_TAGS = frozenset({"a", "b1", "b2", "b3a", "c", "d", "f", "g", "h", "i", "j"})
+
+# The G29 (b) PRESENCE half (§3.5): each engine's safety flags are asserted by plan() tests in the engine module's
+# own inline `mod argv_contract { … }` test module, and argv_contract_pin requires that module - a string literal
+# opening with each flag inside it - once the plan box that builds the engine's argv is `[x]`.
+# engine -> (plan file, box id, the string-literal prefixes the module must carry). The ABSENCE half stays
+# Semgrep: rules (b2)/(b3a) in project/engine-argv.yaml.
+# The §3.5.5 ImageMagick fallback route is the one further presence property: there the core passes the staged
+# policy directory to the image worker as the `policy_dir=` argv key, and the commit that adds the key adds the
+# `image` entry here - the plan box that wires the key, ("policy_dir=",) - with the image module's argv_contract
+# test. The decided route compiles the policy into the worker, so it has no key and no entry.
+ARGV_CONTRACT: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "libreoffice": ("docs/plan/P7-office.md", "P7.8", ("-env:UserInstallation=",)),
+    "pandoc": ("docs/plan/P7-office.md", "P7.25", ("--sandbox", "--resource-path")),
+    "ffmpeg": ("docs/plan/P6-av-crosscat.md", "P6.9", ("-protocol_whitelist",)),
+}
 
 _ID_RE = re.compile(r"(?m)^\s*-\s*id:\s*(\S+)\s*$")
 _TAG_RE = re.compile(r'(?m)^\s*convertia-rule:\s*["\']?([a-z0-9]+)["\']?\s*$')
@@ -648,6 +674,181 @@ def t11_seam_pin(text: str | None = None) -> list[str]:
     return problems
 
 
+# --- the argv contract (the G29 (b) presence half): ARGV_CONTRACT above names each engine's box and flags ---
+
+_ARGV_MOD_RE = re.compile(r"\bmod\s+argv_contract\s*\{")
+_ARGV_MOD_DECL_RE = re.compile(r"\bmod\s+argv_contract\s*;")
+_RAW_OPEN_RE = re.compile(r'r(#*)"')
+_DORMANT_MARKERS = frozenset({" ", "!", "!extern"})
+
+
+def _rs_lex(text: str) -> tuple[str, list[tuple[int, str]]]:
+    """(pure) One string-aware pass over Rust source -> (code, literals). `code` is `text` with every comment and
+    every string, raw-string and char literal blanked to spaces (newlines kept, so offsets and line numbers agree
+    with `text`); `literals` holds each string literal as (offset of its opening quote, its source text between
+    the delimiters, escapes not decoded). Unlike _blank_rs_comments, a `//` inside a string is no comment (the
+    LibreOffice profile URL `file://…` carries one) and a brace inside a string or char literal is no brace; block
+    comments nest, as in Rust. A `b`/`c` literal prefix stays code and the literal after it is read as a string.
+    An unterminated literal or comment runs to the end of the text, which leaves an open block unclosed: the pin
+    then fails (over-strict, never fail-open)."""
+    n = len(text)
+    code = list(text)
+    literals: list[tuple[int, str]] = []
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, min(b, n)):
+            if code[k] != "\n":
+                code[k] = " "
+
+    def ident(k: int) -> bool:
+        return 0 <= k < n and (text[k].isalnum() or text[k] == "_")
+
+    i = 0
+    while i < n:
+        c, nxt = text[i], text[i + 1] if i + 1 < n else ""
+        raw = None
+        if c == "r" and (not ident(i - 1) or (text[i - 1] in "bc" and not ident(i - 2))):
+            raw = _RAW_OPEN_RE.match(text, i)
+        if c == "/" and nxt == "/":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            blank(i, j)
+            i = j
+        elif c == "/" and nxt == "*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            blank(i, j)
+            i = j
+        elif raw is not None:
+            close = '"' + raw.group(1)
+            end = text.find(close, raw.end())
+            end = n if end == -1 else end
+            literals.append((raw.end() - 1, text[raw.end():end]))
+            j = min(end + len(close), n)
+            blank(i, j)
+            i = j
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            literals.append((i, text[i + 1:min(j, n)]))
+            j = min(j + 1, n)
+            blank(i, j)
+            i = j
+        elif c == "'" and nxt == "\\" and text.find("'", i + 3) != -1:
+            j = text.find("'", i + 3) + 1          # an escaped char literal: '\'' '\\' '\n' '\u{7B}'
+            blank(i, j)
+            i = j
+        elif c == "'" and i + 2 < n and text[i + 2] == "'":
+            blank(i, i + 3)                         # a plain char literal; any other quote opens a lifetime
+            i += 3
+        else:
+            i += 1
+    return "".join(code), literals
+
+
+def _close_brace(code: str, open_i: int) -> int:
+    """(pure) The offset of the `}` matching the `{` at `open_i` in a _rs_lex code view, or -1 if it never closes."""
+    depth = 0
+    for k in range(open_i, len(code)):
+        if code[k] == "{":
+            depth += 1
+        elif code[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return k
+    return -1
+
+
+def _box_marker(plan: Path, box: str) -> str | None:
+    """The marker of `box`'s header line in `plan` (`x`, ` `, `!` or `!extern`), or None when the plan file is
+    absent or holds no or several header lines for the id - unresolvable, which arms the pin (fail-closed)."""
+    if not plan.is_file():
+        return None
+    rx = re.compile(r"(?m)^\s*- \[(x| |!|!extern)\] \*\*" + re.escape(box) + r"\*\*")
+    found = rx.findall(plan.read_text(encoding="utf-8", errors="replace"))
+    return found[0] if len(found) == 1 else None
+
+
+def _engine_module_files(root: Path, engine: str) -> list[Path]:
+    """The engine module: `src-tauri/src/engines/<engine>.rs` and every `.rs` under `src-tauri/src/engines/<engine>/`
+    (the scope of the (b2)/(b3a) absence rules)."""
+    base = root / "src-tauri" / "src" / "engines"
+    files = [base / f"{engine}.rs"] if (base / f"{engine}.rs").is_file() else []
+    if (base / engine).is_dir():
+        files += sorted(p for p in (base / engine).rglob("*.rs") if p.is_file())
+    return files
+
+
+def argv_contract_pin(root: Path | None = None,
+                      contract: dict[str, tuple[str, str, tuple[str, ...]]] | None = None,
+                      ) -> tuple[list[str], list[str]]:
+    """The G29 (b) presence pin (§3.5) -> (problems, notices). Per `contract` engine (default ARGV_CONTRACT), the
+    marker of its argv box decides: `[ ]`, `[!]` and `[!extern]` leave it dormant (a notice); `[x]`, or a box the
+    plan file does not resolve to exactly one header line, arms it (fail-closed). Armed, exactly one inline
+    `mod argv_contract { … }` block must exist across the engine module, and for each flag a string literal inside
+    the block must start with it - read through _rs_lex, so a comment never satisfies a flag and a `//` or a brace
+    inside a literal never moves the block's end. Anything else is a problem. It pins that the test module carries
+    each flag, not that its tests are meaningful: that, and a block rustc never compiles (an undeclared file, a
+    `#[cfg(any())]` module), are the G1 review's. `root` defaults to the repo root."""
+    root = ROOT if root is None else root
+    contract = ARGV_CONTRACT if contract is None else contract
+    problems: list[str] = []
+    notices: list[str] = []
+    for engine, (plan_rel, box, flags) in contract.items():
+        marker = _box_marker(root / plan_rel, box)
+        if marker in _DORMANT_MARKERS:
+            notices.append(f"argv contract: {engine} dormant - {box} is [{marker}] in {plan_rel}")
+            continue
+        why = (f"{box} is [x] in {plan_rel}" if marker == "x"
+               else f"{box} does not resolve to one box in {plan_rel}, fail-closed")
+        scope = f"src-tauri/src/engines/{engine}.rs or src-tauri/src/engines/{engine}/"
+        # (repo-relative file, line, offset of the opening brace, offset of its match or -1, the file's literals)
+        blocks: list[tuple[str, int, int, int, list[tuple[int, str]]]] = []
+        out_of_line: list[str] = []
+        for f in _engine_module_files(root, engine):
+            try:
+                rel = f.resolve().relative_to(root.resolve()).as_posix()
+            except (ValueError, OSError):
+                rel = f.as_posix()
+            code, literals = _rs_lex(f.read_text(encoding="utf-8", errors="replace"))
+            for mb in _ARGV_MOD_RE.finditer(code):
+                blocks.append((rel, code[: mb.start()].count("\n") + 1, mb.end() - 1,
+                               _close_brace(code, mb.end() - 1), literals))
+            if _ARGV_MOD_DECL_RE.search(code):
+                out_of_line.append(rel)
+        if not blocks:
+            hint = (f"; `mod argv_contract;` in {', '.join(out_of_line)} is out of line - the pin reads the inline "
+                    "block" if out_of_line else "")
+            problems.append(f"argv contract: {engine} is armed ({why}), but no file of its engine module ({scope}) "
+                            f"holds an inline `mod argv_contract {{ … }}` block - the plan() test module asserting "
+                            f"{', '.join(flags)}{hint} (G29 (b), §3.5)")
+            continue
+        if len(blocks) > 1:
+            problems.append(f"argv contract: {engine}: {len(blocks)} `mod argv_contract` blocks ("
+                            + ", ".join(f"{r}:{ln}" for r, ln, _, _, _ in blocks) + f") - exactly one ({why})")
+            continue
+        rel, line, open_i, close_i, literals = blocks[0]
+        if close_i == -1:
+            problems.append(f"argv contract: {engine}: the `mod argv_contract` block at {rel}:{line} never closes "
+                            f"({why})")
+            continue
+        missing = [fl for fl in flags
+                   if not any(open_i < off < close_i and body.startswith(fl) for off, body in literals)]
+        for fl in missing:
+            problems.append(f"argv contract: {engine}: the `mod argv_contract` block at {rel}:{line} carries no "
+                            f"string literal starting with `{fl}` (comments do not count; {why})")
+        if not missing:
+            notices.append(f"argv contract: {engine} armed ({why}) - {rel}:{line} carries every flag")
+    return problems, notices
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Semgrep + shellcheck SAST gate (G29, P0.4.2)")
     ap.add_argument("--full", action="store_true", help="accepted for wiring parity")
@@ -713,13 +914,22 @@ def main(argv: list[str] | None = None) -> int:
             fail(p)
         problems += 1 if seam else 0
 
+    # The argv contract (the G29 (b) presence half, semgrep-independent): an engine stays dormant until the plan
+    # box that builds its argv is [x]; then its engine module must carry the inline argv_contract test module.
+    argv_problems, argv_notices = argv_contract_pin()
+    for line in argv_notices:
+        print(f"[G29] {line}")
+    for p in argv_problems:
+        fail(p)
+    problems += 1 if argv_problems else 0
+
     problems += shellcheck_scan()
 
     if problems:
         print(f"[G29] {problems} SAST gate problem(s)", file=sys.stderr)
         return 1
     print("[G29] SAST gate OK (validate + armed-canary/suppression-pins + scan + census + "
-          "macos-homing + t11-seam-pin + shellcheck)")
+          "macos-homing + t11-seam-pin + argv-contract + shellcheck)")
     return 0
 
 

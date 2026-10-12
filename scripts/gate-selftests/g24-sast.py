@@ -12,12 +12,25 @@ counter/comparator, the macOS homing scan (cfg + runtime consts::OS forms), and 
 pins on the refined (b1)/(d) rule text (paths scope + fixture binding + the adjacent suppression
 forms); (7, the 2026-08-30 P4.26 adjudication) the T11 seam pin `t11_seam_pin` (the engine_input
 macOS arm's own span calls the literal standalone stage_for_tcc; a dropped call, a vanished or
-not()-only arm, a call in the wrong arm, or a rename of either load-bearing name is flagged).
+not()-only arm, a call in the wrong arm, or a rename of either load-bearing name is flagged);
+(8) the engine argv contract, the G29 (b) split: the (b2)/(b3a) absence rules are whole-module
+`pattern-regex` rules whose one `paths:` key includes exactly the module's file and directory
+globs, and whose regex, run here through Python's `re`, fires on every `sast-must-fire` line of
+the engine fixtures (the module file's and the one under the module directory) and on no
+`sast-clean` line; and `argv_contract_pin` over hermetic temp roots (a `[ ]`/`[!]`/`[!extern]`
+box leaves its engine dormant, `[x]` or an unresolvable box arms it, an armed engine needs
+exactly one inline `mod argv_contract` block, in any file of the module at any depth, holding a
+string literal for every flag - not in a comment, not outside the block, not moved by a `//` or a
+brace inside a literal, a raw literal closed only by its own hash count), the live tree, and
+main()'s wiring of the leg (over a temp root).
 The REAL semgrep-over-fixtures armed canary
 runs inside check-sast in the CI `sast` job (semgrep present). stdlib-only. Exit 0 = all held.
 """
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
+import re
 import sys
 from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
@@ -41,29 +54,40 @@ def record(name: str, ok: bool) -> None:
 ids = m.project_rule_ids()
 # [Test-Change: P0.4.2 — old-obsolete+new-correct, §0.10 rule (e) retired 2026-09-29] 15 -> 14: the
 # single-store-name rule left with the WebView store grant (G47 exact tokens); measured 14 rule ids.
-record("rule discovery: 14 project rules found", len(ids) == 14)
+# [Test-Change: P0.4.2 — old-obsolete+new-correct, §3.5 G29 (b) argv contract] 14 -> 11: the chain-shaped
+# presence rules b3b, b4 and b5 bound no spawn (engine argv is a plan()-built Vec<OsString>); the presence
+# half is check-sast's argv-contract leg (section 13); measured 11 rule ids.
+record("rule discovery: 11 project rules found", len(ids) == 11)
 record("rule discovery: the load-bearing rules are present",
        {"convertia-net-ban-std-tokio", "convertia-net-ban-raw-socket-ffi",
         "convertia-tauri-command-missing-fs-guard", "convertia-tauri-command-name-rename-forbidden",
         "convertia-webview-taint-to-dom-sink", "convertia-opener-egress-non-constant"} <= ids)
 record("rule discovery: every NET_BAN_RULE_ID is a real discovered rule", m.NET_BAN_RULE_IDS <= ids)
 
-# --- 2. planted-positive fixtures present, incl. the resolved-path engine fixtures at the module path ---
-# (one .rs may cover >1 rule — libreoffice.rs feeds both b3a + b3b — so the per-RULE firing guarantee is
-# the check-sast canary prelude, not a file count; here we assert the fixtures + the path-scoped engine
-# fixtures exist at engines/<engine>.rs so the `paths: include` globs bind.)
+# --- 2. planted-positive fixtures present, incl. the engine-module fixtures at the module path ---
+# (the per-RULE firing guarantee is the check-sast canary prelude, not a file count; here we assert the
+# fixtures + the path-scoped engine fixtures exist at engines/<engine>.rs and engines/<engine>/args.rs, so
+# both `paths: include` globs of each engine rule bind. The engine argv absence rules are (b2) pandoc and
+# (b3a) LibreOffice only.)
+# [Test-Change: P0.4.2 — old-obsolete+new-correct, §3.5 G29 (b) argv contract] ffmpeg.rs and image.rs
+# planted the retired b4/b5 spawn-chain rules and left with them.
 fixtures = list(m.FIXTURES.rglob("*.rs")) + list(m.FIXTURES.rglob("*.ts"))
-record("fixtures: present incl. the resolved-path engine fixtures under engines/",
+record("fixtures: present incl. the engine-module fixtures under engines/ (pandoc.rs, libreoffice.rs, and "
+       "pandoc/args.rs, libreoffice/args.rs for the module directories)",
        len(fixtures) >= 10 and all((m.FIXTURES / "engines" / e).is_file()
-                                   for e in ("pandoc.rs", "libreoffice.rs", "ffmpeg.rs", "image.rs")))
+                                   for e in ("pandoc.rs", "libreoffice.rs", "pandoc/args.rs", "libreoffice/args.rs")))
 
 # --- 2b. the contract a-j tag set is pinned INDEPENDENTLY of the discovered ids (not count-only) ---
 id_tags = m.project_rule_id_tags()
 record("tags: every project rule carries a convertia-rule tag", len(id_tags) == len(ids))
 record("tags: declared tag set == the frozen contract a-j set EXPECTED_RULE_TAGS",
        set(id_tags.values()) == m.EXPECTED_RULE_TAGS)
+# [Test-Change: P0.4.2 — old-obsolete+new-correct, §3.5 G29 (b) argv contract] the dropped tag is b3a: b4 is
+# retired, so subtracting it no longer shrinks the set.
 record("tags: a renamed/dropped rule (tag set shrinks) != EXPECTED_RULE_TAGS (count-only would miss it)",
-       (set(id_tags.values()) - {"b4"}) != m.EXPECTED_RULE_TAGS)
+       (set(id_tags.values()) - {"b3a"}) != m.EXPECTED_RULE_TAGS)
+record("tags: the retired e, b3b, b4 and b5 stay retired (in neither EXPECTED_RULE_TAGS nor a rule file)",
+       not ({"e", "b3b", "b4", "b5"} & (m.EXPECTED_RULE_TAGS | set(id_tags.values()))))
 
 # --- 3. armed-canary detector ------------------------------------------------------------------
 def res(rids):  # synthetic semgrep result list
@@ -325,6 +349,243 @@ record("t11-seam-pin: the call sitting ONLY in the not()-arm is flagged (the R2 
                                    '    #[cfg(not(target_os = "macos"))]\n'
                                    '    { let _x = stage_for_tcc(a); Ok(b(a)) }\n'
                                    '}\n')))
+
+
+# --- 13. the engine argv contract, the G29 (b) split (§3.5) ---------------------------------------------------
+# ABSENCE: (b2)/(b3a) are whole-module `pattern-regex` rules. A rule's one `paths:` key must include exactly the
+# module's file and directory globs and exclude nothing - pinned line for line, since a glob moved from the include
+# to an exclude list still appears in the block. Each regex is read from the YAML and run through Python's `re`
+# (the 3-OS stand-in for the CI prelude's Semgrep run): over its engine fixtures - fixtures/engines/<engine>.rs, and
+# fixtures/engines/<engine>/args.rs under the module directory, whose firing in the prelude proves the directory
+# glob binds - it must hit exactly the lines pinned `sast-must-fire` for its rule - every planted form fires, no
+# `sast-clean` line and no unpinned line does.
+def _paths_lines(blk: str) -> list[str] | None:
+    """The stripped, non-comment lines of a rule block's `paths:` mapping, or None unless the block holds exactly one
+    `paths:` key, written in block style (a flow-style, anchored, aliased or repeated key fails the pin closed)."""
+    lines = blk.split("\n")
+    keys = [i for i, ln in enumerate(lines) if re.match(r"[ \t]*paths:", ln)]
+    if len(keys) != 1 or not re.fullmatch(r"[ \t]*paths:[ \t]*", lines[keys[0]]):
+        return None
+    indent = len(lines[keys[0]]) - len(lines[keys[0]].lstrip())
+    out = []
+    for ln in lines[keys[0] + 1:]:
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        if len(ln) - len(ln.lstrip()) <= indent:
+            break
+        out.append(s)
+    return out
+
+
+def _fixture_lines(rel: str, rx: re.Pattern | None, rid: str) -> tuple[set[int], set[int], set[int]]:
+    """(the lines `rx` hits, the lines pinned `sast-must-fire` for `rid`, the lines pinned `sast-clean` for `rid`)
+    of the fixture at FIXTURES/`rel`; an absent fixture reads empty, so its leg fails."""
+    p = m.FIXTURES / rel
+    fx = p.read_text(encoding="utf-8") if p.is_file() else ""
+    return ({i for i, ln in enumerate(fx.split("\n"), 1) if rx is not None and rx.search(ln)},
+            {ln for ln, rids in m.parse_fire_markers(fx).items() if rid in rids},
+            {ln for ln, rids in m.parse_clean_markers(fx).items() if rid in rids})
+
+
+_ea_yaml = (m.PROJECT_RULES / "engine-argv.yaml").read_text(encoding="utf-8")
+_ea_blocks = {}
+for _blk in m._RULE_SPLIT_RE.split(_ea_yaml):
+    _mid = re.search(r"(?m)^\s*-\s*id:\s*(\S+)", _blk)
+    if _mid:
+        _ea_blocks[_mid.group(1)] = _blk
+_EA_RULES = {"convertia-pandoc-unsafe-resource-path": ("b2", "pandoc"),
+             "convertia-soffice-accept-socket": ("b3a", "libreoffice")}
+record("engine-argv: the rule file holds exactly the (b2) and (b3a) absence rules", set(_ea_blocks) == set(_EA_RULES))
+for _rid, (_tag, _eng) in _EA_RULES.items():
+    _blk = _ea_blocks.get(_rid, "")
+    record(f"engine-argv yaml-pin: ({_tag}) is a pattern-regex rule over the whole {_eng} module - its one paths: key "
+           f"includes exactly engines/{_eng}.rs and engines/{_eng}/** and excludes nothing - no spawn-chain pattern",
+           "pattern-regex:" in _blk
+           and _paths_lines(_blk) == [f'include: ["**/engines/{_eng}.rs", "**/engines/{_eng}/**"]']
+           and "pattern-either" not in _blk and "Command::new" not in _blk)
+    _mrx = re.search(r"(?m)^\s*pattern-regex:\s*'((?:[^']|'')*)'\s*$", _blk)
+    _rx = re.compile(_mrx.group(1).replace("''", "'")) if _mrx else None
+    _hits, _fire, _clean = _fixture_lines(f"engines/{_eng}.rs", _rx, _rid)
+    record(f"engine-argv regex: ({_tag}) hits exactly the must-fire lines of fixtures/engines/{_eng}.rs "
+           "(>= 3 planted forms; none of its >= 3 sast-clean lines)",
+           _rx is not None and len(_fire) >= 3 and len(_clean) >= 3 and _hits == _fire)
+    _hits, _fire, _ = _fixture_lines(f"engines/{_eng}/args.rs", _rx, _rid)
+    record(f"engine-argv regex: ({_tag}) hits exactly the must-fire line of fixtures/engines/{_eng}/args.rs, the "
+           "fixture under the module directory",
+           _rx is not None and len(_fire) >= 1 and _hits == _fire)
+
+# PRESENCE: argv_contract_pin. The table itself is the contract the G29 row states.
+record("argv-contract: ARGV_CONTRACT names the §3.5 flags of LibreOffice, pandoc and FFmpeg at their argv boxes",
+       m.ARGV_CONTRACT == {
+           "libreoffice": ("docs/plan/P7-office.md", "P7.8", ("-env:UserInstallation=",)),
+           "pandoc": ("docs/plan/P7-office.md", "P7.25", ("--sandbox", "--resource-path")),
+           "ffmpeg": ("docs/plan/P6-av-crosscat.md", "P6.9", ("-protocol_whitelist",)),
+       })
+
+# Hermetic temp roots with a one-engine contract; these legs never run main([]) on the real repo.
+_td3 = Path(tempfile.mkdtemp(prefix="g24-sast-argv-"))
+try:
+    _C = {"ffmpeg": ("docs/plan/P6-x.md", "P6.9", ("-protocol_whitelist", "-nostdin"))}
+    _MOD = "src-tauri/src/engines/ffmpeg.rs"
+    _GOOD = ("pub(crate) fn plan() -> Vec<OsString> {\n"
+             "    Vec::new()\n"
+             "}\n"
+             "#[cfg(test)]\n"
+             "mod argv_contract {\n"
+             "    #[test]\n"
+             "    fn flags() {\n"
+             "        let a = super::plan();\n"
+             '        assert!(a.contains(&"-protocol_whitelist".into()));\n'
+             '        assert!(a.contains(&"-nostdin".into()));\n'
+             "    }\n"
+             "}\n")
+    _FLAGS_OUTSIDE = 'fn plan() -> Vec<OsString> { vec!["-protocol_whitelist".into(), "-nostdin".into()] }\n'
+    _roots = [0]
+
+    def _box(marker: str) -> str:
+        return f"- [{marker}] **P6.9** [RUST] Apply the global FFmpeg flags · §3.5.1 · G38\n  needs: P6.8\n"
+
+    def _pin(plan, files):
+        """argv_contract_pin over a fresh root: docs/plan/P6-x.md holds `plan` (None: no plan file), plus `files`."""
+        _roots[0] += 1
+        root = _td3 / f"r{_roots[0]}"
+        root.mkdir()
+        if plan is not None:
+            (root / "docs" / "plan").mkdir(parents=True)
+            (root / "docs" / "plan" / "P6-x.md").write_text(plan, encoding="utf-8", newline="\n")
+        for rel, body in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(body, encoding="utf-8", newline="\n")
+        return m.argv_contract_pin(root, _C)
+
+    _p, _n = _pin(_box(" "), {})
+    record("argv-contract: a [ ] box leaves its engine dormant (no module needed; a notice)",
+           _p == [] and any("ffmpeg dormant" in x for x in _n))
+    _p1, _n1 = _pin(_box("!"), {})
+    _p2, _n2 = _pin(_box("!extern"), {})
+    record("argv-contract: a [!] or [!extern] box leaves its engine dormant too",
+           _p1 == [] and _p2 == [] and any("[!]" in x for x in _n1) and any("[!extern]" in x for x in _n2))
+    _p, _ = _pin(_box("x"), {})
+    record("argv-contract: a [x] box with the engine module absent FAILS",
+           len(_p) == 1 and "no file of its engine module" in _p[0])
+    _p, _ = _pin("- [x] **P6.90** [RUST] Another box · §3.5.1 · G38\n- [x] **P619** [RUST] A third box · G38\n", {})
+    record("argv-contract: a box id the plan file does not carry ARMS the engine (fail-closed; module absent FAILS)",
+           len(_p) == 1 and "does not resolve" in _p[0])
+    _p, _ = _pin(None, {})
+    record("argv-contract: an absent plan file ARMS the engine (fail-closed)",
+           len(_p) == 1 and "does not resolve" in _p[0])
+    _p, _ = _pin(_box(" ") + _box("x"), {})
+    record("argv-contract: two header lines for the box id ARM the engine (fail-closed, never the first match)",
+           len(_p) == 1 and "does not resolve" in _p[0])
+    _p, _n = _pin(_box("x"), {_MOD: _GOOD})
+    record("argv-contract: an armed engine whose argv_contract block carries every flag passes",
+           _p == [] and any("ffmpeg armed" in x for x in _n))
+    _p, _n = _pin(None, {_MOD: _GOOD})
+    record("argv-contract: an unresolvable box arms, and a satisfied module passes armed",
+           _p == [] and any("ffmpeg armed" in x and "does not resolve" in x for x in _n))
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD.replace('assert!(a.contains(&"-nostdin".into()));',
+                                                 '// "-nostdin" is asserted by the caller')})
+    record("argv-contract: a flag only in a COMMENT inside the block FAILS",
+           len(_p) == 1 and "`-nostdin`" in _p[0])
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD.replace('assert!(a.contains(&"-nostdin".into()));',
+                                                 '/* outer /* inner */ "-nostdin" */')})
+    record("argv-contract: a flag inside a NESTED block comment FAILS (block comments nest, as in Rust)",
+           len(_p) == 1 and "`-nostdin`" in _p[0])
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD.replace('        assert!(a.contains(&"-nostdin".into()));\n', "")
+                                         .replace("    Vec::new()\n", '    vec!["-nostdin".into()]\n')})
+    record("argv-contract: a flag only OUTSIDE the block (in plan() itself) FAILS",
+           len(_p) == 1 and "`-nostdin`" in _p[0])
+    _p, _ = _pin(_box("x"), {_MOD: "fn plan() -> Vec<OsString> { Vec::new() }\n"
+                                   'mod argv_contract { fn t() { let _ = ("-protocol_whitelist", "-nostdin", '
+                                   '"file://x"); } }\n'})
+    record("argv-contract: a `//` inside a literal (`file://`) is no comment - the block closes on its own line",
+           _p == [])
+    _p, _ = _pin(_box("x"), {_MOD: 'mod argv_contract { fn t() { let _ = "file://x"; } }\n' + _FLAGS_OUTSIDE})
+    record("argv-contract: ... so flags after that one-line block are OUTSIDE it (both FAIL)",
+           len(_p) == 2 and all("carries no string literal" in x for x in _p))
+    _p, _ = _pin(_box("x"), {_MOD: "mod argv_contract { fn t() { let _ = (\"{\", '{', '\\u{7B}'); } }\n"
+                                   + _FLAGS_OUTSIDE})
+    record("argv-contract: a brace inside a string or char literal does not move the block end (flags outside FAIL)",
+           len(_p) == 2 and all("carries no string literal" in x for x in _p))
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD.replace('"-nostdin"', '"see \\"-nostdin"')})
+    record("argv-contract: a flag after an escaped quote inside a literal does not count",
+           len(_p) == 1 and "`-nostdin`" in _p[0])
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD.replace('"-nostdin"', '"x-nostdin"')})
+    record("argv-contract: a flag in the middle of a longer literal does not count (a literal must START with it)",
+           len(_p) == 1 and "`-nostdin`" in _p[0])
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD.replace('"-protocol_whitelist"', 'r##"-protocol_whitelist "#}"##')
+                                         .replace('"-nostdin"', 'r"-nostdin\\"')})
+    record("argv-contract: raw string literals count, read raw (only the opening's own hash count closes one - an "
+           "inner `\"#}` ends neither r##\"…\"## nor the block; a trailing backslash escapes nothing)",
+           _p == [])
+    _p, _ = _pin(_box("x"), {_MOD: "mod argv_contract {\n    fn a() {}\n"
+                                   '    fn b() { let _ = ("-protocol_whitelist", "-nostdin"); }\n}\n'})
+    record("argv-contract: a nested item's closing brace does not end the block early", _p == [])
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD.replace("    fn flags() {\n",
+                                                 "    fn flags() {\n        let _q = ('\"', '\\\"');\n")})
+    record("argv-contract: a '\"' or '\\\"' char literal opens no string (the flags after it still count)", _p == [])
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD.replace("    #[test]\n",
+                                                 "    fn s(v: &'static str) { let _w: &'static str = v; }\n"
+                                                 "    #[test]\n")})
+    record("argv-contract: a lifetime ('static) opens no char literal (a brace between two stays a brace)",
+           _p == [])
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD, "src-tauri/src/engines/ffmpeg/extra.rs": "mod argv_contract {}\n"})
+    record("argv-contract: two `mod argv_contract` blocks across the engine module FAIL (exactly one)",
+           len(_p) == 1 and "2 `mod argv_contract` blocks" in _p[0])
+    _p, _ = _pin(_box("x"), {_MOD: "fn plan() {}\n#[cfg(test)]\nmod argv_contract;\n",
+                             "src-tauri/src/engines/ffmpeg/argv_contract.rs":
+                                 '#[test]\nfn t() { let _ = ("-protocol_whitelist", "-nostdin"); }\n'})
+    record("argv-contract: an out-of-line `mod argv_contract;` FAILS, naming the inline block it needs",
+           len(_p) == 1 and "out of line" in _p[0])
+    _p, _ = _pin(_box("x"), {"src-tauri/src/engines/ffmpeg/mod.rs": "mod plan;\n",
+                             "src-tauri/src/engines/ffmpeg/plan/mod.rs": "mod args;\n",
+                             "src-tauri/src/engines/ffmpeg/plan/args.rs": _GOOD})
+    record("argv-contract: a directory engine module is read whole, at any depth - the block may sit in any file "
+           "under it (here ffmpeg/plan/args.rs, two levels down)",
+           _p == [])
+    _p, _ = _pin(_box("x"), {"src-tauri/src/engines/pandoc.rs": _GOOD, "src-tauri/src/engines/ffmpegx.rs": _GOOD})
+    record("argv-contract: a block in another engine's module (pandoc.rs, ffmpegx.rs) does not count",
+           len(_p) == 1 and "no file of its engine module" in _p[0])
+    _p, _ = _pin(_box("x"), {_MOD: '// mod argv_contract { "-protocol_whitelist" "-nostdin" }\n'
+                                   'const DOC: &str = "mod argv_contract { }";\n'})
+    record("argv-contract: `mod argv_contract {` inside a comment or a string is no block (FAILS)",
+           len(_p) == 1 and "no file of its engine module" in _p[0])
+    _p, _ = _pin(_box("x"), {_MOD: _GOOD[: _GOOD.rindex("}")]})
+    record("argv-contract: a block that never closes FAILS", len(_p) == 1 and "never closes" in _p[0])
+finally:
+    shutil.rmtree(_td3, ignore_errors=True)
+
+# The live tree: the pin holds (each engine dormant until its argv box is [x], then satisfied), and every box the
+# table names resolves to exactly one plan box - a stale id would arm its engine fail-closed.
+_lp, _ = m.argv_contract_pin()
+record("argv-contract: the LIVE tree passes the pin, and every ARGV_CONTRACT box resolves to one plan box",
+       _lp == [] and all(m._box_marker(m.ROOT / pf, bx) is not None for pf, bx, _ in m.ARGV_CONTRACT.values()))
+
+# The main() wiring: driven over a temp root with the module's ROOT, contract, Semgrep probe and shellcheck leg
+# swapped for the two calls and restored after, so the real repo is never scanned.
+_saved = (m.ROOT, m.ARGV_CONTRACT, m._semgrep, m.shellcheck_scan)
+_td4 = Path(tempfile.mkdtemp(prefix="g24-sast-main-"))
+try:
+    (_td4 / "docs" / "plan").mkdir(parents=True)
+    m.ROOT = _td4
+    m.ARGV_CONTRACT = {"ffmpeg": ("docs/plan/P6-x.md", "P6.9", ("-protocol_whitelist",))}
+    m._semgrep = lambda: None
+    m.shellcheck_scan = lambda: 0
+    _runs = []
+    for _mk in (" ", "x"):
+        (_td4 / "docs" / "plan" / "P6-x.md").write_text(f"- [{_mk}] **P6.9** [RUST] Apply the flags · G38\n",
+                                                        encoding="utf-8", newline="\n")
+        _out = io.StringIO()
+        with contextlib.redirect_stdout(_out), contextlib.redirect_stderr(_out):
+            _runs.append((m.main([]), _out.getvalue()))
+    record("argv-contract: main() runs the pin - dormant exits 0 naming the leg, an armed engine without its "
+           "module exits 1",
+           _runs[0][0] == 0 and "argv-contract" in _runs[0][1] and "ffmpeg dormant" in _runs[0][1]
+           and _runs[1][0] == 1 and "argv contract: ffmpeg is armed" in _runs[1][1])
+finally:
+    m.ROOT, m.ARGV_CONTRACT, m._semgrep, m.shellcheck_scan = _saved
+    shutil.rmtree(_td4, ignore_errors=True)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} legs passed")

@@ -372,8 +372,8 @@ build-time mechanics that realise them**:
   ICO must read — and **fails the build** otherwise. It is the structural proof of the coder
   lockdown, which is compiled into the worker rather than parsed from a file; on the §3.5.5
   fallback route the same self-check runs against the staged read-only `policy.xml`, whose
-  directory reaches the worker as the `policy_dir=` argv key under the G29 (b) engine-argv
-  rule.
+  directory reaches the worker as the `policy_dir=` argv key, pinned by an `image` entry in
+  the G29 (b) argv contract.
 - **Exposed-parameter capability assertions (against the §3.8-pinned versions) `[DECIDED]`:**
   the per-format option names ConvertIA exposes must actually exist in the staged engine
   builds, so the stage step asserts (and **fails the build** on a miss): (1) the **FFmpeg

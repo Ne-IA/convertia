@@ -1404,7 +1404,9 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
 - **Concrete opts (from `documents.md`):** `--wrap=preserve`; `*→HTML`
   `--standalone --embed-resources` (self-contained single file, images inlined);
   `MD` read dialect `-f gfm`; `*→MD` `-t gfm`; `[DEFER: corpus]` image policy
-  (leans drop-with-note vs data-URI) owned by documents.md.
+  (leans drop-with-note vs data-URI) owned by documents.md. Every invocation also
+  passes `--resource-path <the item's working directory>`, never a user or home
+  directory (G29 (b)).
 - **Reader limits honored (not re-decided):** pandoc **cannot** read legacy binary
   `.doc` and has gaps reading RTF → those down-conversions are **not** assigned to
   pandoc (documents.md reassigns them to LibreOffice); the registry (§3.2) never
@@ -1491,8 +1493,8 @@ proves the structural half; a §0.11 T11 runtime check covers the rest, and the 
   leg, also with a permissive `policy.xml` placed beside it. If it does not, the allowlist
   ships as a read-only `policy.xml` bundle resource, the core passes its directory as the
   `policy_dir=` argv key, the worker sets `MAGICK_CONFIGURE_PATH` in its own process before
-  ImageMagick reads its configuration, the same read-back runs against it, and the G29 (b)
-  engine-argv rule covers the key — without escalation.
+  ImageMagick reads its configuration, the same read-back runs against it, and an `image`
+  entry in the G29 (b) argv contract pins the key — without escalation.
 - **libheif's codecs are built in `[DECIDED]`.** libheif is built from source with libde265
   (HEVC decode), dav1d (AV1 decode), kvazaar (HEVC encode, BSD-3-Clause; left out where
   HEVC encode is gapped, §3.4.4a) and aom (AV1 encode) built in, plugin loading off and no

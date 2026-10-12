@@ -92,6 +92,7 @@
 - [ ] **P6.9** [RUST] Apply the always-on global FFmpeg flags + the argv SSRF/LFR defence-in-depth · §3.5.1 · G38 G42 G42b
   needs: P6.8
   > prepend the global flags to every FFmpeg job: `-nostdin -hide_banner -loglevel error -y` (`-y` safe — target is the §2.1 temp path, `-nostdin` prevents the parent-stdin-consume hang); the per-input `-protocol_whitelist file,pipe` (defence-in-depth on the network-absent build, set before each input); and NEVER `-safe 0` on the concat demuxer (`-safe 1` default rejects absolute/`..` paths). These are the runtime half of the §3.5.1 control.
+  > Delivers the FFmpeg module's inline `mod argv_contract` test module, asserting `-protocol_whitelist file,pipe` before every input; check-sast's argv-contract leg (G29 (b)) requires it once this box is `[x]`.
 - [ ] **P6.10** [RUST] Wire FFprobe stream inspection + the `ProbeOutput` → `plan_encode` denominator path · §3.5.1 §1.7 §1.11 · G31
   needs: P6.8, P4.9
   > `ffprobe -v error -print_format json -show_streams -show_format <input>` (probe-first for video) parsed into `ProbeOutput` (inner codecs / duration / rotation / interlace); the duration becomes the §1.11 progress denominator carried into `Engine::plan_encode(.., &probe)` (§3.2.1/§3.2.2) which builds the encode `Invocation` with `ProgressModel::FfmpegKeyValue { duration_us }` already populated — NO placeholder-then-mutate. (`needs: P4.9` — the P4-built two-step probe-then-encode sequencing this populates.)
