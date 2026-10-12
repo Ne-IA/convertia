@@ -1213,10 +1213,9 @@ record("31 sweep: an OPEN `[ ]` sweep box (not [!extern]) -> caught",
 record("31 sweep: a successor phase whose first box P<n+1>.1 is ABSENT -> caught (fail-closed, never a silent skip)",
        any("P3.1 is absent" in f.msg for f in m.doc31_sweep_binding(_sweep_plan(first3="P3.2"))))
 record("31 sweep: clean on the real plan (P2..P11 each bind their sweep)", m.doc31_sweep_binding(_real) == [])
-record("registry: every DOC_CHECKS key has its numbered item in build-gates.md §6 (a check without its §6 "
-       "definition is a dangling cross-reference - the check-31 r1 P1 catcher)",
-       all(m.re.search(rf"^{k.split(':')[0]}\. \*\*", _real.docs.get("docs/security/build-gates.md", ""), m.re.M)
-           for k in m.DOC_CHECKS))
+# [Test-Change: G7 check 34 registry leg — old-obsolete+new-correct, build-gates §6 item 34] the canary-only
+# DOC_CHECKS -> §6 item assertion moved into plan-lint check 34 (g), which runs it at L1 in both directions and
+# with each item's function; its legs are under check 34 below.
 record("registry: the retired checks 1 and 10 keep their numbered §6 items, marked retired, and have no DOC_CHECKS key",
        not any(k.split(":")[0] in ("1", "10") for k in m.DOC_CHECKS)
        and all(m.re.search(rf"^{n}\. \*\*[^*\n]* — retired\*\*", _real.docs.get("docs/security/build-gates.md", ""), m.re.M)
@@ -1591,35 +1590,117 @@ record("base-case: a deliberately-broken box yields findings (would exit 1)", le
 _REQ32 = "# Pinned EXACT-version `semgrep=={h}` + its tree\nsemgrep=={p} \\\n    --hash=sha256:aa\n"
 _DOC32 = {"docs/security/build-gates.md": "| **G29** | SAST | Semgrep, pinned in `requirements-ci.txt` | push |\n",
           "docs/plan/P0-build-and-security.md": "- [x] **P0.4.2** [GATE] Wire SAST · G29\n  > Semgrep, pinned in `requirements-ci.txt`\n"}
+_OK32 = _REQ32.format(h="9.9.9", p="9.9.9")
+
+
+# [Test-Change: G7 SAST-pin single source — old-obsolete+new-correct, build-gates §6 item 32] check 32 reads the
+# tracked files too, so every fixture leg runs over a stubbed git index; the existing assertions are kept.
+def _run32(c, tracked=None):
+    """doc32 over `c` with the git index stubbed to `tracked` (default: none) - the throwaway root is no repository."""
+    saved = m._git_ls_files
+    try:
+        m._git_ls_files = lambda root: [] if tracked is None else tracked
+        return m.doc32_sast_pin_sync(c)
+    finally:
+        m._git_ls_files = saved
+
+
 with tempfile.TemporaryDirectory() as _d32:
     _r32 = Path(_d32)
-    def _c32(req: str | None, docs: dict[str, str] | None = None):
+    def _c32(req: str | None, docs: dict[str, str] | None = None, files: dict[str, bytes] | None = None):
         if req is None:
             (_r32 / "requirements-ci.txt").unlink(missing_ok=True)
         else:
             (_r32 / "requirements-ci.txt").write_text(req, encoding="utf-8")
+        for rel, data in (files or {}).items():
+            (_r32 / rel).parent.mkdir(parents=True, exist_ok=True)
+            (_r32 / rel).write_bytes(data)
         return m.Ctx(root=_r32, boxes=[], by_id={}, plan_files=[], gate_ids=set(), docs=_DOC32 | (docs or {}))
     record("32 sast-pin-sync: the header names the pin and no doc names a Semgrep version -> clean",
-           m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.9"))) == [])
+           _run32(_c32(_OK32)) == [])
     record("32 sast-pin-sync: the requirements HEADER line stale (`semgrep==9.9.9` above a 9.9.10 pin) -> flagged",
-           [(f.file, "header line" in f.msg) for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.10")))]
+           [(f.file, "header line" in f.msg) for f in _run32(_c32(_REQ32.format(h="9.9.9", p="9.9.10")))]
            == [("requirements-ci.txt", True)])
     record("32 sast-pin-sync: a requirements file WITHOUT a semgrep== pin -> flagged (the file's reason to exist)",
-           any("no `semgrep==" in f.msg for f in m.doc32_sast_pin_sync(_c32("requests==2.0.0\n"))))
+           any("no `semgrep==" in f.msg for f in _run32(_c32("requests==2.0.0\n"))))
     # [Test-Change: G7 target-absent flip — old-obsolete+new-correct, build-gates §6] requirements-ci.txt
     # landed, so its absence is a finding, never target-absent.
     record("32 sast-pin-sync: requirements-ci.txt absent -> caught (a missing target is a finding)",
-           [f.msg for f in m.doc32_sast_pin_sync(_c32(None))] == ["requirements-ci.txt is missing or empty — fail-closed"])
+           [f.msg for f in _run32(_c32(None))] == ["requirements-ci.txt is missing or empty — fail-closed"])
     record("32 sast-pin-sync: a G29 row naming `semgrep==9.9.9` -> flagged (the version is single-sourced)",
-           [(f.file, f.lineno) for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.9"), {
+           [(f.file, f.lineno) for f in _run32(_c32(_OK32, {
                "docs/security/build-gates.md": "# gates\n| **G29** | SAST | `semgrep==9.9.9` | push |\n"}))]
            == [("docs/security/build-gates.md", 2)])
     record("32 sast-pin-sync: a P0.4.2 note naming Semgrep `9.9.9` -> flagged (the backticked spelling)",
-           [f.file for f in m.doc32_sast_pin_sync(_c32(_REQ32.format(h="9.9.9", p="9.9.9"), {
+           [f.file for f in _run32(_c32(_OK32, {
                "docs/plan/P0-build-and-security.md": "- [x] **P0.4.2** [GATE] Wire SAST · G29\n"
                                                      "  > Semgrep `9.9.9` hash-pinned\n"}))]
            == ["docs/plan/P0-build-and-security.md"])
-record("32 sast-pin-sync: the REAL repo is clean (the header names the pin; no doc names a Semgrep version)",
+    # the vendored rule-pack header incident: a tracked non-doc file restating the pin is read like a doc
+    _V32 = "scripts/semgrep-rules/vendor/p-x.yaml"
+    record("32 sast-pin-sync: a tracked non-doc file (a vendored rule-pack header) naming `semgrep==9.9.8` -> flagged "
+           "(every tracked text file is read, not only the doc set)",
+           [(f.file, f.lineno) for f in _run32(_c32(_OK32, files={
+               _V32: b"# VENDORED pack\n# Snapshot: for the pinned semgrep==9.9.8 (requirements-ci.txt).\nrules: []\n"}),
+               [_V32])] == [(_V32, 2)])
+    _SPELL32 = {"docs/a.md": "Validated against pinned semgrep 9.9.9 in the container.\n",
+                "docs/b.md": "the Semgrep v9.9.9 release\n",
+                "docs/c.md": "image `semgrep/semgrep:9.9.9`\n",
+                "docs/d.md": "the sdist semgrep-9.9.9.tar.gz\n",
+                "docs/e.md": "npx semgrep@9.9.9\n",
+                "docs/f.md": "SEMGREP_VERSION: \"9.9.9\"\n",
+                "docs/g.md": "`semgrep` (9.9.9)\n"}
+    record("32 sast-pin-sync: the plain-prose, `v`, image-tag, sdist, `@`, identifier and parenthesized spellings are "
+           "versions too -> each flagged",
+           sorted(f.file for f in _run32(_c32(_OK32, _SPELL32))) == sorted(_SPELL32))
+    # a separator is any non-word character or `v`, however many, and the name may sit anywhere in a name token
+    _SPELL32B = {"docs/h.md": "pip install 'semgrep>=9.9.9'\n",
+                 "docs/i.md": "semgrep~=9.9.9\n",
+                 "docs/j.md": "Semgrep **9.9.9**\n",
+                 "docs/k.md": "PINNED_SEMGREP = \"9.9.9\"\n",
+                 "docs/l.md": "const pinnedSemgrep = '9.9.9';\n",
+                 "docs/m.md": "semgrep-version: 9.9.9\n",
+                 "docs/o.md": "semgrep.version = 9.9.9\n",
+                 "docs/p.md": "semgrep = \"==9.9.9\"\n",
+                 "docs/q.md": "Semgrep v 9.9.9\n",
+                 "docs/r.md": "installs the pinned Semgrep\n9.9.9 wheel from requirements-ci.txt.\n"}
+    record("32 sast-pin-sync: the pip-operator (`>=`, `~=`), markdown-emphasis, identifier-head (`_`, camelCase), "
+           "hyphen- and dot-joined key, six-separator (a Pipfile line), spaced-`v` and hard-wrapped spellings are "
+           "versions too -> each flagged",
+           sorted(f.file for f in _run32(_c32(_OK32, _SPELL32B))) == sorted(_SPELL32B))
+    # each file is matched whole: a line break separates like any other non-word character, and a finding names the
+    # line holding the name, once per line
+    _WRAP32 = "scripts/x.sh"
+    record("32 sast-pin-sync: a version hard-wrapped onto the next line (prose, a comment block, a CRLF file) or set "
+           "past a blank line is flagged at the line holding the name, and two versions on one line are one finding",
+           [(f.file, f.lineno) for f in _run32(_c32(_OK32, {
+               "docs/s.md": "intro\nthe pinned Semgrep\n9.9.9 wheel; semgrep 9.9.8 and semgrep==9.9.7\n"
+                            "# a comment naming Semgrep\n#   v9.9.6 in a wrapped block\nthe pinned Semgrep:\n\n9.9.4\n"},
+               files={_WRAP32: b"#!/bin/sh\r\n# the pinned Semgrep\r\n# 9.9.5\r\n"}), [_WRAP32])]
+           == [("docs/s.md", 2), ("docs/s.md", 3), ("docs/s.md", 4), ("docs/s.md", 6), (_WRAP32, 2)])
+    record("32 sast-pin-sync: near misses name no version (the bare `semgrep==` line, `semgrep==<new>`, the rule "
+           "directory, the registry URL, a date) and a version set apart by a word or written before the name is a "
+           "named residual -> clean",
+           _run32(_c32(_OK32, {"docs/n.md": "the `semgrep==` line; printf 'semgrep==<new>'; scripts/semgrep-rules/vendor/;"
+                                             " https://semgrep.dev/c/p/rust; semgrep 2026-06-18;"
+                                             " Semgrep, version 9.9.9\nthe 9.9.9 Semgrep release\n"})) == [])
+    record("32 sast-pin-sync: requirements-ci.txt's own lines and the planted versions in g24-plan-lint.py are exempt, "
+           "and a binary tracked file (a NUL byte) is not read -> clean",
+           _run32(_c32(_OK32 + "# Bumped to `9.9.9` from semgrep==9.9.8\n", files={
+               "scripts/gate-selftests/g24-plan-lint.py": b"# planted: semgrep==9.9.7\n",
+               "tests/corpus/x.bin": b"\x00semgrep==9.9.6\n"}),
+               ["requirements-ci.txt", "scripts/gate-selftests/g24-plan-lint.py", "tests/corpus/x.bin"]) == [])
+    _saved_ls32 = m._git_ls_files
+    try:
+        m._git_ls_files = lambda root: None
+        _git_down32 = m.doc32_sast_pin_sync(_c32(_OK32))
+    finally:
+        m._git_ls_files = _saved_ls32
+    record("32 sast-pin-sync: an unavailable git -> caught (the tracked scope is unknown, fail-closed), stub restored",
+           [f.msg for f in _git_down32] == ["git ls-files failed - cannot enumerate the tracked files that must not "
+                                            "name a Semgrep version (fail-closed)"]
+           and m._git_ls_files is _saved_ls32)
+record("32 sast-pin-sync: the REAL repo is clean (the header names the pin; no other file names a Semgrep version)",
        m.doc32_sast_pin_sync(_real) == [])
 
 # --- check 33: a gate row never defers a leg to an unowned box (shape rule, word window, real-box resolution) --
@@ -1756,6 +1837,183 @@ record("33 gate-row-promise: generic process prose outside a row / §6 item ('a 
 _bs33, _by33, _pf33 = m.load_plan(ROOT)
 record("33 gate-row-promise: the REAL build-gates.md carries no unowned promise (ids resolved against the real plan)",
        m.doc33_gate_row_promise(m.Ctx(root=ROOT, boxes=_bs33, by_id=_by33, plan_files=_pf33, gate_ids=set(), docs={})) == [])
+
+# --- check 34: the catalogue cells are bound (row schema, Status, box ids, wiring, Fail mode, the two registries) ---
+# [Test-Change: G7 check 34 — new-test:the catalogue-structure check is new, build-gates §6 item 34]
+# The fixture: one plan where P2 is unswept (its sweep box [!extern]) and P3 swept ([x]), a P1 box (P1 has no sweep
+# box), a planes tree wiring scripts/check-x in lefthook.yml and scripts/check-z in a workflow while scripts/check-y
+# appears only in comments (a column-0 header like the real planes', an indented full-line comment and a trailing
+# one), and a stubbed git index - so each leg breaks exactly one clause of a clean catalogue.
+_HDR34 = "| ID | Gate | Contract | Enforced by | Status | Blocks | Fail mode |\n|---|---|---|---|---|---|---|\n"
+_TRACKED34 = ["scripts/check-x", "scripts/check-y", "scripts/check-z", "scripts/data.toml", "scripts/gate-selftests/g24-x.py"]
+_PLAN34 = [box(bid="P1.4", marker="x"), box(bid="P2.1", marker="x"), box(bid="P2.2", marker=" "),
+           box(bid="P2.9", marker="!extern", title=_SW), box(bid="P3.1", marker="x", needs=["P2.9"]),
+           box(bid="P3.5", marker="x", title=_SW3)]
+_GP34 = 'default_posture = "fail-closed"\n'
+_FO34 = '[[fail_open]]\ngate = "{g}"\nleg = "{leg}"\nfail_open_at = "L1"\ncovered_by = "L4"\nreason = "r"\n'
+_MAX34 = max(int(k.split(":")[0]) for k in m.DOC_CHECKS)
+
+
+def _row34(gid="G2", contract="Scans the tree.", enforced="`scripts/check-x` (L1 L4) · `scripts/gate-selftests/g24-x.py`",
+           status="live", fail="fail-closed"):
+    return f"| **{gid}** | A gate | {contract} | {enforced} | {status} | commit | {fail} |\n"
+
+
+def _sec6_34(drop=None, rename=None, retire=None, extra=""):
+    """A §6 registering every DOC_CHECKS key - items 1..max, each free number a retired item, the function named on
+    a continuation line - with at most one item dropped, renamed or retired."""
+    fns = {int(k.split(":")[0]): fn.__name__ for k, fn in m.DOC_CHECKS.items()}
+    lines = []
+    for n in range(1, max(fns) + 1):
+        if n == drop:
+            continue
+        if n in fns and n != retire:
+            lines.append(f"{n}. **Check {n}** — what it catches.\n    `{(rename or {}).get(n, fns[n])}`.")
+        else:
+            lines.append(f"{n}. **Check {n} — retired** — no function.")
+    return "## 6. The checks\n\n" + "\n".join(lines) + "\n" + extra
+
+
+def _cat34(*rows, sec6=None):
+    return "# gates\n\n## 2. L1\n\n" + _HDR34 + "".join(rows or (_row34(),)) + "\n" + (_sec6_34() if sec6 is None else sec6)
+
+
+record("34 catalogue-structure: registered as a doc check", m.DOC_CHECKS.get("34:catalogue-structure") is m.doc34_catalogue_structure)
+record("34 catalogue-structure: the REAL catalogue, plan, planes, gate-planes.toml and §6 registry are clean",
+       m.doc34_catalogue_structure(_real) == [])
+with tempfile.TemporaryDirectory() as _d34:
+    _r34 = Path(_d34)
+    (_r34 / "scripts").mkdir()
+    (_r34 / ".github" / "workflows").mkdir(parents=True)
+    (_r34 / "lefthook.yml").write_text("# the planes; the y gate (scripts/check-y) is named in this header\n"
+                                       "pre-commit:\n  commands:\n    x:\n      run: python3 scripts/check-x\n"
+                                       "    # y:\n    #   run: python3 scripts/check-y\n"
+                                       "    w:  # python3 scripts/check-y\n      run: echo ok\n", encoding="utf-8")
+    (_r34 / ".github" / "workflows" / "ci.yml").write_text(
+        "jobs:\n  a:\n    steps:\n      - run: python3 -P scripts/check-z --full\n", encoding="utf-8")
+
+    def _run34(cat, gp=_GP34, tracked=_TRACKED34):
+        """check 34's messages over `cat` - gate-planes.toml written from `gp` (None: absent), the git index stubbed
+        to `tracked` (None: git unavailable)."""
+        gpf = _r34 / "scripts" / "gate-planes.toml"
+        if gp is None:
+            gpf.unlink(missing_ok=True)
+        else:
+            gpf.write_text(gp, encoding="utf-8")
+        c = m.Ctx(root=_r34, boxes=_PLAN34, by_id={b.box_id: b for b in _PLAN34}, plan_files=[], gate_ids=set(),
+                  docs={"docs/security/build-gates.md": cat})
+        saved = m._git_ls_files
+        try:
+            m._git_ls_files = lambda root: tracked
+            return [f.msg for f in m.doc34_catalogue_structure(c)]
+        finally:
+            m._git_ls_files = saved
+
+    record("34 catalogue-structure: a clean catalogue (an escaped `\\|` inside a cell) -> clean",
+           _run34(_cat34(_row34(contract="Splits `a \\| b` and scans."))) == [])
+    record("34 (a) shape: a six-cell row -> caught, and only it",
+           _run34(_cat34("| **G2** | A gate | Scans. | `scripts/check-x` | live | fail-closed |\n"))
+           == ["G2: the row has 6 cells, not the seven of the schema (ID, Gate, Contract, Enforced by, Status, Blocks, "
+               "Fail mode; a literal pipe is `\\|`)"])
+    record("34 (a) shape: a second row for one gate id -> caught",
+           _run34(_cat34(_row34(), _row34())) == ["G2: a second catalogue row (the first is line 7) - one row per gate id"])
+    _bad34 = _run34(_cat34(_row34("G2", status="partial"), _row34("G3", status="unbuilt → P2.2 (soon)"),
+                           _row34("G4", status="live-partial (the scan → P2.2)")))
+    record("34 (b) Status: a free word, prose after the box list and a live-partial without its `<live legs>; ` part "
+           "-> each caught",
+           len(_bad34) == 3 and all("is outside the vocabulary" in s for s in _bad34)
+           and [s.split(":")[0] for s in _bad34] == ["G2", "G3", "G4"])
+    record("34 (b)/(f) vocabularies: live, live-partial (<legs>; <rest> → <box>), unbuilt → <box>, <box>, dormant-until "
+           "<box>, informational (…) and fail-closed (…) -> clean",
+           _run34(_cat34(_row34("G2"), _row34("G3", status="live-partial (the scan; the rest → P2.2)"),
+                         _row34("G4", status="unbuilt → P2.2, P2.1", fail="informational (release-tier)"),
+                         _row34("G5", enforced="`scripts/check-z --full`", status="dormant-until P2.2",
+                                fail="fail-closed (self-attested; not a security control)"))) == [])
+    record("34 (c) box ids: a Status box that is no plan box -> caught",
+           _run34(_cat34(_row34(status="unbuilt → P9.9"))) == ["G2: Status names P9.9, which is no plan box"])
+    record("34 (c) box ids: a box id in the Contract cell -> caught (box ids stand only in the Status cell)",
+           _run34(_cat34(_row34(contract="Delivered by P2.1."))) == ["G2: the Contract cell names P2.1 - box ids stand "
+                                                                    "only in the Status cell (build-gates §0)"])
+    record("34 (d) done boxes: an [x] Status box in an UNSWEPT phase (its sweep box [!extern]) -> clean",
+           _run34(_cat34(_row34(status="unbuilt → P2.1"))) == [])
+    record("34 (d) done boxes: the same shape once its phase's sweep box is [x] -> caught (re-point at the sweep)",
+           _run34(_cat34(_row34(status="unbuilt → P3.1"))) == ["G2: Status names P3.1, which is [x], and its phase's "
+                                                              "sweep box is [x] - re-point the cell (live, or the box "
+                                                              "that still owes the rest; test-strategy §11.2)"])
+    record("34 (d) done boxes: an [x] Status box of a phase without a sweep box (P1) -> caught",
+           any("Status names P1.4, which is [x], and phase P1 has no phase-end sweep box" in s
+               for s in _run34(_cat34(_row34(status="unbuilt → P1.4")))))
+    record("34 (e) wiring: a live row whose script is named only in comments (a column-0 header, an indented full-line "
+           "comment and a trailing `#`) -> caught",
+           _run34(_cat34(_row34(enforced="`scripts/check-y`"))) == ["G2: Enforced by names `scripts/check-y`, but no "
+                                                                     "non-comment line of lefthook.yml or "
+                                                                     ".github/workflows runs it - a live gate is wired"])
+    record("34 (e) wiring: a workflow-run script with flags, a tracked data file, a tracked directory and a tracked "
+           "self-test -> clean",
+           _run34(_cat34(_row34(enforced="`scripts/check-z --full` (L4) · `scripts/data.toml` · `scripts/gate-selftests/`"
+                                         " · `scripts/gate-selftests/g24-x.py`"))) == [])
+    record("34 (e) tracked: an untracked script, an untracked self-test path and a directory with no tracked file on "
+           "live rows -> each caught",
+           _run34(_cat34(_row34("G2", enforced="`scripts/check-q`"),
+                         _row34("G3", enforced="`scripts/check-x` · `scripts/gate-selftests/g24-gone.py`"),
+                         _row34("G4", enforced="`scripts/check-x` · `scripts/nope/`")))
+           == ["G2: Enforced by names `scripts/check-q`, which is not a tracked file",
+               "G3: Enforced by names `scripts/gate-selftests/g24-gone.py`, which is not a tracked file",
+               "G4: Enforced by names `scripts/nope/`, which is not a tracked file"])
+    record("34 (e) scope: an unbuilt row may name its future, untracked driver -> clean",
+           _run34(_cat34(_row34(enforced="`scripts/check-q`", status="unbuilt → P2.2"))) == [])
+    record("34 (e) scope: a dormant-until row is wired by definition - an unwired script there -> caught",
+           _run34(_cat34(_row34(enforced="`scripts/check-y`", status="dormant-until P2.2")))
+           == ["G2: Enforced by names `scripts/check-y`, but no non-comment line of lefthook.yml or .github/workflows "
+               "runs it - a dormant-until gate is wired"])
+    record("34 (e) tracked: an unavailable git -> caught (fail-closed); the wiring leg still runs",
+           _run34(_cat34(), tracked=None) == ["git ls-files failed - cannot verify that the Enforced-by paths are "
+                                              "tracked (fail-closed)"])
+    record("34 (f) registry: a fail-soft cell and a fail-open-leg cell without a [[fail_open]] row -> each caught",
+           _run34(_cat34(_row34("G2", fail="fail-soft"), _row34("G3", fail="fail-closed; fail-open leg: L1 without a base")))
+           == [f"{g}: the Fail mode is fail-soft or names a fail-open leg, but scripts/gate-planes.toml has no "
+               "[[fail_open]] row for it (build-gates §0)" for g in ("G2", "G3")])
+    record("34 (f) registry: a [[fail_open]] gate whose cell reads fail-closed, and one with no catalogue row -> each caught",
+           _run34(_cat34(), gp=_GP34 + _FO34.format(g="G2", leg="a") + _FO34.format(g="G9", leg="b"))
+           == ["G2 has a [[fail_open]] row, but its Fail-mode cell names no fail-soft posture and no fail-open leg - "
+               "name the leg in the cell or drop the row", "G9 has a [[fail_open]] row but no catalogue row"])
+    record("34 (f) registry: two [[fail_open]] rows for one gate whose cell names two fail-open legs (the G74 shape) -> clean",
+           _run34(_cat34(_row34(fail="fail-closed; fail-open legs: (a) without a base, (b) without a toolchain")),
+                  gp=_GP34 + _FO34.format(g="G2", leg="a") + _FO34.format(g="G2", leg="b")) == [])
+    _fm34 = _run34(_cat34(_row34("G2", fail="fail-closed except offline"), _row34("G3", fail="fail-open"),
+                          _row34("G4", fail="Fail-closed")))
+    record("34 (f) vocabulary: a posture smuggled after fail-closed, a bare fail-open and a capitalised word -> each caught",
+           len(_fm34) == 3 and all("is outside the vocabulary" in s and "Fail mode" in s for s in _fm34))
+    record("34 (g) registry: a DOC_CHECKS key without its §6 item -> caught (the canary-only registry leg, now at L1)",
+           _run34(_cat34(sec6=_sec6_34(drop=_MAX34)))
+           == [f"DOC_CHECKS key {k!r} has no §6 item {_MAX34} - every check is defined in build-gates §6"
+               for k in m.DOC_CHECKS if k.startswith(f"{_MAX34}:")])
+    record("34 (g) registry: a §6 item that names another function -> caught",
+           _run34(_cat34(sec6=_sec6_34(rename={2: "doc2_renamed"}))) == ["§6 item 2 does not name its function "
+                                                                         "`doc2_cross_reference`"])
+    record("34 (g) registry: an item that is neither registered nor marked retired (a phantom check) -> caught",
+           _run34(_cat34(sec6=_sec6_34(extra=f"{_MAX34 + 1}. **Phantom check** — described, never run. `doc_phantom`.\n")))
+           == [f"§6 item {_MAX34 + 1} (Phantom check) has no DOC_CHECKS key and is not marked `— retired` - a check "
+               "the catalogue describes and plan-lint does not run"])
+    record("34 (g) registry: an item marked retired whose check is still registered -> caught",
+           _run34(_cat34(sec6=_sec6_34(retire=2))) == ["§6 item 2 is marked retired, but DOC_CHECKS registers "
+                                                       "'2:cross-reference-validity'"])
+    _gap34 = _run34(_cat34(sec6=_sec6_34(drop=5, extra="3. **Check 3 again** — twice. `doc3_heading_hierarchy`.\n")))
+    record("34 (g) registry: a skipped number and a repeated one -> each caught (a retired check keeps its line)",
+           len(_gap34) == 3 and any(s.startswith("§6 item 3 appears twice") for s in _gap34)
+           and "§6 skips item 5 - a retired check keeps its number and its line" in _gap34
+           and any(s.startswith("DOC_CHECKS key '5:") for s in _gap34))
+    record("34 missing target: no catalogue, then a catalogue without a gate row -> each caught",
+           _run34("") == ["docs/security/build-gates.md is missing or empty — fail-closed"]
+           and _run34("# gates\n\n" + _sec6_34()) == ["the build-gates `| **Gnn** |` catalogue is missing or empty — "
+                                                     "fail-closed"])
+    record("34 missing target: a catalogue without §6 -> caught",
+           _run34(_cat34(sec6="")) == ["build-gates §6 (`## 6.`) is missing - the DOC_CHECKS registry has no items to "
+                                      "bind (fail-closed)"])
+    record("34 missing target: gate-planes.toml absent, then unparseable -> each caught",
+           _run34(_cat34(), gp=None) == ["scripts/gate-planes.toml is missing or empty — fail-closed"]
+           and _run34(_cat34(), gp="[[fail_open]\n") == ["gate-planes.toml is unparseable - cannot bind the Fail-mode "
+                                                        "cells to the [[fail_open]] registry (fail-closed)"])
 
 # --- missing target: a doc check over a landed target reports its absence (build-gates §6, G7) ------------------
 # Each leg removes exactly one target and expects exactly the finding that names it; the registry leg then pins

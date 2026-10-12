@@ -2,7 +2,8 @@
 # policy, as machine-readable config (P0.2.12, G54b). This is the "empty-but-wired contract"
 # the P0.3/P0.4 gates slot into: it is the SOURCE-OF-TRUTH for the plane STRUCTURE + the
 # fail-open policy. The per-gate plane and posture live in the build-gates.md rows; this file holds
-# the plane structure and the fail-open registry.
+# the plane structure and the fail-open registry. Each [[fail_open]] gate matches a fail-soft or
+# fail-open-leg Fail-mode cell in build-gates.md, and the reverse (plan-lint check 34).
 # Validated by scripts/check-gate-planes (G54b - the plane-DEFINITION-integrity sibling of the
 # G54 plane-EXECUTION-integrity gate). L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 #

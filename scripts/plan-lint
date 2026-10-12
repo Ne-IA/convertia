@@ -490,13 +490,13 @@ _GATE_ROW_ID_RE = re.compile(r"^\| \*\*(G\d+[a-z]?)\*\* \|")
 _CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
 
-def _gate_row_cells(bg: str) -> dict[str, list[str]]:
-    """(pure) The cells of every `| **Gnn** |` catalogue row, keyed by gate id (the first row of an id): the line
-    split on the unescaped `|`, each cell stripped, the empty edge cells dropped. The schema is seven cells - ID,
-    Gate, Contract, Enforced by, Status, Blocks, Fail mode (build-gates §0 *Status and fail posture*); a row with
-    another count is returned as it is, and the caller decides."""
-    rows: dict[str, list[str]] = {}
-    for line in bg.splitlines():
+def _catalogue_rows(bg: str) -> list[tuple[int, str, list[str]]]:
+    """(pure) (line number, gate id, cells) for every `| **Gnn** |` catalogue row in file order, a repeated id
+    included: the line split on the unescaped `|`, each cell stripped, the empty edge cells dropped. The schema is
+    seven cells - ID, Gate, Contract, Enforced by, Status, Blocks, Fail mode (build-gates §0 *Status and fail
+    posture*); a row with another count is returned as it is, and the caller decides."""
+    rows: list[tuple[int, str, list[str]]] = []
+    for lineno, line in enumerate(bg.splitlines(), 1):
         m = _GATE_ROW_ID_RE.match(line)
         if not m:
             continue
@@ -505,7 +505,15 @@ def _gate_row_cells(bg: str) -> dict[str, list[str]]:
             cells = cells[1:]
         if cells and not cells[-1]:
             cells = cells[:-1]
-        rows.setdefault(m.group(1), cells)
+        rows.append((lineno, m.group(1), cells))
+    return rows
+
+
+def _gate_row_cells(bg: str) -> dict[str, list[str]]:
+    """(pure) The cells of every catalogue row (_catalogue_rows), keyed by gate id - the first row of an id."""
+    rows: dict[str, list[str]] = {}
+    for _lineno, gid, cells in _catalogue_rows(bg):
+        rows.setdefault(gid, cells)
     return rows
 
 
@@ -2064,7 +2072,7 @@ def doc29_stale_liveness(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  The canonical-string, SAST-pin, gate-row-promise and sweep-binding checks, then the registry.
+#  The canonical-string, SAST-pin, gate-row-promise, sweep-binding and catalogue-structure checks, then the registry.
 # =============================================================================================
 # --- check 30: spec-restatement fidelity (the P4.33 QuarantinedByOs reconcile's class catcher) ---------
 # One canonical user-facing string has ONE home — the §2.8.2, §2.9.1 and §2.13.5 tables in 02-guarantees.md —
@@ -2221,12 +2229,27 @@ def doc30_spec_restatement_fidelity(ctx: Ctx) -> list[Finding]:
 # requirements-ci.txt pins the Semgrep binary (`semgrep==X`, --require-hashes) and its own header line names the
 # pin. More than once (dfda4fb, d6847d0, the 2026-09-24 re-land of Dependabot #33) a bump carried prose notes that
 # restated the version by hand, and a forgotten note is a stale version literal the doc graph cannot see (G68
-# resolves links, not numbers). So the docs name the file, never the version: this check reads the pin, requires
-# the header to name it, and reds any doc in the doc set that names a Semgrep version, so a bump touches
-# requirements-ci.txt alone (CLAUDE.md §5: a version pin moves with every doc that restates it).
+# resolves links, not numbers): the vendored rule-pack headers kept naming the first pin through every bump, and a
+# plan note restated the pin as plain prose, out of reach of the pip and backticked spellings. So every other file
+# names the file, never the version: this check reads the pin, requires the header to name it, and reds every doc
+# of the doc set and every other tracked text file that names a Semgrep version - requirements-ci.txt itself and
+# this check's planted versions in g24-plan-lint.py excepted - so a bump touches requirements-ci.txt alone
+# (CLAUDE.md §5: a version pin moves with every doc that restates it). A version is `semgrep==` with a digit after
+# it, or the tool's name, any case, anywhere in a name token of word characters, dots and hyphens (`PINNED_SEMGREP`,
+# `pinnedSemgrep`, `SEMGREP_VERSION`, `semgrep-version`, `semgrep.version`), followed by an `X.Y.Z` triple with
+# nothing but non-word characters and `v` between them - however many: a space, a quote, a pip operator (`>=`,
+# `~=`), markdown emphasis, a path, image-tag or sdist separator, a line break (each file is matched whole, so a
+# hard wrap between the name and the version is seen, and so is a blank line: an `X.Y.Z` heading right after a
+# paragraph that ends in the name reads as a version and is reworded; the finding names the line the name is on).
+# Named residuals: a version set apart from the name by a separate word ("Semgrep, version 1.2.3") or written before
+# the name is not seen, and a file holding a NUL byte is binary and not read.
 _SAST_PIN_RE = re.compile(r"(?m)^semgrep==([0-9][\w.+-]*)")
-# a Semgrep version in a doc: the pip spelling or the backticked dotted form after the tool's name
-_SAST_VERSION_IN_DOC_RE = re.compile(r"semgrep==\d|Semgrep `\d+\.\d+\.\d+`")
+# the name token's tail, then the separator run, split at its first character that cannot extend the token: the
+# matches of `[\w.-]*[\Wv]*`, without its quadratic backtracking over a long run of dots, hyphens or `v`
+_SAST_VERSION_RE = re.compile(r"(?i)semgrep(?:==\d|[\w.-]*(?:[^\w.-][\Wv]*)?\d+\.\d+\.\d+)")
+_SAST_PIN_FILE = "requirements-ci.txt"
+# the single source, and the canary file whose fixtures plant versions for this check
+_SAST_PIN_EXEMPT = frozenset({_SAST_PIN_FILE, "scripts/gate-selftests/g24-plan-lint.py"})
 
 
 def _doc_text(ctx: Ctx, rel: str) -> str:
@@ -2239,30 +2262,50 @@ def _doc_text(ctx: Ctx, rel: str) -> str:
 
 def doc32_sast_pin_sync(ctx: Ctx) -> list[Finding]:
     """Check 32: the Semgrep version is single-sourced in requirements-ci.txt - the file pins `semgrep==X`, its own
-    header line names that pin (backticked, or as `semgrep==X`), and no doc in the doc set names a Semgrep version
-    (`semgrep==<digit>...` or Semgrep `` `X.Y.Z` ``). A missing requirements-ci.txt, and a requirements file without
-    the pin, are each a finding."""
-    req = ctx.root / "requirements-ci.txt"
+    header line names that pin (backticked, or as `semgrep==X`), and no other file names a Semgrep version: no doc of
+    the doc set and no tracked text file outside _SAST_PIN_EXEMPT (the spellings are the module comment's). A missing
+    requirements-ci.txt, a requirements file without the pin and an unavailable git are each a finding."""
+    req = ctx.root / _SAST_PIN_FILE
     if not req.is_file():
-        return _target_missing("32:sast-pin-sync", "requirements-ci.txt")
+        return _target_missing("32:sast-pin-sync", _SAST_PIN_FILE)
     text = req.read_text(encoding="utf-8", errors="replace")
     m = _SAST_PIN_RE.search(text)
     if m is None:
-        return [Finding("32:sast-pin-sync", "requirements-ci.txt", 0,
+        return [Finding("32:sast-pin-sync", _SAST_PIN_FILE, 0,
                         "no `semgrep==<version>` pin - the SAST binary pin is this file's reason to exist (G29)")]
     pin = m.group(1)
     out: list[Finding] = []
     header = re.search(r"(?m)^# Pinned EXACT-version .*$", text)
     if header is None or (f"`{pin}`" not in header.group(0) and f"semgrep=={pin}" not in header.group(0)):
-        out.append(Finding("32:sast-pin-sync", "requirements-ci.txt", 0,
+        out.append(Finding("32:sast-pin-sync", _SAST_PIN_FILE, 0,
                            f"the current Semgrep pin `{pin}` is not named in the requirements-ci.txt header line - "
                            "the header names the pin the file holds"))
-    for rel, doc in sorted(ctx.docs.items()):
-        for lineno, line in enumerate(doc.splitlines(), 1):
-            if _SAST_VERSION_IN_DOC_RE.search(line):
+    texts = {rel: doc for rel, doc in ctx.docs.items() if rel not in _SAST_PIN_EXEMPT}
+    tracked = _git_ls_files(ctx.root)
+    if tracked is None:
+        out.append(Finding("32:sast-pin-sync", ".", 0, "git ls-files failed - cannot enumerate the tracked files that "
+                                                       "must not name a Semgrep version (fail-closed)"))
+    for rel in tracked or []:
+        if rel in texts or rel in _SAST_PIN_EXEMPT:
+            continue
+        try:
+            raw = (ctx.root / rel).read_bytes()
+        except OSError:          # a tracked path missing from the working tree, or a directory entry (a submodule)
+            continue
+        if b"\0" not in raw and b"semgrep" in raw.lower():
+            texts[rel] = raw.decode("utf-8", errors="replace")
+    for rel, doc in sorted(texts.items()):
+        # matched whole, so a line break separates like any other non-word character; one finding per line a match
+        # starts on (the line holding the name), the line count carried forward from the previous match
+        lineno, pos, last = 1, 0, 0
+        for v in _SAST_VERSION_RE.finditer(doc):
+            lineno += doc.count("\n", pos, v.start())
+            pos = v.start()
+            if lineno != last:
+                last = lineno
                 out.append(Finding("32:sast-pin-sync", rel, lineno,
-                                   "names a Semgrep version - a Semgrep version is single-sourced in "
-                                   "requirements-ci.txt (name the file, never the version)"))
+                                   "names a Semgrep version - the version is single-sourced in requirements-ci.txt "
+                                   "(name the file, never the version)"))
     return out
 
 
@@ -2403,6 +2446,243 @@ def doc31_sweep_binding(ctx: Ctx) -> list[Finding]:
     return out
 
 
+# --- check 34: the catalogue cells are bound (the row schema, its vocabularies, the fail-open and check registries) --
+# build-gates.md states every gate as one seven-cell row - ID, Gate, Contract, Enforced by, Status, Blocks, Fail mode
+# (§0 *Status and fail posture*). The Status and Fail-mode cells are closed vocabularies that check 16 and the
+# phase-end sweep read, so this check binds them at L1 instead of leaving them to review:
+#   (a) shape: every `| **Gnn** |` row splits into the seven cells (a literal pipe is `\|`), one row per gate id;
+#   (b) Status: exactly `live`, `live-partial (<live legs>; <rest> → <box>[, <box>...])`,
+#       `unbuilt → <box>[, <box>...]` or `dormant-until <box>`;
+#   (c) box ids: every box id of a Status cell is a plan box, and no other cell of a row names one, so (d) sees them;
+#   (d) done boxes: a Status box that is [x] while its phase's sweep box (check 31) is [x], or whose phase has no
+#       sweep box, is stale - the sweep re-points the cell no later than its own check-off (test-strategy §11.2);
+#   (e) wiring: every `scripts/...` path in the Enforced-by cell of a live, live-partial or dormant-until row is
+#       tracked, and every top-level script among them (`scripts/<name>`, no extension) is named on a non-comment
+#       line of lefthook.yml or of a .github/workflows YAML file;
+#   (f) Fail mode: exactly `fail-closed`, `fail-soft` or `informational`, each with an optional `(...)` after, or
+#       `fail-closed; fail-open leg: <leg>` (`legs:` for several); the gates whose cell is fail-soft or names a
+#       fail-open leg are exactly the [[fail_open]] gates of scripts/gate-planes.toml, read with tomllib (a gate may
+#       hold one row per leg);
+#   (g) check registry: build-gates §6 numbers its items 1..N, each once; every DOC_CHECKS key has its item, not
+#       marked retired, naming the key's function; an item without a key is marked `— retired`.
+# Named residuals: whether a Contract sentence agrees with its Status and Fail mode is the G1 review's (the cells
+# are bound, the prose is read); a parenthetical after a Fail-mode word is free text; a non-comment plane line
+# that names a script without running it (a step name, a string) counts as wiring; a script that only another
+# script runs is wired through the driver its row names.
+_CATALOGUE = "docs/security/build-gates.md"
+_GATE_PLANES = "scripts/gate-planes.toml"
+_CELL_NAMES = ("ID", "Gate", "Contract", "Enforced by", "Status", "Blocks", "Fail mode")
+_BOX_PAT = r"P\d+(?:\.\d+)+"
+_STATUS_RE = re.compile(rf"live|live-partial \([^);]+; [^)]*→ {_BOX_PAT}[^)]*\)"
+                        rf"|unbuilt → {_BOX_PAT}(?:, {_BOX_PAT})*|dormant-until {_BOX_PAT}")
+_FAIL_MODE_RE = re.compile(r"(?:fail-closed|fail-soft|informational)(?: \(.+\))?|fail-closed; fail-open legs?: \S.*")
+_FAIL_OPEN_CELL = ("fail-soft", "fail-closed; fail-open leg")     # the two Fail-mode forms a [[fail_open]] row backs
+_SCRIPT_PATH_RE = re.compile(r"(?<![\w./-])scripts/[\w.-]+(?:/[\w.-]+)*/?")
+_TOP_SCRIPT_RE = re.compile(r"scripts/[A-Za-z0-9][\w-]*")    # a gate driver: a top-level script without an extension
+_SECTION6_RE = re.compile(r"^## 6\.")
+_SECTION_END_RE = re.compile(r"^#{1,2} ")
+_CHECK_ITEM_RE = re.compile(r"^(\d+)\. \*\*([^*\n]+)\*\*")
+_RETIRED_MARK = " — retired"
+
+
+def _sweep_done_by_phase(boxes: list[Box]) -> dict[int, bool]:
+    """{phase: its phase-end sweep box is [x]} for every phase that has one (check 31 binds one per phase >= 2)."""
+    done: dict[int, bool] = {}
+    for b in boxes:
+        if b.title.startswith(_SWEEP_TITLE):
+            done[b.phase] = done.get(b.phase, False) or b.marker == "x"
+    return done
+
+
+def _plane_lines(root: Path) -> list[str]:
+    """The non-comment lines of the plane files that run the gate scripts - lefthook.yml and every .github/workflows
+    YAML file - with a full-line `#` comment and a trailing ` #` comment stripped (check 27's reading)."""
+    files = [root / "lefthook.yml"]
+    workflows = root / ".github" / "workflows"
+    if workflows.is_dir():
+        files += sorted(p for p in workflows.iterdir() if p.suffix in (".yml", ".yaml"))
+    out: list[str] = []
+    for p in files:
+        if not p.is_file():
+            continue
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = line.split(" #", 1)[0].strip()
+            if s and not s.startswith("#"):
+                out.append(s)
+    return out
+
+
+def _check_items(bg: str) -> list[tuple[int, int, str, str]] | None:
+    """(pure) build-gates §6's numbered check items as (line number, item number, bold name, joined item text); None
+    when the catalogue has no `## 6.` section. An item runs to the next item, a blank line or a heading."""
+    lines = bg.splitlines()
+    start = next((i for i, line in enumerate(lines) if _SECTION6_RE.match(line)), None)
+    if start is None:
+        return None
+    items: list[list] = []
+    in_item = False
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if _SECTION_END_RE.match(line):
+            break
+        mi = _CHECK_ITEM_RE.match(line)
+        if mi:
+            items.append([i + 1, int(mi.group(1)), mi.group(2).strip(), line.strip()])
+            in_item = True
+        elif not line.strip():
+            in_item = False
+        elif in_item:
+            items[-1][3] += " " + line.strip()
+    return [(ln, num, name, text) for ln, num, name, text in items]
+
+
+def _check_registry_findings(items: list[tuple[int, int, str, str]]) -> list[tuple[int, str]]:
+    """(pure) Check 34 (g): (line number, message) for every disagreement between the §6 items and DOC_CHECKS."""
+    out: list[tuple[int, str]] = []
+    by_num: dict[int, tuple[int, int, str, str]] = {}
+    for item in items:
+        if item[1] in by_num:
+            out.append((item[0], f"§6 item {item[1]} appears twice (the first is at line {by_num[item[1]][0]})"))
+        by_num.setdefault(item[1], item)
+    for n in range(1, max(by_num, default=0) + 1):
+        if n not in by_num:
+            out.append((0, f"§6 skips item {n} - a retired check keeps its number and its line"))
+    keys = {int(key.split(":")[0]): (key, fn) for key, fn in DOC_CHECKS.items()}
+    for n, (key, fn) in sorted(keys.items()):
+        item = by_num.get(n)
+        if item is None:
+            out.append((0, f"DOC_CHECKS key {key!r} has no §6 item {n} - every check is defined in build-gates §6"))
+        elif item[2].endswith(_RETIRED_MARK):
+            out.append((item[0], f"§6 item {n} is marked retired, but DOC_CHECKS registers {key!r}"))
+        elif f"`{fn.__name__}`" not in item[3]:
+            out.append((item[0], f"§6 item {n} does not name its function `{fn.__name__}`"))
+    for n, item in sorted(by_num.items()):
+        if n not in keys and not item[2].endswith(_RETIRED_MARK):
+            out.append((item[0], f"§6 item {n} ({item[2]}) has no DOC_CHECKS key and is not marked "
+                                 f"`{_RETIRED_MARK.strip()}` - a check the catalogue describes and plan-lint "
+                                 "does not run"))
+    return out
+
+
+def doc34_catalogue_structure(ctx: Ctx) -> list[Finding]:
+    """Check 34: the build-gates catalogue cells are bound - (a) seven cells and one row per gate id, (b) the Status
+    vocabulary, (c) every Status box id a plan box and no box id outside the Status cell, (d) no Status box done in a
+    swept phase, (e) the Enforced-by scripts of a live, live-partial or dormant-until row tracked and wired, (f) the
+    Fail-mode vocabulary and the [[fail_open]] registry both ways, (g) the §6 items bound to DOC_CHECKS (module
+    comment above). A missing catalogue, catalogue table, §6 or gate-planes.toml, an unparseable gate-planes.toml and
+    an unavailable git are each a finding."""
+    chk = "34:catalogue-structure"
+    bg = ctx.docs.get(_CATALOGUE, "")
+    if not bg:
+        return _target_missing(chk, _CATALOGUE)
+    rows = _catalogue_rows(bg)
+    if not rows:
+        return _target_missing(chk, _CATALOGUE, "the build-gates `| **Gnn** |` catalogue")
+    out: list[Finding] = []
+    tracked = _git_ls_files(ctx.root)
+    if tracked is None:
+        out.append(Finding(chk, _CATALOGUE, 0, "git ls-files failed - cannot verify that the Enforced-by paths are "
+                                               "tracked (fail-closed)"))
+    tracked_set = set(tracked or [])
+    plane_lines = _plane_lines(ctx.root)
+    sweep_done = _sweep_done_by_phase(ctx.boxes)
+    first_row: dict[str, int] = {}
+    shaped: set[str] = set()
+    fail_open_cells: dict[str, int] = {}
+    for lineno, gid, cells in rows:
+        if gid in first_row:
+            out.append(Finding(chk, _CATALOGUE, lineno, f"{gid}: a second catalogue row (the first is line "
+                                                        f"{first_row[gid]}) - one row per gate id"))
+            continue
+        first_row[gid] = lineno
+        if len(cells) != len(_CELL_NAMES):
+            out.append(Finding(chk, _CATALOGUE, lineno, f"{gid}: the row has {len(cells)} cells, not the seven of the "
+                               "schema (ID, Gate, Contract, Enforced by, Status, Blocks, Fail mode; a literal pipe is "
+                               "`\\|`)"))
+            continue
+        shaped.add(gid)
+        enforced, status, fail_mode = cells[3], cells[4], cells[6]
+        if not _STATUS_RE.fullmatch(status):
+            out.append(Finding(chk, _CATALOGUE, lineno, f"{gid}: Status {status!r} is outside the vocabulary - live, "
+                               "live-partial (<live legs>; <rest> → <box>), unbuilt → <box>[, <box>...] or "
+                               "dormant-until <box> (build-gates §0)"))
+        for bid in _BOX_ID_RE.findall(status):
+            b = ctx.by_id.get(bid)
+            if b is None:
+                out.append(Finding(chk, _CATALOGUE, lineno, f"{gid}: Status names {bid}, which is no plan box"))
+            elif b.marker == "x" and sweep_done.get(b.phase, True):
+                why = ("its phase's sweep box is [x]" if b.phase in sweep_done
+                       else f"phase P{b.phase} has no phase-end sweep box")
+                out.append(Finding(chk, _CATALOGUE, lineno, f"{gid}: Status names {bid}, which is [x], and {why} - "
+                                   "re-point the cell (live, or the box that still owes the rest; "
+                                   "test-strategy §11.2)"))
+        for idx, cell in enumerate(cells):
+            stray = _BOX_ID_RE.findall(cell) if idx != 4 else []
+            if stray:
+                out.append(Finding(chk, _CATALOGUE, lineno, f"{gid}: the {_CELL_NAMES[idx]} cell names "
+                                   f"{', '.join(stray)} - box ids stand only in the Status cell (build-gates §0)"))
+        if status == "live" or status.startswith(("live-partial", "dormant-until")):
+            for mt in _SCRIPT_PATH_RE.finditer(enforced):
+                path = mt.group(0).rstrip(".")
+                is_tracked = path in tracked_set or (path.endswith("/")
+                                                     and any(t.startswith(path) for t in tracked_set))
+                if tracked is not None and not is_tracked:
+                    out.append(Finding(chk, _CATALOGUE, lineno, f"{gid}: Enforced by names `{path}`, which is not a "
+                                                                "tracked file"))
+                    continue
+                runs = re.compile(rf"(?<![\w./-]){re.escape(path)}(?![\w.-])")
+                if _TOP_SCRIPT_RE.fullmatch(path) and not any(runs.search(line) for line in plane_lines):
+                    out.append(Finding(chk, _CATALOGUE, lineno, f"{gid}: Enforced by names `{path}`, but no "
+                                       "non-comment line of lefthook.yml or .github/workflows runs it - a "
+                                       f"{status.split(' ', 1)[0]} gate is wired"))
+        if not _FAIL_MODE_RE.fullmatch(fail_mode):
+            out.append(Finding(chk, _CATALOGUE, lineno, f"{gid}: Fail mode {fail_mode!r} is outside the vocabulary - "
+                               "fail-closed, fail-closed; fail-open leg: <leg>, fail-soft or informational, an "
+                               "optional (…) after (build-gates §0)"))
+        if fail_mode.startswith(_FAIL_OPEN_CELL):
+            fail_open_cells[gid] = lineno
+    gp = ctx.root / _GATE_PLANES
+    data: dict | None = None
+    if not gp.is_file():
+        out.extend(_target_missing(chk, _GATE_PLANES))
+    else:
+        try:
+            data = tomllib.loads(gp.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError:
+            out.append(Finding(chk, _GATE_PLANES, 0, "gate-planes.toml is unparseable - cannot bind the Fail-mode "
+                                                     "cells to the [[fail_open]] registry (fail-closed)"))
+    if data is not None:
+        raw = data.get("fail_open", [])
+        if not isinstance(raw, list):
+            out.append(Finding(chk, _GATE_PLANES, 0, "[[fail_open]] is not an array of tables (fail-closed)"))
+            raw = []
+        registered: set[str] = set()
+        for row in raw:
+            gate = row.get("gate") if isinstance(row, dict) else None
+            if not isinstance(gate, str) or not gate.strip():
+                out.append(Finding(chk, _GATE_PLANES, 0, "a [[fail_open]] row names no gate id (fail-closed)"))
+                continue
+            registered.add(gate.strip())
+        for gid in sorted(set(fail_open_cells) - registered):
+            out.append(Finding(chk, _CATALOGUE, fail_open_cells[gid], f"{gid}: the Fail mode is fail-soft or names "
+                               f"a fail-open leg, but {_GATE_PLANES} has no [[fail_open]] row for it "
+                               "(build-gates §0)"))
+        for gid in sorted(registered - set(fail_open_cells)):
+            if gid not in first_row:
+                out.append(Finding(chk, _GATE_PLANES, 0, f"{gid} has a [[fail_open]] row but no catalogue row"))
+            elif gid in shaped:
+                out.append(Finding(chk, _GATE_PLANES, 0, f"{gid} has a [[fail_open]] row, but its Fail-mode cell "
+                                   "names no fail-soft posture and no fail-open leg - name the leg in the cell or "
+                                   "drop the row"))
+    items = _check_items(bg)
+    if items is None:
+        out.append(Finding(chk, _CATALOGUE, 0, "build-gates §6 (`## 6.`) is missing - the DOC_CHECKS registry has no "
+                                               "items to bind (fail-closed)"))
+    else:
+        out += [Finding(chk, _CATALOGUE, ln, msg) for ln, msg in _check_registry_findings(items)]
+    return out
+
+
 FORMAT_CHECKS = {
     "format:box-parse-completeness": fmt_box_parse_completeness,
     "format:marker-validity": fmt_marker_validity,
@@ -2448,6 +2728,7 @@ DOC_CHECKS = {
     "31:sweep-binding": doc31_sweep_binding,
     "32:sast-pin-sync": doc32_sast_pin_sync,
     "33:gate-row-promise": doc33_gate_row_promise,
+    "34:catalogue-structure": doc34_catalogue_structure,
 }
 CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # the doc checks keep their build-gates §6 numbers
 

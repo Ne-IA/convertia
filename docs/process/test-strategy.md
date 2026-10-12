@@ -884,6 +884,9 @@ plus its background jobs.
    - the caged tails, landed under owner-ack: the tail of every `[x]` box in scope whose
      `l-neg1:` line reads `sweep-tail`, found by a grep of the phase files
      (`plan-lint --report owner-acts` skips `[x]` boxes);
+   - the build-gates Status cells: every cell that names an `[x]` box of the phase is re-pointed,
+     to `live` or to the box that still owes the rest, no later than the commit that flips the
+     sweep box (plan-lint check 34 reds that commit otherwise);
    - the phase-boundary G1 spot-audit (build-loop.md Step 5, the reviewer-family
      decision): a random ≥ 1-in-10 sample of the phase's box commits plus every `GO/GO`
      commit whose Review record carries no finding on a non-trivial diff, each record

@@ -432,8 +432,8 @@ Dual-Review: opus=GO sonnet=GO
   exact form `Dual-Review: opus=(GO|NOGO) sonnet=(GO|NOGO)`).
 - **Body economy (owner rule, 2026-09-09).** The body is evidence, not narrative.
   Write it in the template's fields. A count appears only where a checker
-  cross-checks it (the runner's `N legs` rows, `--shortstat`); a mechanism is written
-  as its observable effect, never as an unmeasured "because". Aim for ≤ 40 lines.
+  cross-checks it (`--shortstat`); a mechanism is written as its observable
+  effect, never as an unmeasured "because". Aim for ≤ 40 lines.
   G11 rejects a body over 120 counted lines (the non-blank lines git stores after
   the subject; a final trailer block of at most 5 lines is not counted).
 - **Commit** in the foreground; a hook red → fix → Step 4a → Step 5 → commit again. **A red gate
