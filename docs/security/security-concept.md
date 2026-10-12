@@ -4,15 +4,17 @@
 > protect against* and *which guardrail proves it*. The companion
 > [build-gates.md](build-gates.md) is the operational gate catalogue (the *how*).
 >
-> **Status: living.** This document is refined *during* implementation; whenever a
-> control or gate changes while building, it is recorded here first. It does **not**
-> override the product truth:
+> **Status: living.** It maps threats to controls and gates and changes only on the
+> triggers in §6. It does **not** override the product truth:
 > **conflict order = [SSOT](../SINGLE-SOURCE-OF-TRUTH.md) > [spec](../spec/README.md) > this document**
 > (the full order is SSOT > spec > security/process docs > plan > code > conversation;
 > this document sits in the security/process-docs layer).
 > Where this doc and the spec describe the same control, the spec's `§` is the
 > source of the technical detail; this doc is the consolidated security view + the
 > mapping to enforcement.
+>
+> The long-form text before this index (mechanics now owned by the spec sections and the
+> build-gates rows): `git show 608a771d07a9:docs/security/security-concept.md`.
 
 ## 1. Scope & axis
 
@@ -28,28 +30,13 @@ manifest, license compliance).
 
 ## 2. Working model — two sessions, one branch
 
-| Session | Role |
-|---|---|
-| **Build-Loop session** | Autonomous. Builds the plan box by box, writes tests, runs every gate + the dual review, commits directly to `main`. The gates are the protection — there is no second branch and no merge step. |
-| **Co-Pilot session** (the owner's partner) | Escalation & clarification target for the Build-Loop session; strategic decisions; high-level review. Works with the owner. Executes the standing phase-end hardening sweep box that closes every phase `P2`..`P11` ([test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). |
+The session model — one branch, `main`, with no merge step and no auto-merge; two sessions,
+each committing from its own clone; enforcement by the deterministic gates plus the required
+status checks on every push — is defined in [CLAUDE.md](../../CLAUDE.md) §2,
+[build-loop.md](../process/build-loop.md) §0,
+[roles-and-escalation.md](../process/roles-and-escalation.md) and spec §6.7; this section
+keeps the two security rules.
 
-- **Single branch (`main`), GitHub, GitHub Actions.** No worktrees, no parallel
-  branches, no push-lock coordination, no separate feedback/sniping sessions, **no
-  merge step and no auto-merge** — the enforcement is **CI green on `main` + required
-  status checks on every push** (asserted by G56a), a red `main` fixed immediately.
-  The **one** surviving `PR` concept is the **external fork pull-request** (this is a
-  *public* OSS repo, so an outside contributor can still open one) — the G56 fork-PR
-  secret guard is retained for that reason, **not** for our own direct-to-`main` flow;
-  "per-PR" vocabulary elsewhere means "per-push" unless it is explicitly that guard.
-- **Two sessions commit to `main`, each from its own clone**: the Co-Pilot pushes only
-  while no loop `ci` run is queued or in progress; the loop fast-forwards every iteration
-  and rebases before its push ([build-loop.md §0](../process/build-loop.md#0-who-runs-this-and-what-it-is-not));
-  G54 refuses a stale-base push. The safety comes from the gates, not from branch
-  isolation.
-- **Escalation path:** Build-Loop → Co-Pilot session → owner. The Build-Loop
-  session escalates on genuine blocks (see [roles-and-escalation.md](../process/roles-and-escalation.md),
-  authored in P0); it decides routine implementation/pattern/naming/default
-  choices itself.
 - **L(-1) security-critical-file change-control (owner decision D1).** The files that
   carry the power to silently weaken an enforcement plane are the **L(-1)
   security-critical-file set** (the cage the gates live in): every file under `scripts/`
@@ -67,11 +54,12 @@ manifest, license compliance).
   pre-push gate **G71** mechanically audits the trailer's
   presence on any L(-1)-touching commit (the trailer is the **only** sanctioned escape —
   there is **no** check-off / `[!extern]` exemption for an L(-1) edit; a commit touching no
-  L(-1) file needs no trailer) and, since P4.56.1, the cage's own liveness (a glob matching
-  no tracked path, a stale/orphan targetless declaration, a refused, dead or orphan
-  Loop-tool escape, or a refused or dead monotone entry fails the gate — the build-gates
-  G71 row carries the mechanics)
-  (fail-soft during the P0 bootstrap, fail-closed from P1). This is the one **ownership control above the deterministic gates** — the
+  L(-1) file needs no trailer) and the cage's own liveness (a glob matching no tracked path,
+  a stale/orphan targetless declaration, a refused, dead or orphan Loop-tool escape, or a
+  refused or dead monotone entry fails the gate — the build-gates G71 row carries the
+  mechanics). G71 fails closed at pre-push and on every push in CI, and its posture-flag row
+  in `scripts/gate-planes.toml` keeps it so (plan-lint check 27). This is the one
+  **ownership control above the deterministic gates** — the
   trailer records an owner decision; G71 checks the evidence, not the intent (so a leaked
   key or a unilateral cage edit cannot pass unseen). It is independent of the G1
   `Dual-Review:` trailer; both may co-occur on one commit.
@@ -82,45 +70,19 @@ manifest, license compliance).
   (`coverage-floors.toml`, `max_survived_mutants.toml`) stays caged whole.
 
 **The dual review is a quality amplifier, not a security control.** The Opus+Sonnet
-review (G1) is self-attested via an unverifiable commit trailer; a gamed `GO/GO`
-trailer cannot, by itself, ship insecure code, because the **only security controls
+review (G1) is self-attested via an unverifiable commit trailer (G12 checks its presence
+and a review marker in the body, a heuristic that cannot prove two live models ran); a
+gamed `GO/GO` trailer cannot, by itself, ship insecure code, because the **only security controls
 are the deterministic gates (every `Gnn` except G1, the dual review)** — a gate
-either passes on a clean checkout or it does not. (The numeric span is stated as
-"every gate except G1" deliberately: a frozen upper bound like *G2–G50* drifts every
-time a gate is added; a `plan-lint` assertion that the prose matches `max(Gnn)` would
-be the alternative, but the open phrasing cannot rot.) The dual review raises quality and catches design defects the gates can't
-encode; its evidence trail (the commit body's review record: one `Review:` line per
-round and one line per P0/P1 finding, build-loop.md §3 Step 6) makes a "both GO, 0
-findings" on a non-trivial diff an **auditable smell** for the phase-end Co-Pilot
-spot-audit. The review protocol itself (inputs, severity bar, round cap, post-GO rule)
-is canonical in build-loop.md §3 Step 5 and is not restated here. Conflict order for the
-Build-Loop: **SSOT > spec > these security/process docs > plan > code > conversation.**
-
-**Reviewer availability + integrity (build-loop soundness, authored in build-loop.md).**
-Because the autonomous loop leans on G1 executing, its failure modes are explicit:
-**(a)** the two reviewer **model IDs are recorded** on each commit's `Models:`
-line, and a deprecation/rename surfaces as an escalation, not a silent skip; **(b)** on a
-reviewer error/timeout/rate-limit/5xx the loop retries with backoff a bounded number
-of times, then **HARD-STOPS + escalates** to Co-Pilot — it **NEVER** auto-emits a `GO`
-trailer with fewer than **two live** reviews and never silently degrades to a single or
-zero reviewer (G12 checks the trailer is well-formed and that a `GO/GO` commit's
-body carries a review marker — a presence heuristic, not a per-reviewer parse — but cannot prove
-two LIVE models ran, so this rule remains the load-bearing defence against a
-well-formed-but-unbacked `GO`; the marker check raises the cheat cost from "emit one trailer
-line" to "write a plausible review record" and keeps a fabricated record an auditable spot-audit
-target). **Correlated-blind-spot residual (stated honestly):** Opus and Sonnet share
-model lineage, so "both `GO`, 0 findings" is a *correlated* signal, not two independent
-ones — the only retrospective backstop is the auditable-smell spot-audit above. **Recorded
-owner decision (r6 — no longer left open):** the correlated-lineage residual is **explicitly
-ACCEPTED for v1** (the deterministic gates — every `Gnn` except G1 — carry the real security
-weight and bound blast radius regardless of reviewer correlation; G1 is a quality amplifier),
-**with a concrete spot-audit cadence: a Co-Pilot auditable-smell spot-audit at every phase
-boundary AND a random ≥1-in-10-box sample** of the committed `GO/GO` Review records, both run
-at the phase-end sweep (test-strategy §11.2). The
-**flip option remains open** — making one reviewer a different model family (e.g. a non-Anthropic
-model) to make "independent" literally true is a future owner decision that can be taken at any
-time. This decision is recorded verbatim in `build-loop.md` and asserted present by plan-lint
-check 20, so the autonomous loop cannot silently run without it.
+either passes on a clean checkout or it does not. The dual review raises quality and
+catches design defects the gates can't encode; its review record in the commit body
+(build-loop.md §3 Step 6) makes a "both GO, 0 findings" on a non-trivial diff an
+**auditable smell** for the phase-end Co-Pilot spot-audit. The review protocol (inputs,
+severity bar, round cap, post-GO rule, and two live reviews or no `GO`) is canonical in
+build-loop.md §3 Step 5 and is not restated here. The correlated-reviewer residual (Opus
+and Sonnet share lineage) is accepted for v1; the decision, its spot-audit cadence and the
+open reviewer-family flip live in [build-loop.md](../process/build-loop.md) §3 Step 5
+(plan-lint check 20).
 
 ## 3. Defense in depth — the enforcement planes
 
@@ -129,52 +91,40 @@ published release. No plane trusts an earlier one to have caught everything.
 
 | Plane | When | Mechanism | Blocks | Bypassable? |
 |---|---|---|---|---|
-| **L0 — Build-Loop per box** | While building, before each commit | The build-loop discipline + the **Opus + Sonnet dual review** on the staged diff (**no fix-push cycle** — no push between a fix and its re-review); P0/P1 findings fixed in the working tree before push | the commit (self-gate) | only by rule violation (no technical bypass) |
-| **L1 — pre-commit hook** | `git commit` | Git-hook manager, `parallel`, budget < ~10 s (a **SOFT** target — see [build-gates §0](build-gates.md#0-policy)) | the commit | `--no-verify` **and** `core.hooksPath` redirection (both **forbidden** — see the forbidden-bypass list below) |
-| **L2 — pre-push hook** (fires at `git push` time) | `git push` | Git-hook manager, budget < ~3 min; docs-only fastpath (six heavy toolchain legs, build-gates §4) | the push | `--no-verify` / `core.hooksPath` (**forbidden**); the fastpath skip of those six legs for a documentation-only push range |
-| **L3 — commit-msg hook** (L3 fires at `git commit`, chronologically **before** L2 which fires at `git push`; numbering is stable-by-assignment, not chronological) | `git commit` | Conventional-commit format check + the subject (≤ 100 chars) / body (≤ 120 lines) caps (G11) | the commit | `--no-verify` / `core.hooksPath` (**forbidden**); git auto-subjects (merge/revert/fixup) allowed |
-| **L4 — CI (GitHub Actions)** | After push | The same gates re-run on a clean checkout + the heavy gates (cross-platform build, corpus, coverage, SAST, SBOM) | a red `main` (fix immediately) | none for required checks — and **G56a** asserts in CI that the GitHub required-status-checks config exists (so "a red L4 blocks" is real repo state, not an invisible assumption) |
-| **L5 — Release** | On a `v*` tag | Release workflow: SBOM + completeness, license hard-fail, copyleft-source-bundle present, **checksums + minisign over `SHA256SUMS`** (the *only* signing in scope — **not** binary code-signing/notarization, SSOT *Out of Scope*), size budget, egress/no-pollution observability gates. The **`v*` tag trigger itself is trust-gated by G56b** (tag-protection ruleset + the release job's first step asserting the tagged commit is an ancestor of `origin/main` with main's required checks green for that SHA, before any secret is read) — so a tag on a never-green commit cannot mint a signed artifact | the release | none (release-blocking); the tag trigger guarded by G56b |
+| **L(-1) — change control** | a commit touching an L(-1) file | the owner-ack trailer, audited by G71 (§2) | the push | none |
+| **L0 — Build-Loop per box** | while building, before each commit | the build-loop discipline and the G1 dual review of the staged diff; P0/P1 findings are fixed in the working tree and re-reviewed before the commit, never in a fix-push cycle | the commit (self-gate) | only by a rule violation (no technical bypass) |
+| **L1 — pre-commit** | `git commit` | lefthook, parallel and diff-scoped, under a soft ~10 s budget ([build-gates §0](build-gates.md#0-policy)) | the commit | only by a forbidden bypass (below) |
+| **L2 — pre-push** | `git push` | lefthook range and full-tree gates under ~3 min; the docs-only fastpath skips six heavy toolchain legs (build-gates §4) | the push | a forbidden bypass; the fastpath skip of those six legs on a documentation-only push range |
+| **L3 — commit-msg** | `git commit`, before L2 (the plane numbers are assigned, not chronological) | the conventional-commit subject and the subject (≤ 100 characters) and body (≤ 120 lines) caps (G11) | the commit | a forbidden bypass; git's merge, revert and fixup auto-subjects are exempt |
+| **L4 — CI (GitHub Actions)** | after push | the same gates re-run on a clean checkout (G25) plus the heavy gates: cross-platform build, corpus, coverage, SAST, SBOM, repo-config introspection | a red `main`, fixed immediately | none for the required checks, whose repo configuration G56a asserts |
+| **L5 — Release** | a `v*` tag | the release gates: SBOM and completeness, the licence hard-fail, the copyleft source bundle, checksums and minisign over `SHA256SUMS` (the only signing in scope — never binary code-signing or notarization, SSOT *Out of Scope*), the build-provenance attestation, the size budget, the egress and no-pollution gates; the G56b tag-trust check runs before any secret is read | the release | none (release-blocking) |
 
-**Two enforcement planes principle.** Every gate that CAN run locally runs **both
-planes — locally (L1–L3) and again in CI (L4)**; inherently CI-only gates
-(repo-config introspection G56a/G56b, the CI-only L4 corpus/SAST/coverage heavies
-— G25–G33a, G48, G50, G57; **G34 is vacated**, not a heavy — and the release-tier L5
-gates beginning at G33b and running through the release section) run in CI only.
-(Accurate prose rather than a closed `Gnn–Gnn` span — r7: the old "G26–G34 / G35–G67"
-labels were factually wrong: G34 is vacated, the L5 set STARTS at G33b not G35, and the
-closed G35–G67 range swept in the non-existent G40/G61–G63 and the prose-only reserved
-G65/G66/G67; plan-lint check 11 only forbids claiming a span NARROWER than `max(Gnn)`, so
-it did not catch this.) Local hooks give
-realtime feedback and keep `main` clean; CI is the immutable backstop that proves
-green on a fresh clone. A red CI run is
-fixed immediately — never re-run hoping it passes, never `--no-verify`.
+**Two planes.** The two-planes principle: a gate that can run locally runs at L1–L3 and
+again on a clean checkout at L4 (G25), so a skipped or missing local hook is still caught;
+repo-config introspection, the heavy build, corpus, coverage and SAST jobs and the release
+tier run in CI only. The principle steers the wiring; where each gate actually runs is its
+build-gates row (the *Enforced by* cell), and the plane structure and the fail-open registry
+are [`scripts/gate-planes.toml`](../../scripts/gate-planes.toml) (G54b). No check asserts
+that every local gate command has its L4 step — the G25 residual. A red CI run is fixed
+immediately: never re-run hoping it passes, never `--no-verify`.
 
-**Forbidden local-plane bypasses (the complete named set).** The local L1–L3 plane
-is **entirely git-hook-based**, so the no-bypass policy must name *every* way to make
-a hook not fire — not only the obvious one: **(a)** `--no-verify`/`-n` on commit/push;
-**(b)** force-push; **(c)** disabling a required CI check; **(d)** `core.hooksPath`
-redirection — `git -c core.hooksPath=<elsewhere> commit/push` (or a persisted
-`git config core.hooksPath`) silently disables ALL local hooks **without** `--no-verify`,
-a functionally identical un-named bypass. This is **machine-checked**, not only
-documented: the P0.6 step-0 session-start sanity asserts `git config --get core.hooksPath`
-is unset (or equals the lefthook-managed path), and **G54 resolves the EFFECTIVE hooks
-dir** (`git rev-parse --git-path hooks` / `git config core.hooksPath`) rather than
-hardcoding `.git/hooks/`, so a hooksPath pointing away from `.git/hooks` cannot make G54
-inspect an inert directory and pass while no hook fires. (L4/G25 remains the immutable
-net regardless; this closes the local-plane-completeness claim the design otherwise could
-not honestly make.)
+**Forbidden local-plane bypasses (the complete named set).** The local L1–L3 plane is
+entirely git-hook-based, so the no-bypass policy names every way to make a hook not fire:
+**(a)** `--no-verify`/`-n` on commit or push; **(b)** force-push; **(c)** disabling a
+required CI check; **(d)** `core.hooksPath` redirection — `git -c core.hooksPath=<elsewhere>`
+(or a persisted `git config core.hooksPath`) silently disables every local hook without
+`--no-verify`. (d) is machine-checked: the build-loop Step 0 start sanity asserts
+`core.hooksPath` is unset or the lefthook-managed path, and G54 resolves the effective
+hooks directory instead of assuming `.git/hooks/`, so a redirect cannot leave it inspecting
+an inert directory. L4 (G25) remains the net regardless.
 
-**Gate isolation from the tree it checks.** A gate that resolves an import from the checkout
-can be subverted by a file placed beside it: `scripts/re.py` shadows `re` for every
-`python3 scripts/<gate>` run before the gate's code executes, which no in-gate check can
-catch. Every plane therefore runs its Python gates as `python3 -P`, and the canary runner sets
-`PYTHONSAFEPATH=1`; G54b (leg (5)) fails a plane Python invocation without `-P`. A self-test's
-throwaway repository is kept apart from the repository the hook runs in the same way: a hook in
-a linked worktree exports an absolute `GIT_DIR`, under which a canary's own
-`git config core.hooksPath <tmp>` would persist bypass (d) there, so the runner drops the
-inherited `GIT_*` variables (except `GIT_EXEC_PATH`) from every self-test it starts, and every
-self-test that starts git itself drops them first (G24).
+**Gate isolation from the tree it checks.** No in-gate check can catch a file placed beside a
+gate that shadows a module the gate imports (`scripts/re.py` shadows `re` for a plain
+`python3 scripts/<gate>` run), so every plane runs its Python gates as `python3 -P`, which G54b
+leg (5) enforces, and the canary runner sets `PYTHONSAFEPATH=1`. A hook in a linked worktree
+exports an absolute `GIT_DIR`, under which a self-test's own `git config core.hooksPath <tmp>`
+would persist bypass (d) in that repository, so the runner and every self-test that starts git
+drop the inherited `GIT_*` variables except `GIT_EXEC_PATH` (G24).
 
 ## 4. Security principles (the invariants the gates defend)
 
@@ -208,195 +158,130 @@ self-test that starts git itself drops them first (G24).
 8. **No stubs, no drift.** Every change is production-ready (CLAUDE.md): no
    `TODO`/`FIXME`/`unimplemented!`/`console.log` in production code without a
    tracked box-id; generated artifacts never drift from source.
-9. **In-core untrusted bytes are still adversarially tested.** The §1.2 detection
-   layer (the bounded gzip/svgz inflate, the Rust ZIP central-directory peek, the
-   OLE2/CFB directory read, the bounded XML structural peeks) runs in the trust
-   kernel *outside* the §2.12 isolation boundary — so it is the one untrusted-byte
-   path where a panic/OOM/UB lands in the core. It carries its own adversarial fuzz
-   gate (G48), not only the engine-side corpus. (spec §1.2, §2.12.4)
-10. **Hermetic, hardened CI supply chain.** The CI plane itself is an asset to
-    protect (it holds the signing trust anchor `MINISIGN_SECRET_KEY` **and** its
-    passphrase `MINISIGN_PASSWORD`, §6.2.3): every workflow declares
-    least-privilege `permissions`, every third-party action is pinned by full
-    commit SHA (kept current by a `dependabot.yml` whose **`github-actions`,
-    `cargo`, `npm`, AND `pip`** ecosystems are all watched — `pip` for the gate-toolchain
-    `requirements-ci.txt` layer (Semgrep et al.), which reads CI secrets AND produces findings,
-    so it is in the CI trust boundary; the pin-and-watch discipline is
-    symmetric across all four graphs, not actions-only; bump PRs are reviewed by
-    Co-Pilot/owner, never auto-merged), the build resolves only the committed
-    lockfiles (`--locked` / `--frozen-lockfile`, no silent graph drift), and the
-    workflow lints (G49/G50) run on every push in CI. The secret-bearing release
-    job never runs on a fork pull-request. Every gate/SAST/SBOM tool is itself pinned
-    by exact version **and** verified by checksum / image digest at install — the
-    fetch-and-verify mechanism is itself a **self-tested control** (a deliberately-wrong
-    checksum MUST fail the install; `pip`-installed gate tools use
-    `--require-hashes`), because a poisoned or typosquatted gate tool would both miss a
-    real finding **and** read the CI secrets (same discipline as a bundled engine). The
-    **build toolchain that produces the shipped artifact** is in the same trust
-    boundary — "everything that touches the bytes that get minisigned" — so the CI base
-    image/container is digest-pinned, the C/C++ toolchain and the Tauri
-    CLI/bundler/linker are version/digest-pinned, and the `cargo-fuzz` nightly channel
-    is **date-pinned** (`nightly-YYYY-MM-DD`, asserted not a floating `nightly`).
-    **Branch-protection / required-status-checks config** is also CI-protected, not
-    just documented: in the single-branch direct-to-`main` model the repo config is the
-    only thing that makes a red run actually block, so G56a queries the GitHub **rulesets**
-    API (NOT classic branch protection — its required-checks block *all* direct pushes incl.
-    admins, GH006, so it cannot coexist with direct-to-`main`) and fails on missing required
-    checks, on the force-push/`deletion` rules being absent or carrying any bypass actor, or
-    on the required-checks rule being bypassable by a **non-admin / wider** actor. **The repo-
-    ADMIN role bypassing the *checks* rule is the intended trusted-direct-pusher mechanism**
-    (a fork-PR stays gated; the owner/Build-Loop can direct-push), while the history-protection
-    rules carry NO bypass — this owner-decided ruleset split is what reconciles "required checks
-    on `main`" with the autonomous direct-to-`main` push, replacing the unsatisfiable
-    enforce-admins assertion. As sub-checks G56a also fails on disabled secret-scanning/push-
-    protection or a non-read default workflow-permission. **The secret-bearing release trigger is the `v*` TAG ref, which
-    G56a does not cover — so G56b applies the same "a red run actually blocks" guard to the
-    tag ref:** a `v*` tag-protection ruleset + a release-workflow first step asserting the
-    tagged commit is an ancestor of `origin/main` with main's required checks green for that
-    SHA, before any secret is read, so a tag on a never-green commit cannot mint a signed
-    artifact.
-11. **CI runner-host integrity (the secret never shares a host with untrusted
-    input).** The `MINISIGN_SECRET_KEY`/`MINISIGN_PASSWORD` are the single most
-    damaging secret in the system — the entire user-facing trust substitute
-    (minisign over `SHA256SUMS`, principle 7) collapses to this one key. The
-    Lane-B Linux corpus leg processes `corpus-large` untrusted/adversarial files +
-    the fuzz/adversarial-egress inputs (spec §6.1.4 / §6.7.2), and a runner that
-    handles untrusted input and outlives its job is the textbook host-compromise
-    vector — once poisoned, every future release can be silently re-signed with the
-    real key. Every lane runs on GitHub-hosted runners, a fresh VM per job; no
-    self-hosted runner exists (spec §6.1.4). So: **(a)** the secret-bearing
-    signing/release step runs **only on an ephemeral GitHub-hosted runner**, never
-    on a self-hosted one; **(b)** the untrusted-corpus/fuzz jobs and the
-    secret-bearing job are host-isolated (no shared workspace, no shared runner
-    host); **(c)** runner-egress hardening: **`step-security/harden-runner`'s
-    free/Community tier only works on GitHub-HOSTED runners — self-hosted support
-    requires a StepSecurity Enterprise license** (verified against the StepSecurity
-    docs); harden-runner runs in **BLOCK** mode (strict egress allowlist) on the
-    **ephemeral GitHub-hosted signing job** (where the free tier applies and adds
-    value — it runs no engine and has nothing to observe). On the Linux corpus/fuzz
-    leg the enforcement is **G42b's `ptrace`/Landlock fs-audit + G42's nftables/strace
-    egress monitor**. This is enforced structurally (G56 — a workflow lint flags any
-    secret-using job bound to a self-hosted label, and asserts harden-runner
-    presence/mode on every GitHub-hosted secret job). **Community-tier
-    silent-degrade residual (stated honestly):** harden-runner's free/Community tier carries
-    a ~10k-runs/week ceiling above which it silently degrades to no-enforcement — a
-    silent-degrade-to-no-enforcement on a control the design relies on for the secret's host
-    is exactly the failure class hardened against elsewhere. The signing job is rare/tag-only
-    so the ceiling won't bind in practice, but to be safe the release job **asserts
-    harden-runner reported ENFORCED (BLOCK active), not merely present** — a degraded-to-audit
-    or no-enforce status on the signing job is a release-blocking fail. **harden-runner's lack
-    of a programmatic enforcement-status step output is handled by an ACTIVE PROBE, not a
-    log-string parse (r7 — verified: step-security/harden-runner exposes NO step output for
-    block/enforcement status; status surfaces only via the job log, the markdown summary, and
-    the StepSecurity dashboard, so "parse a log line for ENFORCED" is fragile):** a post-step in
-    the signing job attempts a known-blocked outbound connection and asserts it **FAILS**
-    (proving BLOCK is live), with a G24-style self-test; G56 names the probe (verify the action's
-    actual output API at the exact pinned version first and use a real enforcement output if one
-    is added upstream).
-    **`ANTHROPIC_API_KEY` host-isolation (r7 — principle 11 was asymmetric, naming only the
-    minisign pair; the §5 row names `ANTHROPIC_API_KEY` as the THIRD real secret):** the
-    reviewer-API key is **build-session-local — it lives in the autonomous Build-Loop session's
-    environment and is NEVER present in any GitHub Actions / CI job** (the dual review G1 runs in
-    the build session, not in CI), so it does not co-reside with the untrusted-corpus CI legs and
-    needs no CI host-isolation. Its blast radius is bounded regardless (**G1 is NOT a security
-    control** — a leaked reviewer key cannot ship insecure code or mint a signed artifact; it
-    only suppresses the human review-trace the spot-audit relies on). **IF any future workflow
-    ever reads `ANTHROPIC_API_KEY`, it inherits the same self-hosted-label ban + host-isolation
-    as the minisign secret** — the G56 self-hosted-label / disjoint-host lint extends to all
-    THREE named secrets, not only the minisign pair.
+9. **In-core untrusted bytes are still adversarially tested.** The in-core
+   untrusted-byte paths — the §1.2 detection layer (the bounded gzip/svgz inflate, the
+   Rust ZIP central-directory peek, the OLE2/CFB directory read, the bounded XML
+   structural peeks) and the native CSV/TSV engine — run in the trust kernel *outside*
+   the §2.12 isolation boundary, where a panic/OOM/UB lands in the core. They carry
+   their own adversarial fuzz gate (G48), not only the engine-side corpus. (spec §1.2,
+   §2.12.4)
+10. **Hermetic, hardened CI supply chain — pin and verify.** The CI plane is itself an
+    asset — it holds the signing key `MINISIGN_SECRET_KEY` and its passphrase
+    `MINISIGN_PASSWORD` (spec §6.2.3) — so every workflow declares least-privilege
+    `permissions`, every third-party action is pinned by full commit SHA, the build
+    resolves only the committed lockfiles (`--locked` / `--frozen-lockfile`), the workflow
+    lints run on every push, and the secret-bearing release job never runs on a fork pull
+    request (spec §6.3.4). `dependabot.yml` watches all four graphs — github-actions,
+    cargo, npm and pip (the gate-tool `requirements-ci.txt`, which reads CI secrets and
+    produces findings) — and every bump is reviewed and re-landed, never auto-merged. Every
+    gate, SAST and SBOM tool is pinned by exact version and verified by checksum or image
+    digest at install, through a verify step that is itself self-tested (a wrong checksum
+    must fail the install; pip tools install `--require-hashes`), because a poisoned gate
+    tool both misses a real finding and reads the CI secrets. The build toolchain that
+    produces the shipped artifact is in the same trust boundary (everything that touches the
+    minisigned bytes) and carries its own pins: the CI base image and build container are
+    digest-pinned, the C/C++ toolchain and the Tauri CLI version- or digest-pinned, and the
+    Rust toolchain pinned to an exact stable version and the `cargo-fuzz` nightly to a date
+    (`nightly-YYYY-MM-DD`), both asserted not floating
+    ([build-gates §0](build-gates.md#0-policy)). The repo config that makes a red run block
+    is asserted, not assumed: G56a reads the `main` rulesets — the required checks,
+    bypassable by the repo-admin role only (the trusted direct pusher, while a fork pull
+    request stays gated; classic branch protection would block every direct push), and
+    history protection with no bypass actor — plus secret scanning with push protection and
+    read-only default workflow permissions; the secret-bearing `v*` tag trigger, which those
+    rulesets do not cover, has G56b instead: the release aborts before any secret is read
+    unless the tagged commit is an ancestor of `main` with its checks green (its tag-ruleset
+    read is unbuilt, §5).
+11. **CI runner-host integrity — the secret never shares a host with untrusted
+    input.** The `MINISIGN_SECRET_KEY`/`MINISIGN_PASSWORD` pair is the single most
+    damaging secret (the user-facing trust substitute, principle 7, collapses to it), and
+    a runner that handles untrusted input and outlives its job is the textbook
+    host-compromise vector: once poisoned, every later release could be silently
+    re-signed with the real key. So every lane runs on GitHub-hosted runners, a fresh VM
+    per job (spec §6.1.4), and signing is its own ephemeral job with no corpus, fuzz or
+    engine step, under `step-security/harden-runner` in block mode whose enforcement an
+    active probe proves rather than trusts (spec §6.7.2); on the Linux corpus and fuzz
+    legs the egress monitor and the read-half fs-audit bound what an untrusted input can
+    reach (G42, G42b). G56 fails a job that reads any of the three secret names on a
+    self-hosted label or without harden-runner block mode. `ANTHROPIC_API_KEY` lives only
+    in the build session, where G1 runs, and is present in no CI job — a leaked reviewer key
+    can at most forge a review trace, never ship code or mint a signed artifact — and a
+    workflow that ever reads it falls under the same rule.
 
 ## 5. Threat model → control → gate
 
-The spec's threat map (spec §0.11, owned by
-[00-architecture.md](../spec/00-architecture.md) — `02-guarantees.md` only
-cross-references it) is the **authoritative enumeration** — exactly
-**19 classes**: `T1, T2, T2a, T2b, T2c, T3, T3a, T4, T5, T6, T7, T7a, T8, T9a, T9b, T10, T11, T12, T13`
-(`T7a` added by the 2026-07-21 P3.73 P0 ruling — the Windows reserved-name output-aliasing class).
-This table carries **one row per class** (including the `a`/`b`/`c` sub-rows),
-mapping each to its primary runtime/build control **and** the concrete `Gnn` gate
-that proves the control is in place. **§0.11 ↔ §5 parity is bidirectional and
-machine-checked** (plan-lint check 8, §6 of [build-gates.md](build-gates.md)): every
-§0.11 class has a row here, and every row cites a `Gnn`. A class with a runtime
-control but no verifying gate is itself a gap.
+The spec §0.11 table is the class list; this table has one row per class, and plan-lint
+check 8 holds it to the canonical §0.11 class set in both directions and requires a
+catalogued gate in every row. A class with a control but no verifying gate is a gap. A row
+names the owning spec sections and the control in one sentence (the mechanics live in the
+spec), the verifying gates (their mechanics and their Status live in the
+[build-gates.md](build-gates.md) rows; check 16 requires a self-test for every live,
+fail-closed, script-driven gate a threat row cites) and the residual the class accepts; a
+residual accepted by declining a closure tool is that tool's `decided` row in
+[gate-status.md](../process/gate-status.md).
 
-| Threat (spec §0.11) | Primary control | Verifying gate (see [build-gates.md](build-gates.md)) |
-|---|---|---|
-| **T1** untrusted decoder input → crash/hang/exploit | engine isolation (§2.12) + invocation timeout/kill (§1.7) + pool bounds (§0.9); the in-core §1.2 detection layer is memory-safe Rust. **Honest residual `[DECIDED]` (stated, not implied-covered):** the §2.12.3 runtime privilege-drop — the realized tiers (Linux Landlock + netns + seccomp; macOS cheap tier; Windows intermediate IL + Job Object) — is **best-effort and SILENTLY degrades** to a cheap tier — so T1 has **no LOAD-BEARING runtime containment** of an RCE inside a decoder; process-isolation bounds a *crash* (and a successful exploit's blast radius to one sandboxed sidecar + its scratch), but does not by itself stop code-exec inside that process. The load-bearing controls are isolation + the timeout/kill + the input never reaching the core; the privilege-drop tier is defence-in-depth that is *tracked* (G64 ratchet) but accepted as degradable | **G48** in-core detector fuzz (`cargo-fuzz` over `crate::detection`); **G31** per-pair corpus + reliability through the §2.12 boundary (engine-side T1 — incl. the crafted-BMP ImageMagick sentinel, the densest-CVE decoder) + the §2.12.3 **privilege-drop-tier-applied** + **memory-cap kill** + **Job-Object reap** positive assertions; **G64** privilege-drop-tier ratchet (a commit lowering an achieved tier fails/escalates — the silent-degrade can't quietly regress net coverage); **G26** engine-side adversarial corpus through the §2.12 boundary, with an **`engines.lock`↔adversarial-fixture bijection guard** (every staged engine — incl. ImageMagick — has ≥1 fault-injection fixture targeting its type, hard-fail otherwise); isolation runtime test |
-| **T2** malicious / compromised WebView content | §0.10 capability allowlist (no WebView `fs`/network) + CSP (no remote origins, `object-src 'none'`) + **the eslint ban on the DOM/eval sinks** (the APIs that parse a string as unsanitized markup or as code, banned by name in the code shapes G5 lists, so no WebView-controlled value reaches one through those shapes, whatever the flow depth); the §0.10 by-construction hardening keys asserted by G47 — **all six (r7 — the prose previously named only three, lagging the G47 gate body):** `withGlobalTauri` off, `dangerousDisableAssetCspModification` off, release `devtools` off, **`app.security.dangerousRemoteDomainIpcAccess` absent/empty** (a Tauri v2 `app.security` knob — NOT `app.windows[]` — that, if set, lets ANY remote origin invoke registered IPC commands directly, collapsing the T2 boundary), **`assetProtocol.enable` absent/false**, and **`bundle.createUpdaterArtifacts` absent/false**. **Un-pinnable runtime residual `[DECIDED]` (named, not implied-covered):** the **OS-provided WebView itself** (WebView2 Evergreen on Windows, WebKitGTK on Linux, WKWebView on macOS — a large untrusted-HTML-parsing C++ surface with its own CVE stream) is the named OS mechanism for T2 yet is **un-pinned, un-versioned, absent from the SBOM** — its integrity/CVE-currency is delegated to the OS update channel; ConvertIA's only side-bound is the G47 CSP lock (the WebView analogue of the G37c glibc-floor honesty). **JS name-trust gap (r7, un-verified residual ACCEPTED for v1):** G18c proves every `pnpm-lock` resolution URL ∈ the pinned registry but NOT package-name legitimacy — a typosquat / convincing-name malicious package hosted ON the pinned registry passes G18c entirely, where the Rust side's `cargo-vet` (G18b) closes exactly this class; residual accepted for v1 — its lightweight closure (a committed npm package-name+scope allowlist diffed against `pnpm-lock.yaml`, or Socket CLI as a non-blocking corroborator) is declined for v1 (a gate-status `decided` row) | **G47** CSP/capability structural lint (incl. ALL six §0.10 by-construction keys above); **G18** deny-list (no `tauri-plugin-updater`/HTTP-client crate); **G18c** registry-origin pin (name-trust gap residual noted above); **G42** offline-egress monitor (Lane-B confirmation, macOS WebView gap noted); **G5** T2 sink ban, the primary sink control — the eslint ban, with no inline directive able to lift it, each sink rule frozen as declared once at error and proven to fire on a planted fixture before every run, and every `src/` file linted under the evaluated sink rules, language options and settings the fixture proves; the accepted residual of the CodeQL decline ([gate-status.md](../process/gate-status.md)) is one class (measured): the ban matches each sink in the forms G5 lists, as the fixture pins them, and reads a `set`/`createAttribute(NS)` or `createElement(NS)` call and a global timer at the callee, directly or through exactly one wrapper; every other indirection lints clean — such a call or timer reached as a template tag, through a callee wrapped more than once, through an alias or a destructured or imported binding of the method or timer, or through a comma expression, `call`, `apply`, `bind` or `Reflect`; a sink name held in a variable, built by concatenation, written after a template substitution or as the template key of an object literal, or passed as a string to `Reflect` or a property descriptor, and a name string wrapped in a type assertion; a `javascript:` URL whose scheme does not begin a string literal or the leading text of a template literal; a runtime string timer handler the type-aware rule does not check (one typed as a function by a type assertion or by a binding from an `any` value, one returned by a `bind` call, or one in a call whose own scope binds the timer name); and an API outside the list that none of the G5 rules reads (a JSX `script` element, a script element's `text`, a function's `constructor`) — with the runtime CSP's `script-src 'self'` (no `unsafe-eval` or `unsafe-inline` source, G47) and React's escaping as the compensating controls; **G29 rule (i)**, defense in depth — a Semgrep `mode: taint` rule with its planted positive that follows an `invoke()` result or a DOM event value into a sink the G5 ban forbids, within one function, and plan-lint check 21 asserts the rule file |
-| **T2a** WebView steers a write to an attacker-chosen path | destination roots are core-picked (`[DECIDED 2026-07-06]` core-owned paths): C2b runs the native picker Rust-side and returns a `DestinationId` + display string, and `DestinationChoice::ChosenRoot(DestinationId)` resolves against the core-side session registry — the WebView never supplies a root path STRING, only an ID the core itself minted; the no-harm machinery — non-destructive create + write-target link-safety + divert (§2.1/§2.3.3/§2.7) — remains the backstop bound on the resolved root | **G19/G31** fs-safety unit + property tests (no-clobber + link-safe on a core-resolved `ChosenRoot` (`DestinationId`)); adversarial-path corpus (T7-shared) |
-| **T2b** WebView re-submits an attacker-chosen SOURCE path | eliminated by construction (`[DECIDED 2026-07-06]` core-owned paths — the wire carries no path in either direction: intake paths live only in the core-side `PendingIntake` buffer and C1 `drain_intake` drains them by `collectingId`, so the WebView holds no path to echo back); the freeze-time §1.1 re-validation (canonicalise / resolve-identity / existence / detection at the §2.4 freeze) remains as defence-in-depth over the core-side intake sources — provenance-independent | **G31** freeze re-validation property test (every intake path re-validated regardless of provenance) |
-| **T2c** WebView plugin-write surface (`log:default`) | the log bridge appends WebView-supplied diagnostic text to ConvertIA's own log file (spec §0.11): no path, no file choice, no user-file contents; no `store:` permission — prefs are core-owned (spec §7.4.2), so no `plugin:store` command is invocable (the `store:default` grant, an arbitrary-file JSON write through the pinned plugin's path-taking `load`, was removed 2026-09-29). Worst case: noisy local log lines, never read/exfil/overwrite of user data | **G47** — every capability permission is one of `{core:default, log:default}` (per-entry membership; a scoped entry fails), so any other grant or token fails the build |
-| **T3** bundled-binary supply chain | pinned + checksum-verified engines; build-time hash manifest; startup integrity. **Engine acquisition decided per engine per platform (spec §3.8, P0 review r3):** prebuilt-vs-from-source is an explicit policy because the two have different ground truths — **from-source** ⇒ the binary SHA is a build-output stability check, and provenance moves to the **§3.8 `from_source.anchor` (one of four variants, each independent of the download host) + digest-pinned build toolchain/base image** — **but a validly-signed tarball is NOT sufficient (r7): the xz/liblzma backdoor rode a SIGNED tarball whose autotools-GENERATED files differed from git, so the anchor prefers a VCS tag/commit (`git archive` of the signed tag, `configure`/`m4` regenerated locally) or, where a tarball must be used, a diff of its non-generated sources against the upstream VCS tag; both the tarball SHA AND the VCS tag/commit are recorded in `engines.lock`** (G37); **prebuilt** ⇒ corroborate via **≥ 2 independent mirrors** OR a **distro GPG-signed package + signed repo metadata** (a bare hash of one unsigned download is unacceptable — it launders provenance, the xz/liblzma class). **FFmpeg** (which publishes no signature for the common gyan/BtbN prebuilts) is built from source only, anchored on the GPG-signed `ffmpeg.org` release (`detached-signature`): no prebuilt satisfies the §3.5.1 `--disable-network` floor. An **engine-source allow-list** constrains which hosts a pin (and its corroboration checksum) may come from, on independent origins. *Residual risk stated honestly:* startup integrity gives **no runtime tamper-resistance** (a whole-bundle swap swaps the in-bundle manifest too); the floor is the §6.2 SHA256SUMS + minisign anchor, not a runtime check (§3.8, §6.1.3, §6.3.4, §7.2.3). **Declined for v1 (a gate-status `decided` row):** binding the in-bundle manifest's digest into the binary at build time, and a startup read of the signed `SHA256SUMS` — the residual above stands, and the authenticity floor stays the user-verified minisign signature (§6.2) | **G37** engine-checksum build gate (verify vs in-repo `engines.lock` before staging + on cache-restore) + **pin-establishment provenance assertion** (the spec §3.8 acquisition-mode corroboration — named satisfiable source per engine incl. FFmpeg; any `engines.lock` SHA edit is a hard Co-Pilot escalation) + **engine-source allow-list assertion** (every `engines.lock` source URL ∈ the committed per-engine origin allow-list, pin URL and corroboration URL on independent origins); **G35** SBOM completeness; **G46** startup integrity verification; **G17b** *(informational, planted-positive self-tested)* OSV/grype CVE scan over `engines.lock` (PURL-keyed; the **FFmpeg CPE is MANDATORY** — the highest-CVE surface is FFmpeg's enabled internal decoders, which `pkg:generic` PURLs miss; the planted-positive uses a historical INTERNAL-decoder CVE) |
-| **T3a** DLL/dylib/`.so` side-loading of a bundled shared object inside an engine resource tree (LibreOffice's; FFmpeg links its codecs statically, spec §3.9.1) | every staged shared object pinned — individually `engines.lock`-rowed with its SHA-256, or covered by its prebuilt tree engine's per-(archive, triple) row with its per-file digest in the §7.2.3 manifest (spec §3.7.2 item 1) — + verified before staging; on Windows, engines spawned with a minimal explicit `PATH` (the program's own bundle directory only, the spec §3.5 env table, so the OS DLL search starts inside the bundle) + the §3.5 loader-injection-var strip (`LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*` cleared); a staging-time dynamic-dependency-closure check that every non-system dependency resolves **inside** the bundle | **G37** per-shared-object SHA-256 verify (each `.dll`/`.dylib`/`.so` by its row or its tree's per-file digest, not just the primary engine binary); **G35** manifest diff hard-fails on a staged shared object not matching its `engines.lock` row (an ATTRIBUTION check per §6.3.3 item 1 — never a post-staging byte re-verify: staging re-emits bytes, the `lipo` merge and the P4.30 load-path rewrite both rewriting load commands, so the post-staging anchor is the §7.2.3 in-bundle manifest); **G37b** dynamic-dependency-closure assertion (`ldd`/`readelf -d` Linux · `otool -L` **AND `otool -l`** macOS — the `-l` leg enumerates `LC_RPATH`/`LC_LOAD_DYLIB` so an `@rpath` resolving OUTSIDE the bundle (Homebrew/`/usr/local`) is caught, which `otool -L` alone misses · `dumpbin /dependents` Windows — every non-system dep resolves inside the bundle, catching both a side-loading vector and an offline-floor break where an engine links a Homebrew/distro lib present only on the build runner) |
-| **T4** open-file launch of a fresh artifact | §7.7 open-file safety (reveal-in-folder, no auto-open) + the §7.7.3 Rust-side C9 gate: `open_path { target: OpenTarget }` resolves a run-scoped ID against `State<RunResultStore>` — the WebView cannot name a path at all (`[DECIDED 2026-07-06]` core-owned paths), only a target the core maps to its own recorded result path | **G15/G31** membership-check unit + integration tests re-keyed to the `OpenTarget`→`RunResultStore` ID-resolution (only a current-run result may be opened, and only by ID) |
-| **T5** core panic / app fault | §2.13 app-level fault model (`catch_unwind` worker boundary) + §7.2 startup faults + §0.3.1 WebView-absent handling | **G15** panic-boundary unit test (panic → app-fault, not crash); **G46** missing/corrupt-engine → app-fault acceptance |
-| **T6** copyleft aggregation boundary | §3.6 copyleft isolation (separately-invoked binaries, aggregation not linking); §0.3/§0.7 subprocess model | **G18** `cargo-deny` GPL/AGPL ban on the Rust crate graph; **G36** SBOM forbidden-family hard-fail; **G38b** LGPL-relink + GPL-corresponding-source bundle-present assertion (§6.1.3 ii/iii); **G53** core-crate forbidden-dependency check (`cargo-deny [bans]` workspace-member-scoped — no image-worker C libs in the core closure) |
-| **T7** path / link redirection (symlink/junction/TOCTOU) | §2.3 resolved-identity & link safety + §2.1 exclusive create-new-or-fail on the resolved real file | **G19/G31** atomic-publish/fs-safety unit + property tests; adversarial-path corpus |
-| **T7a** Windows reserved-name / trailing-dot-space output aliasing (`CON.csv` → candidate `CON.tsv`: a Win32 open aliases the console/device; the §2.1.2 NT dir-handle publish would create a real-but-Win32-unopenable file; a trailing dot/space is silently stripped — an alias onto a DIFFERENT name) | **§2.2.4** Windows-unopenable-name guard (`[DECIDED — the 2026-07-21 P3.73 P0 ruling]`): the pre-publish validation seam (beside §2.2.3 `check_path_limit`) rejects — Windows-only, on every ConvertIA-**constructed** component (the §2.2.1 leaf + §2.7.1-recreated subtree dirs, never user-chosen existing ancestors) — a right-trimmed first dot-segment equal to a reserved DOS device name or a trailing dot/space, as a clear per-item §2.8 failure naming the token; never alias/sanitise/truncate; the divert path re-checks identically. Neither `output_name` (verbatim-stem, §2.2.1) nor `is_safe_output` (no-clobber-only, §2.3.3) owns the class — §2.2.4 does; built by **P3.88** | **G15** P3.88 unit tests (reserved first-dot-segment incl. right-trim + trailing-dot/space reject on Windows; the legal-on-Unix pass-through; the divert re-check) — the corpus/E2E leg joins G31's hosted fs-safety assertion set when the §2.1.1 write sequence exercises it per-pair |
-| **T8** self-feeding / batch expansion | §2.4 frozen source set + §7.1 instance/run identity | **G15** frozen-set + per-run-ownership unit tests (the data-structure leg); **G31** T8 INTEGRATION sub-test (the live-path leg) — a batch whose conversion writes outputs INTO the same watched/dropped source folder mid-run asserts the fresh outputs are **NOT** in the run's ingest/result set (snapshot-not-live-iteration, §2.4.2), and a two-instance fixture where instance B drops a `file`/`*.part` into a shared folder mid-run asserts instance A's frozen set never grows (§2.4.3 concurrent-instance hand-off) |
-| **T9a** ConvertIA's own code exfiltrates user files | structural: opens no socket — no HTTP/updater on the §0.10 allowlist, no remote `connect-src`, no phone-home (§7.6) | **G29 project-local rules (g)+(j)** the per-push Rust-source net-ban — **(g)** `std::net`/`tokio::net`-outside-allow-list (the import-site path) **and (j)** `libc::socket`/`libc::connect`/`nix::sys::socket`-outside-allow-list (the raw-syscall FFI path the imgworker's `#[allow(unsafe_code)]` surface allows, which (g) structurally misses) — together the per-push structural proof that first-party Rust opens no socket by EITHER path, catching the renamed/transitive crate G18's name-based ban misses + **G47** CSP/capability lint + **G18** HTTP-client deny-list (no socket-opening dep ships); **G42** packet-monitor / egress-deny release gate (the release-tier proof) |
-| **T9b** bundled engine reaches out / reads out-of-input on hostile input (incl. the LibreOffice macro-execution / `WEBSERVICE()`-external-data vectors) | load-bearing argv/build controls: FFmpeg `-protocol_whitelist file,pipe` + curated demuxers (no `concat` demuxer; `-safe 0` never passed); pandoc `--sandbox` (pandoc ≥ 2.15 — `--sandbox` shipped in 2.15 and is honoured from 2.15 on, enforced by pandoc's type system; spec §3.5.4); LibreOffice hardened profile (`-env:UserInstallation=file://<per-job scratch>` disposable profile, asserted by the G29 argv rule + G31 — without it LibreOffice re-uses the user/home profile, a T9b read-half + T8 cross-job leak) (`MacroSecurityLevel = 3` + `DisableMacrosExecution = true`, `LinkUpdateMode = 0`, no external-data-range / `WEBSERVICE()` refresh on load, §3.5.2); librsvg **no base URL** (§3.5.x); **poppler `pdftotext` built WITHOUT network/HTTP** (no `curl`/`libsoup` in its dynamic closure — a crafted PDF can carry `GoToR`/remote-action / annotation URIs; asserted by G38 + a G31 remote-URI-PDF corpus sentinel; r7 — poppler was omitted from this control enumeration); **ImageMagick allowlist policy compiled into the worker** (spec §3.5.5) — every coder, every delegate and every `@`-indirect path read denied, read and write on the BMP coders and read on the ICO coder allowed, no `policy.xml` and no `MAGICK_CONFIGURE_PATH` (the historically most CVE-dense decoder family: ImageTragick CVE-2016-3714 + the URL/MSL/MVG coder SSRF/LFR/RCE class; ImageMagick is statically linked inside `convertia-imgworker`, §3.5.5, so the §2.12 worker isolation bounds blast radius but is the degradable §2.12.3 tier, NOT the structural T9b control — the load-bearing control is this compiled-in coder lockdown). **Two load-bearing halves, each with its own armed enforcement substrate:** (a) **zero outbound packets** (the egress half) and (b) **no out-of-input FILE READ** (the read half — symmetric, not a mere oracle). **The LibreOffice structural T9b/T1 control is bundled CONFIG, not a binary (r7):** the `registrymodifications.xcu` carries its own `engines.lock` SHA-256 row (verified by G37, counted by Syft G35) and is hashed by the §7.2.3 startup integrity check — a damaged `.xcu` MUST fault, not silently disarm the lockdown; the ImageMagick lockdown lives in the worker binary, which the same startup check hashes (on the §3.5.5 fallback route its `policy.xml` takes the `.xcu`'s treatment) | **G38** per-engine build assertions (`ffmpeg -protocols`/`-demuxers`, librsvg no-base-URL, `pandoc --version ≥ 2.15`, the **poppler `pdftotext`-built-without-network** introspection + the remote-URI-PDF G31 sentinel (r7), the **LibreOffice profile assertion** — parse the shipped `registrymodifications.xcu` and assert `MacroSecurityLevel`/`DisableMacrosExecution`/`LinkUpdateMode` + the external-data keys, and the **ImageMagick policy read-back** — the staged worker refuses a denied coder (SVG, MSVG, URL, PS), reads and writes BMP and reads ICO, spec §6.1.3); **G29** the per-spawn argv/env safety rule (incl. the image-engine `MAGICK_CONFIGURE_PATH` presence rule, written for a staged `policy.xml` — the decided route sets no such key, and the §3.5.5 ImageMagick fallback route's `policy_dir=` argv key falls under the G29 (b) engine-argv rule — + the LibreOffice `-env:UserInstallation` disposable-profile presence + value check + the pandoc `--resource-path <scratch-only>` value check); **G31** corpus sentinels (a `.docm`/`.xlsm`/`.pptm` AutoOpen/`Workbook_Open` macro writing a canary inside the egress-deny window → canary **NOT** created; a `WEBSERVICE()` `.xlsx` → no egress/no out-of-input read; **a crafted BMP / SVG-via-MSL/URL-coder → no egress + no out-of-input read inside the G42/G42b window**; **a poppler remote-URI-annotation `.pdf` → no packet inside the egress-deny window (r7 — the poppler sentinel was documented in G38 but missing from this T9b verifying-gates cell and the G31 sentinel host-list)**), pulled forward into the per-push L4 leg; **G42** release-confirmation adversarial-egress monitor (the EGRESS half — zero outbound packets, armed-window canary, fail-closed); **G42b** the read-half fs-audit enforcement substrate (spec §6.4.2 — `ptrace`/Landlock, fail-CLOSED when neither is available, out-of-input sentinel + planted-positive, symmetric with G42 so the read half can never silently no-enforce **on the Linux leg**; macOS/Windows rest on the degradable §2.12.3 tier + the G31 sentinel oracle; **macOS = G42b option (b) BY DECISION since the P4.16 cheap-tier ruling (spec §2.12.3 macOS row: no Seatbelt profile is ever applied in v1-portable — the owner-accepted residual is recorded in the G42b row); Windows = option (b) BY DECISION since the P4.17 Co-Pilot ruling 2026-08-25 (the realizable Windows legs — a reduced-integrity intermediate-IL token + Job Object — confine writes/resources only, files carry no `NO_READ_UP`, and the AppContainer profile is unrealizable in v1-portable; the owner-accepted residual is recorded in the G42b row)**) |
-| **T10** resource exhaustion / DoS-by-input | §1.10 resource pre-flight & budgets (incl. an **output/scratch BYTE budget** — r7: the decompression-bomb defence covers the in-core detect path + the §1.10 RAM / §2.12.3 memory-cap-kill, but a decoder that slowly explodes a 1 KB input into a 50 GB intermediate WITHIN its memory/time budget exhausts the scratch DISK, an exhaustion axis the RAM/handle/time budgets miss; the output/scratch byte budget kills to a clean `Failed(TooBig)` when decoded output exceeds N× input or an absolute scratch ceiling) + §0.9 pool/handle bounds + the to-GIF guardrail | **G16/G31** adversarial resource-budget corpus + property tests (oversized-render SVG, over-duration to-GIF, over-cardinality batch → fail-clearly, batch continues, no handle/RAM exhaustion); decompression-bomb fixtures (svgz/ZIP-in-OPC/nested-flate); **an output/scratch-byte-budget adversarial sub-case** (a bomb whose DECODED output exceeds N× input or the absolute scratch ceiling → killed to a clean `Failed(TooBig)`, batch continues, scratch returns to baseline) |
-| **T11** macOS engine-as-first-TCC-accessor (silent-deny) | §3.5.0/§7.2.6 macOS TCC source staging — the Rust core (holding the TCC grant from §1.1 freeze) copies a TCC-protected source into a per-job kind-2 scratch path (§2.14.2) **before** spawning, so a sidecar is never the first process to touch Desktop/Documents/Downloads/removable media (a chain-break otherwise triggers an invisible TCC denial / wrong-process prompt that defeats the conversion, and is silent on CI which runs from `TMPDIR`) | **G31** macOS sub-test (the Rust core PID, not the engine PID, is the first accessor of the protected path; the engine receives a kind-2 scratch path); **G29** leg (two halves per the 2026-08-30 P4.26 adjudication, build-gates G29 (d)): the Semgrep rule (every `Command::new` in the macOS isolation module — the delivered `paths:`-scoped P4.85 form — is preceded by the stage-for-TCC / scratch-staging call), a deliberately-vacuous armed door guard with zero in-scope spawn sites (every spawn lives on the cross-platform §2.12.3 floor and takes the already-staged §3.2.2 `engine_input` value) that fires mechanically on any future mac-homed spawn carrying the `misplaced_macos_cfg` spellings (a literal-free OS predicate or an audited `nosemgrep` is the G31 leg's to catch); plus the non-vacuous check-sast `t11_seam_pin` (the seam's macOS arm must call the literal standalone `stage_for_tcc` — the rename class closed); the behavioural burden sits on the G31 leg |
-| **T12** unsigned distribution / download-MITM (tamper between our release and the user) | the build ships **unsigned/unnotarized** artifacts (binary code-signing is SSOT *Out of Scope*) — the trust anchor is the **minisign-signed `SHA256SUMS`** (§6.2) + an **out-of-band pubkey-fingerprint** anchor (the in-repo `docs/minisign.pub` TOFU is otherwise circular); the user verifies before first run. **Residual (accepted + documented, not implied-covered):** no runtime tamper-resistance + SmartScreen/Gatekeeper friction on an unsigned build (§6.2.4) — named in SSOT *Out of Scope* + the release notes | **G39** checksums + minisign over `SHA256SUMS` + the executable verify-recipe assertion; **G44** verify-recipe-present + the pubkey out-of-band-fingerprint match (the deleted **G40** cosign/SLSA binary-signing path is the explicitly-out-of-scope alternative) |
-| **T13** cross-user single-instance socket (macOS machine-global) | `tauri-plugin-single-instance` hard-codes the macOS single-instance socket at world-writable `/tmp/{id}_si.sock` carrying the second launch's `cwd`+`argv` (§7.1.1) — so on a **multi-user Mac** a different OS user can pre-bind (path leak), inject (paths→intake), or squat (DoS). **Accepted v1 limitation (§7.1.1 `[DECIDED]`):** the injection half is bounded by the **same provenance-independent freeze re-validation that backstops T2b as defence-in-depth** (the injected leg is core-side — a socket-delivered path enters the core-side §7.8.1 funnel/`PendingIntake` buffer exactly like a launch argv, never the IPC wire; every intake path is canonicalised/resolve-identity/existence/detection re-validated at the §2.4 freeze; a substituted path only converts an A-readable file to an output beside it, no-clobber + link-safe). The **confidentiality (launch-path leak) + DoS halves are accepted residual** (named, not implied-covered): a local logged-in second macOS user is out of the offline-converter threat model, the leaked data is **user-visible launch PATHS** (never file contents), single-user Macs dominate, and the **macOS PRIMARY single-instance path is the AppleEvent (§7.8)** — unaffected (the /tmp socket covers only direct-binary re-exec, the least-mature leg). Win/Linux are per-OS-user by construction (session namespace / session D-Bus). | **G31** freeze re-validation property test (the injected-path half — every intake path re-validated regardless of provenance, the same property that backstops T2b); the §6.6 macOS walkthrough confirms the normal single-`.app` path. The leak/DoS halves are accepted residual, no gate (§7.1.1 `[DECIDED]`) |
+| Threat (spec §0.11) | Owning § and control | Verifying gates ([build-gates.md](build-gates.md)) | Accepted residual |
+|---|---|---|---|
+| **T1** untrusted decoder input → crash, hang or exploit | §2.12, §1.7, §0.9, §1.2 — every third-party C/C++ decoder runs in an isolated subprocess under the invocation timeout/kill and the pool bounds; untrusted bytes reach the core only through memory-safe Rust (the detection sniffs and the native CSV/TSV engine, §2.12.4) | G48 in-core detector fuzz · G31 the corpus through the §2.12 boundary (the crafted-BMP ImageMagick sentinel included), with the privilege-drop-tier-applied, memory-cap-kill and Job-Object-reap assertions · G26 the engine-side adversarial corpus, at least one fault-injection fixture per staged engine · G64 the privilege-drop-tier ratchet | the §2.12.3 privilege drop (Linux Landlock + netns + seccomp; the macOS cheap tier; Windows intermediate IL + Job Object) is best-effort and degrades silently, so a decoder exploit has no load-bearing runtime containment: isolation bounds it to one sidecar and its scratch, and the tier is tracked, not guaranteed |
+| **T2** malicious / compromised WebView content | §0.10 — the capability allow-list gives the WebView no `fs` and no network, the CSP admits no remote origin (`object-src 'none'`), and the §0.10 by-construction hardening keys (`withGlobalTauri`, `dangerousRemoteDomainIpcAccess`, release `devtools`, the asset protocol, the updater artifacts and the rest of that list) stay absent or false; an eslint ban by name on the DOM and eval sinks — the APIs that parse a string as unsanitized markup or as code — in the listed code shapes keeps a WebView-controlled value from reaching one through those shapes, whatever the flow depth | G47 the CSP, capability and hardening-key lint · G5 the sink ban, the primary sink control: no inline directive lifts it, each sink rule is frozen as declared once at error and proven to fire on a planted fixture before every run, and every `src/` file is linted under the sink rules, language options and settings the fixture proves · G18 no updater or HTTP-client crate · G18c the npm registry pin · G18b cargo-vet, the crate-side name-trust check the npm side lacks · G42 the offline-egress monitor (the macOS WebView leg rests on G47) · G29 rule (i), defense in depth: the WebView taint rule into a sink the ban forbids, within one function (plan-lint check 21 asserts its file) · G37c the glibc floor, the OS-library analogue, with no WebView leg | the OS WebView (WebView2, WebKitGTK, WKWebView) is un-pinned, un-versioned and absent from the SBOM: its CVE currency is the OS update channel's, and the CSP lock is ConvertIA's only side-bound; a typosquatted npm package hosted on the pinned registry passes the registry pin (its closure is declined, gate-status.md); the sink ban reads each listed sink in its listed forms, and an attribute- or element-method call or a global timer at its callee, directly or through exactly one wrapper; every other indirection lints clean — one measured class, such as an alias or a destructured or imported binding, a computed or concatenated name, `call`/`apply`/`bind`/`Reflect`, a callee wrapped more than once or an API outside the list, which the CodeQL decline lists in full (gate-status.md) — with the runtime CSP's `script-src 'self'` (no `unsafe-eval` or `unsafe-inline` source) and React's escaping as the compensating controls |
+| **T2a** WebView steers a write to an attacker-chosen path | §0.4.4, §2.1, §2.3.3, §2.7 — destination roots are core-picked: C2b runs the native picker Rust-side and `ChosenRoot(DestinationId)` resolves against the core-side picked-roots registry, so the WebView never names a path; the no-harm machinery (non-destructive create, write-target link safety, divert) stays the backstop on the resolved root | G15 / G16 the fs-safety unit and property tests (no-clobber and link-safe on a core-resolved root) · G31 the hosted fs-safety assertions and the adversarial-path corpus shared with T7 | — |
+| **T2b** WebView re-submits an attacker-chosen SOURCE path | §7.8.1, §1.1, §2.4 — eliminated by construction: no path crosses the IPC wire in either direction (intake paths stay in the core-side `PendingIntake` buffer that C1 `drain_intake` drains by `collectingId`), and the freeze-time §1.1 re-validation stays as defence in depth over every core-side source | G31 the freeze re-validation property test (every intake path re-validated, whatever its provenance) | — |
+| **T2c** WebView plugin-write surface (`log:default`) | §7.5.1, §7.4.2, §0.10 — the log bridge appends WebView-supplied diagnostic text to ConvertIA's own log file and names no path, file or target; the WebView holds no `store:` permission, because prefs are core-owned (§7.4.2), so no `plugin:store` command is invocable | G47 every capability permission is one of `{core:default, log:default}`, entry by entry (a scoped entry fails) | noisy local log lines (rotation bounds the size); never a read, an exfiltration or an overwrite of user data |
+| **T3** bundled-binary supply chain | §3.8, §6.1.3, §6.2, §7.2.3 — every engine is pinned and checksum-verified before staging under the per-engine acquisition policy (from source: an anchor independent of the download host, with the generated build files regenerated locally; prebuilt: corroborated by ≥ 2 independent mirrors or a distro's signed package; FFmpeg from source only, from its GPG-signed release), from allow-listed origins, enumerated in the SBOM and integrity-checked at startup | G37 engine checksum, pin-establishment provenance and engine-source allow-list (any `engines.lock` SHA edit is a hard Co-Pilot escalation) · G35 SBOM completeness · G46 startup integrity · G17b the engine CVE scan over `engines.lock` (informational per push; the FFmpeg CPE mandatory) | startup integrity detects damage, not tampering: a whole-bundle swap replaces the in-bundle manifest too, so the authenticity floor is the minisign-signed `SHA256SUMS` the user verifies before first run (§6.2); binding the manifest digest into the binary and a startup read of the signed sums are declined (gate-status.md) |
+| **T3a** DLL/dylib/`.so` side-loading of a bundled shared object inside an engine resource tree | §3.7.2, §3.5, §6.1.3 — every staged shared object is pinned (its own `engines.lock` row, or its tree engine's per-file digest in the §7.2.3 manifest) and verified before staging; on Windows, engines spawn with a minimal `PATH` (their own bundle directory), the loader-injection variables (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`) are stripped, and a staging-time closure check resolves every non-system dependency inside the bundle | G37 the per-shared-object SHA-256 before staging · G35 the stage-tree manifest diff, an attribution check (never a post-staging byte re-verify: staging re-emits bytes) · G37b the dynamic-dependency closure (`ldd`/`readelf -d`, `otool -L` and `otool -l`, `dumpbin /dependents`) | — |
+| **T4** open-file launch of a fresh artifact | §7.7, §7.7.3 — reveal-in-folder and no auto-open; C9 takes an `OpenTarget` resolved Rust-side against the current run's `RunResultStore`, so the WebView can select only a recorded result, never name a path | G15 / G31 the membership tests (only a current-run result opens, and only by id) | — |
+| **T5** core panic / app fault | §2.13, §7.2, §0.3.1 — the app-level fault model (`catch_unwind` worker boundary), the startup faults and the WebView-absent handling | G15 the panic-boundary unit test (a panic becomes an app fault, never a crash) · G46 a missing or corrupt engine is an app fault | — |
+| **T6** copyleft aggregation boundary | §3.6, §0.3, §0.7 — copyleft engines ship as separately invoked binaries (aggregation, not linking) | G18 the `cargo-deny` licence allow-list over the Rust graph · G36 the SBOM forbidden-family hard-fail · G38b the LGPL relink and GPL corresponding-source bundle present (§6.1.3) · G53 the core-crate forbidden-dependency walk (no image-worker C library in the core closure) | — |
+| **T7** path / link redirection (symlink/junction/TOCTOU) | §2.3, §2.1 — resolved-identity and link safety, and the exclusive create-new-or-fail publish evaluated on the resolved real file | G15 / G16 the atomic-publish and fs-safety unit and property tests · G31 the hosted fs-safety assertions and the adversarial-path corpus | — |
+| **T7a** Windows reserved-name / trailing-dot-space output aliasing | §2.2.4 — on Windows the pre-publish seam rejects every ConvertIA-constructed component whose right-trimmed first dot-segment is a reserved DOS device name or that ends in a dot or space, as a clear per-item failure naming the token (never alias, sanitise or truncate); the divert path re-checks identically | G15 the guard's unit tests (the reserved-segment and trailing-dot/space rejects on Windows, the Unix pass-through, the divert re-check) · G31 the per-pair fs-safety leg, once the §2.1.1 write sequence runs per pair | — |
+| **T8** self-feeding / batch expansion | §2.4, §7.1 — the source set is frozen at drop and each run owns its instance identity, so fresh outputs and a second instance's files never join a run | G15 the frozen-set and per-run-ownership unit tests · G31 the integration leg: outputs written into the dropped folder mid-run stay out of the run, and a second instance's drop never grows the frozen set (§2.4.2, §2.4.3) | — |
+| **T9a** ConvertIA's own code exfiltrates user files | §7.6, §0.10 — ConvertIA's own code opens no socket: no HTTP or updater plugin, no remote `connect-src`, no phone-home | G29 rules (g) and (j), the per-push net ban over the Rust import path and the raw-socket FFI path, which also catches a renamed or transitive crate a name-based ban misses · G47 the CSP and capability lint · G18 the HTTP-client deny-list · G42 the egress monitor, the release-tier proof | — |
+| **T9b** bundled engine reaches out / reads out-of-input on hostile input (incl. the LibreOffice macro and `WEBSERVICE()` vectors) | §3.5.1, §3.5.2, §3.5.4, §3.5.5, §6.1.3 — load-bearing per-engine argv and build controls, not the degradable OS sandbox: FFmpeg `-protocol_whitelist file,pipe` and curated demuxers (no `concat`, never `-safe 0`); pandoc `--sandbox` (≥ 2.15); a disposable per-job LibreOffice profile (never the user's own) with macros and link updates disabled and no `WEBSERVICE()` or external-data refresh on load; librsvg loaded with no base URL; poppler `pdftotext` built without network support; the ImageMagick coder allow-list compiled into the image worker — each half (zero outbound packets; no out-of-input file read) with its own armed substrate, and the LibreOffice profile and the worker's compiled lockdown hashed at startup, so a damaged one faults instead of disarming | G38 the per-engine build assertions (protocols and demuxers, the no-base-URL librsvg, pandoc ≥ 2.15, poppler without network, the parsed LibreOffice profile keys, the ImageMagick policy read-back) · G29 rule (b), the per-spawn argv and environment rule · G31 the corpus sentinels on the per-push leg (macro-bearing office files, a `WEBSERVICE()` sheet, a crafted BMP or an MSL/URL-coder SVG, a remote-URI PDF) · G42 the egress half · G42b the read half (`ptrace`/Landlock, fail-closed on Linux) · G37 / G35 the LibreOffice profile's `engines.lock` row and its SBOM count | on macOS and Windows the read half rests on the corpus sentinels and the argv and build controls: the realized tiers there confine no reads (owner-accepted, option (b)) |
+| **T10** resource exhaustion / DoS-by-input | §1.10, §0.9 — the resource pre-flight and budgets, including the per-item output and scratch byte budget that kills a slowly exploding decode to `Failed(TooBig)`, the pool and handle bounds and the to-GIF guardrail | G16 / G31 the adversarial resource-budget corpus and property tests — oversized SVG renders, over-duration to-GIF, over-cardinality batches, decompression bombs (svgz, ZIP-in-OPC, nested flate) and an output/scratch byte-budget case — each failing clearly while the batch continues | — |
+| **T11** macOS engine-as-first-TCC-accessor (silent-deny) | §3.5.0, §7.2.6 — the Rust core, holding the TCC grant from the §1.1 freeze, copies a protected source into a per-job scratch path before spawning, so an engine is never the first process to touch Desktop, Documents, Downloads or removable media | G31 the macOS sub-test (the core PID is the first accessor; the engine gets the scratch path) · G29 rule (d), an armed door guard with no in-scope spawn by design, plus the `t11_seam_pin` source pin on the seam's `stage_for_tcc` call | — |
+| **T12** unsigned distribution / download-MITM | §6.2 — the build ships unsigned and un-notarized; the trust anchor is the minisign-signed `SHA256SUMS` plus an out-of-band public-key fingerprint (the in-repo key alone is trust-on-first-use), verified by the user before first run | G39 checksums, minisign and the executed verify recipe · G44 the verify recipe and the out-of-band fingerprint match | no runtime tamper resistance, and SmartScreen/Gatekeeper friction on an unsigned build (§6.2.4), named in SSOT *Out of Scope* and the release notes |
+| **T13** cross-user single-instance socket (macOS machine-global) | §7.1.1, §2.4 — an accepted v1 limitation: the plugin's macOS socket is the world-writable `/tmp/{id}_si.sock`; its injection half is bounded by the provenance-independent freeze re-validation that backs T2b (a socket-delivered path enters the core-side intake funnel, never the wire) | G31 the freeze re-validation property test (the injected-path half); the §6.6 macOS walkthrough confirms the normal single-`.app` path | the launch-path leak and the squat DoS: a second logged-in macOS user is outside the offline-converter threat model, the leak is user-visible paths (never contents), and the primary macOS path is the AppleEvent (§7.8), which the socket does not touch; Windows and Linux are per-user by construction |
 
-**Cross-cutting build/release controls** (not §0.11 threat classes, but
-load-bearing security guarantees with their own gates):
+**Cross-cutting build/release controls** (not §0.11 threat classes, but load-bearing
+security guarantees with their own gates):
 
-| Guarantee | Primary control | Verifying gate |
-|---|---|---|
-| credential / secret in repo | no secrets committed; the real CI secrets are **THREE**: `MINISIGN_SECRET_KEY` **and** `MINISIGN_PASSWORD` (§6.2.3) **and** the build-session reviewer-API `ANTHROPIC_API_KEY` (`sk-ant-…`, the §5 reviewer-API dependency row) | **G2** `gitleaks` secrets scan using the **current** subcommands (`gitleaks` v8.19+ deprecated `protect`/`detect`): L1 `gitleaks git --staged` + **L2** `gitleaks git` over the unpushed range `@{u}..HEAD` (the last local catch before a secret goes public; **excluded from the docs-only fastpath** — secrets in `.md` count) + L4 full-tree `gitleaks dir` + a release-tier **full-history `gitleaks git`** leg over the commit log (a once-committed-then-removed secret stays live forever in a **public** OSS repo with no PR-review backstop). All THREE secrets are named + provably caught + planted-positived: a committed `.gitleaks.toml` carries a **custom rule matching the minisign secret-key shape** (the `untrusted comment:` header co-occurring with a long base64 blob / a banned `*.key` staging) — `gitleaks`' default PEM rule keys on `-----BEGIN…-----` delimiters and a minisign key has none, so the PEM rule alone would **miss** it; **`ANTHROPIC_API_KEY` is caught by `gitleaks`' bundled Anthropic-key rule (`sk-ant-` prefix) — confirmed present + a planted-positive**; **`MINISIGN_PASSWORD` is a free-form passphrase that relies only on entropy + the `MINISIGN_PASSWORD` env-name scan**, so a committed `MINISIGN_PASSWORD=<value>` literal line is additionally banned by a custom rule. The committed `.gitleaks.toml` path allowlist + the zero-entry baseline are the **only** suppression this repository controls, frozen by `check-gitleaks-allowlist` (a key-shape check of the whole config + a refusal of a tracked `.gitleaksignore`); `scripts/run-gitleaks` honours no inline `gitleaks:allow` comment, no `.gitleaksignore` (it refuses to scan beside one) and no binary verdict of git's (its `git` modes read no in-tree attributes file and diff every path as text, so neither a `binary`/`-diff` mark nor a NUL byte hides a file), in every mode — each of these let the planted secret through with no caged edit before the driver closed it. **Named residual:** the global allowlist of gitleaks' bundled rule set, which `useDefault` appends (the pinned 8.30.1 cannot keep the bundled rules without it), skips a path such as an image, a font, a document, a lock file or a dependency / vendored tree for every rule, the custom ones too, and drops a bundled rule's finding whose secret holds `false` in any case or a stopword, starts with `true`, ends in `null` or is a placeholder shape (each custom rule reports a fixed capture — the key's `RW` prefix, the variable name, `sk-ant-` — so no value it matches reaches that list: a `MINISIGN_PASSWORD` holding `False` passed every mode while the rule reported the value) — accepted, since G2 guards against a careless leak of a text secret, those paths hold generated, binary or vendored artefacts, a bundled rule's secret is a random token that holds such a word only by chance, and a secret placed there on purpose inside the owner-acked tree is the G1 / owner surface; G24 legs pin both reaches, so a gitleaks bump that moves either reds. The G56a secret-scanning + push-protection sub-check is the free GitHub-native backstop for all three |
-| authentic, verifiable download | per-file SHA-256 + minisign-signed `SHA256SUMS` + published verify recipe (§6.2) — the recipe is `minisign -Vm SHA256SUMS -p docs/minisign.pub` (**lowercase `-p` = public-key file path**; uppercase `-P` expects an inline base64 string and would fail on a path — standardised across README + spec §6.2.3/§6.2.4); an **out-of-band pubkey fingerprint** anchor (the in-repo `docs/minisign.pub` TOFU is otherwise circular — an attacker serving a tampered clone swaps artifact + `SHA256SUMS` + `.minisig` + pubkey together) | **G39** checksums + minisign over `SHA256SUMS` **+ a release-tier executable assertion that RUNS the exact documented recipe** against the just-produced `SHA256SUMS` + `.minisig` + committed pubkey and fails the release on non-zero (turns "recipe present" into "recipe correct and working"); **G44** verify recipe present + literal-form match; **G39/G44 sub-assertion** that `docs/minisign.pub` matches the fingerprint published out-of-band (a pinned README via the verified GitHub web UI / org page the pipeline cannot rewrite); the key-compromise/loss + coordinated-disclosure path lives in `vuln-response.md` (the human-readable retired/compromised-key commit IS the revocation channel for an offline app) |
-| §7.5 log never carries file contents / full paths | redaction in the logging layer (§7.5) | **G15/G31** (redaction property-test sub-case, homed in G31's hosted security-assertion set — parallel to the temp-ownership row below): a known secret-looking path stem fed through the logger is absent from the log |
-| §2.14.1 per-run temp ownership + mode | per-run-owned scratch, `0o700` scratch root / `0o600` `.part` publish-temp | **G15/G31** temp-ownership + mode-bits assertion |
-| hardened CI supply chain | least-privilege `permissions`, SHA-pinned actions, transitively recorded (a caged inventory holds every action's nested `uses:` and container image; current via `dependabot.yml` covering **github-actions, cargo, npm, and pip** ecosystems — pip for the gate-toolchain layer `requirements-ci.txt`, r7; a `docker://` step image is digest-pinned and re-pinned at the phase-end sweep), lockfile-locked builds, no fork-PR release, pinned+digest-verified gate tools, per-workflow concurrency + `timeout-minutes` | **G49** `actionlint` (L4); **G50** `zizmor` (L4); **G18a** lockfile-integrity (`--locked`/`--frozen-lockfile` + `git diff --exit-code` lockfiles); **G56** `dependabot.yml` github-actions **+ cargo + npm + pip** entries + push-workflow concurrency/timeout-minutes assertions + the action-pin inventory bijection (leg 12) |
-| CI runner-host integrity (principle 11) | every lane runs on GitHub-hosted runners, a fresh VM per job (spec §6.1.4); the secret-bearing signing job runs only on an ephemeral GitHub-hosted runner, host-isolated from the untrusted-corpus/fuzz jobs; **`step-security/harden-runner` (BLOCK mode) on the GitHub-hosted signing job** (its free/Community tier works only on GitHub-hosted runners; self-hosted needs Enterprise); on the Linux corpus/fuzz leg the enforcement is **G42b ptrace/Landlock + G42 nftables/strace** | **G56** workflow lint — a secret-using job bound to a self-hosted runner label is a hard fail; the corpus/fuzz job and the signing job assert disjoint runner hosts; **harden-runner presence/mode is asserted on every GitHub-hosted secret job** |
-| GitHub required-status-checks / repo config (via rulesets) | the single-branch direct-to-`main` model has no PR and no second reviewer, so the **only** thing that turns a red CI run into an actual block is repo config — invisible to the codebase and silently relaxable in the GitHub UI. Classic branch protection cannot express it: its required-checks block **all** direct pushes incl. admins (GH006), incompatible with the direct-to-`main` "red `main`, fix immediately" model — so the config is **two rulesets**: a required-checks ruleset whose bypass is the repo-**ADMIN role ONLY** (the trusted direct-pusher — a fork-PR stays gated, the owner/Build-Loop can direct-push), and a `non_fast_forward`+`deletion` ruleset with **NO** bypass (history protection for everyone). **Plus two further invisible-config settings free and load-bearing for a public repo holding the most-damaging secret:** native secret-scanning + push-protection ENABLED, and the repo's default workflow permissions = read-only (a workflow omitting a `permissions:` key inherits this) | **G56a** repo-config assertion — queries the GitHub **rulesets** API for `main` (`gh api repos/:owner/:repo/rulesets`, GET per active ruleset) and fails if the agreed required checks are not all present-and-required, if the `non_fast_forward`/`deletion` rules are absent or carry **any** bypass actor, or if a **non-admin/wider** actor can bypass the required-checks rule (the repo-admin bypassing the *checks* rule is the intended trusted-direct-pusher mechanism — this REPLACES the old "admin-bypass off" assertion the GH006 reality made unsatisfiable; owner-decided, §4 principle 10); **+ sub-checks: `secret_scanning`/`secret_scanning_push_protection` enabled and `default_workflow_permissions == "read"` + `can_approve_pull_request_reviews == false`** (fail-soft only during the P0 bootstrap box, then hard) |
-| release-tag (`v*`) trust — the secret-bearing trigger G56a does NOT cover | the minisign release job (the ONLY holder of `MINISIGN_SECRET_KEY`/`MINISIGN_PASSWORD`) fires on a `v*` tag, but G56a guards only the `main` BRANCH ref — so the loop / a compromised `GITHUB_TOKEN` / a stale-or-forced tag could create a `v*` tag on a commit that never passed L4 green and mint a signed artifact; the release trigger needs the same "a red run actually blocks" guard applied to the tag ref | **G56b** release-tag trust gate — (1) a GitHub **tag-protection ruleset on `v*`** (only the owner/a protected actor may create release tags), whose rulesets-API read is unbuilt (the build-gates G56b Status cell names its box) — until it runs, the owner-provisioned ruleset is the control and no CI leg verifies it; (2) the release workflow's FIRST step asserts the tagged commit is an **ancestor of `origin/main`** AND **main's required checks were green for that exact SHA** (`gh api …/commits/<sha>/check-runs`), aborting before any secret is read otherwise; (3) the `v*` tag is a **signed annotated tag**, verified with `git verify-tag` against a **committed SSH allowed-signers file** (the loop signs its own release tags; the file is provisioned in P0.7 — distinct from the spec §6.7.1 requested-not-required DCO commit sign-off). Legs 2/3 fail closed; leg 3 fails open only while the allowed-signers file is absent (its `scripts/gate-planes.toml` `[[fail_open]]` row) |
-| JS/WebView supply-chain symmetry with Rust | committed `.npmrc` registry pin + resolution-URL guard (dependency-confusion defence); a frontend GPL/AGPL license deny over the pnpm graph; a committed minimal `onlyBuiltDependencies` allowlist (install-lifecycle-script lockdown). **Asymmetry stated HONESTLY (r7 — the JS-side execution lockdown is the STRONGER half, the reverse of what "symmetry with Rust" implies):** G18d BLOCKS arbitrary code via `postinstall` the moment `pnpm install` runs in CI, but the Rust side has NO equivalent execution lockdown — `build.rs` scripts and proc-macros execute arbitrary native code during `cargo build`/`test` in the SAME secret-bearing release job, with full network by default; `cargo-vet` (G18b) is a TRUST signal, not an execution sandbox (a vetted-then-compromised, or as-yet-unvetted-but-allowed, crate's `build.rs` can open a socket / exfiltrate `MINISIGN_SECRET_KEY` at build time). The mitigation: in the secret-bearing release/signing job, after `cargo fetch --locked`, run all `cargo build`/`test` with **`CARGO_NET_OFFLINE=true`** (plus the harden-runner BLOCK already mandated on that hosted job) so a `build.rs`/proc-macro cannot phone home. **Residual stated honestly: cargo cannot fully sandbox build scripts the way pnpm blocks lifecycle scripts** — offline-after-fetch + harden-runner BLOCK bound the egress, not in-process behaviour; a per-crate capability cap (`cargo-acl`/cackle) is declined for v1 (gate-status.md), so a `build.rs` or transitive crate that opens a socket outside the fetch step is the accepted residual | **G17** `osv-scanner` over `pnpm-lock.yaml` (`scripts/check-js-advisories`: offline against the Lane-A-refreshed OSV database, fail-closed at L4; **NOT** `pnpm audit`, which is online-only — see G17); **G18c** `.npmrc` registry-pin + every `pnpm-lock.yaml` resolution URL ∈ the allowed registry; **G36b** frontend GPL/AGPL license hard-fail (cdxgen SBOM → `jq`/license filter); **G18d** `onlyBuiltDependencies` allowlist-growth lint (+ fail unless `enable-pre-post-scripts`/`unsafe-perm` are each pinned `false` — pnpm reads an absent key as ON); **G56** jq-over-YAML sub-rule asserting the secret-bearing signing job sets `CARGO_NET_OFFLINE=true` after `cargo fetch --locked` (no-network-after-fetch) |
-| Principle-11 English-only / string-ownership (spec §6.7.1 / §6.10 row 23 — v1 is English-ONLY, no i18n runtime) | no locale-switch / i18n-runtime library import; every `strings/ui.ts` key resolves to a non-empty English value; user-facing literals live in `strings/ui.ts` | **G57** English-only / string-ownership lint (Lane-A, activated in P1) — fails on any locale-switch/i18n import, on an empty/missing `ui.ts` key, or a user-facing literal outside `strings/ui.ts` |
-| build-time reviewer-API dependency (the ONE breach of the hermetic-CI principle, named honestly) | the G1 dual review calls the **Anthropic API** on every box — the single sanctioned build-time network dependency, the one place principle 10's "hermetic CI / everything that touches the minisigned bytes" is breached. It is **OUTSIDE the minisigned-bytes boundary** because it *observes but does not produce* the artifact. **Residuals stated:** (a) it is a live network call from the build session, the only one; (b) a spoofed/compromised endpoint could emit a **forged `GO`** — but G1 is **not** a security control (every `Gnn` except G1 is the real control), so a forged GO suppresses only the human review-trace the spot-audit relies on, it cannot ship insecure code; (c) the full staged diff (incl. any committed test-fixture material) leaves the machine to a third party — acceptable for an OSS repo, but a stated fact; (d) **prompt-injection via a committed fixture** — adversarial corpus bytes added to the diff reach the reviewer as DATA, never as instructions, and even a reviewer subverted into a forged `GO` cannot ship insecure code because **G1 is not a security control** (every `Gnn` except G1 is the deterministic control), so the bound on this vector is the same "a forged GO suppresses only the review-trace, never a gate" framing as (b). Model IDs are recorded per commit (§2) | **G1** (quality amplifier, not a security control) + the auditable-smell spot-audit (§2); mitigated structurally by "every Gnn except G1 is the deterministic control" |
-| release-artifact completeness (the single backstop catching "the SBOM/CVE-report/source-bundle silently didn't get attached") | every required release asset enumerated + present before publish | **G58** release-manifest completeness meta-gate — fails the release if any of the per-OS bundle, `SHA256SUMS`, `SHA256SUMS.minisig`, SBOM file(s), dated open-CVE report (G17b), `NOTICE`/`THIRD-PARTY-LICENSES`, copyleft corresponding-source bundle (G38b), measured-sizes asset, `usability-floor.md`, `name-clearance.md`, the §6.5.3 CHANGELOG/release-notes (with demoted/lossy pairs), the G59 attestation Sigstore bundle, or its paired `trusted_root.jsonl` offline-verify asset is missing |
-
-> Every row above also lists, in [build-gates.md](build-gates.md), the concrete
-> tool, the plane it runs at, and its fail-open/closed posture. The §0.11 ↔ §5
-> parity check (plan-lint check 8) fails the build if **any** §0.11 class loses its
-> row or a row loses its `Gnn`, so this mapping can never silently drift.
+| Guarantee | Owning § and control | Verifying gates | Accepted residual |
+|---|---|---|---|
+| credential / secret in repo | §6.2.3 — no secret is committed; the real secrets are three: the CI pair `MINISIGN_SECRET_KEY` and `MINISIGN_PASSWORD` and the build-session reviewer key `ANTHROPIC_API_KEY` (`sk-ant-…`); the committed path allow-list and the capped baseline are the only suppression the repository controls, so in every mode the scan honours no inline `gitleaks:allow` comment, no `.gitleaksignore` and no binary verdict of git's | G2 `gitleaks` over the staged diff, the unpushed range, the working tree and the full history, with custom rules for the minisign key shape, a literal `MINISIGN_PASSWORD` and the Anthropic key, each planted-positive; `run-gitleaks` closes those three in-repo suppression channels and `check-gitleaks-allowlist` freezes the config shape and refuses a tracked `.gitleaksignore` · G24 the self-test pins both reaches of the bundled allow-list, so a gitleaks bump that moves either reds · G56a secret scanning and push protection on, the GitHub-native backstop · G1 the dual review, never a security control: with the owner, the surface for a secret placed on purpose in an allow-listed path | gitleaks' bundled global allow-list, which `useDefault` appends (the pinned 8.30.1 cannot keep the bundled rules without it), skips a path such as an image, a font, a document, a lock file or a vendored tree for every rule, the custom ones included, and drops a bundled rule's finding by its secret (`false` or a stopword in it, `true` at its start, `null` at its end, or a placeholder shape; a custom rule reports a fixed capture, so no value it matches reaches that list); accepted, because the gate guards a careless leak of a text secret, those paths hold generated, binary or vendored artefacts, a bundled rule's random token holds such a word only by chance, and a secret placed there on purpose inside the owner-acked tree is the review's and the owner's surface; `scripts/run-gitleaks` lists the reach |
+| authentic, verifiable download | §6.2 — per-file SHA-256, the minisign-signed `SHA256SUMS` and the published recipe `minisign -Vm SHA256SUMS -p docs/minisign.pub` (lowercase `-p`, the key file), plus an out-of-band public-key fingerprint (the in-repo key alone is trust-on-first-use: a tampered clone swaps artifact, sums, signature and key together); key loss and coordinated disclosure follow [vuln-response.md](../process/vuln-response.md) | G39 runs the documented recipe against the produced sums and fails the release on non-zero · G44 the recipe's literal form and the published fingerprint | — |
+| §7.5 log never carries file contents / full paths | §7.5 — redaction in the logging layer | G15 / G31 the redaction property test: a secret-looking path stem fed through the logger is absent from the log | — |
+| §2.14.1 per-run temp ownership + mode | §2.14.1 — per-run-owned scratch: a `0o700` scratch root and `0o600` `.part` publish temps | G15 / G31 the temp-ownership and mode-bits assertion | — |
+| hardened CI supply chain | §6.3.4, principle 10 — least-privilege `permissions`; SHA-pinned actions recorded transitively in the caged inventory; `dependabot.yml` over github-actions, cargo, npm and pip; a `docker://` step image digest-pinned and re-pinned at the phase-end sweep; lockfile-locked builds; no fork-PR release; pinned, digest-verified gate tools; per-workflow concurrency and `timeout-minutes` | G49 `actionlint` · G50 `zizmor` · G18a lockfile integrity · G56 the Dependabot ecosystems, concurrency and timeouts, and the action-pin inventory (check 12) | — |
+| CI runner-host integrity (principle 11) | §6.1.4, §6.3.4, §6.7.2 — every lane on GitHub-hosted runners, a fresh VM per job; signing is its own ephemeral hosted job under `step-security/harden-runner` block mode, with no untrusted-input step | G56 a secret-reading job on a self-hosted label, or without harden-runner block mode, fails · G42 / G42b the egress monitor and the read-half fs-audit on the Linux corpus and fuzz legs | — |
+| GitHub required-status-checks / repo config (via rulesets) | §6.7.1, principle 10 — with no PR and no second reviewer, repo config is the only thing that turns a red run into a block, and it is invisible to the codebase: two rulesets on `main` — the required checks, bypassable by the repo-admin role only (the trusted direct pusher; classic branch protection blocks every direct push, GH006), and `non_fast_forward` + `deletion` with no bypass actor — plus secret scanning with push protection and read-only default workflow permissions | G56a reads the rulesets and settings through the API on every push and on schedule | — |
+| release-tag (`v*`) trust — the secret-bearing trigger G56a does not cover | §6.7.2, [release-pipeline-trust.md](../process/release-pipeline-trust.md) — the signing job fires on a `v*` tag, outside the branch rulesets, so the tag gets the same guard: a tag-protection ruleset, an ancestry-and-green check of the tagged commit before any secret is read, and a signed annotated tag | G56b (1) the `v*` tag ruleset, whose rulesets-API read is unbuilt (the G56b Status cell names its box): until it runs, the owner-provisioned ruleset is the control and no CI leg verifies it; (2) the tagged commit an ancestor of `origin/main` with `main`'s checks green for that exact SHA, before any secret is read; (3) `git verify-tag` against the committed allowed-signers file. Legs (2) and (3) fail closed; (3) fails open only while that file is absent (its `scripts/gate-planes.toml` `[[fail_open]]` row) | — |
+| JS/WebView supply-chain symmetry with Rust | §6.3.4 — the `.npmrc` registry pin and resolution guard (dependency confusion), a frontend GPL/AGPL licence deny over the pnpm graph and a frozen `onlyBuiltDependencies` allow-list (no install-lifecycle scripts). The JS execution lockdown is the stronger half: Rust `build.rs` scripts and proc-macros run arbitrary native code in the secret-bearing release job, and cargo-vet is a trust signal, not a sandbox, so that job builds with `CARGO_NET_OFFLINE=true` after `cargo fetch --locked`, under harden-runner block mode | G17 `osv-scanner` offline over `pnpm-lock.yaml` (never the online-only `pnpm audit`) · G18c the registry pin and resolution-URL guard · G36b the frontend GPL/AGPL hard-fail · G18d the lifecycle-script lockdown: the `onlyBuiltDependencies` allow-list frozen, and `enable-pre-post-scripts` and `unsafe-perm` each pinned `false` (pnpm reads an absent key as on) · G18b cargo-vet, a trust signal and no sandbox · G56 check 8, `CARGO_NET_OFFLINE` after the locked fetch | cargo cannot sandbox a build script the way pnpm blocks lifecycle scripts: the offline build and harden-runner bound egress, not in-process behaviour, so a `build.rs` or transitive crate that opens a socket outside the fetch step stays (the per-crate capability cap is declined, gate-status.md) |
+| SSOT Principle 11 English-only / string ownership (§6.7.1, §6.10 row 23) | §5.7, §6.10 — v1 is English-only with no i18n runtime: no locale-switch import, every `strings/ui.ts` key a non-empty English value, user-facing literals only in `strings/ui.ts` | G57 the English-only and string-ownership lint | — |
+| build-time reviewer-API dependency (the one breach of the hermetic-CI principle) | build-loop §3 Step 5 — the dual review calls the Anthropic API on every box: the single sanctioned build-time network dependency, outside the minisigned-bytes boundary because it observes the artifact and produces none; the model IDs are recorded per commit | G1, a quality amplifier and never a security control · the phase-end auditable-smell spot-audit (§2) | the build session's one live network call; a spoofed endpoint, or a prompt injected through a committed fixture (diff content reaches the reviewer as data, never as instructions), can at most forge a `GO`, which suppresses the review trace the spot-audit relies on but cannot ship insecure code, because the deterministic gates are the control; the staged diff, fixtures included, leaves the machine to a third party, acceptable for an open-source repo |
+| release-artifact completeness (the single backstop for a silently missing SBOM, CVE report or source bundle) | §6.7.2 — every required release asset is enumerated and present before publish | G58 the release-manifest meta-gate over the per-OS bundles, `SHA256SUMS` and its signature, the SBOM, the G17b open-CVE report, the licence files, the G38b source bundle, the measured sizes, the usability and name-clearance records, the release notes and the G59 attestation bundle with its `trusted_root.jsonl` | — |
 
 ## 6. Living-doc rules
 
-- A control or gate that changes during the build is updated **here first**, in
-  the same commit as the change, with a one-line rationale.
+- **What changes this document.** Control mechanics live in the owning spec §; gate
+  mechanics live in the build-gates row. This document changes only when (i) a threat class
+  is added or removed, (ii) the owning § or the verifying gate set of a class or a
+  cross-cutting guarantee changes, (iii) an accepted residual is decided or changed, or (iv)
+  the L(-1) policy, the plane structure or a principle changes. Such an edit is an owner act
+  (L(-1)); as the tail of a Loop box it is a caged part, landed by a route of
+  [build-loop.md](../process/build-loop.md) §3 Step 7.
 - If a security control is *removed* or *weakened*, that is an escalation to the
   Co-Pilot session, never a silent edit.
-- This doc and [build-gates.md](build-gates.md) are themselves under the
-  doc-consistency gate (`plan-lint`/`spec-lint`, P0.3): every `§` reference must
-  resolve and every gate named here must exist in the catalogue.
-- **Doc-graph freshness is machine-enforced, not a promise (the general form of the
-  spec-sync rule).** A change to **any** authoritative source — a gate (`Gnn`), a
-  control, a decision, a path/directory, a convention, an enum variant, a version
-  pin — must be reflected in **every** referencing doc in the **same commit** (no
-  stale, no contradictory, no orphaned `.md`); the **gates→`.md` consistency case is
-  ONE instance, not the scope**. **G68** (doc-graph integrity & freshness) enforces
-  this graph-wide — no-orphan + cross-doc-reference resolution + the
-  described-the-old-way freshness fingerprint across the **repo-scoped** graph
-  `CLAUDE.md` ↔ SSOT ↔ spec ↔ security ↔ process ↔ plan (the out-of-repo `~/.claude`
-  memory channel is audited once, manually, in P0.1.7 — it is outside `git ls-files`
-  and not a continuous G68 node). The structural analogue is **G69**: every tracked
-  directory has a row in the spec §0.7 physical tree (directories only), every §0.7
-  directory is tracked, and every file on §0.7's load-bearing list is tracked — nothing
-  structural lives outside §0.7; `CLAUDE.md` §1a points to it.
-- **Context-routing — the autonomous loop runs LEAN; the Co-Pilot holds the full
-  picture.** The [build-loop.md](../process/build-loop.md) prompt **references** this
-  doc + [build-gates.md](build-gates.md) for a per-box / red-CI gate lookup but does
-  **NOT inline** the whole security/gate corpus into the lean loop session (no context
-  ballast). The complete gate catalogue, the threat model, and the cross-phase
-  security view are the **Co-Pilot's** to carry
-  ([roles-and-escalation.md](../process/roles-and-escalation.md)). This is a
-  defense-in-depth property, not a convenience: a bloated loop prompt dilutes the
-  per-box focus the gates depend on. The split is asserted by the P0.1.7
-  documentation-wiring & context-routing audit.
+- This doc and [build-gates.md](build-gates.md) are under plan-lint (build-gates §6): every
+  `§` reference and link resolves (checks 2 and 25), every gate named here is catalogued
+  (check 5), the threat rows match the canonical class set (check 8), and a cited live gate
+  has its self-test (check 16).
+- **Doc-graph freshness.** A change to a source of truth moves every referencing doc in the
+  same commit (CLAUDE.md §5): G68 enforces the links, the orphans, the vanished gate and
+  threat ids and the fingerprinted cage, and G69 the §0.7 structural map — their build-gates
+  rows carry the mechanics; other drift is a G1 review item.
+- **Context routing.** The Build-Loop runs lean and looks a gate up per box or red CI; the
+  Co-Pilot carries the full gate catalogue and threat model
+  ([roles-and-escalation.md](../process/roles-and-escalation.md) §1).
 - **Current state only — git is the log.** This document carries no review-round logs or history
   sections; a decision lands in the section it governs. The retired P0 review reconciliation log
   (r1–r15) is read with `git show cf97638f7280:docs/security/security-concept.md`. A provenance

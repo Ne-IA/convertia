@@ -145,7 +145,8 @@ One line each, with the gate that enforces it:
   `[Test-Change: …]` tag, "the P<n>.<m> note" or "ruling" — is history resolved through git, not
   a reference to re-point, [security-concept.md](docs/security/security-concept.md) §6) → G68 for links,
   orphans, vanished gate or threat ids and the fingerprinted cage (other drift is a G1 review item),
-  DoD (b).
+  DoD (b). A doc that maps rather than restates (security-concept §5) is stale only when its mapping
+  changes.
 - An L(-1) edit by the Build-Loop, or any L(-1) edit without the `L-neg1-ack: owner` trailer. The
   files that can silently weaken an enforcement plane (every file under `scripts/` except the
   declared Loop build tools, the hook and CI planes, the supply-chain, secret-scan, toolchain,
