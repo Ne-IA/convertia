@@ -504,9 +504,10 @@ def _scan_hunks(diff_text: str, relpath: str) -> list[str]:
                 # String+comment-blanked FIRST (2026-08-30, the check-29-calibration commit's finding):
                 # a removed line whose only `expect(`/`assert(` lives inside a STRING LITERAL (a lint
                 # `reason = "... expect(dead_code) ..."` being reworded) or a `//` comment is prose,
-                # not an assertion - the doc-comment-FP class (Loop-memory
-                # `g70-doc-comment-assert-token-fp`) on the `-` side, where rewording the ADDED line
-                # cannot silence the already-committed REMOVED one. A real removed assertion is code
+                # not an assertion - the comment-token false-positive class (an assertion token in prose
+                # reads as a commented-out assertion; CONTRIBUTING.md "Known gate traps" gives the fix for
+                # an ADDED line) on the `-` side, where rewording the ADDED line cannot silence the
+                # already-committed REMOVED one. A real removed assertion is code
                 # and survives the blanking; over-flagging is no longer the safe direction here,
                 # because the only escape would be a [Test-Change] tag asserting a test change that
                 # never happened.

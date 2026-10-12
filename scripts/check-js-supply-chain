@@ -222,7 +222,7 @@ _FLOOR_ACK = "(owner-acked, G71 monotone rule)"
 #      depth for a URL outside a resolution - and the posture: a `deprecated:` notice that names a URL is a
 #      RED by design, the signal to move off the deprecated package (the eslint@9 case of 2026-09-24), never a
 #      scan exemption.
-# Named residuals - the same seven items stand in the G18c row, the Loop-memory and the commit body.
+# Named residuals - the same seven items stand in the G18c row of build-gates.md.
 # Fail-closed (a red by design; the remedy is a dependency bump or a re-audit, never a scan exemption): a
 # notice whose text carries a bare `resolution` token, or a dependency literally named `resolution`; a
 # block-scalar value line (a notice, a `peerDependencies` range) starting with `?` / `&` / `*` / `!` / `%`, or

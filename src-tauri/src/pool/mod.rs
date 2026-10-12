@@ -649,7 +649,7 @@ impl Pool {
     /// The `#[cfg(test)]` door onto [`Self::with_degree_and_memory`] for tests in OTHER modules — the
     /// `crate::engines` cancel-during-pause regression drives the gate through the real `dispatch`, so it
     /// needs a pool with a pinned memory reading. Placed AFTER the fn it wraps, never between that fn and
-    /// its doc block (the `inserting-a-module-hijacks-the-preceding-doc-comment` class).
+    /// its doc block, which an item inserted there would take over (CONTRIBUTING.md "Known gate traps").
     /// [Build-Session-Entscheidung: P4.20]
     #[cfg(test)]
     pub(crate) fn with_degree_and_memory_for_test(

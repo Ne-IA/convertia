@@ -84,7 +84,7 @@ export async function drainPendingIntake(): Promise<CollectedSet> {
 /**
  * [Build-Session-Entscheidung: P3.55] The §5.8 MOUNT-drain consumption (§7.8.1): drain `PendingIntake` once on
  * root-shell mount and route the `CollectedSet` into the §5.2 machine FROM Idle (the `useLaunchDrain` caller).
- * The launch-vs-nudge ASYMMETRY (memory `p3-screen-box-wiring-model`): the mount-drain dispatches `collected`
+ * The launch-vs-nudge ASYMMETRY: the mount-drain dispatches `collected`
  * DIRECTLY from Idle (no `startCollecting`), so a plain-launch `Empty` STAYS Idle (the machine's `fromIdle`
  * `emptyStaysIdle=true` arm) rather than mis-routing to Unsupported — while a launch-with-files set advances
  * exactly like a drop. The launch walk therefore does NOT transit the Collecting indicator; that is the nudge

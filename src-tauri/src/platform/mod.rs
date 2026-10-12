@@ -986,8 +986,9 @@ fn ephemeral_roots() -> Vec<PathBuf> {
 /// is now a LIVE root — [Corrected by P4.32] P4.32 wired the subprocess dispatch arms, so the reader no
 /// longer hangs off a dead caller. The annotation nonetheless STAYS, and its remaining reason is the macOS
 /// arm spelled out below: macOS is DECIDED cheap-tier only (P4.16) and constructs no verdict there.
-/// Narrowing a cross-target `allow` to the platforms one can check locally is the trap the Loop-memory
-/// entry `cross-target-gated-item-needs-unconditional-allow` records — it reds the leg you cannot run.
+/// Narrowing a cross-target `allow` to the platforms one can check locally is a trap: on a platform left
+/// out, an item no test there uses is dead in the test build that platform's clippy leg compiles, so the
+/// narrowing reds the one leg its author cannot run.
 ///
 /// Shared with the §2.12.3 WINDOWS tier (P4.17), whose Leg-A `lower_child_to` reports the same
 /// three outcomes over the same grant-IS-the-enforcement model — one per-leg vocabulary across both
@@ -2102,7 +2103,7 @@ pub(crate) fn label_confinement_sinks(
 /// `#[cfg(not(windows))]` [`strip_mandatory_label`] returns exactly that. Matching a variant does not
 /// count as constructing it, so `Stripped`/`Failed` read as dead on the Linux + macOS legs and would
 /// fail their `clippy -D warnings` (G4/G14). `allow`, never `expect`: on Windows all three ARE
-/// constructed, so an `expect` would flip to unfulfilled there (the recorded `expect`→`allow` trap).
+/// constructed, so an `expect` would flip to unfulfilled there (CONTRIBUTING.md "Known gate traps").
 #[cfg_attr(
     not(windows),
     allow(

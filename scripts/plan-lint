@@ -2005,11 +2005,12 @@ def doc27_gate_posture_transition(ctx: Ctx) -> list[Finding]:
 # ("stays dead until P4.32 wires it", "no production caller until P6.10", "once P2.34 lands") goes
 # flat-false the moment that box lands, and THREE protections miss it: expect(dead_code) stays
 # fulfilled while one clause of a long reason rots (other items are still dead), G68 is .md-only, and
-# a line-based grep cannot see a claim spanning two comment lines. The Loop-memory entry
-# `stale-liveness-futurity-claims` records the class + the sweep method; this check is its mechanical
-# form (steps 1-3): JOIN each contiguous //-family comment run (and each reason = "..." string) into
-# one string, match the DEADNESS-UNTIL-BOUND constructions, capture the BOUND box-id directly from
-# the construction, and fail iff that id is [x] in docs/plan/P*.md.
+# a line-based grep cannot see a claim spanning two comment lines. This check mechanizes the class:
+# JOIN each contiguous //-family comment run (and each reason = "..." string) into one string, match the
+# DEADNESS-UNTIL-BOUND constructions, capture the BOUND box-id directly from the construction, and fail
+# iff that id is [x] in docs/plan/P*.md. The reword a finding asks for stays human work: verify every
+# subject of the new sentence against its real call sites - an over-eager LIVENESS claim carries no
+# futurity vocabulary, so this check cannot match it.
 #
 # Calibrated against the live tree (2026-08-30: 21 raw candidates -> 14 genuinely stale constructions,
 # 15 sites corrected in the arming commit). Deliberate narrowings, each a recorded residual, so the
@@ -2028,7 +2029,7 @@ def doc27_gate_posture_transition(ctx: Ctx) -> list[Finding]:
 #   * block comments of any kind (`/* ... */`, the `/*!` and `/**` doc forms included) are not scanned:
 #     line-comment runs and `reason` strings are the repo's carriers;
 #   * boundless futurity ("until then", "until those land", "until consumed") names no id and cannot
-#     be mechanically bound - the test-strategy §11.4 surface-(e) audit + the sweep memory own it.
+#     be mechanically bound - the test-strategy §11.4 surface-(e) audit owns it.
 _RS_COMMENT_LINE = re.compile(r"^\s*//[/!]?(.*)$")
 _RS_REASON_OPEN = re.compile(r'reason\s*=\s*(r#*"|")')
 _FUT_TAG_SPAN = re.compile(
@@ -2132,8 +2133,8 @@ def _stale_liveness_problems(files: dict[str, str], done: set[str]) -> list[tupl
                                      f"a {name} futurity construction is bounded by "
                                      f"{'/'.join(landed)}, which is [x] — the comment asserts a "
                                      f"dead-ness that box ended; reword it to the live truth, verifying "
-                                     f"every subject against its real call sites (Loop-memory "
-                                     f"`stale-liveness-futurity-claims`) near: "
+                                     f"every subject against its real call sites (an over-eager "
+                                     f"liveness claim is the same defect inverted) near: "
                                      f"…{s[max(0, m.start() - 40):m.end() + 45]}…"))
     return problems
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """check-doc-splice - G74 comment integrity on .rs diffs: attachment on insertions (P4.18 follow-up) + deleted-definition references.
 
-THE CLASS (2x recurred before this gate; the Loop-memory entry
-`inserting-a-module-hijacks-the-preceding-doc-comment`): an edit anchored on an item's
+THE CLASS (2x recurred before this gate; CONTRIBUTING.md "Known gate traps" lists it): an edit anchored on an item's
 DECLARATION line (`#[cfg(test)]` / `mod x {` / `fn y(`) inserts a NEW ITEM between a comment
 block and the item that block belongs to - a `///` block genuinely re-attaches to the
 insertion (proven with `#![deny(missing_docs)]`; attachment crosses BLANK lines and
@@ -199,8 +198,8 @@ def scan_unified_diff(diff_text: str) -> list[str]:
                 "blank and attribute lines). Move the insertion BELOW the documented item's closing "
                 "brace (anchor on the end of the item, never on its declaration/attribute line); if "
                 "the comment above is a trailing end-of-section note, move it onto its own item "
-                "instead. See the Loop-memory entry "
-                "`inserting-a-module-hijacks-the-preceding-doc-comment`."
+                "instead. The class: a new item inserted between a comment block and the item it "
+                "documents takes over that comment (CONTRIBUTING.md \"Known gate traps\")."
             )
         pending_run = []
 

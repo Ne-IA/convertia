@@ -78,17 +78,17 @@ def _purge_bytecode_caches(scripts_dir: Path) -> tuple[list[Path], list[Path]]:
     The g24 canaries load their tools via `SourceFileLoader`, which HONOURS `__pycache__` - and
     the cache's validity check is (source mtime, size), so a length-preserving mutation restored
     in the same mtime second leaves a VALID-looking stale `.pyc` compiled from the MUTANT: a
-    later gate run would execute mutant bytecode while reading correct source (the recorded
-    `length-preserving-mutation-poisons-pycache` class, found by the P4.29.1/8affa89 review's
-    own harness). The RUNNER therefore never trusts a bytecode cache: purge on entry, VERIFIED -
-    a cache that survives the purge (a locked file, a permission fault) is returned as a
-    SURVIVOR and main() refuses to run, because PYTHONDONTWRITEBYTECODE only suppresses WRITES,
-    never reads of a pre-existing stale cache (the r1 sonnet P0: `ignore_errors` + an
-    unconditional append reported a locked cache as purged while the very next canary would
-    load it). A canary run OUTSIDE the runner is the named residual surface: it is bounded by
-    this purge at the next gate run and by the banked Loop memory, not closed here. Exact-name
-    match only - `rglob("__pycache__")` cannot touch a sibling directory that merely contains
-    the substring."""
+    later gate run would execute mutant bytecode while reading correct source (a class found by
+    the P4.29.1/8affa89 review's own harness). The RUNNER therefore never trusts a bytecode
+    cache: purge on entry, VERIFIED - a cache that survives the purge (a locked file, a
+    permission fault) is returned as a SURVIVOR and main() refuses to run, because
+    PYTHONDONTWRITEBYTECODE only suppresses WRITES, never reads of a pre-existing stale cache
+    (the r1 sonnet P0: `ignore_errors` + an unconditional append reported a locked cache as
+    purged while the very next canary would load it). A canary run OUTSIDE the runner is the
+    named residual surface, bounded by this purge at the next gate run and not closed here: a
+    harness that probes a tool by mutation mutates it in a mirror of the repo root, or purges
+    `scripts/__pycache__` after restoring the tool. Exact-name match only -
+    `rglob("__pycache__")` cannot touch a sibling directory that merely contains the substring."""
     removed: list[Path] = []
     survivors: list[Path] = []
     for cache in sorted(scripts_dir.rglob("__pycache__")):
@@ -174,7 +174,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[canary] FATAL: {len(survivors)} __pycache__ dir(s) under scripts/ survived the "
               f"purge (e.g. {survivors[0]}) - a stale bytecode cache the canaries would TRUST, "
               "and PYTHONDONTWRITEBYTECODE cannot prevent READS; refusing to run "
-              "(the length-preserving-mutation-poisons-pycache class, fail-closed)",
+              "(a same-size mutation restored within the mtime second leaves a valid stale .pyc; "
+              "fail-closed)",
               file=sys.stderr)
         return 1
     if purged:

@@ -589,9 +589,9 @@ fn has_token(code: &str, word: &str) -> bool {
 /// unscanned). A `#![cfg(test)]` inner attribute makes the whole file test-only (empty projection). The
 /// input MUST already be [`strip_noncode`]'d — a marker merely MENTIONED in a doc comment or a string is
 /// blanked there, so it can never forge a phantom gate (the round-1 review P1: `ipc/mod.rs` names the
-/// marker in its `//!` header; the Loop-memory class `ref-resolver-gate-strip-defs` — locate a structural
-/// marker over stripped code, never raw text). Markers are spelled via `concat!` so this file's own text
-/// never contains them.
+/// marker in its `//!` header; a scanner locates a structural marker over stripped code, never raw text,
+/// or a mention in a comment or a string forges one — CONTRIBUTING.md "Known gate traps"). Markers are
+/// spelled via `concat!` so this file's own text never contains them.
 fn production_projection(stripped: &str) -> String {
     if stripped
         .trim_start()

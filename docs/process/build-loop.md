@@ -192,6 +192,9 @@ rank-ordered pair in the same commit with a `Spec-Reconcile:` body line, and par
 - **Tags and records** (defined in roles-and-escalation §3): `[Build-Session-Entscheidung:
   <box-id>]` and `[Derived-Assumption: <box-id> — …]` at the code site, the `Spec-Reconcile:`
   body line; `[Test-Change]` → test-strategy §8.
+- **Lessons, not memory names.** Never cite a Loop-memory entry by name in repo text — the memory
+  lives outside the repo; state the lesson in a clause, and where a repo doc lists it
+  (CONTRIBUTING.md "Known gate traps", a test-strategy section), name that doc too.
 - **`engines.lock` + SBOM row** for a newly staged engine; **§0.11 threat-map +
   security-concept §5 row** for a new threat class (§5).
 - **Scope guard.** If a named gate already enforces the invariant, deliver the wiring plus one

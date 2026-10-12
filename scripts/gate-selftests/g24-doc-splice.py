@@ -141,9 +141,12 @@ record("hijack: a spliced `const` ITEM under a doc block is caught (const stays 
 record("window: both live git-diff calls carry -U10 (the attachment-visibility window pin)",
        (lambda src: src.count('"-U10"') == 2 and '"-U3"' not in src)(
            SCRIPT.read_text(encoding="utf-8")))
-record("hijack: the failure text carries the re-anchoring instruction + the memory name",
+# [Test-Change: G74 finding text — old-obsolete+new-correct, build-loop.md §3 Step 4] the old needle was an
+# out-of-repo memory-entry name, which repo text no longer carries; the new one pins the class sentence that replaced it.
+record("hijack: the failure text carries the re-anchoring instruction + the class description",
        (lambda ps: len(ps) == 1 and "BELOW the documented item's closing brace" in ps[0]
-        and "inserting-a-module-hijacks-the-preceding-doc-comment" in ps[0])(
+        and "a new item inserted between a comment block and the item it documents takes over that comment"
+        in ps[0])(
            m.scan_unified_diff(diff(
                "+++ b/a.rs", "@@ -5,3 +5,4 @@",
                " /// docs", "+fn stealer() {}", " fn documented() {}"))))
@@ -293,7 +296,8 @@ _E2E_DIRS: list[str] = []
 
 def _e2e_deleted_file(cite: bool, config=(), attributes=None, extra=None) -> tuple[int, str]:
     """The WIRED path, not the pure fn: a throwaway repo, a real staged `git rm` of a defining file, then the
-    script's own `--diff` mode (Loop-memory `test-both-halves-against-one-artifact`)."""
+    script's own `--diff` mode - git's diff and the scanner run over the same artifact, because a hand-written
+    diff fixture only shows what its author expected git to emit."""
     d = tempfile.mkdtemp(prefix="g24-doc-splice-")
     _E2E_DIRS.append(d)
     try:

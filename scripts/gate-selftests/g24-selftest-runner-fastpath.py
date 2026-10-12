@@ -14,8 +14,8 @@ tail these legs also pin the runner's BYTECODE-CACHE posture: the purge of every
 under scripts/ on entry (the ORDERING observed at spawn time, never narrated), the
 PYTHONDONTWRITEBYTECODE=1 child environment proven from the wiring (the
 ambient variable is popped for the leg, so inheritance cannot fake it), and the fail-closed
-refusal when a cache SURVIVES the purge (the length-preserving-mutation-poisons-pycache
-class - see `_purge_bytecode_caches` in the runner). The PYTHONSAFEPATH=1 child environment (G54b
+refusal when a cache SURVIVES the purge (a same-size mutation restored within the mtime second
+leaves a valid stale .pyc - see `_purge_bytecode_caches` in the runner). The PYTHONSAFEPATH=1 child environment (G54b
 leg (5)) is pinned the same way, its ambient value popped. The GIT_* posture is pinned in both halves: the
 runner's child environment drops every inherited GIT_* variable but GIT_EXEC_PATH (the exact set, from the
 wiring, and end to end - the runner over a planted self-test that scrubs nothing leaves the repository a planted
@@ -189,14 +189,14 @@ record("lefthook rule: a --changed slot ONLY under pre-commit is RED (the hook-T
                        "      run: python3 scripts/run-gate-selftests --changed\n"
                        "\npre-push:\n  commands:\n    y:\n      run: echo ok\n"))
 
-# --- the bytecode-cache purge (the length-preserving-mutation-poisons-pycache class, found
+# --- the bytecode-cache purge (the stale-bytecode class, found
 # by the P4.29.1/8affa89 review's own harness): the g24 canaries SourceFileLoader-load their
 # tools, which HONOURS __pycache__, and a same-size mutation restored in the same mtime second
 # leaves a VALID-looking stale .pyc compiled from the MUTANT - so the runner purges the gate
 # plane's caches on entry and spawns every canary with PYTHONDONTWRITEBYTECODE=1. Both halves
 # are pinned here: the purge behaviourally on this canary's own temp tree, the wiring
 # hermetically (the dir globals patched, subprocess stubbed - never m.main([]) against the real
-# repo, the recorded g24-target-absent hermeticity rule). ---------------------------------------
+# repo, where the leg would test whatever the tree holds, not the case it names). ----------------
 
 
 def _purge_leg() -> bool:
@@ -273,7 +273,7 @@ def _fake_subprocess(popen):
 def _wiring_leg() -> bool:
     saved = m.SELFTEST_DIR, m.ROOT, m.subprocess
     # The runner builds child_env FROM os.environ, so an ambient PYTHONDONTWRITEBYTECODE=1
-    # (exactly what the recorded probing discipline tells a human to export) would satisfy the
+    # (a developer may export it while probing a tool by in-place mutation) would satisfy the
     # env assertion by INHERITANCE - popped here so the leg proves the WIRING, restored in the
     # same finally as the globals (the r1 opus P2).
     ambient = os.environ.pop("PYTHONDONTWRITEBYTECODE", None)

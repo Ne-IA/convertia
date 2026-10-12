@@ -11806,7 +11806,7 @@ mod run_conversion_tests {
     // `convert_item` directly (the sibling cancel test's harness) so the test OWNS the `RunScratch` and can
     // read it back afterwards; the run-scope `cleanup_run` never fires here. Off macOS there is nothing to
     // observe — the seam is the identity — so this leg is `cfg`'d to the one target where staging exists
-    // and its first macos-14 CI execution is its validation (`test-subprocess-validate-on-ci-runtime`).
+    // and its first macos-14 CI execution is its validation: a green suite on another OS never ran it.
     //
     // NOTE FOR P4.88, which is scheduled to change what this asserts: the staged copy survives its item's
     // terminal transition ONLY because no per-item reclaim exists yet — §2.14.2 `[DECIDED]` requires one,
@@ -11992,8 +11992,8 @@ mod run_conversion_tests {
     fn the_conductor_plans_over_the_resolved_engine_input_and_never_the_raw_source() {
         let src = production_conductor_source();
         // Non-vacuity FIRST: a slicing bug that returned an empty or truncated prefix would make every
-        // `matches(..) == 0` assertion below pass for the wrong reason (the `ref-resolver-gate-strip-defs`
-        // lesson — prove the corpus is the real one before asserting over it).
+        // `matches(..) == 0` assertion below pass for the wrong reason — prove the corpus is the real one
+        // before asserting over it.
         assert!(
             src.contains("async fn convert_item("),
             "the scanned prefix must really contain the conductor, or every scan below is vacuous"
