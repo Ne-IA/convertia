@@ -99,6 +99,16 @@ security-critical-file set (security-concept §2 counts it among the CI planes; 
 `scripts/l-neg1-files.toml` matches it via `.github/**`) — an edit is
 a Co-Pilot escalation carrying the `L-neg1-ack: owner` trailer (G71).
 
+**Key rotations** (newest first; the steps are the §5 *Key loss or rotation* note):
+
+- **2026-10-23 — the P0.7.17 key retires**
+  (`SHA256:VFtui3NcAVEl8Za+dzXLkyhkjbx/62lwjTu83at5Lfw`): its private half was lost on 2026-10-13
+  with no surviving copy. The owner's new ed25519 key
+  (`SHA256:wwsl0/oMFYMKzxAWi3c7fzYRhrtocruKpyNDavx+GXQ`, comment `convertia release signing`)
+  replaces it on the committer account and as the line of `.github/allowed_signers`. No `v*` tag
+  existed at the rotation. Commits the retired key signed keep the verification GitHub stored for
+  them, and `git verify-commit` against the file rejects them.
+
 ## 4. Plane 3 — the one irreversible action is human-approved + minimally scoped (G56)
 
 ### 4.1 The `release` GitHub Environment (the human-in-the-loop)
@@ -155,7 +165,8 @@ in place. The exact owner steps:
    `ssh-keygen -t ed25519 -C "convertia release signing" -f ~/.ssh/convertia_sign`,
    and hand the **public** line (`~/.ssh/convertia_sign.pub`) to the loop so the
    committed `.github/allowed_signers` can be authored with the real key (an L(-1)
-   edit under the owner ack). The **private** key never leaves the owner's control.
+   edit under the owner ack). The **private** key never leaves the owner's control;
+   keep an **offline copy** of it, its passphrase stored apart from the copy.
 2. **Wire git signing** on the build machine: `git config gpg.format ssh`;
    `git config user.signingkey ~/.ssh/convertia_sign.pub`;
    `git config commit.gpgsign true`; `git config tag.gpgsign true`;
@@ -170,6 +181,12 @@ in place. The exact owner steps:
 3. **Create the `v*` tag-protection ruleset** (Settings → Rules → Rulesets → new *tag*
    ruleset targeting `v*`, restrict *tag creations* to the owner, bypass-actor list
    minimal) so only the owner can create a release tag.
+
+**Key loss or rotation (plane 2).** Generate the new key as in step 1, its offline copy included.
+Register its public line on the committer account as a *Signing Key* and delete the old key there.
+Replace the `.github/allowed_signers` line in an owner-acked commit (an L(-1) edit) and leave no
+line for the old key, not even one bounded by `valid-before`: the signer sets a signature's time,
+so a lost key could still sign a back-dated tag inside the bound. Record the rotation in §3.
 
 **P0.7.18 — the `release` Environment + secrets (plane 3):**
 4. **Create the `release` Environment** (Settings → Environments → `release`) with

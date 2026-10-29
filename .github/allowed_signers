@@ -2,7 +2,10 @@
 # Backs G56b leg 3 (release-tag `git verify-tag`) + G56a sub-check (g) (`main` required_signatures).
 # L(-1) security-critical (scripts/l-neg1-files.toml: `.github/**`; security-concept section 2 names
 # "the G56b SSH allowed-signers file"). An edit is a Co-Pilot escalation carrying `L-neg1-ack: owner`.
-# Authored P0.7.17 from the owner's release-signing public key. Verified via
+# Authored P0.7.17 from the owner's release-signing public key; rotated to the owner's new key after the
+# P0.7.17 private key was lost (release-pipeline-trust.md section 3 records the rotation). A retired key
+# keeps no line here, not even one bounded by `valid-before`, so a commit or tag it signed does not verify
+# against this file. Verified via
 # `git config gpg.ssh.allowedSignersFile .github/allowed_signers` + `git verify-commit`/`git verify-tag`.
 # Field form: <principal = committer email> namespaces="git" <keytype> <base64 key>
-info@ne-ia.dev namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIHPkln/YmQdcK+r4Qr1Pd/GnznbyPariIxaG5wyLSqk
+info@ne-ia.dev namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHo24eXSflRLqw3FljDJ4QLjn8MZRyjX6Ag86nS2pHvW
