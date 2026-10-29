@@ -275,12 +275,13 @@ def child_in_own_empty_cwd(call: dict[str, object], argv_of: Callable[[Path, Pat
 _real_ignores, _real_problems = m.load_ignores(m.IGNORES.read_text(encoding="utf-8"))
 record("the committed scripts/osv-ignores.toml parses clean and holds exactly EXPECTED_IGNORE_COUNT entries",
        _real_problems == [] and len(_real_ignores) == m.EXPECTED_IGNORE_COUNT)
-# [Test-Change: P4.96 - old-obsolete+new-correct, build-gates G17 row] old: the pin read 0, true while the committed
-# ignore file held no entry; the owner accepted braces GHSA-vfj7-8cjw-p6xm (no fixed release), so the file holds
-# one entry and check-js-advisories raised the count to 1 in the same commit. new: 1, the entry count the leg above
-# binds to the committed file; moving the value stays an owner-acked edit of this pin.
-record("EXPECTED_IGNORE_COUNT is frozen at 1 (one accepted JS advisory; growth is an owner-acked edit of this pin)",
-       m.EXPECTED_IGNORE_COUNT == 1)
+# [Test-Change: P4.96 - old-obsolete+new-correct, build-gates G17 row] old: the pin read 1, true while the committed
+# ignore file held the braces entry GHSA-vfj7-8cjw-p6xm; the advisory was withdrawn upstream, the scan stopped
+# reporting it and the check redded the entry as stale, so the entry left the file and check-js-advisories lowered
+# the count to 0 in the same commit. new: 0, the entry count the leg above binds to the committed file; moving the
+# value stays an owner-acked edit of this pin.
+record("EXPECTED_IGNORE_COUNT is frozen at 0 (no accepted JS advisory; growth is an owner-acked edit of this pin)",
+       m.EXPECTED_IGNORE_COUNT == 0)
 _fx_bytes = FIXTURE.read_bytes()
 _fx = json.loads(_fx_bytes)
 record("the fixture is the trimmed incident record (six keys, the GHSA id, the CVE alias, npm undici), LF-only",
