@@ -46,8 +46,8 @@ all-features = true
 # (audit.toml; G18 two-scanner reconciliation) — check-supply-chain asserts the two sets agree.
 version = 2
 yanked = "deny"
-# 8 advisories ACCEPTED below — all confirmed by `cargo audit` as allowed warnings (7 `unmaintained` + 1
-# `unsound`), NOT vulnerabilities (`cargo audit` reports 0 vulnerabilities among them). All are PURELY
+# Each advisory ACCEPTED below is one that `cargo audit` reports as an allowed warning (`unmaintained` or
+# `unsound`), NOT a vulnerability. All are PURELY
 # TRANSITIVE (ConvertIA depends on none directly) with NO reachable fix in the current dependency tree. A NEW
 # advisory not on this list STILL fails the gate (fail-closed); re-triage this whole set on any deliberate
 # Tauri/dep version bump (itself an L(-1) act). Retired 2026-09-24 (the dependency refresh, Co-Pilot under
@@ -73,6 +73,14 @@ ignore = [
   "RUSTSEC-2025-0081",  # unic-char-property
   "RUSTSEC-2025-0098",  # unic-ucd-version
   "RUSTSEC-2025-0100",  # unic-ucd-ident
+  # zbus 5.x `unmaintained`: upstream merged these crates into zbus 6.0.0. LINUX-ONLY, transitive: zbus
+  # 5.x enters only the x86_64-unknown-linux-gnu graph, via tauri-plugin-opener and
+  # tauri-plugin-single-instance (`cargo tree -i zbus` prints nothing for the Windows/macOS triples). No
+  # fix is reachable from our side while the stable releases of both plugins require zbus ^5.9.
+  # Unmaintained, not a vulnerability; re-triage on the next Tauri/plugin bump.
+  "RUSTSEC-2026-0370",  # zvariant
+  "RUSTSEC-2026-0371",  # zbus_names
+  "RUSTSEC-2026-0372",  # zvariant_derive
 ]
 
 [licenses]

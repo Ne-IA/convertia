@@ -6,8 +6,8 @@
 # may be silenced in one scanner but live in the other). L(-1) security-critical
 # (scripts/l-neg1-files.toml, G71): a silently-added ignore would blind both scanners to a real advisory.
 #
-# The 8 ids below MIRROR deny.toml [advisories].ignore EXACTLY — keep the two in lock-step. All 8 are what
-# `cargo audit` reports as allowed warnings (7 `unmaintained` + 1 `unsound`), NOT vulnerabilities, and PURELY
+# The ids below MIRROR deny.toml [advisories].ignore EXACTLY — keep the two in lock-step. Each is one that
+# `cargo audit` reports as an allowed warning (`unmaintained` or `unsound`), NOT a vulnerability, and PURELY
 # TRANSITIVE with no reachable fix in the current dependency tree. The per-id rationale lives in deny.toml;
 # re-triage the whole set on any deliberate Tauri/dep bump. Retired 2026-09-24 (the dependency refresh,
 # Co-Pilot under owner ack): the ten gtk-rs "unmaintained" ids RUSTSEC-2024-0411..0420 (WITHDRAWN upstream
@@ -31,4 +31,9 @@ ignore = [
   "RUSTSEC-2025-0081",  # unic-char-property
   "RUSTSEC-2025-0098",  # unic-ucd-version
   "RUSTSEC-2025-0100",  # unic-ucd-ident
+  # zbus 5.x `unmaintained` crates, merged upstream into zbus 6.0.0: LINUX-ONLY, transitive via
+  # tauri-plugin-opener and tauri-plugin-single-instance, whose stable releases require zbus ^5.9
+  "RUSTSEC-2026-0370",  # zvariant
+  "RUSTSEC-2026-0371",  # zbus_names
+  "RUSTSEC-2026-0372",  # zvariant_derive
 ]
