@@ -12,7 +12,7 @@ contribution workflow, the quality bar, and how to run the checks, see
   `rustfmt`, `clippy`, and `llvm-tools-preview` components); rustup reads that file and
   installs the right toolchain automatically the first time you build, so you never pick a
   channel by hand.
-- **Node.js + pnpm** — ConvertIA uses **pnpm**, pinned to `pnpm@10.13.1` through the
+- **Node.js + pnpm** — ConvertIA uses **pnpm**, pinned to `pnpm@10.34.7` through the
   `packageManager` field. The simplest way to get the pinned pnpm is Corepack, which ships
   with Node: run `corepack enable`, then `pnpm install` in the repo root. Use a current
   Node.js LTS.

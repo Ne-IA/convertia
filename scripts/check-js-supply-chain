@@ -46,11 +46,19 @@ freezes the JS supply-chain posture (stdlib only):
     removes one. A missing or malformed block, or a missing pnpm-lock.yaml, fails closed.
 
 Scope note: once pnpm-lock.yaml exists (P1.2.2) the lockfile resolution scan + the onlyBuiltDependencies
-count + the §0.8 floor are LIVE; the `.npmrc` posture is enforced regardless. The covered surface is the
-committed-config install/source-substitution surface of the PINNED pnpm (10.13.1, §0.8) - a pnpm
-major-version bump is itself a pinned-version change (security-concept §4 principle 10, pin and verify)
-that triggers a re-audit of this gate against the new pnpm config surface. `.npmrc` is L(-1)
-(scripts/l-neg1-files.toml, G71) - relaxing the pin / lockdown is an owner-ack + Dual-Review change.
+count + the §0.8 floor are LIVE; the `.npmrc` posture is enforced regardless. The pinned pnpm is 10.34.7
+(§0.8). The refused spellings were measured through pnpm 10.13.1 and re-measured through 10.34.7 on
+2026-10-30: both read the same `.npmrc` keys and this guard refuses them alike, and `globalconfig` is no
+longer honoured by 10.34.7 (the key stays refused). The variants measured against real pnpm 10.13.1 and
+10.34.7, this guard exiting 1 on each under both, are the ones the self-test's main() legs name
+(g24-js-supply-chain.py: the package.json `pnpm` keys, the pnpm-workspace.yaml keys and model refusals,
+`pnpm:devPreinstall`, the default hook forms, the alternate manifests and the other refused root names, a
+tracked node_modules/); the root names come from an strace sweep of what both (and corepack) open during the
+install, `ignored-builds`, `run` and `exec` commands CI and the gates run. Every pnpm pin change, minor or
+major, re-runs that re-measure, the strace sweep and a config-surface diff of the new pnpm (its
+DEPS_BUILD_CONFIG_KEYS, the package.json `pnpm` keys it reads, the .npmrc types) - security-concept §4
+principle 10, pin and verify. `.npmrc` is L(-1) (scripts/l-neg1-files.toml, G71) - relaxing the pin /
+lockdown is an owner-ack + Dual-Review change.
 
 Exit: 0 = posture OK (+ the live checks pass); 1 = a relaxation / a foreign-or-non-registry
        resolution / a scoped-registry override / a grown-or-unparseable allowlist / a lock-missing

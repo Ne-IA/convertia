@@ -110,7 +110,7 @@ jobs:
             sleep 5
           done
           sudo apt-get install -y --no-download "${pkgs[@]}"
-      # Node + pnpm via corepack (the runner ships Node; corepack activates the pinned pnpm@10.13.1 from
+      # Node + pnpm via corepack (the runner ships Node; corepack activates the pinned pnpm@10.34.7 from
       # package.json's packageManager). Linux-only: the §6.7.1 JS legs (tsc/eslint/stylelint/prettier/
       # vitest + vitest-axe) are OS-agnostic, so they run ONCE on the Linux leg — populating node_modules
       # here is what flips check-ts-gate's pnpm-guarded live tier from skip-with-notice to live (P1.51).
