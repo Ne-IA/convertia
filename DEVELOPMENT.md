@@ -78,6 +78,14 @@ The individual check commands (type-check, lint, tests) are listed in
 
 ## Windows host notes
 
+These notes serve a contributor working on a Windows host, who runs what they name natively. An
+agent session runs the repo code they name — `setup-dev`, a hook, a test, a gate — only in a
+throwaway container, never on its host ([CLAUDE.md](CLAUDE.md) §10): the container twins of the
+two recipes below are its rule and optional for a human contributor. Its commits leave the
+container unsigned and reach `main` by the landing path of
+[build-loop.md](docs/process/build-loop.md) Step 6, signed at the hop on the owner's PC only after
+his own Freigabe message.
+
 - **Python.** `python3` is the python.org CPython 3.12 of the [Windows prerequisites](#windows), never
   the Microsoft Store Python. Under a Store `python3`, a random vitest suite of `check-ts-gate` can
   fail with `Failed to resolve import`; the prerequisite gives the cause and the `PATH` fix.
@@ -94,9 +102,9 @@ The individual check commands (type-check, lint, tests) are listed in
   in a corpus tree (`tests/corpus/`, `fuzz/corpus/`, ...) keeps its exact bytes, CRLF included. A Python
   script that writes a repo file opens it with `newline="\n"` or in binary mode; text mode writes
   CRLF on Windows.
-- **Signed commits.** Commit in the foreground: a commit that hangs with no output is waiting on the
-  signing step. `setup-dev` points `gpg.ssh.program` at the Windows OpenSSH `ssh-keygen`, which reaches
-  the SSH agent.
+- **Signed commits.** If you sign your own commits, commit in the foreground: a commit that hangs with
+  no output is waiting on the signing step. `setup-dev` points `gpg.ssh.program` at the Windows OpenSSH
+  `ssh-keygen`, which reaches the SSH agent.
 - **Push status.** Read `git push`'s own exit status (`git push origin main; echo "exit $?"`), never
   through a pipe or `tee`, which reports its last command's status. A pre-push red ends in
   `failed to push some refs`, which reads like a remote rejection.
@@ -109,7 +117,8 @@ The individual check commands (type-check, lint, tests) are listed in
   RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends libwebkit2gtk-4.1-dev \
       libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev libssl-dev libglib2.0-dev \
       libsoup-3.0-dev libjavascriptcoregtk-4.1-dev pkg-config build-essential file \
-      && rm -rf /var/lib/apt/lists/*
+      && rm -rf /var/lib/apt/lists/* \
+      && useradd -m -u 10001 dev && chown -R dev /usr/local/rustup /usr/local/cargo
   EOF
   MSYS_NO_PATHCONV=1 docker run --rm --security-opt seccomp=unconfined -v "<repo>:/work" -w /work \
     -v convertia_rustup:/usr/local/rustup -v convertia_cargo_registry:/usr/local/cargo/registry \
@@ -120,7 +129,26 @@ The individual check commands (type-check, lint, tests) are listed in
 
   `seccomp=unconfined` lets the Landlock and user-namespace legs run instead of degrading. The image's
   Rust is the newest 1.96.x, not the `rust-toolchain.toml` pin, so rustup installs the pinned toolchain
-  on the first run; the `convertia_rustup` volume keeps it for the next runs.
+  on the first run; the `convertia_rustup` volume keeps it for the next runs. The container twin,
+  from the repo root, copies the staged tree in and runs as the image's user `dev`:
+
+  ```sh
+  git archive --format=tar "$(git write-tree)" | MSYS_NO_PATHCONV=1 docker run -i --rm \
+    --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges \
+    --network "$NET" -e HTTPS_PROXY="$PROXY" convertia-linux \
+    sh -c 'mkdir ~/work && cd ~/work && tar -xf - &&
+      cargo test -p convertia-core --lib --locked &&
+      cargo clippy -p convertia-core --all-targets --locked -- -D warnings'
+  ```
+
+  It keeps nothing, so every run installs the pinned toolchain from `static.rust-lang.org` and
+  fetches the crates from `index.crates.io` and `static.crates.io`. It therefore joins an internal
+  Docker network, `$NET` (`docker network create --internal <name>`), whose one way out is an
+  allowlist egress proxy, `$PROXY`: the proxy container sits on `$NET` and on a second network with
+  a route out, and forwards only to the hosts a recipe names. A run that fetches nothing takes
+  `--network none` instead. Docker's default seccomp profile stays on in the twin, as CLAUDE.md §10
+  asks of an agent session, so a Landlock or user-namespace leg it refuses degrades there instead of
+  running; CI's Linux leg runs those tests on a hosted runner, outside any container.
 - **G29 SAST.** Semgrep runs natively on Windows, but a `semgrep` on `PATH` is not the CI pin and
   `check-sast` runs whichever it finds without a version check, so a native green is advisory.
   `install-gate-tools` does not install Semgrep, and the pinned set in `requirements-ci.txt` does not
@@ -132,6 +160,23 @@ The individual check commands (type-check, lint, tests) are listed in
   MSYS_NO_PATHCONV=1 docker run --rm -v "<repo>:/src:ro" python:3.12 bash -c 'set -e
     git config --global --add safe.directory "*"; git clone -q /src /work
     git -C /src diff --cached --binary | git -C /work apply --index --allow-empty; cd /work
+    python3 -P -m pip install -q --require-hashes -r requirements-ci.txt
+    python3 -P scripts/install-gate-tools --tool shellcheck; python3 -P scripts/check-sast --full'
+  ```
+
+  Its container twin copies the staged tree in as a `git archive` stream, indexes it again and runs
+  as `nobody`, with the same `$NET` and `$PROXY` for its fetches: pip's from `pypi.org` and
+  `files.pythonhosted.org`, the shellcheck download from `github.com` and the release-asset hosts it
+  redirects to (`release-assets.githubusercontent.com`, `objects.githubusercontent.com`), and
+  Semgrep's `--validate` fetch of its rule-lint pack from `semgrep.dev` (build-gates §0 *Network
+  fetches*):
+
+  ```sh
+  git archive --format=tar "$(git write-tree)" | MSYS_NO_PATHCONV=1 docker run -i --rm --user nobody \
+    --cap-drop ALL --security-opt no-new-privileges --network "$NET" -e HTTPS_PROXY="$PROXY" \
+    -e HOME=/tmp python:3.12 bash -c 'set -e
+    mkdir /tmp/work && cd /tmp/work && tar -xf - && git init -q && git add -A -f
+    python3 -m venv /tmp/venv && . /tmp/venv/bin/activate
     python3 -P -m pip install -q --require-hashes -r requirements-ci.txt
     python3 -P scripts/install-gate-tools --tool shellcheck; python3 -P scripts/check-sast --full'
   ```

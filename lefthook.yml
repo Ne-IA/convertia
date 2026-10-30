@@ -10,6 +10,8 @@
 #   pre-commit = L1  (fires at `git commit`;                  soft budget < 10 s; diff-scoped)
 #   commit-msg = L3  (fires at `git commit`, BEFORE pre-push; conventional-commit subject + length caps (G11))
 #   pre-push   = L2  (fires at `git push`;                    budget < 3 min; range / full-tree)
+#                    On the landing path (build-loop Step 6) L2 is the forced container run instead:
+#                    `lefthook run pre-push --force` on exactly the signed commits, before the signer repo pushes them.
 # Stated explicitly so commit-msg (L3) is never wired into pre-push or omitted.
 # commit-msg (L3) is DECLARED below as of P0.3.3 (G11 conventional-commit subject + length caps);
 # G12 (the Dual-Review trailer) is the L2 pre-push half of the commit-hygiene plane.

@@ -17,8 +17,9 @@ arbitrary, red, or unsigned ref. Three legs:
   (3) SIGNED-TAG (fail-SOFT until provisioned, then fail-closed) - the `v*` tag is a signed
       annotated tag verifiable against the committed SSH allowed-signers file
       (`git -c gpg.ssh.allowedSignersFile=<file> verify-tag <tag>`). The allowed-signers file
-      + the loop's signing key are provisioned in P0.7.17; until that file exists this leg is
-      skip-with-warning (fail-soft), and fail-closed the moment it lands.
+      (P0.7.17) holds the public line of the owner's signing key, with which the signing hop signs
+      a `v*` tag only after his own Freigabe message (release-pipeline-trust.md §3); until that
+      file exists this leg is skip-with-warning (fail-soft), and fail-closed the moment it lands.
 
 The `gh` call uses the workflow's GITHUB_TOKEN (`github.token`, NOT a `secrets.*` value), so
 the guard job itself reads no release secret - the secret-bearing signing job runs only after

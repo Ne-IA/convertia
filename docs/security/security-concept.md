@@ -94,7 +94,7 @@ published release. No plane trusts an earlier one to have caught everything.
 | **L(-1) — change control** | a commit touching an L(-1) file | the owner-ack trailer, audited by G71 (§2) | the push | none |
 | **L0 — Build-Loop per box** | while building, before each commit | the build-loop discipline and the G1 dual review of the staged diff; P0/P1 findings are fixed in the working tree and re-reviewed before the commit, never in a fix-push cycle | the commit (self-gate) | only by a rule violation (no technical bypass) |
 | **L1 — pre-commit** | `git commit` | lefthook, parallel and diff-scoped, under a soft ~10 s budget ([build-gates §0](build-gates.md#0-policy)) | the commit | only by a forbidden bypass (below) |
-| **L2 — pre-push** | `git push` | lefthook range and full-tree gates under ~3 min; the docs-only fastpath skips six heavy toolchain legs (build-gates §4) | the push | a forbidden bypass; the fastpath skip of those six legs on a documentation-only push range |
+| **L2 — pre-push** | `git push`; on the landing path (build-loop Step 6), the forced pre-push in a throwaway container on exactly the signed commits, before the signer repo pushes them | lefthook range and full-tree gates under ~3 min; the docs-only fastpath skips six heavy toolchain legs (build-gates §4) | the push | a forbidden bypass; the fastpath skip of those six legs on a documentation-only push range |
 | **L3 — commit-msg** | `git commit`, before L2 (the plane numbers are assigned, not chronological) | the conventional-commit subject and the subject (≤ 100 characters) and body (≤ 120 lines) caps (G11) | the commit | a forbidden bypass; git's merge, revert and fixup auto-subjects are exempt |
 | **L4 — CI (GitHub Actions)** | after push | the same gates re-run on a clean checkout (G25) plus the heavy gates: cross-platform build, corpus, coverage, SAST, SBOM, repo-config introspection | a red `main`, fixed immediately | none for the required checks, whose repo configuration G56a asserts |
 | **L5 — Release** | a `v*` tag | the release gates: SBOM and completeness, the licence hard-fail, the copyleft source bundle, checksums and minisign over `SHA256SUMS` (the only signing in scope — never binary code-signing or notarization, SSOT *Out of Scope*), the build-provenance attestation, the size budget, the egress and no-pollution gates; the G56b tag-trust check runs before any secret is read | the release | none (release-blocking) |
@@ -109,14 +109,37 @@ that every local gate command has its L4 step — the G25 residual. A red CI run
 immediately: never re-run hoping it passes, never `--no-verify`.
 
 **Forbidden local-plane bypasses (the complete named set).** The local L1–L3 plane is
-entirely git-hook-based, so the no-bypass policy names every way to make a hook not fire:
-**(a)** `--no-verify`/`-n` on commit or push; **(b)** force-push; **(c)** disabling a
-required CI check; **(d)** `core.hooksPath` redirection — `git -c core.hooksPath=<elsewhere>`
-(or a persisted `git config core.hooksPath`) silently disables every local hook without
-`--no-verify`. (d) is machine-checked: the build-loop Step 0 start sanity asserts
-`core.hooksPath` is unset or the lefthook-managed path, and G54 resolves the effective
-hooks directory instead of assuming `.git/hooks/`, so a redirect cannot leave it inspecting
-an inert directory. L4 (G25) remains the net regardless.
+entirely git-hook-based, so the no-bypass policy names every way to make a hook not fire or
+not run its commands: **(a)** `--no-verify`/`-n` on commit or push; **(b)** force-push;
+**(c)** disabling a required CI check; **(d)** `core.hooksPath` redirection —
+`git -c core.hooksPath=<elsewhere>` (or a persisted `git config core.hooksPath`) silently
+disables every local hook without `--no-verify`; **(e)** a push from a repository without the
+installed hooks (a fresh clone, a bare repo, a hook removed or edited), or a change made to
+`main` on GitHub itself (the web editor, the API); **(f)** a pushed commit that no hooked
+`git commit` made — a plumbing commit (`git commit-tree`, or `git hash-object -w` with
+`git mktree` and `git update-ref`), one made in a repository without the installed hooks, or one
+that `git cherry-pick`, `git rebase`, `git am` or `git merge` wrote (none of them runs the
+pre-commit hook) — save a rewrite of a commit L1 and L3 passed with a forced L1 run
+(`lefthook run pre-commit --force`) on it before the push, as Step 4a (1) runs after the
+build-loop Step 6 rebase; **(g)** a lefthook switch that skips or swaps what a hook runs — the
+`LEFTHOOK=0`, `LEFTHOOK_EXCLUDE`, `LEFTHOOK_CONFIG` and `LEFTHOOK_BIN` environment variables and
+a per-clone local config - `lefthook-local.<ext>` or `.lefthook-local.<ext>` at the repository
+root or `.config/lefthook-local.<ext>`, `<ext>` one of yml, yaml, toml, json and jsonc (measured
+with the pinned lefthook 2.1.9) - which lefthook merges over `lefthook.yml`. The landing path
+([build-loop.md](../process/build-loop.md) Step 6) holds the one sanctioned hook-free commit and
+the one sanctioned hook-free push, both in the signer repo of the signing hop, which a session
+runs on the owner's PC only after the owner's own Freigabe message
+([release-pipeline-trust.md](../process/release-pipeline-trust.md) §3): its `git commit-tree -S`
+re-creates each commit that L1 and L3 passed in a throwaway container, on that commit's own tree
+and message, and changes only the signature and the parent line; on this path L2 is the forced
+pre-push (`lefthook run pre-push --force`) in a throwaway container on exactly the signed
+commits, and the signer repo pushes only after that run is green and only those commits. Any
+other such push is bypass (e), and any other such commit is bypass (f). (d) is machine-checked:
+the build-loop Step 0 start sanity asserts `core.hooksPath` is unset or the lefthook-managed
+path, and G54 resolves the effective hooks directory instead of assuming `.git/hooks/`, so a
+redirect cannot leave it inspecting an inert directory. No gate sees which repository a push
+comes from, how a commit was made or which variables a hook ran under, so (e)–(g) are not. L4
+(G25) remains the net regardless.
 
 **Gate isolation from the tree it checks.** No in-gate check can catch a file placed beside a
 gate that shadows a module the gate imports (`scripts/re.py` shadows `re` for a plain

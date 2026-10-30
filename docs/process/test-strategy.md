@@ -822,7 +822,9 @@ hardening sweep (`[!extern]`, `[TEST]`, the last work box of its phase). Once ev
 other box of the phase is `[x]`, the Co-Pilot session — never the Build-Loop — runs
 two legs: **Leg A** re-tests the phase's whole delivery (§11.2); **Leg B** checks the
 next phase's readiness (§11.4). The box flips `[x]` when both legs are done and their
-must-fix findings have landed.
+must-fix findings have landed. Every run either leg makes of repo code — the L4 suite, a
+mutant, a probe, a realizability run — happens in a throwaway container, never on the
+session's host ([CLAUDE.md](../../CLAUDE.md) §10).
 
 ### 11.1 Why a phase-level pass exists
 

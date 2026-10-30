@@ -45,7 +45,7 @@ mirror = "L1 + L4"
 [[plane]]
 id = "L2"
 name = "pre-push"
-trigger = "git push"
+trigger = "git push; on the landing path (build-loop Step 6), the forced pre-push in a throwaway container on exactly the signed commits, before the signer repo pushes them (security-concept §3, bypass (e))"
 budget_seconds = 180
 budget_kind = "hard"
 enforcement = "lefthook pre-push; range / full-tree gates; docs-only fastpath over the six heavy toolchain legs (build-gates §4)"
@@ -54,7 +54,7 @@ mirror = "L2 + L4"
 [[plane]]
 id = "L3"
 name = "commit-msg"
-trigger = "git commit (chronologically BEFORE L2, which fires at git push)"
+trigger = "git commit (chronologically BEFORE L2, which fires at git push or, on the landing path (build-loop Step 6), at the forced pre-push in a throwaway container)"
 enforcement = "lefthook commit-msg; conventional-commit subject format + the subject/body length caps (G11)"
 mirror = "L3 + L4"
 

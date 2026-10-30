@@ -69,29 +69,54 @@ ruleset (this plane) and the in-workflow ancestry/green-history assertion (P0.2)
 distinct controls: the ruleset stops the *creation*, the workflow step stops the
 *release* if a tag slips onto an unverified commit.
 
-## 3. Plane 2 — the loop signs its own commits and tags (G56b leg 3 + G56a sub-check (g))
+## 3. Plane 2 — commits and tags are signed at the hop (G56b leg 3 + G56a sub-check (g))
 
-**Policy.** The Build-Loop holds an **SSH signing key**; the repo commits a **public SSH
-allowed-signers file** at `.github/allowed_signers`, and `git config
+**Policy.** The commits that land on `main` and the `v*` tags are signed with one **SSH signing
+key**, the owner's, held in the Windows ssh-agent of his PC (the signing hop below); the repo
+commits a **public SSH allowed-signers file** at `.github/allowed_signers`, and `git config
 gpg.ssh.allowedSignersFile` points at it. Two assertions ride on this one key:
 
-- **Release-tag verification (G56b leg 3).** The loop signs every `v*` tag
-  (`git tag -s`); the release workflow's first step runs `git verify-tag` against the
-  committed allowed-signers file and **aborts before any secret is read** on failure —
+- **Release-tag verification (G56b leg 3).** Every `v*` tag is signed at the signing hop
+  (`git tag -s` in the signer repo); the release workflow's first step runs `git verify-tag`
+  against the committed allowed-signers file and **aborts before any secret is read** on failure —
   so a lightweight/unsigned tag planted by a compromised `GITHUB_TOKEN` cannot trigger
   a release. `.github/allowed_signers` is committed (P0.7.17), so leg 3 fail-closes on
   that file's presence once the release pipeline and a real `v*` tag exist
   (`scripts/gate-planes.toml` keeps its L5 `[[fail_open]]` row until P10).
-- **Commit authenticity (G56a sub-check (g)).** The **same** key signs the loop's own
-  `main` commits (`git config commit.gpgsign true`), so `main`'s ruleset
+- **Commit authenticity (G56a sub-check (g)).** The **same** key signs the commits the
+  landing path brings to `main` (at the signing hop), so `main`'s ruleset
   **`required_signatures`** knob is *satisfiable* — closing the integrity axis a
   forged `Dual-Review:` trailer + spoofed author would otherwise open. **Fail-closed**
   (G56a (g)).
 
+**The signing hop (owner decision, 2026-10-23; who runs it: owner grant, 2026-10-29).** The key
+never sits beside running repo code: it stays in the Windows ssh-agent of the owner's PC, which
+makes every signature (a `v*` tag's included) and runs no repo code, and no key or token enters
+the throwaway container that does ([CLAUDE.md](../../CLAUDE.md) §10). A session runs the hop on
+that PC with that key: the session the owner gave his own Freigabe message to, and only after
+that message, which releases exactly the commits (their GO trees) or the tag to sign, and the push
+path. The hop signs nothing the message does not release, so no Freigabe means no signature and
+every signature attests one; the Freigabe message stays the owner's own, as his ack does
+([roles-and-escalation.md](roles-and-escalation.md) §4(g)). A commit leaves that container
+unsigned, as a bundle. A fresh bare signer repo on the PC fetches the bundle and re-creates each
+commit with `git commit-tree -S` on its own tree and message, on the signed parent, with the
+author and committer name, email and date of its unsigned twin copied (`GIT_AUTHOR_*`,
+`GIT_COMMITTER_*`), so only commit ids change, never a tree. The signer repo stays free of
+hooks whatever the owner's git config holds: every git command in it, its push included, runs
+with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` set to the null device and no other inherited
+`GIT_*` variable, so neither the system nor the global config (an `init.templateDir`, a
+`core.hooksPath`) reaches it, and it takes what it needs (§5 step 2's signing settings, the
+push's credential helper and TLS settings) as `git -c` options; before the first signature the
+hop checks that the repo's hooks directory holds nothing but git's `*.sample` files and that
+`core.hooksPath` is unset. Each signed commit is checked with `git verify-commit` against the
+`.github/allowed_signers` the pushed tip carries, and differs from its unsigned twin only in the
+signature and the parent line. The pre-push on the signed commits and the push from the signer
+repo are the landing path of [build-loop.md](build-loop.md) Step 6.
+
 **Distinct from the spec §6.7.1 DCO posture — no conflict.** §6.7.1's
 `Signed-off-by` is *requested-not-required text* on **external contributors' commits**
-("CI does not hard-block"). Leg 3 is the **loop's own cryptographic signature** on its
-**own** release tags + commits — a different artifact, a different actor. They
+("CI does not hard-block"). Leg 3 is the **signing hop's cryptographic signature** on the
+project's **own** release tags + commits — a different artifact, a different actor. They
 coexist.
 
 **L(-1).** The committed `.github/allowed_signers` file is in the L(-1)
@@ -161,23 +186,25 @@ The two STOPs are **symmetric** — together they guarantee no release is minted
 in place. The exact owner steps:
 
 **P0.7.17 — tag protection + signing key (planes 1 + 2):**
-1. **Generate an SSH signing key** on the build machine, e.g.
+1. **Generate an SSH signing key** on the owner's PC, for its Windows ssh-agent (§3, the
+   signing hop), e.g.
    `ssh-keygen -t ed25519 -C "convertia release signing" -f ~/.ssh/convertia_sign`,
-   and hand the **public** line (`~/.ssh/convertia_sign.pub`) to the loop so the
+   and hand the **public** line (`~/.ssh/convertia_sign.pub`) to the Co-Pilot so the
    committed `.github/allowed_signers` can be authored with the real key (an L(-1)
-   edit under the owner ack). The **private** key never leaves the owner's control;
-   keep an **offline copy** of it, its passphrase stored apart from the copy.
-2. **Wire git signing** on the build machine: `git config gpg.format ssh`;
-   `git config user.signingkey ~/.ssh/convertia_sign.pub`;
-   `git config commit.gpgsign true`; `git config tag.gpgsign true`;
-   `git config gpg.ssh.allowedSignersFile .github/allowed_signers`. **On Windows,
-   also pin `git config gpg.ssh.program` to the native OpenSSH `ssh-keygen`**
-   (`%WINDIR%\System32\OpenSSH\ssh-keygen.exe`) — Git-for-Windows' bundled MSYS2
-   `ssh-keygen` cannot reach the Windows OpenSSH agent's named pipe and falls back to
-   the encrypted key file, so a **non-interactive signed commit hangs forever**
-   (it would wedge every autonomous Build-Loop commit). `scripts/setup-dev` (step 5)
-   applies this pin automatically on every Windows clone where the native OpenSSH
-   `ssh-keygen` is present.
+   edit under the owner ack). The **private** key never leaves the owner's control: a
+   session signs with it, through his Windows ssh-agent, only after his Freigabe message
+   (§3); keep an **offline copy** of it, its passphrase stored apart from the copy.
+2. **Wire git signing** in the signer repo of the §3 signing hop, never in a clone that runs
+   repo code: `gpg.format ssh`, `user.signingkey ~/.ssh/convertia_sign.pub`,
+   `commit.gpgsign true`, `tag.gpgsign true` and `gpg.ssh.allowedSignersFile` naming a copy
+   of the committed `.github/allowed_signers` (each fresh signer repo takes them as `git -c`
+   options from the hop a session runs, §3). **On Windows, also pin `gpg.ssh.program` to the
+   native OpenSSH `ssh-keygen`** (`%WINDIR%\System32\OpenSSH\ssh-keygen.exe`) —
+   Git-for-Windows' bundled MSYS2 `ssh-keygen` cannot reach the Windows OpenSSH agent's named
+   pipe and falls back to the encrypted key file, so a **non-interactive signed commit hangs
+   forever** (it would wedge every signing hop). `scripts/setup-dev` (step 5) applies this pin
+   on a Windows clone where the native OpenSSH `ssh-keygen` is present; the signer repo, where
+   setup-dev never runs, sets it itself.
 3. **Create the `v*` tag-protection ruleset** (Settings → Rules → Rulesets → new *tag*
    ruleset targeting `v*`, restrict *tag creations* to the owner, bypass-actor list
    minimal) so only the owner can create a release tag.

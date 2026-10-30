@@ -22,14 +22,17 @@
 
 | Session | Role |
 |---|---|
-| **Build-Loop** (this file) | Autonomous. Builds `P1`..`P11`, one box per commit — code, tests, every gate, the dual review — and pushes **directly to `main`**. It never authors a caged line (§3 Step 7). |
+| **Build-Loop** (this file) | Autonomous. Builds `P1`..`P11`, one box per commit — code, tests, every gate, the dual review — and its commits land **directly on `main`** by the Step 6 landing path: after the owner's own Freigabe message a session signs them at the signing hop on his PC, and the signer repo pushes them. It never authors a caged line (§3 Step 7). |
 | **Co-Pilot** | Works with the owner: escalations and rulings, the caged part of a parked box, owner acts, the phase-end sweep boxes ([test-strategy §11](test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)), and incoming PRs and Dependabot bumps ([roles-and-escalation.md §5a](roles-and-escalation.md#5a-incoming-pull-requests--dependabot-bumps--owned-by-co-pilot-never-the-loop)). |
 
 Single branch `main`, no merge step, no worktrees. **Two sessions commit to `main`, each from its
 own clone**: the Co-Pilot pushes only while no loop `ci` run is queued or in progress; the loop
-fast-forwards every iteration (Step 0) and rebases before its push (Step 6). P0 was bootstrapped
-manually (roles-and-escalation §5). The one surviving PR concept is the external fork pull
-request; "per-PR" elsewhere means "per-push".
+fast-forwards every iteration (Step 0) and rebases before its signing hop (Step 6). Every command
+below that runs repo code — a gate, a hook (`git commit` runs them), a test, `plan-lint`,
+`setup-dev` — runs in a throwaway container, never on the session's host (CLAUDE.md §10), and a
+commit reaches `main` by the landing path of Step 6. P0 was bootstrapped manually
+(roles-and-escalation §5). The one surviving PR concept is the external fork pull request;
+"per-PR" elsewhere means "per-push".
 
 **The dual review is a quality amplifier, NOT a security control.** G1 is
 self-attested through an unverifiable commit trailer; a gamed `GO/GO` cannot, by
@@ -214,7 +217,8 @@ After the box's last `git add`, before R1 and after every fix round:
 3. The CI-only legs the diff touches: `src/**` → `pnpm test:a11y` and `pnpm test:coverage`;
    Rust, TypeScript or shell source → the containerized `check-sast --full`; `cfg(unix)` / Linux
    code or `scripts/**` → a run in the `convertia-linux` image (DEVELOPMENT.md "Windows host
-   notes" carries both recipes); macOS-only code: CI only.
+   notes" carries both recipes, and the loop runs their container twins); Windows-only and
+   macOS-only code: CI only.
 4. The brief (Step 5) gets one `<gate>: exit <n>` line per gate run.
 
 ### Step 5 — Pre-commit Opus + Sonnet dual review (G1)
@@ -233,12 +237,13 @@ model deprecation or rename surfaces as an escalation, never a silent skip.
 
 **Reviewer contract.** Reviewers never change the shared tree, index or `target/` (no
 checkout, stash, reset, commit or edit). A reviewer that must run code, a mutant or a repro does
-it in its own scratch clone — a real `git clone`, never a junction or symlink of the repo — with
-the staged diff applied and `CARGO_TARGET_DIR` inside the clone, reused across that reviewer's
-rounds of the box. Reviewers run targeted commands (one test module, one gate script, one
-repro), never the full suite; the brief carries the gate transcript. A third reviewer or a lens
-run, when used, runs once, before R1, under the same severity bar. After every round the loop
-compares `git write-tree` with the round's tree id before it edits anything.
+it in its own throwaway container (CLAUDE.md §10), never on the host: a clone copied in with the
+staged diff applied — never a mount, junction or symlink of the repo — and `CARGO_TARGET_DIR`
+inside the clone, the container kept for that reviewer's rounds of the box and removed after
+them. Reviewers run targeted commands (one test module, one gate script, one repro), never the
+full suite; the brief carries the gate transcript. A third reviewer or a lens run, when used,
+runs once, before R1, under the same severity bar. After every round the loop compares
+`git write-tree` with the round's tree id before it edits anything.
 
 ```text
 === ConvertIA dual-review rubric (canonical — emitted to BOTH reviewers verbatim) ===
@@ -441,13 +446,39 @@ Dual-Review: opus=GO sonnet=GO
   the subject; a final trailer block of at most 5 lines is not counted).
 - **Commit** in the foreground; a hook red → fix → Step 4a → Step 5 → commit again. **A red gate
   is fixed, never bypassed:** no `--no-verify`, no force-push, no `core.hooksPath` redirection,
-  no disabled required CI check.
-- **Rebase before the push:** `git fetch origin main`; if `origin/main` moved,
-  `git rebase origin/main`, re-run Step 4a (1)–(2), then push. A rebase never counts as a push
-  failure; a conflict → `git rebase --abort` → §6 stop (4).
-- **Push status** is `git push`'s own exit status, never read through a pipe (DEVELOPMENT.md
-  "Windows host notes"). A non-zero exit reports `Push gescheitert (exit N), Lefthook-Hook X rot`;
-  the loop fixes the cause and pushes again (§6 stop (4) counts the failures).
+  no disabled required CI check, no lefthook switch that skips a hook's commands, and no
+  hook-free commit or push but the landing path's below (security-concept §3, bypasses (a)–(g)).
+- **Rebase before the hop:** in the throwaway container, `git fetch origin main`; if
+  `origin/main` moved, `git rebase origin/main` and re-run Step 4a (1)–(2), then hand the commits
+  to the signing hop, which signs a rebased commit only under a Freigabe that releases it. A
+  signed commit is never rebased: when `origin/main` moves after the hop, the unsigned commits take
+  this bullet again and a new hop signs them. A rebase never counts as a push failure; a conflict
+  → `git rebase --abort` → §6 stop (4).
+- **Landing path (owner decision, 2026-10-23; who runs the hop: owner grant, 2026-10-29).** The
+  commit is made in the throwaway container with every hook live and leaves it unsigned, as a
+  bundle; until the signed tip lands on `main`, the loop's commit waits as that bundle. The signing
+  hop runs on the owner's PC with his signing key from its Windows ssh-agent, and the session the
+  owner gives his own Freigabe message to runs it, only after that message: it releases exactly
+  those commits — their GO trees and this push path, with his owner word for a re-landed update
+  ([roles-and-escalation.md](roles-and-escalation.md) §5a) and his `L-neg1-ack: owner` where the
+  cage moves — and the hop signs only what it releases, so no Freigabe means no signature and every
+  signature attests one. The Freigabe message is the owner's own, as his ack is
+  (roles-and-escalation.md §4(g)); an agent message is never one. In the hop a fresh bare signer
+  repo, isolated from the system and global git config and checked to hold no hook
+  ([release-pipeline-trust.md](release-pipeline-trust.md) §3), re-creates each commit with
+  `git commit-tree -S` on its own tree, with its unsigned twin's author and committer name, email
+  and date, so only commit ids change, never a tree, and no hook runs on the PC. The real pre-push
+  then runs in a throwaway container on exactly the signed commits, and the signer repo pushes the
+  signed tip to `main` with the owner's existing GitHub login — the repo-admin path of the `main`
+  ruleset every push to `main` takes, with no extra push token; CI then runs on `main`. That push
+  is the loop's push for Step 0's sync, the egress-window rule and §6 stop (4)'s push-failure
+  count: the next box starts Step 4 only once its `ci` run concluded green.
+- **Push status.** A red container pre-push is the push failure: nothing is pushed, and it
+  reports `Push gescheitert (exit N), Lefthook-Hook X rot` with the exit status of
+  `lefthook run pre-push --force`. The signer repo's push runs no lefthook hook; its own exit
+  status, never read through a pipe (DEVELOPMENT.md "Windows host notes"), is the push status,
+  and a non-zero exit reports `Push gescheitert (exit N)`. The loop fixes the cause, and the
+  commit takes the landing path again (§6 stop (4) counts the failures).
 - **Egress-window rule (G42/G42b):** never push while the previous push's `ci` run is
   unresolved, and never start Step 4 of the next box before that run concluded green. The run is
   found by `headSha` (`gh run list --workflow ci --branch main --json
@@ -540,7 +571,8 @@ A change is **done** only when:
 3. **a red `main` not attributable to its own last push** (Step 6);
 4. **a hard-stop class** — `>= 3 consecutive push failures`, a second red after the
    fix-forward, a rebase conflict, reviewer unavailability (Step 5), an anomalous cancel, the
-   GitHub API unreachable while a run is unobserved, a Step 0 mismatch.
+   GitHub API unreachable while a run is unobserved, a Step 0 mismatch, no throwaway container
+   available (CLAUDE.md §10).
 
 On a stop it leaves a clean tree, posts the §8 line and schedules no next iteration.
 
@@ -596,12 +628,14 @@ The owner starts the loop once with the Claude Code `/loop` skill, self-paced, a
 Build-Loop: follow docs/process/build-loop.md; one iteration = §3 Step 0 to Step 7 for one box; stop only on a §6 stop.
 ```
 
-**Cadence: `== 1 box per iteration`.** Each iteration runs Step 0 to Step 7 for one box, pushes,
-and schedules its next wake-up. A wake-up whose Step 0 finds the previous push's `ci` run still
-in progress runs Steps 1–3 only, prints the §8 waiting line and schedules the next wake-up at the
-run's expected end. Compaction carries the loop across boxes; after one it re-reads §2 and resumes
-the step in progress, since Step 0 runs only when an iteration starts. An iteration that schedules
-no wake-up ends the loop, so the loop schedules none only on a §6 stop.
+**Cadence: `== 1 box per iteration`.** Each iteration runs Step 0 to Step 7 for one box, hands its
+commit to the Step 6 landing path, and schedules its next wake-up. A wake-up whose Step 0 finds
+the previous push's `ci` run still in progress runs Steps 1–3 only, prints the §8 waiting line and
+schedules the next wake-up at the run's expected end; one that finds the previous commit still
+waiting for its Freigabe or its push runs Steps 1–3 only as well. Compaction carries the loop
+across boxes; after one it re-reads §2 and resumes the step in progress, since Step 0 runs only
+when an iteration starts. An iteration that schedules no wake-up ends the loop, so the loop
+schedules none only on a §6 stop.
 There is no batching and no session box limit.
 
 Escalation goes **Build-Loop → Co-Pilot → owner** ([roles-and-escalation.md](roles-and-escalation.md)),
@@ -659,7 +693,7 @@ surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here
   half-staged commit); a box re-entered after a crash restarts its G1 review at R1.
 - **(b)** **Committed-but-CI-red** → a **NEW** commit fixing it (the Step 6 fix-forward);
   **never amend a pushed commit**.
-- **(c)** **Committed-but-not-pushed** → push first (Step 6, with its rebase).
+- **(c)** **Committed-but-not-pushed** → land it first (the Step 6 landing path, with its rebase).
 - **(d)** **Push is idempotent on retry** — a re-push of an already-pushed commit is
   a no-op, safe to repeat.
 

@@ -12,15 +12,16 @@ UI. G50/G56 lint workflow FILES but cannot see repo settings. This gate queries 
     direct pushes, GH006), so the config is two rulesets:
     * a `required_status_checks` rule whose checks cover EXPECTED_REQUIRED_CHECKS (subset, so adding
       heavier checks in P0.3/P0.4 never red-fails this), with its bypass set restricted to the repo-
-      ADMIN role ONLY (the trusted direct-pusher - a fork-PR is still gated, the owner/Build-Loop
-      can push);
+      ADMIN role ONLY (the trusted direct-pusher - a fork-PR is still gated, while the owner's
+      login, with which the build-loop.md Step 6 landing path pushes, can push);
     * `non_fast_forward` (block force-push) + `deletion` rules with NO bypass (history protection
       applies to EVERYONE incl. admins).
     [This resolves the prior `enforce_admins`-vs-direct-push contradiction - security-concept §4
     principle 10.]
   (g) a `required_signatures` ruleset rule on `main` - target-gated: fail-SOFT (skip-with-warning)
-      until the committed SSH allowed-signers file lands (P0.7.17, the loop then signs its own
-      commits), then fail-closed.
+      until the committed SSH allowed-signers file lands (P0.7.17; the commits the landing path
+      brings to `main` are then signed at the signing hop, after the owner's own Freigabe message,
+      release-pipeline-trust.md §3), then fail-closed.
   (d) native secret-scanning + push-protection enabled (`repos/<repo>` security_and_analysis).
   (e) default workflow permissions read-only + can_approve_pull_request_reviews == false
       (`repos/<repo>/actions/permissions/workflow`).

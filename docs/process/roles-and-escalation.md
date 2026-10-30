@@ -24,7 +24,7 @@
 
 | Role | What it is | What it decides | What it never does |
 |---|---|---|---|
-| **Build-Loop session** | The autonomous builder. Reads [build-loop.md](build-loop.md) top to bottom, then works the plan box by box (**P1 onward**), writes tests, runs every gate + the [dual review](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1) (G1), and commits **directly to `main`** + pushes. The gates are the protection — no second branch, no merge step. | Routine implementation, pattern, naming, path, and default-value choices — **itself**, after a codebase/process-doc pattern lookup (§3), each tagged `[Build-Session-Entscheidung: <box-id>]` at the code site. Phase-cut / "which phase owns this" questions answered from the plan. | Merge, rewrite history, force-push, `--no-verify`, `core.hooksPath` redirection, pick a side in a spec contradiction the §4(a) pre-check cannot rank, author a caged line (§4(g)), or build **P0** (DECISION B, §5). It escalates *to* Co-Pilot — it never resolves a genuine fork on its own. |
+| **Build-Loop session** | The autonomous builder. Reads [build-loop.md](build-loop.md) top to bottom, then works the plan box by box (**P1 onward**), writes tests, runs every gate + the [dual review](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1) (G1), and commits **directly to `main`**: its commits land by the build-loop.md Step 6 landing path, where, after the owner's own Freigabe message, a session signs them at the signing hop on the owner's PC with his key and the signer repo pushes them. The gates are the protection — no second branch, no merge step. | Routine implementation, pattern, naming, path, and default-value choices — **itself**, after a codebase/process-doc pattern lookup (§3), each tagged `[Build-Session-Entscheidung: <box-id>]` at the code site. Phase-cut / "which phase owns this" questions answered from the plan. | Merge, rewrite history, force-push, `--no-verify`, `core.hooksPath` redirection, pick a side in a spec contradiction the §4(a) pre-check cannot rank, author a caged line (§4(g)), or build **P0** (DECISION B, §5). It escalates *to* Co-Pilot — it never resolves a genuine fork on its own. |
 | **Co-Pilot session** | The owner's partner. The Build-Loop's **escalation & clarification target**; the home of strategic / cross-phase / architecture decisions and high-level review. Completes the caged part of a parked box under the owner's ack (§4(g)). Executes the standing **phase-end hardening sweep** box that closes every phase `P2`..`P11` ([test-strategy §11](test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). | Cross-phase architecture with no spec/SSOT source; how to *resolve* a spec/SSOT contradiction once the owner has ruled on the fork; whether a misfiring gate is scoped or quarantined ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)). | Override the conflict order, or change scope / SSOT intent. A genuine fork (§4) goes to the **owner**; Co-Pilot frames it, the owner calls it. |
 | **Owner** | Final authority. | The genuine forks: scope, legal/license posture, the [reviewer-family flip](../security/security-concept.md#2-working-model--two-sessions-one-branch), the [security-critical-file L(-1) ack policy](../security/security-concept.md#2-working-model--two-sessions-one-branch), the v1 cut, and any decision a doc records as "owner decision / owner call". Drives the start/stop vocabulary ([build-loop.md §7](build-loop.md#7-escalation-conversation-and-the-startstop-vocabulary)). | — |
 
@@ -40,10 +40,12 @@ checkout regardless of who is watching).
 **Clones and landing.** **Two sessions commit to `main`, each from its own clone**: the Co-Pilot
 pushes only while no loop `ci` run is queued or in progress, and re-checks that window after any
 rebase (a newer push cancels an in-progress `ci` run); the loop fast-forwards every iteration and
-rebases before its push ([build-loop.md §0](build-loop.md#0-who-runs-this-and-what-it-is-not)). A
-caged part reaches the Co-Pilot as a parked patch (build-loop.md Step 7). Messages are
-notifications: rulings and acks reach the loop only as landed commits, and an agent message is
-never the owner's ack or stop word.
+rebases before its signing hop ([build-loop.md §0](build-loop.md#0-who-runs-this-and-what-it-is-not)).
+Each session runs repo code only in a throwaway container ([CLAUDE.md](../../CLAUDE.md) §10), and
+every commit of theirs reaches `main` by the landing path of build-loop.md Step 6, signed at its
+hop only after the owner's own Freigabe message. A caged part reaches the Co-Pilot as a parked
+patch (build-loop.md Step 7). Messages are notifications: rulings and acks reach the loop only as
+landed commits, and an agent message is never the owner's ack, Freigabe or stop word.
 
 **Context-routing — who holds what (lean loop / full Co-Pilot).** The two sessions
 are deliberately given **different amounts of the security/gate corpus**:
@@ -207,9 +209,11 @@ Further blockers route the same way (their mechanics live in build-loop.md, the
   ([build-loop.md Step 7](build-loop.md#step-7--check-off-the-box)); caged text that **reds
   nothing** until it lands (a build-gates row) → pre-declared in the box, closed by the
   phase-end sweep box (test-strategy §11.2). `L-neg1-ack: owner` is written only in the session
-  where the owner gave the ack. The trigger stops the caged edit, not the loop, which continues
-  outside the blocked closure (except the phase-end sweep box, which blocks its WHOLE successor
-  phase, test-strategy §11.3).
+  where the owner gave the ack, and the owner's Freigabe message of the landing path
+  ([build-loop.md](build-loop.md) Step 6), which carries that ack where the cage moves, is his own
+  in the same way: only the session he gave it to runs the signing hop on it. The trigger stops the
+  caged edit, not the loop, which continues outside the blocked closure (except the phase-end
+  sweep box, which blocks its WHOLE successor phase, test-strategy §11.3).
 - **(h) G1 non-convergence** — a P0/P1 is still open when review round 4 ends
   ([build-loop.md §3 step 5](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1)). The loop
   parks the box (the

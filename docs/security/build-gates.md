@@ -31,7 +31,20 @@
   a functionally identical un-named bypass — so it is added to the forbidden set
   explicitly, checked at [build-loop.md](../process/build-loop.md) Step 0
   (`git config --get core.hooksPath` unset or == the lefthook path) and by G54 (which resolves
-  the EFFECTIVE hooks dir, not a hardcoded `.git/hooks/`). A red gate is fixed, not bypassed.
+  the EFFECTIVE hooks dir, not a hardcoded `.git/hooks/`). The other ways to land a change no local
+  hook checked are in the forbidden set too: a push from a repository without the installed hooks
+  or a change made to `main` on GitHub itself, a pushed commit that no hooked `git commit` made
+  (plumbing such as `git commit-tree`, a clone without the hooks, or a `git cherry-pick`, `rebase`,
+  `am` or `merge` — none of them runs the pre-commit hook — save a rewrite of a commit L1 and L3
+  passed with a forced L1 run, `lefthook run pre-commit --force`, on it) and a lefthook switch
+  that skips or swaps a hook's commands (`LEFTHOOK=0`, `LEFTHOOK_EXCLUDE`, `LEFTHOOK_CONFIG`,
+  `LEFTHOOK_BIN`, a per-clone `lefthook-local.<ext>` or `.lefthook-local.<ext>` at the root or
+  `.config/lefthook-local.<ext>`, `<ext>` yml, yaml, toml, json or jsonc). The landing path of
+  build-loop.md Step 6 is the one exception: the signing hop's signer repo re-creates each commit L1
+  and L3 passed in a throwaway container with `git commit-tree -S` on its own tree and message, and
+  pushes, hook-free, only after the forced pre-push (`lefthook run pre-push --force`) ran green in a
+  throwaway container on exactly the signed commits, and only those commits (security-concept §3,
+  bypasses (e)–(g)). A red gate is fixed, not bypassed.
 - **Severity ≠ exit code** for custom gate scripts: *any* finding fails the gate;
   severity only drives output formatting.
 - **Custom gate scripts are themselves tested** (positive **and** negative cases —
@@ -229,7 +242,9 @@ and the review record. The commit-message shape is Step 6; G12 checks the traile
 
 > *(Ordering note — the catalogue is grouped by GIT TRIGGER, not by plane number:
 > §2 (L1) and §3 (L3) are the two **`git commit`-time** planes (grouped here), and
-> §4 (L2) is the **`git push`-time** plane (follows). So L3 is documented right after
+> §4 (L2) is the **`git push`-time** plane (follows; on the landing path of
+> [build-loop.md](../process/build-loop.md) Step 6 it fires as the forced pre-push in a throwaway
+> container on exactly the signed commits). So L3 is documented right after
 > L1 because both fire at commit time; L2 fires at push time. The defense-in-depth
 > plane list in [security-concept.md §3](security-concept.md#3-defense-in-depth--the-enforcement-planes)
 > remains in strict L0→L5 order.)*

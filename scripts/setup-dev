@@ -36,7 +36,7 @@ WHY step 5: with `gpg.format = ssh` + `commit.gpgsign`, git signs each commit by
 running `ssh-keygen -Y sign`. On Windows, Git-for-Windows may resolve its BUNDLED
 MSYS2 ssh-keygen, which CANNOT reach the Windows OpenSSH agent (a named pipe) - it
 then falls back to the passphrase-protected key FILE and, with no TTY, HANGS forever.
-A non-interactive `git commit -S` (every Build-Loop commit) would wedge silently. We
+A non-interactive `git commit -S` would wedge silently. We
 pin `gpg.ssh.program` to the native Windows OpenSSH ssh-keygen, which talks to the
 agent's named pipe and signs without a prompt. Non-Windows: a harmless no-op.
 

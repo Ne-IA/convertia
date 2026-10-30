@@ -50,6 +50,10 @@ The same checks run **locally** (git hooks, via lefthook) on every commit and pu
   hooks after cloning; setup-dev is their one installer. A red gate is **fixed, never bypassed** —
   `--no-verify` and force-pushes to the default branch are not used.
 
+A human contributor runs these checks natively, as above. An agent session runs them, and every
+other command that executes repo code, only in a throwaway container, never on its host
+([CLAUDE.md](CLAUDE.md) §10).
+
 Per-OS development prerequisites (toolchains, the platform WebView runtime, system build
 dependencies), the `tauri dev` / `tauri build` commands, and how to obtain the bundled engine
 binaries for a local run are documented in [DEVELOPMENT.md](DEVELOPMENT.md).

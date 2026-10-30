@@ -156,8 +156,16 @@ One line each, with the gate that enforces it:
   ratchet row (the §0.8 floors in `Cargo.toml` / `package.json`) needs the same trailer; the Loop
   parks a box with a caged part (build-loop Step 7) → G71 (owner decision D1,
   [security-concept §2](docs/security/security-concept.md#2-working-model--two-sessions-one-branch)).
-- `--no-verify`, force-push, `core.hooksPath` redirection, or disabling a required CI check — the
-  complete forbidden-bypass set (security-concept §3) → G54, G56a.
+- `--no-verify`, force-push, `core.hooksPath` redirection, disabling a required CI check, a push
+  from a repository without the installed hooks or a change made to `main` on GitHub itself, a
+  pushed commit that no hooked `git commit` made (plumbing such as `git commit-tree`, a clone
+  without the hooks, a cherry-pick, rebase, `am` or merge, save a rewrite of a checked commit with
+  a forced L1 run on it), or a lefthook switch that skips a hook's commands (`LEFTHOOK=0`,
+  `LEFTHOOK_EXCLUDE`, `LEFTHOOK_CONFIG`, `LEFTHOOK_BIN`, a per-clone `lefthook-local.<ext>` or
+  `.lefthook-local.<ext>` at the root or `.config/lefthook-local.<ext>`, `<ext>` yml, yaml, toml,
+  json or jsonc) — outside the signing hop's commit and the signer repo's push on the landing path
+  ([build-loop.md](docs/process/build-loop.md) Step 6), the complete forbidden-bypass set
+  (security-concept §3) → G54, G56a, and the L4 re-run (G25) behind the ones no gate sees.
 
 ## 6. The owner's core rule
 
@@ -230,5 +238,23 @@ the work at hand, decide strictly at this anchor, not reflexively by the cheaper
   line with its reason — never an unowned "later". These stay **immediate**: a security red (a G17
   advisory, a red `main`), a gate that fires for the wrong reason, and any P0/P1 functional defect.
   Everything else outside the work at hand is a residual-ledger line, triaged at the phase-end sweep (§6).
+- **Throwaway containers only (owner, 2026-10-23; the signing hop as the owner granted it on
+  2026-10-29).** An agent session — the Build-Loop, the Co-Pilot, a reviewer or a fixer — never runs
+  repo code on the host it works from; a human contributor keeps the native flow of
+  [DEVELOPMENT.md](DEVELOPMENT.md). Every gate, hook (`git commit` and `git push` run them), test,
+  build, repo script, review harness, mutant, repro and generated or fuzzed command of an agent
+  session runs inside a hardened throwaway container: made for one job (a Step 4a run, one reviewer's
+  rounds of a box, one repro) and removed after it; the repo and every input copied in (a bundle, a
+  `git archive` stream, `docker cp`), never a bind mount of a host path (the clone, the user profile,
+  the Docker socket); no key, token or secret inside; a non-root user, `--cap-drop ALL` and
+  `--security-opt no-new-privileges`, never `--privileged` or `seccomp=unconfined`; no network
+  (`--network none`) unless the job fetches, and then an internal network whose one way out is an
+  allowlist egress proxy. With no such container to hand, the session stops and asks. Its commits
+  leave the container unsigned and reach `main` by the landing path of
+  [build-loop.md](docs/process/build-loop.md) Step 6, whose signing hop and signer-repo push run on
+  the owner's PC outside any container — git over the commits' objects, no repo code: the session
+  runs the hop, which signs them with his key from the Windows ssh-agent, only after the owner's own
+  Freigabe message for exactly those commits (no Freigabe, no signature), so the key never sits
+  beside running repo code.
 
 <!-- End owner rules -->
