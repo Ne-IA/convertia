@@ -8,8 +8,10 @@ evaluate (`userconfig` and its siblings load a further config file), or ANY comm
 .npmrc / pnpm-workspace.yaml spelling measured through pnpm 10.13.1 read the way pnpm reads it; in
 pnpm-workspace.yaml every refused setting is caught in any key form and a `${` or a source-redirect
 prefix anywhere; a
-pnpm-lock.yaml resolution URL from a non-allowed host is caught; the onlyBuiltDependencies allowlist
-count is read from both pnpm manifest forms; the REAL committed .npmrc evaluates clean and main()
+pnpm-lock.yaml resolution URL from a non-allowed host is caught; the build-script allowlist count reads
+every DEPS_BUILD_CONFIG_KEYS key in both files, summed; the package.json `pnpm` field allowlist and the
+pnpm-workspace.yaml input model refuse every key and line outside them (R1-O0's probe A, the R1-S2 keys,
+R1-S3's block map, a committed hook file, each model refusal); the REAL committed .npmrc evaluates clean and main()
 exits 0 over the real tree; the §0.8 floor legs read the floors as data (package.json
 `convertia.pinned-floors`): a missing, unparseable or malformed block and a missing pnpm-lock.yaml
 each fail closed. stdlib-only.
@@ -19,12 +21,18 @@ import contextlib
 import importlib.machinery
 import importlib.util
 import io
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+# A git hook exports GIT_* variables (an absolute GIT_DIR in a linked worktree): under them, a git run from this
+# file in a temp directory - its own, a gate's or a tool's - acts on the hooked repository. All but GIT_EXEC_PATH go.
+for _k in [k for k in os.environ if k.startswith("GIT_") and k != "GIT_EXEC_PATH"]:
+    os.environ.pop(_k)
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-js-supply-chain"
 _loader = importlib.machinery.SourceFileLoader("cjs", str(SCRIPT))
@@ -415,15 +423,124 @@ record("a lockfile URL from a FOREIGN host -> caught",
 record("integrity sha512 hashes (not URLs) are ignored",
        m.lockfile_url_problems("integrity: sha512-AAAA/BBBB==\n") == [])
 
-# --- onlyBuiltDependencies count (G18d) -------------------------------------------------------
-record("pnpm-workspace onlyBuiltDependencies: [] -> 0", m.workspace_onlybuilt_count("onlyBuiltDependencies: []\n") == 0)
-record("pnpm-workspace onlyBuiltDependencies with 2 items -> 2",
-       m.workspace_onlybuilt_count("packages:\n  - 'a'\nonlyBuiltDependencies:\n  - esbuild\n  - "
-                                   "'@swc/core'\nother: x\n") == 2)
-record("pnpm-workspace WITHOUT the key -> None (target-absent)",
-       m.workspace_onlybuilt_count("packages:\n  - 'apps/*'\n") is None)
-record("pnpm-workspace INLINE onlyBuiltDependencies: [a, b] -> 2 (a non-empty inline list is not missed)",
-       m.workspace_onlybuilt_count("onlyBuiltDependencies: [esbuild, '@swc/core']\n") == 2)
+# --- the build-script allowlist count (G18d) -------------------------------------------------
+# [Test-Change: push 1c - old-obsolete+new-correct, build-gates G18d row] old: workspace_onlybuilt_count read one
+# `onlyBuiltDependencies` list out of the pnpm-workspace.yaml text and the counter returned on the first key it
+# found, so a package.json `allowBuilds` map next to `onlyBuiltDependencies: []` counted 0 and ran the @swc/core
+# postinstall under pnpm 10.34.7 (R1-O0, measured), and a block-map `allowBuilds:` in the workspace counted 0
+# (R1-S3); new: the workspace is read by its input model (a build setting there is a line outside it, the
+# workspace-model legs below), and build_allowlist_count reads every DEPS_BUILD_CONFIG_KEYS key of a settings
+# source, summed over both sources - each expectation read back from pnpm's getOptionsFromPnpmSettings (an
+# `allowBuilds` map's true entries are appended to onlyBuiltDependencies).
+record("DEPS_BUILD_CONFIG_KEYS = pnpm 10.34.7's own list (10.13.1's four + allowBuilds)",
+       m.DEPS_BUILD_CONFIG_KEYS == ("dangerouslyAllowAllBuilds", "onlyBuiltDependencies", "onlyBuiltDependenciesFile",
+                                    "neverBuiltDependencies", "allowBuilds"))
+record("build_allowlist_count: onlyBuiltDependencies: [] -> 0", m.build_allowlist_count({"onlyBuiltDependencies": []}) == 0)
+record("build_allowlist_count: a list of 2 -> 2",
+       m.build_allowlist_count({"onlyBuiltDependencies": ["esbuild", "@swc/core"]}) == 2)
+record("build_allowlist_count: R1-O0's probe A (`allowBuilds: {\"@swc/core\": true}` next to `onlyBuiltDependencies: []`) "
+       "-> 1, every key read, never the first one found",
+       m.build_allowlist_count({"onlyBuiltDependencies": [], "allowBuilds": {"@swc/core": True}}) == 1)
+record("build_allowlist_count: an allowBuilds map counts every entry, a `false` one included (fail-closed)",
+       m.build_allowlist_count({"allowBuilds": {"a": True, "b": False}}) == 2)
+record("build_allowlist_count: a JSON null is no entry (pnpm's `config[key] != null`)",
+       m.build_allowlist_count({"onlyBuiltDependencies": None, "allowBuilds": None}) == 0)
+for _k, _v in (("onlyBuiltDependenciesFile", "allow.json"), ("neverBuiltDependencies", []),
+               ("dangerouslyAllowAllBuilds", False), ("allowBuilds", ["@swc/core"]),
+               ("onlyBuiltDependencies", "@swc/core")):
+    record(f"build_allowlist_count: `{_k}: {_v!r}` -> the fail-closed sentinel",
+           m.build_allowlist_count({_k: _v}) == m._UNCOUNTABLE)
+record("onlybuilt_count: the two sources are summed (package.json 1 + workspace 1 -> 2)",
+       m.onlybuilt_count({"pnpm": {"onlyBuiltDependencies": ["a"]}}, {"allowBuilds": {"b": True}}) == 2)
+record("onlybuilt_count: neither source -> None (target-absent); a `pnpm` field that is no object -> the sentinel",
+       m.onlybuilt_count(None, None) is None and m.onlybuilt_count({"pnpm": []}, None) == m._UNCOUNTABLE)
+record("onlybuilt_count: the real package.json + the real workspace -> 0",
+       m.onlybuilt_count(m.json.loads(m.PACKAGE_JSON.read_text(encoding="utf-8")),
+                         m.workspace_model(m.PNPM_WORKSPACE.read_bytes().decode("utf-8"))[0]) == 0)
+
+# --- the package.json `pnpm` field allowlist (G18d) ---------------------------------------------
+# every key pnpm 10.34.7's getOptionsFromRootManifest picks from the field (10.13.1's set lacks `allowBuilds` and
+# `requiredScripts`), each refused by name
+_PNPM_FIELD_READ = ("allowNonAppliedPatches", "allowBuilds", "allowUnusedPatches", "allowedDeprecatedVersions",
+                    "auditConfig", "configDependencies", "executionEnv", "ignorePatchFailures",
+                    "ignoredBuiltDependencies", "ignoredOptionalDependencies", "neverBuiltDependencies",
+                    "onlyBuiltDependenciesFile", "overrides", "packageExtensions", "patchedDependencies",
+                    "peerDependencyRules", "requiredScripts", "supportedArchitectures", "updateConfig",
+                    "dangerouslyAllowAllBuilds")
+record("pnpm_field_problems: the real package.json -> clean",
+       m.pnpm_field_problems(m.json.loads(m.PACKAGE_JSON.read_text(encoding="utf-8"))) == [])
+record("pnpm_field_problems: `onlyBuiltDependencies: []` alone, and no `pnpm` field -> clean",
+       m.pnpm_field_problems({"pnpm": {"onlyBuiltDependencies": []}}) == [] and m.pnpm_field_problems({}) == [])
+for _k in _PNPM_FIELD_READ:
+    record(f"pnpm_field_problems: `pnpm.{_k}` -> refused by name",
+           any(f"`pnpm.{_k}` is not a key this guard evaluates" in p
+               for p in m.pnpm_field_problems({"pnpm": {"onlyBuiltDependencies": [], _k: {}}})))
+record("pnpm_field_problems: an unknown key (`pnpm.fooBar`) -> refused by name (an allowlist, not a deny-list)",
+       any("`pnpm.fooBar`" in p for p in m.pnpm_field_problems({"pnpm": {"fooBar": 1}})))
+record("pnpm_field_problems: a `pnpm` field that is no object (null, a list) -> refused",
+       all(m.pnpm_field_problems({"pnpm": v}) for v in (None, [], "x")))
+
+# --- the pnpm-workspace.yaml input model (G18d) -------------------------------------------------
+_WS_OUTSIDE = "is outside the input model"
+
+
+def _ws(text: str) -> list:
+    return m.workspace_model(text)[1]
+
+
+def _ws_red(text: str, line: int, needle: str = "") -> bool:
+    """`text` is refused, a problem names `line`, and (if given) carries `needle`."""
+    return any(f"pnpm-workspace.yaml line {line} " in p and needle in p for p in _ws(text))
+
+
+record("workspace_model: the REAL committed pnpm-workspace.yaml -> accepted, settings {packages: ['.']}",
+       m.workspace_model(m.PNPM_WORKSPACE.read_bytes().decode("utf-8")) == ({"packages": ["."]}, []))
+for _label, _text in (("`- '.'`", "packages:\n  - '.'\n"), ("`- \".\"`", 'packages:\n  - "."\n'),
+                      ("`- .`", "packages:\n  - .\n"), ("indent 0", "packages:\n- '.'\n"),
+                      ("several spaces after `-`", "packages:\n    -   '.'\n"),
+                      ("comments and blank lines around", "# a\n\npackages:\n  # b\n\n  - '.'\n   \n# c\n"),
+                      ("no final newline", "packages:\n  - '.'")):
+    record(f"workspace_model: {_label} -> accepted", _ws(_text) == [])
+for _label, _text, _line, _needle in (
+        ("another key (`onlyBuiltDependencies: []`)", "packages:\n  - '.'\nonlyBuiltDependencies: []\n", 3, _WS_OUTSIDE),
+        ("R1-S3's block-map `allowBuilds:`", "packages:\n  - '.'\nallowBuilds:\n  '@swc/core': true\n", 3, _WS_OUTSIDE),
+        ("a flow form", "{packages: ['.']}\n", 1, _WS_OUTSIDE),
+        ("a flow sequence value", "packages: ['.']\n", 1, _WS_OUTSIDE),
+        ("an anchor", "packages: &p\n  - '.'\n", 1, _WS_OUTSIDE),
+        ("an alias", "packages:\n  - '.'\nx: *p\n", 3, _WS_OUTSIDE),
+        ("a tag", "packages: !!seq\n  - '.'\n", 1, _WS_OUTSIDE),
+        ("a tagged member", "packages:\n  - !!str .\n", 2, "a member other than"),
+        ("a merge key", "packages:\n  - '.'\n<<: {lockfile: false}\n", 3, _WS_OUTSIDE),
+        ("a second document", "packages:\n  - '.'\n---\nlockfile: false\n", 3, _WS_OUTSIDE),
+        ("a document end marker", "packages:\n  - '.'\n...\n", 3, _WS_OUTSIDE),
+        ("a directive", "%YAML 1.2\n---\npackages:\n  - '.'\n", 1, _WS_OUTSIDE),
+        ("a quoted key", "'packages':\n  - '.'\n", 1, _WS_OUTSIDE),
+        ("a value after `packages:`", "packages: # x\n  - '.'\n", 1, _WS_OUTSIDE),
+        ("an explicit key", "? packages\n: ['.']\n", 1, _WS_OUTSIDE),
+        ("a BOM", "\ufeffpackages:\n  - '.'\n", 1, "a BOM"),
+        ("a tab", "packages:\n\t- '.'\n", 2, "a tab"),
+        ("a tab in a comment", "# a\tb\npackages:\n  - '.'\n", 1, "a tab"),
+        ("a CR", "packages:\r\n  - '.'\r\n", 1, "a CR"),
+        ("a NEL", "packages:\n  - '.'\x85x\n", 2, "U+0085"),
+        ("a duplicate key", "packages:\n  - '.'\npackages:\n", 3, "duplicate `packages:`"),
+        ("a second member", "packages:\n  - '.'\n  - 'apps/*'\n", 3, "a member other than"),
+        ("a member other than `.`", "packages:\n  - './'\n", 2, "a member other than"),
+        ("a member written twice", "packages:\n  - '.'\n  - .\n", 3, "a member other than"),
+        ("a member before the key", "- '.'\npackages:\n", 1, _WS_OUTSIDE),
+        ("a more-indented continuation line", "packages:\n  - '.'\n    x\n", 3, _WS_OUTSIDE),
+        ("an indented key", "packages:\n  - '.'\n  lockfile: false\n", 3, _WS_OUTSIDE)):
+    record(f"workspace_model: {_label} -> refused, naming line {_line}", _ws_red(_text, _line, _needle))
+for _label, _text in (("an empty file", ""), ("comments only", "# x\n"), ("the key without its member", "packages:\n")):
+    record(f"workspace_model: {_label} -> refused (the key and its member are required)",
+           any("lacks `packages:` with its one member" in p for p in _ws(_text)))
+# R1-S2: every key the R1 review measured accepted by the token refusals and honoured by pnpm 10.13.1 and 10.34.7
+_R1_S2_KEYS = (("pnpmfile", "./hook.cjs"), ("globalPnpmfile", "./hook.cjs"), ("strictSsl", "false"),
+               ("verifyStoreIntegrity", "false"), ("lockfileDir", "./other"), ("lockfile", "false"),
+               ("nodeOptions", "--require ./x.js"), ("scriptShell", "./sh"), ("npmPath", "./npm"),
+               ("useNodeVersion", "20.0.0"), ("ca", "x"), ("cafile", "./ca.pem"), ("ignoreScripts", "false"))
+for _k, _v in _R1_S2_KEYS:
+    record(f"workspace_model: R1-S2's `{_k}: {_v}` -> refused, naming line 3",
+           _ws_red(f"packages:\n  - '.'\n{_k}: {_v}\n", 3, _WS_OUTSIDE))
 
 # --- G1 review P1 fixes: scoped registry / resolution schemes / allowlist robustness ----------
 c = good(); c["@evilscope:registry"] = "https://evil.example.com/"
@@ -645,11 +762,10 @@ record("POSTURE: a `deprecated:` notice naming a foreign host (the 2026-09-24 es
            "packages:\n\n  eslint@9.39.4:\n    resolution: {integrity: sha512-XoMj}\n"
            "    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.\n")))
 
-record("a block allowlist with a # comment line mid-list -> counts correctly (not under-counted)",
-       m._list_count_under("onlyBuiltDependencies:\n  - a\n  # note\n  - b\nother: x\n",
-                           "onlyBuiltDependencies") == 2)
-record("pnpm 11 allowBuilds list is counted",
-       m._list_count_under("allowBuilds:\n  - esbuild\n", "allowBuilds") == 1)
+# [Test-Change: push 1c - old-obsolete+new-correct, build-gates G18d row] old: two legs on the retired
+# _list_count_under text counter (a block list with a comment line; an `allowBuilds` LIST, a form pnpm 10.34.7
+# never reads - its getOptionsFromPnpmSettings iterates an `allowBuilds` MAP); new: the comment-line case is the
+# workspace model's accepted comment line and the `allowBuilds` forms are build_allowlist_count's legs above.
 
 # --- R2 fixes: pnpm-workspace registries: block + .pnpmfile.cjs (source-substitution / install code) -
 # [Test-Change: P0.3.8 - old-obsolete+new-correct, build-gates G18c row] old: the refusal named the entry
@@ -730,8 +846,12 @@ record("packageExtensions injecting a file: dependency -> caught",
 record("packageExtensions with a plain-version injected dep -> NOT caught",
        m.install_mutation_problems({"pnpm": {"packageExtensions": {"foo": {"dependencies": {"bar": "^1"}}}}}, "", False) == [])
 # R7 fix: .pnpmfile.mjs (pnpm's default ESM name) + dangerouslyAllowAllBuilds
-record(".pnpmfile.mjs + pnpmfile.mjs are in the forbidden-pnpmfile set (the ESM default name)",
-       all(any(p.name == n for p in m.PNPMFILE_CANDIDATES) for n in (".pnpmfile.mjs", "pnpmfile.mjs")))
+# [Test-Change: push 1c - old-obsolete+new-correct, build-gates G18d row] old: four exact names in
+# PNPMFILE_CANDIDATES, each checked with is_file(); new: every root entry whose casefolded name starts with
+# `.pnpmfile.` or `pnpmfile.` is refused for any entry type (root_entry_problems' legs below) - Node's require
+# loaded `.pnpmfile.cjs.js` and a directory `.pnpmfile.cjs/` as the default hook under both pins (R2-O0, measured).
+record(".pnpmfile.mjs + pnpmfile.mjs are refused root entries (the ESM default name)",
+       all(m.root_entry_problems([n]) for n in (".pnpmfile.mjs", "pnpmfile.mjs")))
 record("dangerouslyAllowAllBuilds (package.json) -> caught",
        any("dangerouslyAllowAllBuilds" in p for p in
            m.install_mutation_problems({"pnpm": {"dangerouslyAllowAllBuilds": True}}, "", False)))
@@ -769,10 +889,10 @@ with tempfile.TemporaryDirectory() as _td:
     base = Path(_td)
     (base / ".npmrc").write_text("registry=https://registry.npmjs.org/\nenable-pre-post-scripts=false\n"
                                  "unsafe-perm=false\n", encoding="utf-8")
-    _orig = (m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES)
-    m.NPMRC, m.PNPM_LOCK = base / ".npmrc", base / "pnpm-lock.yaml"
+    _orig = (m.ROOT, m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m._git_tracked)
+    m.ROOT, m.NPMRC, m.PNPM_LOCK = base, base / ".npmrc", base / "pnpm-lock.yaml"
     m.PNPM_WORKSPACE, m.PACKAGE_JSON = base / "pnpm-workspace.yaml", base / "package.json"
-    m.PNPMFILE_CANDIDATES = (base / ".pnpmfile.cjs", base / "pnpmfile.cjs")
+    m._git_tracked = lambda root: []
     try:
         # [Test-Change: G18 floors as data — old-obsolete+new-correct, §0.8] the synthetic manifest carries an
         # EMPTY floor block (the gate reads the floors from package.json now) instead of patching the retired
@@ -817,7 +937,7 @@ with tempfile.TemporaryDirectory() as _td:
             rc_npmrc_unlisted = m.main()
         (base / ".npmrc").write_text(_npmrc_clean, encoding="utf-8")
     finally:
-        m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES = _orig
+        m.ROOT, m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m._git_tracked = _orig
     record("main(): a pnpm manifest WITHOUT a lockfile -> FAIL (not a silent skip)", rc_nolock == 1)
     record("main(): a lockfile with a FOREIGN resolution URL -> FAIL", rc_foreign == 1)
     record("main(): a lockfile with only allowed-registry resolutions -> pass", rc_clean == 0)
@@ -834,6 +954,160 @@ with tempfile.TemporaryDirectory() as _td:
     record("main(): a `userconfig=./rc2` line in the clean fixture's .npmrc -> FAIL, naming the key (the unlisted-key "
            "refusal is wired)",
            rc_npmrc_unlisted == 1 and ".npmrc key `userconfig` is not one this guard evaluates" in _uc_err.getvalue())
+
+# --- the root entries pnpm opens and a tracked node_modules/ (G18c/G18d, push 1c) ------------------------
+# Each name the strace sweep found pnpm 10.13.1 / 10.34.7 opening at the root that a commit could fill and no other
+# check models, plus Node's resolution of the default hook path; compared casefolded.
+for _n in (".pnpmfile.cjs", ".pnpmfile.cjs.js", ".pnpmfile.cjs.json", ".pnpmfile.cjs.node", ".pnpmfile.mjs",
+           ".pnpmfile.mjs.js", "pnpmfile.cjs", "pnpmfile.mjs", ".PNPMFILE.CJS", ".Pnpmfile.Cjs.JS", "PNPMFILE.CJS"):
+    record(f"root_entry_problems: `{_n}` -> refused as a default hook name",
+           any(f"`{_n}`" in p and "default hook load" in p for p in m.root_entry_problems([_n])))
+for _n in ("package.yaml", "package.json5", "PACKAGE.YAML", "Package.Json5"):
+    record(f"root_entry_problems: `{_n}` -> refused as an alternate manifest",
+           any(f"`{_n}`" in p and "manifest name" in p for p in m.root_entry_problems([_n])))
+for _n, _needle in (("pnpm-workspace.yml", "workspace manifest name"), ("pnpm-workspaces.yaml", "workspace manifest name"),
+                   ("pnpm-workspaces.yml", "workspace manifest name"), ("PNPM-WORKSPACE.YML", "workspace manifest name"),
+                   (".pnpm-workspace.yaml", "workspace manifest name"), (".pnpm-workspace.yml", "workspace manifest name"),
+                   (".pnpm-workspaces.yaml", "workspace manifest name"), (".pnpm-workspaces.yml", "workspace manifest name"),
+                   (".pnp.cjs", "Plug'n'Play loader"), (".PNP.CJS", "Plug'n'Play loader"),
+                   ("binding.gyp", "node-gyp rebuild"), ("Binding.Gyp", "node-gyp rebuild"),
+                   (".corepack.env", "corepack loads"), (".COREPACK.ENV", "corepack loads")):
+    record(f"root_entry_problems: `{_n}` -> refused, naming its effect",
+           any(f"`{_n}`" in p and _needle in p for p in m.root_entry_problems([_n])))
+record("root_entry_problems: the modelled and ordinary root names -> clean",
+       m.root_entry_problems(["package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", ".npmrc", "src", "scripts",
+                              "node_modules", "index.html", "vite.config.ts"]) == [])
+record("root_entry_problems: the REAL repo root listing -> clean", m.root_entry_problems(os.listdir(m.ROOT)) == [])
+for _paths, _red in ((["node_modules/x/index.js"], True), (["sub/Node_Modules/.modules.yaml"], True),
+                     (["NODE_MODULES"], True), (["src/main.tsx", "node_modules_x/a", "a/node_modules.txt"], False),
+                     ([], False)):
+    record(f"tracked_node_modules_problems: {_paths} -> {'refused' if _red else 'clean'}",
+           bool(m.tracked_node_modules_problems(_paths)) == _red)
+record("tracked_node_modules_problems: no tracked-path list (git unavailable) -> fail-closed",
+       any("git is unavailable" in p for p in m.tracked_node_modules_problems(None)))
+# the real reader over a temp repository (the header's GIT_* scrub keeps a hook's GIT_DIR / GIT_INDEX_FILE off it)
+with tempfile.TemporaryDirectory() as _tg, tempfile.TemporaryDirectory() as _tn:
+    _g = Path(_tg)
+    subprocess.run(["git", "init", "-q", str(_g)], check=True, capture_output=True)
+    (_g / "node_modules").mkdir()
+    (_g / "node_modules" / ".modules.yaml").write_text("x: 1\n", encoding="utf-8")
+    (_g / "src").mkdir()
+    (_g / "src" / "a.ts").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src/a.ts"], cwd=_g, check=True, capture_output=True)
+    _only_src = m._git_tracked(_g)
+    subprocess.run(["git", "add", "-f", "node_modules/.modules.yaml"], cwd=_g, check=True, capture_output=True)
+    _with_nm = m._git_tracked(_g / "src")
+    _outside = m._git_tracked(Path(_tn))
+record("_git_tracked: an untracked node_modules/ (an install's own) is not listed",
+       _only_src == ["src/a.ts"] and m.tracked_node_modules_problems(_only_src) == [])
+record("_git_tracked: a force-added node_modules/.modules.yaml is listed from any cwd and refused",
+       sorted(_with_nm or []) == ["node_modules/.modules.yaml", "src/a.ts"]
+       and bool(m.tracked_node_modules_problems(_with_nm)))
+record("_git_tracked: outside a repository -> None (the caller fails closed)", _outside is None)
+
+# --- main() integration: the G18d config allowlist (push 1c) ---------------------------------------
+# Each variant the R1 review measured against real pnpm (R1-O0's probe A, the R1-S2 keys, R1-S3's block map), the
+# committed hook file and a root `pnpm:devPreinstall` over a clean temp tree: main() exits 1 naming it; the clean
+# tree exits 0, so a refusal is the variant's, not the fixture's.
+_CLEAN_PKG = '{"name": "x", "pnpm": {"onlyBuiltDependencies": []}, "convertia": {"pinned-floors": {}}}'
+_CLEAN_WS = "packages:\n  - '.'\n"
+
+
+def _main_over(pkg: str, ws: str, extra: "dict | None" = None, tracked: "list | None" = ()) -> tuple:
+    """main()'s exit and stderr over a temp tree: the clean .npmrc, a canonical lock, `pkg`, `ws` and `extra`
+    entries (`ws` and a str `extra` value written as bytes, so no newline translation touches them; a dict value
+    is a directory of such files, a `("symlink", target)` tuple a symlink), git's tracked-path list read as
+    `tracked` (None: git unavailable)."""
+    with tempfile.TemporaryDirectory() as td:
+        b = Path(td)
+        (b / ".npmrc").write_text(_CLEAN_NPMRC, encoding="utf-8")
+        (b / "pnpm-lock.yaml").write_text("packages:\n\n  x@1.0.0:\n    resolution: {integrity: sha512-AAAA}\n",
+                                          encoding="utf-8")
+        (b / "package.json").write_text(pkg, encoding="utf-8")
+        (b / "pnpm-workspace.yaml").write_bytes(ws.encode("utf-8"))
+        for name, body in (extra or {}).items():
+            if isinstance(body, dict):
+                (b / name).mkdir()
+                for sub, text in body.items():
+                    (b / name / sub).write_bytes(text.encode("utf-8"))
+            elif isinstance(body, tuple):
+                (b / name).symlink_to(body[1])
+            else:
+                (b / name).write_bytes(body.encode("utf-8"))
+        orig = (m.ROOT, m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PATCHES_DIR, m._git_tracked)
+        m.ROOT, m.NPMRC, m.PNPM_LOCK = b, b / ".npmrc", b / "pnpm-lock.yaml"
+        m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PATCHES_DIR = b / "pnpm-workspace.yaml", b / "package.json", b / "patches"
+        m._git_tracked = lambda root: None if tracked is None else list(tracked)
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = m.main()
+        finally:
+            m.ROOT, m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PATCHES_DIR, m._git_tracked = orig
+    return rc, err.getvalue()
+
+
+record("main(): the clean temp tree (package.json `pnpm.onlyBuiltDependencies: []`, the committed workspace form) -> 0",
+       _main_over(_CLEAN_PKG, _CLEAN_WS)[0] == 0)
+_rc, _err = _main_over('{"name": "x", "pnpm": {"onlyBuiltDependencies": [], "allowBuilds": {"@swc/core": true}}, '
+                       '"convertia": {"pinned-floors": {}}}', _CLEAN_WS)
+record("main(): R1-O0's probe A (package.json `pnpm.allowBuilds: {\"@swc/core\": true}` next to "
+       "`onlyBuiltDependencies: []`) -> 1, refused by name and counted 1 > 0",
+       _rc == 1 and "`pnpm.allowBuilds` is not a key this guard evaluates" in _err and "holds 1 entr(ies)" in _err)
+_rc, _err = _main_over(_CLEAN_PKG, _CLEAN_WS + "allowBuilds:\n  '@swc/core': true\n")
+record("main(): R1-S3's block-map `allowBuilds:` in pnpm-workspace.yaml -> 1, naming line 3",
+       _rc == 1 and "pnpm-workspace.yaml line 3 " in _err)
+for _k, _v in _R1_S2_KEYS:
+    _rc, _err = _main_over(_CLEAN_PKG, _CLEAN_WS + f"{_k}: {_v}\n", {"hook.cjs": "module.exports = {}\n"})
+    record(f"main(): R1-S2's `{_k}: {_v}` in pnpm-workspace.yaml -> 1, naming line 3",
+           _rc == 1 and "pnpm-workspace.yaml line 3 " in _err)
+# [Test-Change: push 1c - old-obsolete+new-correct, build-gates G18d row] old: the refusal read `a committed
+# .pnpmfile.cjs exists`; new: every refused root entry is named in backticks with its entry types (the R2-O0 and
+# R2-O1 legs below).
+_rc, _err = _main_over(_CLEAN_PKG, _CLEAN_WS, {".pnpmfile.cjs": "module.exports = {}\n"})
+record("main(): a committed .pnpmfile.cjs (the default hook file pnpm loads) -> 1, naming it",
+       _rc == 1 and "a committed root entry `.pnpmfile.cjs`" in _err)
+# R2-O0: the forms Node's require resolves for pnpm's default hook path `<root>/.pnpmfile.cjs` (each ran its code
+# during `pnpm install` under pnpm 10.13.1 and 10.34.7, measured), a symlink to a directory, and a casefolded name
+_HOOK = "module.exports = {}\n"
+for _label, _extra, _name in (
+        ("a `.pnpmfile.cjs.js` file", {".pnpmfile.cjs.js": _HOOK}, ".pnpmfile.cjs.js"),
+        ("a `.pnpmfile.cjs/` directory with index.js", {".pnpmfile.cjs": {"index.js": _HOOK}}, ".pnpmfile.cjs"),
+        ("a `.pnpmfile.cjs/` directory with a package.json `main`",
+         {".pnpmfile.cjs": {"package.json": '{"main": "lib.js"}', "lib.js": _HOOK}}, ".pnpmfile.cjs"),
+        ("a `.pnpmfile.cjs` symlink to a directory",
+         {"hooks": {"index.js": _HOOK}, ".pnpmfile.cjs": ("symlink", "hooks")}, ".pnpmfile.cjs"),
+        ("a `.PNPMFILE.CJS` file (a macOS / Windows checkout opens it as `.pnpmfile.cjs`)",
+         {".PNPMFILE.CJS": _HOOK}, ".PNPMFILE.CJS")):
+    _rc, _err = _main_over(_CLEAN_PKG, _CLEAN_WS, _extra)
+    record(f"main(): R2-O0's {_label} -> 1, naming it", _rc == 1 and f"a committed root entry `{_name}`" in _err)
+# R2-O1: the alternate manifests pnpm reads for the member `.` (a package.yaml / package.json5 replaced
+# package.json, measured), each as a file and as a directory; and the other root names the strace sweep found
+for _name in ("package.yaml", "package.json5"):
+    for _kind, _body in (("file", "name: x\n"), ("directory", {"x": "x\n"})):
+        _rc, _err = _main_over(_CLEAN_PKG, _CLEAN_WS, {_name: _body})
+        record(f"main(): R2-O1's root `{_name}` {_kind} -> 1, naming it",
+               _rc == 1 and f"a committed root entry `{_name}`" in _err and "manifest name" in _err)
+for _name in ("pnpm-workspace.yml", "pnpm-workspaces.yaml", "pnpm-workspaces.yml", ".pnpm-workspace.yaml", ".pnp.cjs",
+              "binding.gyp", ".corepack.env"):
+    _rc, _err = _main_over(_CLEAN_PKG, _CLEAN_WS, {_name: "x\n"})
+    record(f"main(): a root `{_name}` (a name the strace sweep found pnpm or corepack opening) -> 1, naming it",
+           _rc == 1 and f"a committed root entry `{_name}`" in _err)
+_rc, _err = _main_over(_CLEAN_PKG, _CLEAN_WS, tracked=["node_modules/.modules.yaml", "src/main.tsx"])
+record("main(): a tracked node_modules/.modules.yaml -> 1, naming it",
+       _rc == 1 and "`node_modules/.modules.yaml`" in _err)
+_rc, _err = _main_over(_CLEAN_PKG, _CLEAN_WS, tracked=None)
+record("main(): git unavailable (no tracked-path list) -> 1 (fail-closed)", _rc == 1 and "git is unavailable" in _err)
+_rc, _err = _main_over('{"name": "x", "scripts": {"pnpm:devPreinstall": "node x.js"}, "pnpm": {"onlyBuiltDependencies": '
+                       '[]}, "convertia": {"pinned-floors": {}}}', _CLEAN_WS)
+record("main(): a root `pnpm:devPreinstall` script (pnpm runs it before the install) -> 1, naming it",
+       _rc == 1 and "`pnpm:devPreinstall` script" in _err)
+_rc, _err = _main_over('[]', _CLEAN_WS)
+record("main(): a package.json that is no JSON object -> 1 (fail-closed)",
+       _rc == 1 and "package.json is not a JSON object" in _err)
+_rc, _err = _main_over(_CLEAN_PKG, "packages:\n  - '.'\n", {"pnpm-workspace.yaml": "packages:\r\n  - '.'\r\n"})
+record("main(): a CR in pnpm-workspace.yaml -> 1 (the model reads the raw bytes, no newline translation)",
+       _rc == 1 and "a CR" in _err)
 
 # --- the REAL committed .npmrc + main() -------------------------------------------------------
 record("the REAL committed .npmrc evaluates clean",
