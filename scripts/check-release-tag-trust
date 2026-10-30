@@ -39,7 +39,7 @@ import os
 import re
 import subprocess
 import sys
-import time
+import types
 from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
@@ -64,35 +64,74 @@ def git(*args: str) -> tuple[int, str]:
 
 
 # Transient gh/network failures worth retrying before the gate fails a release: a TLS/connection
-# hiccup or a server-side 5xx/429 must not turn a one-off API stumble into a spurious red (the same
-# transient class as G56a / the sast-502 download). A success, a 404, or a non-transient HTTP error
-# (403/auth) returns on the first try; a transient that persists across all attempts returns the
-# last (failed) result, so the caller still fails-closed. The retry absorbs a hiccup, never weakens
-# the verdict.
+# hiccup or a server-side 5xx/429 must not turn an API stumble into a spurious red (the same
+# transient class as G56a / the sast-502 download). They are retried under the gate plane's one
+# network retry policy (scripts/net-retry, build-gates §0: capped exponential backoff with jitter for a
+# window after the first failure). A success, a 404, or a non-transient HTTP error (403/auth) returns
+# on the first try; a transient that outlasts the window returns the last (failed) result, so the
+# caller still fails-closed. The retry absorbs a burst, never weakens the verdict.
 _TRANSIENT_RE = re.compile(
     r"timeout|timed out|TLS handshake|connection reset|connection refused|EOF|no such host|"
     r"temporary failure|i/o timeout|\b5\d\d\b|\b429\b|rate limit|secondary rate",
     re.IGNORECASE,
 )
-_GH_BACKOFF_S = (2, 5)  # seconds slept before retry 2 and retry 3 (3 attempts total)
+# gh's status line for an answered request: `gh: <message> (HTTP <code>)`, or `gh: HTTP <code>` when the reply
+# carried no message; a line led by `HTTP <code>:` (go-gh's error text) reads the same. The status comes from that
+# line alone - a `404` or `502` elsewhere in the output (a SHA, a path) names no status - and a request that got
+# no answer has no status line, so only the transient phrases of `_TRANSIENT_RE` decide it.
+_GH_STATUS_RE = re.compile(r"^(?:gh: )?(?:HTTP (?P<lead>\d{3})\b.*|.*\(HTTP (?P<tail>\d{3})\))$", re.MULTILINE)
+_RATE_LIMIT_RE = re.compile(r"rate limit", re.IGNORECASE)
+# One `gh api` call's wall-clock bound: a read answers in seconds, so one still running after a minute is a
+# stalled connection - a transient timeout, retried like any other (gh sets no response timeout of its own).
+_GH_ATTEMPT_TIMEOUT_S = 60
+
+# The gate plane's one network retry policy (scripts/net-retry), compiled from its source into a fresh module: this
+# gate runs `python3 -P`, so no scripts/ module is importable by name, and no bytecode cache is read or written.
+_NET_PATH = Path(__file__).resolve().parent / "net-retry"
+_NET = types.ModuleType("net_retry")
+exec(compile(_NET_PATH.read_bytes(), str(_NET_PATH), "exec"), _NET.__dict__)
+_RETRY = _NET.Retrier("G56b")
+
+
+def gh_status(err: str) -> int | None:
+    """(pure) The HTTP status of gh's status line in `err` (`_GH_STATUS_RE`), or None when gh got no answer."""
+    m = _GH_STATUS_RE.search(err)
+    return int(m.group("lead") or m.group("tail")) if m else None
+
+
+def _gh_transient(p: subprocess.CompletedProcess) -> str | None:
+    """(pure) The policy's classifier for one `gh api` result: a reason for a transient failure, None for a
+    success, a 404 or a non-transient error. An answered request is transient as HTTP 429, a 5xx, or a 403 whose
+    message names a rate limit (GitHub answers a secondary rate limit with 403 or 429); one that got no answer is
+    transient when its error names a transport failure."""
+    if p.returncode == 0:
+        return None
+    err = (p.stderr or p.stdout or "").strip()
+    status = gh_status(err)
+    if status is not None:
+        transient = status == 429 or 500 <= status <= 599 or (status == 403 and bool(_RATE_LIMIT_RE.search(err)))
+        return f"HTTP {status}" if transient else None
+    if not _TRANSIENT_RE.search(err):
+        return None
+    return err.splitlines()[0][:160]
 
 
 def gh_api(args: list[str]) -> subprocess.CompletedProcess:
-    """Run `gh api <args>` with a retry on a TRANSIENT failure (network/TLS hiccup, 5xx/429) so a
-    single API stumble doesn't spuriously fail the release gate. A success, a 404, or a non-transient
-    error returns on its first occurrence; a transient that persists across all attempts returns the
-    last (failed) result -> the caller still fails-closed (the retry never weakens the verdict)."""
+    """Run `gh api <args>` under the retry policy so an API burst doesn't spuriously fail the release gate.
+    A success, a 404, or a non-transient error returns on its first occurrence; a TRANSIENT failure
+    (network/TLS hiccup, 5xx/429, a call past its wall-clock bound) is retried until the retry window ends, and
+    the last (failed) result is returned -> the caller still fails-closed (the retry never weakens the
+    verdict)."""
     cmd = ["gh", "api", *args]
-    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    for backoff in _GH_BACKOFF_S:
-        if p.returncode == 0:
-            return p
-        err = (p.stderr or p.stdout or "").strip()
-        if "404" in err or "Not Found" in err or not _TRANSIENT_RE.search(err):
-            return p  # success/404/non-transient: no retry
-        time.sleep(backoff)
-        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return p  # a transient persisted across all attempts -> caller fails-closed
+
+    def attempt() -> subprocess.CompletedProcess:
+        # run_bounded's wall-clock bound: past it the call is exit 124 with a `timed out` line, a transient timeout
+        return _NET.run_bounded(cmd, _GH_ATTEMPT_TIMEOUT_S)
+
+    try:
+        return _RETRY.run(attempt, what="gh api " + " ".join(args), transient_result=_gh_transient)
+    except _NET.WindowSpent as e:
+        return subprocess.CompletedProcess(cmd, 1, "", str(e))
 
 
 def tag_name_from_ref(ref: str) -> str | None:

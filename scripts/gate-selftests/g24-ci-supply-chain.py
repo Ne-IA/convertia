@@ -1913,15 +1913,22 @@ leg13('(13) `timeout "$t" apt-get update` fails (the duration is no literal, so 
       _run_block('sudo timeout "$t" apt-get update'))
 leg13("(13) a `timeout` in an EARLIER command of the line does not bound the apt call (`;` separates them; no `sudo`, "
       "so the privilege-switch rule cannot decide it)", _NO_BOUND, _run_block("timeout 5 true; apt-get update"))
+# [Test-Change: G24 network retry policy — old-obsolete+new-correct, build-gates §0] the live step's retry loop
+# moved from three fixed tries to the gate plane's one network retry policy (g24-net-retry.py pins its schedule);
+# this fixture mirrors the new live loop, and the apt calls this leg reads are unchanged.
 leg13("(13) the live step shape passes: the bounded refresh and download, then the offline `--no-download` install", "",
       _run_block("apt_opts=(-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)",
-                 "pkgs=(", "  libgtk-3-dev", ")", "for try in 1 2 3; do", "  rc=0",
+                 "pkgs=(", "  libgtk-3-dev", ")", "delay=2 deadline=", "while :; do", "  rc=0",
                  'sudo timeout -k 10 120 apt-get "${apt_opts[@]}" update || rc=$?',
                  'if [ "$rc" -eq 0 ]; then',
                  '  sudo timeout -k 10 300 apt-get "${apt_opts[@]}" install -y --download-only "${pkgs[@]}" || rc=$?',
                  "fi", 'if [ "$rc" -eq 0 ]; then break; fi',
-                 'echo "::warning::apt try $try of 3 failed with exit $rc (124 = a wall bound fired)"',
-                 'if [ "$try" -eq 3 ]; then exit 1; fi', "sleep 5", "done",
+                 "deadline=${deadline:-$((SECONDS + 300))}", "left=$((deadline - SECONDS))",
+                 'if [ "$left" -le 0 ]; then echo "::error::apt failed with exit $rc through its retry window"; exit 1; fi',
+                 "pause=$((delay / 2 + RANDOM % (delay / 2 + 1)))",
+                 'if [ "$pause" -gt "$left" ]; then pause=$left; fi',
+                 'echo "::warning::apt try failed with exit $rc (124 = a wall bound fired); retrying in ${pause}s"',
+                 'sleep "$pause"', "delay=$((delay * 2 < 60 ? delay * 2 : 60))", "done",
                  'sudo apt-get install -y --no-download "${pkgs[@]}"'))
 leg13("(13) `timeout 120 sudo apt-get update` fails, and the message names the order "
       "`sudo timeout <seconds> apt-get` - a timeout before sudo runs as the user and cannot stop the root apt-get",

@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""net-retry - the one retry policy for the network fetches of the gate plane (build-gates §0, *Network fetches*).
+
+A fetch whose attempt fails TRANSIENTLY - HTTP 429 or 5xx (a proxy's answer to a CONNECT among them), a timeout, a
+refused, reset or dropped connection, no route to the host, a DNS failure, a TLS failure other than a rejected
+certificate, a body cut short - is retried with capped exponential backoff and jitter: the nominal pause starts at
+BASE_S seconds and doubles up to CAP_S, and each pause is drawn uniformly from the upper half of its nominal value, so
+jobs that failed together do not retry in step. Retrying ends WINDOW_S seconds after the fetch's FIRST failure: the
+pause that would run past that moment is cut to end at it, and a failure after it is final - the fetch fails closed
+with that failure. The window opens at the first failure, not at the first attempt, so an attempt that ran to its own
+bound still leaves the whole window to the retries. Every other failure is final at once: the caller's classifier
+names a 4xx other than 429, a checksum mismatch, a refused redirect, a local file error or a policy verdict never
+transient.
+
+One Retrier serves one process. A fetch whose failures outlast its window SPENDS the Retrier, and a spent Retrier
+attempts no further fetch (WindowSpent): a run of many fetches - the gate-tool install, a gate's API reads - spends
+one window in a sustained outage, not one per fetch. Each attempt carries a wall-clock bound - bounded() for a fetch
+made in this process, run_bounded() for one made by a subprocess, which ends a process past its bound with SIGTERM
+and KILL_GRACE_S seconds later with SIGKILL - so one fetch lasts at most its first attempt's bound + WINDOW_S + its
+last attempt's bound, a subprocess's bound counted with KILL_GRACE_S. read_body() reads a response body in the
+caller's thread, one system call per chunk, so a transfer that stalls ends at the socket timeout and one past its
+deadline ends there, and no byte of it is read after its attempt ended.
+
+The workflow retry loops under .github/workflows run the same schedule in shell and retry every failed try inside
+the window, since the exit codes of their tools (apt-get, git, cargo) do not tell a transient failure from a final
+one; the G24 canary scripts/gate-selftests/g24-net-retry.py pins this module's schedule, binds those loops to these
+constants and computes each retry job's `timeout-minutes` from the attempt bounds.
+
+Each user compiles this file from its source into a fresh module, never by name and never through a bytecode
+cache: the gate plane runs `python3 -P`, so no scripts/ module is on sys.path (G54b), and no scripts/__pycache__ is
+read or written. stdlib-only.
+"""
+from __future__ import annotations
+
+import contextlib
+import errno
+import http.client
+import os
+import random
+import re
+import signal
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+from typing import Callable, Iterator, TypeVar
+
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
+BASE_S = 2          # the first nominal pause, in seconds
+CAP_S = 60          # the nominal pause doubles up to this cap
+WINDOW_S = 300      # retrying ends this many seconds after a fetch's first failure
+KILL_GRACE_S = 5    # run_bounded: a process group past its bound gets SIGTERM, and SIGKILL this many seconds later
+
+_T = TypeVar("_T")
+
+# The socket errors without a subclass of their own that mean the network, not this host, failed the attempt (no
+# route, a network that went down, a reset); the POSIX and the Windows (WSAE*) spellings.
+_TRANSIENT_ERRNOS = frozenset(
+    getattr(errno, name) for name in ("ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "ENETRESET",
+                                      "WSAENETUNREACH", "WSAEHOSTUNREACH", "WSAENETDOWN", "WSAEHOSTDOWN",
+                                      "WSAENETRESET")
+    if hasattr(errno, name))
+# http.client's error for an HTTP proxy that answered a CONNECT with a status of its own (an OSError with no errno):
+# the proxy's 502 or 503 for an upstream it cannot reach is an outage like the upstream's own 5xx, its 403 a refusal.
+_TUNNEL_STATUS_RE = re.compile(r"Tunnel connection failed: (\d{3})\b")
+
+
+class WindowSpent(Exception):
+    """A fetch not attempted: an earlier fetch of this process failed through its whole retry window."""
+
+
+class AttemptTimeout(TimeoutError):
+    """An attempt that gave no result within its wall-clock bound (bounded(), run_bounded(), read_body()): a transient
+    timeout."""
+
+
+class BodyTooLarge(Exception):
+    """A response body past the byte limit its reader set (read_body()): final, never retried."""
+
+
+def nominal_pauses() -> Iterator[int]:
+    """The nominal pauses before retry 1, 2, 3, ...: BASE_S, doubling, capped at CAP_S."""
+    nominal = BASE_S
+    while True:
+        yield nominal
+        nominal = min(nominal * 2, CAP_S)
+
+
+def transient_urllib_error(exc: BaseException) -> str | None:
+    """The transient classifier of a urllib fetch: a short reason when `exc` is transient, else None. HTTP 429 and
+    every 5xx are transient and every other HTTP status final. A URLError is classified by its reason: urlopen wraps
+    a socket-level failure as URLError(<that OSError>), so a URLError whose reason is a string (an unknown URL type,
+    no host) is final. Transient: a timeout (an attempt past its wall-clock bound among them), a refused, reset,
+    aborted or dropped connection, no route to the host, a DNS failure, a TLS failure other than a rejected
+    certificate, a proxy's 429 or 5xx answer to a CONNECT, and a body cut short. Every other exception is final - a
+    local file error (a full disk, a refused permission), an invalid URL, a proxy's refusal of a CONNECT, any other
+    http.client failure, a body past its reader's limit, a programming error."""
+    if isinstance(exc, urllib.error.HTTPError):
+        code = exc.code or 0
+        return f"HTTP {code}" if code == 429 or 500 <= code <= 599 else None
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        return _transient_network_error(reason) if isinstance(reason, BaseException) else None
+    return _transient_network_error(exc)
+
+
+def _transient_network_error(exc: BaseException) -> str | None:
+    if isinstance(exc, ssl.SSLCertVerificationError):          # a certificate the trust store rejects is no outage
+        return None
+    if isinstance(exc, OSError) and exc.errno is None:
+        tunnel = _TUNNEL_STATUS_RE.match(str(exc))
+        if tunnel is not None:
+            code = int(tunnel.group(1))
+            return f"proxy CONNECT {code}" if code == 429 or 500 <= code <= 599 else None
+    transient = (isinstance(exc, (TimeoutError, ConnectionError, socket.gaierror, ssl.SSLError,
+                                  http.client.IncompleteRead))
+                 or (isinstance(exc, OSError) and exc.errno in _TRANSIENT_ERRNOS))
+    if not transient:
+        return None
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+
+
+def bounded(attempt: Callable[[], _T], seconds: float, *,
+            on_late: Callable[[_T], object] | None = None) -> Callable[[], _T]:
+    """`attempt` under a wall-clock bound, as the zero-argument callable Retrier.run takes. Each call runs `attempt`
+    on a daemon worker thread and returns its value or raises its exception; past `seconds` it raises AttemptTimeout
+    instead and leaves the worker to end on its own socket timeout. A socket timeout bounds each blocking step only,
+    so without this a stalled DNS lookup, a connect that walks many addresses or a transfer that still trickles holds
+    an attempt open with no end. A worker that outlived its bound hands the value it still produced to `on_late` (an
+    opened response, closed there unread) instead of to the caller, so it leaves nothing a later attempt reads; an
+    attempt run this way returns what it fetched and writes nothing."""
+
+    def call() -> _T:
+        values: list[_T] = []
+        errors: list[BaseException] = []
+        finished = threading.Event()
+        lock = threading.Lock()
+        abandoned = {"yes": False}
+
+        def work() -> None:
+            try:
+                value = attempt()
+            except BaseException as exc:  # handed over to the caller's thread below
+                errors.append(exc)
+            else:
+                with lock:
+                    late = abandoned["yes"]
+                    if not late:
+                        values.append(value)
+                if late and on_late is not None:
+                    with contextlib.suppress(Exception):
+                        on_late(value)
+            finally:
+                finished.set()
+
+        threading.Thread(target=work, name="net-retry-attempt", daemon=True).start()
+        if not finished.wait(seconds):
+            with lock:
+                abandoned["yes"] = not values and not errors
+            if abandoned["yes"]:
+                raise AttemptTimeout(f"no result within the {seconds:g} s bound of one attempt")
+        if errors:
+            raise errors[0]
+        return values[0]
+
+    return call
+
+
+def read_body(response: object, *, deadline: float, limit: int | None = None, chunk: int = 1 << 16,
+              clock: Callable[[], float] = time.monotonic) -> bytes:
+    """The body of an open urllib response, read in the caller's thread with one system call per chunk (read1): with
+    the socket timeout urlopen() was given, a transfer that sends no byte for that long raises its TimeoutError (a
+    stall, transient); one still running at `deadline` (on `clock`) raises AttemptTimeout after the chunk that was in
+    flight, and no further byte is read; one past `limit` bytes raises BodyTooLarge (final); one that ends short of
+    the length its headers declared raises IncompleteRead (transient). A body whose declared length is in returns
+    without another read."""
+    parts: list[bytes] = []
+    size = 0
+    while True:
+        part = response.read1(chunk)
+        if not part:
+            break
+        size += len(part)
+        if limit is not None and size > limit:
+            raise BodyTooLarge(f"the body exceeds its {limit} byte limit")
+        parts.append(part)
+        if getattr(response, "length", None) == 0:
+            break
+        if clock() >= deadline:
+            raise AttemptTimeout(f"the transfer was still running at its deadline ({size} bytes read)")
+    expected = getattr(response, "length", None)
+    if isinstance(expected, int) and expected > 0:
+        raise http.client.IncompleteRead(b"".join(parts), expected)
+    return b"".join(parts)
+
+
+def run_bounded(cmd: list[str], seconds: float, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """One run of `cmd` under a wall-clock bound that holds on every OS, as text (UTF-8, undecodable bytes replaced),
+    in `env` (None: this process's environment). Its output goes to temporary files, never pipes, so a process that
+    inherited them cannot hold the call open past the bound (subprocess.run's timeout path waits on its pipes without
+    a bound on Windows), not even one that left the process group and outlives the kill. Past `seconds`, on POSIX,
+    the process and every process in its process group get SIGTERM, and SIGKILL once KILL_GRACE_S seconds have passed
+    with one of them still running, so a process that cleans up on SIGTERM does (git removes the partial clone it was
+    making); a process that left the group with setsid() is not reached. On Windows, which has no such signal for a
+    console process tree, `taskkill /F /T` ends the tree at once. The result is exit 124 with a closing stderr line
+    that names the bound. stdin is the null device, so no prompt waits."""
+    group = {"process_group": 0} if os.name == "posix" else {}
+    note = ""
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env, **group)
+        try:
+            code = proc.wait(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            code, note = 124, f"\n{cmd[0]}: timed out - no result within the {seconds:g} s bound of one attempt"
+        except BaseException:
+            _kill_tree(proc)
+            raise
+        out.seek(0)
+        err.seek(0)
+        stdout = out.read().decode("utf-8", errors="replace")
+        stderr = err.read().decode("utf-8", errors="replace") + note
+    return subprocess.CompletedProcess(cmd, code, stdout, stderr)
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """End `proc` and the processes of its process group (POSIX: SIGTERM, then SIGKILL once KILL_GRACE_S seconds have
+    passed with one of them still running) or its tree (Windows: taskkill /F /T), then reap `proc`."""
+    if os.name == "posix":
+        _signal_group(proc.pid, signal.SIGTERM)
+        end = time.monotonic() + KILL_GRACE_S
+        while _group_alive(proc):
+            if time.monotonic() >= end:
+                _signal_group(proc.pid, signal.SIGKILL)
+                break
+            time.sleep(0.05)
+    else:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=60)
+    with contextlib.suppress(OSError):
+        proc.kill()
+    proc.wait()
+
+
+def _signal_group(pgid: int, sig: int) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, sig)
+
+
+def _group_alive(proc: subprocess.Popen) -> bool:
+    """(POSIX) True while os.killpg(pgid, 0) still finds a process of `proc`'s process group; `proc` itself is reaped
+    here once it ended, so it does not keep its group alive."""
+    proc.poll()
+    try:
+        os.killpg(proc.pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _never(_outcome: object) -> str | None:
+    return None
+
+
+def _to_stderr(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+class Retrier:
+    """The policy for one process (the module docstring). `clock`, `sleep`, `rng` and `log` are injectable so a
+    self-test drives the schedule without waiting; the defaults are the monotonic clock, time.sleep, random.random
+    and stderr."""
+
+    def __init__(self, label: str, *, clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep, rng: Callable[[], float] = random.random,
+                 log: Callable[[str], None] = _to_stderr) -> None:
+        self.label = label
+        self.spent = False
+        self._clock = clock
+        self._sleep = sleep
+        self._rng = rng
+        self._log = log
+
+    def run(self, attempt: Callable[[], _T], *, what: str,
+            transient_error: Callable[[BaseException], str | None] = _never,
+            transient_result: Callable[[_T], str | None] = _never) -> _T:
+        """Call `attempt` until it yields an outcome its classifier does not name transient, or until the retry
+        window ends. `transient_error` classifies a raised exception and `transient_result` a returned value: a
+        reason string means transient, None final. A final outcome is returned or raised at once; once the window
+        has ended, the last transient outcome is returned or raised and the Retrier is spent. A spent Retrier raises
+        WindowSpent without calling `attempt`. `what` names the fetch in the log lines."""
+        if self.spent:
+            raise WindowSpent(f"{what}: not attempted - an earlier fetch of this run failed through its whole "
+                              f"{WINDOW_S} s retry window")
+        pauses = nominal_pauses()
+        deadline: float | None = None
+        last_try = False
+        tries = 0
+        while True:
+            tries += 1
+            try:
+                result = attempt()
+            except Exception as exc:  # classified here: a final exception propagates at once
+                reason = transient_error(exc)
+                if reason is None:
+                    raise
+                outcome: tuple[object, Exception | None] = (None, exc)
+            else:
+                reason = transient_result(result)
+                if reason is None:
+                    return result
+                outcome = (result, None)
+            now = self._clock()
+            if deadline is None:
+                deadline = now + WINDOW_S
+            left = deadline - now
+            if last_try or left <= 0:
+                self.spent = True
+                self._log(f"[{self.label}] {what}: attempt {tries} failed ({reason}); the {WINDOW_S} s retry window "
+                          "is spent - failing closed")
+                value, error = outcome
+                if error is not None:
+                    raise error
+                return value  # the last transient result: its caller fails closed on it
+            nominal = next(pauses)
+            pause = nominal / 2 + self._rng() * nominal / 2
+            if pause >= left:
+                pause, last_try = left, True
+            self._log(f"[{self.label}] {what}: attempt {tries} failed ({reason}); retrying in {pause:.1f}s")
+            self._sleep(pause)

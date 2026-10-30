@@ -42,14 +42,18 @@ Exit: 0 = the policy matches the frozen expectation and the §0.8 floors hold (+
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
 import tomllib
+import types
 from pathlib import Path
+from typing import NamedTuple
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -321,37 +325,592 @@ def _workspace_state(lock_candidates=CARGO_LOCK_CANDIDATES, toml_candidates=CARG
     return ("absent",)
 
 
-# cargo-deny's `advisories` section FETCHES the RustSec advisory database over the network (the
-# deliberate G18 two-scanner backstop, reconciled with cargo-audit - deny.toml [advisories]). A
-# transient fetch failure (TLS/5xx/429/connection/git-remote/DNS) must not red main spuriously, so the
-# live `cargo deny check` retries on a transient before failing-closed (the same class as the
-# G56a/G56b/install-gate-tools fixes). A real POLICY violation (a banned crate, a disallowed license, a
-# live advisory) is NOT a fetch error: it produces no transient match -> it fails on the FIRST run (no
-# wasted retry); and even a mis-matched violation STILL fails-closed after the retries, so the retry can
-# NEVER turn a violation into a pass (no fail-OPEN path).
-_DENY_TRANSIENT_RE = re.compile(
-    r"failed to fetch|unable to (?:fetch|update)|error fetching|could not read from remote|"
-    r"connection (?:reset|refused|timed out)|timed out|timeout|TLS handshake|i/o timeout|"
-    r"temporary failure|network is unreachable|\b5\d\d\b|\b429\b",
-    re.IGNORECASE,
-)
-_DENY_BACKOFF_S = (2, 5)  # seconds slept before retry 2 and retry 3 (3 attempts total)
+# cargo-deny's `advisories` section reads the RustSec advisory database, which cargo-deny FETCHES over the network
+# (the deliberate G18 two-scanner backstop, reconciled with cargo-audit - deny.toml [advisories]). The pinned
+# cargo-deny fetches it with the git CLI into a clone of its own and does not report a failed fetch while a clone of
+# the database is cached: it logs the database as fetched and checks against the clone it has (measured with
+# cargo-deny 0.19.9 and no route out: exit 0, the clone's HEAD unmoved); with no clone cached its failed fetch ends
+# its run, in the same words for no route, a rejected certificate and a repository that is gone (measured: `cloned`,
+# then a failure to read FETCH_HEAD). So the live tier runs its network steps itself, retried under the gate plane's
+# one network retry policy (scripts/net-retry, build-gates §0), each under a wall-clock bound: a step past its bound
+# is a transient timeout and is retried, and run_bounded ends it with SIGTERM, then SIGKILL after net-retry's
+# KILL_GRACE_S. The steps, their cold runs measured on Linux (the gate container behind an egress proxy, an empty
+# cargo home; the Windows and macOS runners were not measured) and their bounds:
+#   1. `cargo deny fetch db` (12 s to 49 s; bound 120 s: a cold clone of the 45 MB database needs about 3 Mbit/s);
+#   2. per database `git ls-remote` of its URL (0.5 s to 1.9 s; bound 60 s), which names the remote head; the fetch
+#      counts only when that head is in the clone's HEAD history (`git merge-base --is-ancestor`, local, under
+#      0.01 s; bound 60 s);
+#   3. `cargo fetch --locked` for the manifest the check reads (33 s to 121 s; bound 300 s; an attempt past it keeps
+#      the crates it downloaded): on a registry with no crate cached the check downloads them itself (measured: with
+#      no route out it fails `failed to fetch crates`);
+#   4. `cargo deny check --disable-fetch`, run once (0.9 s to 1.2 s; bound 120 s): after step 3 it opens no connection
+#      (measured: exit 0 with no route out, and no connection in the proxy's log), so its failure is a policy verdict
+#      or a tool error, never retried.
+# Steps 1 and 2 are one fetch attempt and step 3 a fetch of its own, both under this process's one Retrier: a fetch
+# that fails through its window spends it and no later step runs. Each failure names its step, and a fetch that
+# failed for good or through its window fails G18 closed, at L1 and L2 as in L4: the named G18 exception of
+# build-gates §0 *Offline tolerance*, decided - a commit or push with no route out fails closed once the window has
+# ended, at the cost of one `git ls-remote` per run.
+# A fetch attempt that ran past its bound or failed, and a clone that step 2 finds behind the remote head, leave a
+# clone the next `cargo deny fetch db` refetches into without repairing it (a clone killed mid-transfer keeps its
+# remote and no branch, and the next fetch checks out the first branch it fetches instead of main: measured), so
+# step 1 then removes that database's clone, and the next attempt clones it fresh. cargo-deny 0.19.9 names the clone
+# <db root>/<the URL's last path segment>-<the XXH64 of the URL lowercased, seed 0xca80de71, as 16 hex digits>, its db
+# root the `[advisories] db-path` of the deny config it reads, else $CARGO_HOME/advisory-dbs (read from its source;
+# the default database's clone is advisory-db-3157b0e258782691, measured); the step computes that path for each
+# database URL cargo-deny logs and requires it to be the clone cargo-deny loaded. The removal (_remove_db_clone)
+# touches only a real directory - no link, no mount point - named advisory-db-<16 hex digits> directly inside the
+# resolved db root and owned by this process's user: under cargo-deny's own lock (<db root>/db.lock, not waited for:
+# a clone another cargo-deny holds stays and the attempt is retried) it renames the clone to a sibling quarantine name
+# and removes that tree without following links. Anything else is refused: G18 fails closed at once, naming the path,
+# and deletes nothing.
+# Every line of the tools' output is read with its ANSI escapes stripped (_plain), and every command runs with
+# `--color never` and CARGO_TERM_COLOR=never (_git_env): cargo-deny wraps its log level in colour codes under
+# CARGO_TERM_COLOR=always, which hid the `[DEBUG]` lines below.
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+# cargo-deny's own log lines naming each advisory database's URL and the clone it loaded (the fetch step runs at
+# --log-level debug), in the same order.
+_DENY_DB_URL_RE = re.compile(r"Fetching advisory database with git cli from '([^']+)'")
+_DENY_DB_LOADED_RE = re.compile(r"\[DEBUG\] loading advisory database from (.+?)\s*$", re.MULTILINE)
+# git's line for a request that never got an answer it could use (curl's reason after the colon): a transport failure,
+# an HTTP status (`The requested URL returned error: 503`) or an HTTP proxy's answer to its CONNECT (`CONNECT tunnel
+# failed, response 403`, measured), each status transient only as 429 or 5xx. A certificate the trust store rejects is
+# no outage, in git's line as in cargo's curl message: OpenSSL's `server certificate verification failed` (measured),
+# curl's `SSL certificate problem` and `no alternative certificate subject name`, and the words curl's Windows
+# schannel and macOS Secure Transport back ends use, SEC_E_UNTRUSTED_ROOT, SEC_E_CERT_UNKNOWN, SEC_E_WRONG_PRINCIPAL
+# and `certificate is not trusted` (not measured here).
+_GIT_UNREACHABLE_RE = re.compile(r"^fatal: unable to access '[^']*': (.+)$", re.MULTILINE)
+_GIT_HTTP_STATUS_RE = re.compile(r"(?:returned error:|CONNECT tunnel failed, response) (\d{3})\b")
+_GIT_CERT_RE = re.compile(r"certificate verification failed|SSL certificate problem|"
+                          r"no alternative certificate subject name|SEC_E_UNTRUSTED_ROOT|SEC_E_CERT_UNKNOWN|"
+                          r"SEC_E_WRONG_PRINCIPAL|certificate is not trusted")
+# cargo's words for a request that got no usable answer: curl's error code and message (`[6] Could not resolve
+# hostname (Could not resolve host: index.crates.io)`, measured), with a proxy's CONNECT status inside it (`[56]
+# Failure when receiving data from the peer (CONNECT tunnel failed, response 403)`, measured), or an HTTP status. A
+# status is transient as 429 or 5xx only; of curl's codes, its transport failures are transient (5 and 6 no proxy or
+# host resolved, 7 no connection, 16 and 92 an HTTP/2 framing or stream failure, 18 a transfer cut short, 28 a timeout,
+# 35 a TLS connect failure, 52 an empty reply, 55 and 56 a failed send or receive); every other failure is final - a
+# rejected certificate (_GIT_CERT_RE, whatever curl's code), a stale lock (`cannot update the lock file`, measured), a
+# checksum mismatch.
+_CARGO_CURL_RE = re.compile(r"^\s*\[(\d+)\] (.+)$", re.MULTILINE)
+_CARGO_STATUS_RE = re.compile(r"(?:failed to get successful HTTP response from .*, got|"
+                              r"CONNECT tunnel failed, response) (\d{3})\b")
+_CURL_TRANSIENT = frozenset({5, 6, 7, 16, 18, 28, 35, 52, 55, 56, 92})
+_SHA1_RE = re.compile(r"[0-9a-f]{40}")
+# cargo-deny 0.19.9's name for an advisory database clone (the comment above _ANSI_RE): the seed of its XXH64; the URL
+# form G18 names exactly (https, a dotted host, plain path segments: the form the `url` crate writes back unchanged);
+# the clone names the removal may touch; and the deny configs cargo-deny looks for, in each directory from its
+# manifest's up to the root.
+_DB_NAME_SEED = 0xCA80DE71
+_DB_URL_FORM_RE = re.compile(r"https://[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/[a-z0-9_-][a-z0-9._-]*)+")
+_DB_CLONE_RE = re.compile(r"advisory-db-[0-9a-f]{16}")
+_DENY_CONFIG_NAMES = ("deny.toml", ".deny.toml", os.path.join(".cargo", "deny.toml"))
+_XXH64_PRIMES = (0x9E3779B185EBCA87, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9, 0x85EBCA77C2B2AE63, 0x27D4EB2F165667C5)
+# The steps' wall-clock bounds (the comment above _ANSI_RE): a step still running past its bound is a stalled
+# fetch - a transient timeout, retried like any other - except the check's, which is a red.
+_DENY_FETCH_ATTEMPT_S = 120
+_LS_REMOTE_ATTEMPT_S = 60
+_MERGE_BASE_S = 60
+_CARGO_FETCH_ATTEMPT_S = 300
+_DENY_CHECK_S = 120
+# The repository-selecting variables of git(1) *ENVIRONMENT*: a hook's environment carries GIT_DIR (in a linked
+# worktree), GIT_INDEX_FILE (the commit hooks) and GIT_PREFIX (every hook) - measured with git 2.43, which exports no
+# other GIT_* variable to a hook but the author identity, GIT_EDITOR and GIT_EXEC_PATH - and the six others select a
+# repository as well, so any of them inherited would turn a git run inside a database clone onto another repository.
+_GIT_REPO_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+                            "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
+                            "GIT_CEILING_DIRECTORIES"})
+
+# The gate plane's one network retry policy (scripts/net-retry), compiled from its source into a fresh module: this
+# gate runs `python3 -P`, so no scripts/ module is importable by name, and no bytecode cache is read or written (a
+# scripts/__pycache__ written here would race the canary runner's purge at pre-push).
+_NET_PATH = ROOT / "scripts" / "net-retry"
+_NET = types.ModuleType("net_retry")
+exec(compile(_NET_PATH.read_bytes(), str(_NET_PATH), "exec"), _NET.__dict__)
+_RETRY = _NET.Retrier("G18")
 
 
-def _run_cargo_deny(manifest: Path) -> subprocess.CompletedProcess:
-    """`cargo deny check` with a retry on a TRANSIENT advisory-db FETCH failure. A success or a real
-    policy violation returns on the first run; a transient that persists across all attempts returns the
-    last (failed) result -> the caller still fails-closed (the retry never weakens the verdict)."""
-    cmd = ["cargo", "deny", "--manifest-path", str(manifest), "check"]
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    for backoff in _DENY_BACKOFF_S:
-        if r.returncode == 0 or not _DENY_TRANSIENT_RE.search((r.stderr or "") + (r.stdout or "")):
-            return r  # success, or a non-transient failure (a real policy violation) -> no retry
-        print(f"[G18] `cargo deny check` hit a transient advisory-db fetch failure; retrying in {backoff}s",
-              file=sys.stderr)
-        time.sleep(backoff)
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return r  # a transient persisted across all attempts -> caller fails-closed
+class _Step(NamedTuple):
+    """One attempt at a fetch step: whether it succeeded, the reason its failure is transient (None: a success, or a
+    final failure; led by the command that failed), and what the gate reports when it failed (led by that command)."""
+    ok: bool
+    transient: str | None
+    detail: str
+
+
+def _plain(text: str | None) -> str:
+    """(pure) `text` with its ANSI escape sequences removed (the comment above _ANSI_RE)."""
+    return _ANSI_RE.sub("", text or "")
+
+
+def _git_env() -> dict[str, str]:
+    """The environment of the live tier's commands: this process's without the repository-selecting variables
+    (_GIT_REPO_VARS), so a hook's exported GIT_DIR or GIT_INDEX_FILE never turns a git run inside a database clone
+    onto the hooked repository, while every variable that tells git how to reach the network (GIT_CONFIG_GLOBAL,
+    GIT_CONFIG_PARAMETERS, GIT_SSL_*, GIT_SSH_COMMAND, GIT_HTTP_*, the proxy variables) passes; with
+    CARGO_TERM_COLOR=never; LC_ALL=C, the locale in which git words its errors in the English lines _git_transient
+    reads; and GIT_TERMINAL_PROMPT=0, so a git run that would ask for credentials (a repository that is gone) fails at
+    once instead of waiting on a terminal until its bound."""
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_REPO_VARS}
+    env["CARGO_TERM_COLOR"] = "never"
+    env["LC_ALL"] = "C"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _git_transient(stderr: str) -> str | None:
+    """(pure) The classifier of a failed git network run (`git ls-remote`, the probe of a failed cargo-deny fetch):
+    git's `unable to access` line names a transport failure (no route, DNS, a refused or reset connection, a timeout,
+    a TLS failure) - transient - or an HTTP or proxy CONNECT status, transient as 429 or 5xx only; a rejected
+    certificate is final, and so is a failure without that line (a repository that is gone asks for credentials)."""
+    m = _GIT_UNREACHABLE_RE.search(_plain(stderr))
+    if m is None:
+        return None
+    reason = m.group(1)
+    if _GIT_CERT_RE.search(reason):
+        return None
+    status = _GIT_HTTP_STATUS_RE.search(reason)
+    if status is not None and not (status.group(1) == "429" or status.group(1).startswith("5")):
+        return None
+    return reason[:160]
+
+
+def _cargo_transient(output: str) -> str | None:
+    """(pure) The classifier of a failed `cargo fetch` (the comment above _CARGO_CURL_RE)."""
+    text = _plain(output)
+    if _GIT_CERT_RE.search(text):
+        return None
+    status = _CARGO_STATUS_RE.search(text)
+    if status is not None:
+        code = status.group(1)
+        return f"HTTP {code}" if code == "429" or code.startswith("5") else None
+    curl = _CARGO_CURL_RE.search(text)
+    if curl is None or int(curl.group(1)) not in _CURL_TRANSIENT:
+        return None
+    return f"[{curl.group(1)}] {curl.group(2)}"[:160]
+
+
+def _xxh64(data: bytes, seed: int) -> int:
+    """(pure) The XXH64 of `data` (twox-hash's XxHash64::oneshot, with which cargo-deny names its database clones)."""
+    p1, p2, p3, p4, p5 = _XXH64_PRIMES
+    mask = (1 << 64) - 1
+
+    def rotl(x: int, r: int) -> int:
+        return ((x << r) | (x >> (64 - r))) & mask
+
+    def lane(acc: int, value: int) -> int:
+        return (rotl((acc + value * p2) & mask, 31) * p1) & mask
+
+    n, i = len(data), 0
+    if n >= 32:
+        v = [(seed + p1 + p2) & mask, (seed + p2) & mask, seed & mask, (seed - p1) & mask]
+        while i + 32 <= n:
+            v = [lane(v[k], int.from_bytes(data[i + 8 * k:i + 8 * k + 8], "little")) for k in range(4)]
+            i += 32
+        acc = (rotl(v[0], 1) + rotl(v[1], 7) + rotl(v[2], 12) + rotl(v[3], 18)) & mask
+        for value in v:
+            acc = ((acc ^ lane(0, value)) * p1 + p4) & mask
+    else:
+        acc = (seed + p5) & mask
+    acc = (acc + n) & mask
+    while i + 8 <= n:
+        acc = (rotl(acc ^ lane(0, int.from_bytes(data[i:i + 8], "little")), 27) * p1 + p4) & mask
+        i += 8
+    if i + 4 <= n:
+        acc = (rotl(acc ^ (int.from_bytes(data[i:i + 4], "little") * p1 & mask), 23) * p2 + p3) & mask
+        i += 4
+    for byte in data[i:]:
+        acc = (rotl(acc ^ (byte * p5 & mask), 11) * p1) & mask
+    acc = ((acc ^ (acc >> 33)) * p2) & mask
+    acc = ((acc ^ (acc >> 29)) * p3) & mask
+    return acc ^ (acc >> 32)
+
+
+def _db_clone_name(url: str) -> str | None:
+    """(pure) The directory name cargo-deny 0.19.9 gives its clone of the advisory database at `url` (the comment above
+    _ANSI_RE), or None for a URL outside the form G18 names exactly (_DB_URL_FORM_RE)."""
+    lowered = url.lower()
+    if not _DB_URL_FORM_RE.fullmatch(lowered):
+        return None
+    return f"{lowered.rsplit('/', 1)[1]}-{_xxh64(lowered.encode('ascii'), _DB_NAME_SEED):016x}"
+
+
+def _cargo_home() -> str | None:
+    """CARGO_HOME as cargo, rustup and cargo-deny resolve it: the variable (a relative one under the working
+    directory), else .cargo in the user's home directory (HOME on POSIX, USERPROFILE on Windows); None for neither."""
+    home = os.environ.get("CARGO_HOME", "")
+    if home:
+        return home if os.path.isabs(home) else os.path.join(os.getcwd(), home)
+    user = os.environ.get("USERPROFILE" if os.name == "nt" else "HOME", "")
+    return os.path.join(user, ".cargo") if user else None
+
+
+def _deny_db_root(manifest: Path) -> tuple[str | None, str]:
+    """(the advisory database root cargo-deny uses for `manifest`, ""), or (None, why it is not named): the
+    `[advisories] db-path` of the first deny config cargo-deny finds in the manifest's directory or one above it, else
+    $CARGO_HOME/advisory-dbs. A db-path G18 cannot resolve as cargo-deny does (relative, or with `~` or `$`) is not
+    named."""
+    directory = Path(os.path.abspath(manifest)).parent
+    config = next((d / n for d in (directory, *directory.parents) for n in _DENY_CONFIG_NAMES
+                   if os.path.exists(d / n)), None)
+    db_path: object = None
+    if config is not None:
+        try:
+            advisories = tomllib.loads(config.read_text(encoding="utf-8")).get("advisories")
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:
+            return None, f"its deny config {config} is unreadable ({e})"
+        db_path = advisories.get("db-path") if isinstance(advisories, dict) else None
+    if db_path is not None:
+        if not isinstance(db_path, str) or not os.path.isabs(db_path) or "~" in db_path or "$" in db_path:
+            return None, (f"the `[advisories] db-path` {db_path!r} of {config} is not an absolute path without `~` "
+                          "and `$`")
+        return db_path, ""
+    home = _cargo_home()
+    if home is None:
+        return None, "neither CARGO_HOME nor a home directory is set"
+    return os.path.join(home, "advisory-dbs"), ""
+
+
+def _db_clones(manifest: Path, urls: list[str]) -> tuple[str | None, list[str], str]:
+    """(the database root, the clone path of each URL in turn, "") as cargo-deny 0.19.9 names them (the comment above
+    _ANSI_RE), or (None, [], why one is not named)."""
+    root, why = _deny_db_root(manifest)
+    if root is None:
+        return None, [], why
+    clones = []
+    for url in urls:
+        name = _db_clone_name(url)
+        if name is None:
+            return None, [], (f"the advisory database URL {url} is outside the form G18 names its clone for (https, a "
+                              "dotted host, plain path segments)")
+        clones.append(os.path.join(root, name))
+    return root, clones, ""
+
+
+def _windows_owner_is_user(path: str) -> bool:
+    """(Windows) True when the owner SID of `path` is the process token's user or its default owner (the owner a new
+    file gets: the Administrators group for an elevated administrator), read with GetNamedSecurityInfoW."""
+    import ctypes
+    from ctypes import wintypes
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    pointer = ctypes.POINTER(ctypes.c_void_p)
+    advapi32.GetNamedSecurityInfoW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD, pointer, pointer,
+                                               pointer, pointer, pointer]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                             ctypes.POINTER(wintypes.DWORD)]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    advapi32.EqualSid.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    owner, descriptor = ctypes.c_void_p(), ctypes.c_void_p()
+    # SE_FILE_OBJECT (1), OWNER_SECURITY_INFORMATION (1); 0 is ERROR_SUCCESS
+    if advapi32.GetNamedSecurityInfoW(path, 1, 1, ctypes.byref(owner), None, None, None, ctypes.byref(descriptor)):
+        return False
+    try:
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):  # TOKEN_QUERY
+            return False
+        try:
+            sids = []
+            for info_class in (1, 4):                     # TokenUser, TokenOwner: each structure starts with its SID
+                size = wintypes.DWORD()
+                advapi32.GetTokenInformation(token, info_class, None, 0, ctypes.byref(size))
+                buffer = ctypes.create_string_buffer(max(size.value, ctypes.sizeof(ctypes.c_void_p)))
+                if size.value and advapi32.GetTokenInformation(token, info_class, buffer, size, ctypes.byref(size)):
+                    sids.append((buffer, ctypes.c_void_p.from_buffer(buffer).value))
+            return bool(owner.value) and any(sid and advapi32.EqualSid(owner, sid) for _kept, sid in sids)
+        finally:
+            kernel32.CloseHandle(token)
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _owned_by_user(path: str, st: os.stat_result) -> bool:
+    """True when `path` (its lstat `st`) belongs to this process's user: on POSIX its owner is the effective uid, on
+    Windows its owner SID is the token's user or default owner (_windows_owner_is_user); an owner that cannot be read
+    is no owner of this user."""
+    if os.name != "nt":
+        return st.st_uid == os.geteuid()
+    try:
+        return _windows_owner_is_user(path)
+    except Exception:  # noqa: BLE001 - ctypes' ArgumentError among them: an owner it cannot read is not this user's
+        return False
+
+
+def _clone_state(target: str) -> tuple[os.stat_result | None, str]:
+    """(its lstat, "") for a clone the removal may touch, (None, "") when nothing is at `target`, else (None, why
+    not): a link (a symlink or a Windows junction), no directory, a mount point, or another user's."""
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        return None, ""
+    except OSError as e:
+        return None, f"`{target}` cannot be examined ({e})"
+    if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        return None, f"`{target}` is a link, not the clone's own directory"
+    if not stat.S_ISDIR(st.st_mode):
+        return None, f"`{target}` is not a directory"
+    if os.path.ismount(target):
+        return None, f"`{target}` is a mount point"
+    if not _owned_by_user(target, st):
+        return None, f"`{target}` is not owned by this process's user (or its owner cannot be read)"
+    return st, ""
+
+
+def _try_db_lock(root: str) -> tuple[int | None, str]:
+    """cargo-deny's own lock on its database root (<root>/db.lock: an exclusive flock on POSIX, a byte-range lock on
+    Windows, as cargo-deny takes it), without waiting: (its descriptor, "") when taken, (None, "busy") when another
+    process holds it, (None, why) when it cannot be opened or taken otherwise."""
+    path = os.path.join(root, "db.lock")
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    except OSError as e:
+        return None, f"its lock {path} cannot be opened ({e})"
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, PermissionError):      # held: POSIX's EWOULDBLOCK, Windows' locking violation
+        os.close(fd)
+        return None, "busy"
+    except OSError as e:
+        os.close(fd)
+        return None, f"its lock {path} cannot be taken ({e})"
+    return fd, ""
+
+
+def _release_db_lock(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+        with contextlib.suppress(OSError):
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    os.close(fd)
+
+
+def _clear_readonly(func, path: str, exc: BaseException) -> None:
+    """shutil.rmtree's onexc: git makes its object files read-only, which Windows refuses to delete, so a refused delete
+    clears that bit on the file itself (never through a link) and is tried once more; any other error is raised."""
+    if func not in (os.unlink, os.rmdir) or not isinstance(exc, PermissionError):
+        raise exc
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        raise exc
+    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    func(path)
+
+
+def _remove_db_clone(clone: str, root: str) -> tuple[str, str]:
+    """Remove one advisory database clone so the next fetch clones it fresh (the comment above _ANSI_RE): (outcome,
+    text), the outcome "removed", "absent" (nothing is there), "busy" (another cargo-deny run holds its lock: left in
+    place) or "refused" (the text names the path and why; it was left as it is). Only a real directory - no link, no
+    mount point - named advisory-db-<16 hex digits> directly inside the resolved `root` and owned by this process's
+    user is touched: under cargo-deny's lock it is checked again, renamed to a sibling quarantine name, found to be
+    the directory checked, and that tree removed without following links."""
+    name = os.path.basename(clone)
+    if not _DB_CLONE_RE.fullmatch(name):
+        return "refused", (f"`{clone}` is not named like a cargo-deny advisory database clone "
+                           "(advisory-db-<16 hex digits>)")
+    if not os.path.lexists(root):
+        return "absent", ""
+    try:
+        resolved = os.path.realpath(root, strict=True)
+        parent = os.path.realpath(os.path.dirname(os.path.abspath(clone)), strict=True)
+    except OSError as e:
+        return "refused", f"`{clone}`: its database root {root} or its parent cannot be resolved ({e})"
+    if os.path.normcase(parent) != os.path.normcase(resolved) or not os.path.isdir(resolved):
+        return "refused", f"`{clone}` is not directly inside the advisory database directory {resolved}"
+    target = os.path.join(resolved, name)
+    st, why = _clone_state(target)
+    if st is None:
+        return ("refused", why) if why else ("absent", "")
+    fd, held = _try_db_lock(resolved)
+    if fd is None:
+        if held == "busy":
+            return "busy", f"`{target}` is held by another cargo-deny run (its db.lock), so it was left in place"
+        return "refused", f"`{target}` was left as it is: {held}"
+    try:
+        st, why = _clone_state(target)                      # again, under the lock
+        if st is None:
+            return ("refused", why) if why else ("absent", "")
+        quarantine = os.path.join(resolved, f"{name}.removing-{os.getpid()}-{time.time_ns()}")
+        os.rename(target, quarantine)
+        moved = os.lstat(quarantine)
+        if stat.S_ISLNK(moved.st_mode) or (moved.st_dev, moved.st_ino) != (st.st_dev, st.st_ino):
+            return "refused", f"`{target}` changed while it was checked; what was renamed is left at {quarantine}"
+        shutil.rmtree(quarantine, onexc=_clear_readonly)
+    except OSError as e:
+        return "refused", f"`{target}` could not be removed ({e}); remove it and any {name}.removing-* by hand"
+    finally:
+        _release_db_lock(fd)
+    return "removed", f"`{target}` removed"
+
+
+def _drop_clones(manifest: Path, urls: list[str]) -> tuple[str, str]:
+    """Remove the clone of each database URL (_remove_db_clone): (outcome, text), the outcome "refused" with the
+    refusal when one may not be removed, else "busy" when one was left to another cargo-deny run, "removed" when one
+    was removed, "absent" when none was there (or no URL was named)."""
+    if not urls:
+        return "absent", ""
+    root, clones, why = _db_clones(manifest, urls)
+    if root is None:
+        return "refused", f"the clone cannot be named: {why}"
+    outcomes: list[str] = []
+    texts: list[str] = []
+    for clone in clones:
+        outcome, text = _remove_db_clone(clone, root)
+        if outcome == "refused":
+            return "refused", text
+        outcomes.append(outcome)
+        texts += [text] if text else []
+    overall = next((o for o in ("busy", "removed") if o in outcomes), "absent")
+    return overall, "; ".join(texts)
+
+
+def _with_removal(manifest: Path, urls: list[str], reason: str | None, detail: str) -> _Step:
+    """The failed attempt of `reason` (None: final) and `detail` once the clone of each of `urls` was removed
+    (_drop_clones); a refused removal makes the failure final, naming the path."""
+    outcome, note = _drop_clones(manifest, urls)
+    if outcome == "refused":
+        return _Step(False, None, f"{detail}\nthe advisory database clone was not removed - G18 fails closed at once; "
+                                  f"remove it by hand: {note}")
+    if outcome == "removed":
+        detail = f"{detail}\n{note}, so the next fetch clones it fresh"
+        reason = f"{reason}; the clone removed" if reason else None
+    elif outcome == "busy":
+        detail = f"{detail}\n{note}"
+        reason = f"{reason}; the clone left to another cargo-deny run" if reason else None
+    return _Step(False, reason, detail)
+
+
+def _fetch_failure(output: str, urls: list[str], env: dict[str, str]) -> tuple[str | None, str]:
+    """(reason, probe) for a failed `cargo deny fetch db`: the reason it is transient (None: final), from git's own
+    `unable to access` line - in cargo-deny's output when it carries one, else in a `git ls-remote` of each database
+    URL cargo-deny named, since with no clone cached its output reads the same whatever failed (the comment above
+    _ANSI_RE) - and the probe's report. A URL whose ls-remote answers leaves the failure transient (its words tell a
+    transfer cut short from a local error no more than cargo-deny's do); a failure that names no URL, and a probe that
+    fails without git's line, are final."""
+    if _GIT_UNREACHABLE_RE.search(output):
+        reason = _git_transient(output)
+        return (f"cargo deny fetch db: {reason}" if reason else None), ""
+    if not urls:
+        return None, ""
+    for url in urls:
+        probe = _NET.run_bounded(["git", "ls-remote", url, "HEAD"], _LS_REMOTE_ATTEMPT_S, env=env)
+        report = f"\n`git ls-remote {url} HEAD` after it (exit {probe.returncode}):\n{_plain(probe.stderr).strip()}"
+        if probe.returncode == 124:
+            return f"git ls-remote: past its {_LS_REMOTE_ATTEMPT_S} s bound", report
+        if probe.returncode != 0:
+            reason = _git_transient(probe.stderr)
+            return (f"git ls-remote: {reason}" if reason else None), report
+    return ("cargo deny fetch db: failed while its database URL answers `git ls-remote`",
+            f"\n`git ls-remote` answered for {', '.join(urls)}")
+
+
+def _fetch_advisory_db(manifest: Path) -> _Step:
+    """One attempt at refreshing the advisory databases (steps 1 and 2 of the comment above _ANSI_RE): `cargo deny
+    fetch db`, then per database `git ls-remote <url> HEAD` and `git merge-base --is-ancestor <that head> HEAD` in the
+    clone cargo-deny loaded, which must be the clone G18 names for that URL (_db_clones). A failed fetch is classified
+    by git's own words (_fetch_failure); a clone whose HEAD history lacks the remote head was not refreshed -
+    cargo-deny's fetch failed without a word - which is transient like the ls-remote's own transport failures. A fetch
+    past its bound or failed, and a clone that was not refreshed, have their clone removed (_with_removal)."""
+    env = _git_env()
+    r = _NET.run_bounded(["cargo", "deny", "--color", "never", "--log-level", "debug", "--manifest-path",
+                          str(manifest), "fetch", "db"], _DENY_FETCH_ATTEMPT_S, env=env)
+    output = _plain((r.stderr or "") + (r.stdout or ""))
+    urls = _DENY_DB_URL_RE.findall(output)
+    if r.returncode != 0:
+        if r.returncode == 124:
+            reason, probe = f"cargo deny fetch db: past its {_DENY_FETCH_ATTEMPT_S} s bound", ""
+        else:
+            reason, probe = _fetch_failure(output, urls, env)
+        return _with_removal(manifest, urls, reason,
+                             f"`cargo deny fetch db` failed (exit {r.returncode}):\n{output.strip()}{probe}")
+    dbs = _DENY_DB_LOADED_RE.findall(output)
+    root, clones, why = _db_clones(manifest, urls)
+    if root is None:
+        return _Step(False, None, f"`cargo deny fetch db` passed, but G18 cannot name the clone it checks: {why}")
+    named = {os.path.normcase(os.path.normpath(c)) for c in clones}
+    if not dbs or len(urls) != len(dbs) or named != {os.path.normcase(os.path.normpath(d)) for d in dbs}:
+        return _Step(False, None, "`cargo deny fetch db` did not name each advisory database's URL and clone (its "
+                                  "`Fetching advisory database with git cli from` and `loading advisory database "
+                                  f"from` log lines: {len(urls)} and {len(dbs)}; the clones G18 names for those URLs: "
+                                  f"{', '.join(clones) or 'none'}) - the fetch outcome cannot be read"
+                                  f":\n{output.strip()}")
+    for url, db in zip(urls, clones):
+        ls = _NET.run_bounded(["git", "ls-remote", url, "HEAD"], _LS_REMOTE_ATTEMPT_S, env=env)
+        if ls.returncode != 0:
+            if ls.returncode == 124:
+                reason = f"git ls-remote: past its {_LS_REMOTE_ATTEMPT_S} s bound"
+            else:
+                classified = _git_transient(ls.stderr)
+                reason = f"git ls-remote: {classified}" if classified else None
+            return _Step(False, reason, f"`git ls-remote {url} HEAD` failed (exit {ls.returncode}):\n"
+                                        f"{_plain(ls.stderr).strip()}")
+        head = ls.stdout.split()[0] if ls.stdout.split() else ""
+        if not _SHA1_RE.fullmatch(head):
+            return _Step(False, None, f"`git ls-remote {url} HEAD` named no head:\n{ls.stdout}{_plain(ls.stderr)}")
+        current = _NET.run_bounded(["git", "-C", db, "merge-base", "--is-ancestor", head, "HEAD"], _MERGE_BASE_S,
+                                   env=env)
+        if current.returncode != 0:
+            said = _plain(current.stderr).strip()
+            return _with_removal(manifest, [url], "git merge-base: the advisory database clone was not refreshed",
+                                 f"`git -C {db} merge-base --is-ancestor {head} HEAD` (exit {current.returncode}): the "
+                                 f"clone was not refreshed - the remote head {head} of {url} is not in its HEAD "
+                                 f"history (cargo-deny logs a failed git fetch as fetched while a clone is cached)"
+                                 f"{(': ' + said) if said else ''}")
+    return _Step(True, None, "")
+
+
+def _fetch_crates(manifest: Path) -> _Step:
+    """One attempt at step 3 of the comment above _ANSI_RE: `cargo fetch --locked` for the manifest the check reads,
+    its failure classified by cargo's own words (_cargo_transient)."""
+    r = _NET.run_bounded(["cargo", "fetch", "--locked", "--color", "never", "--manifest-path", str(manifest)],
+                         _CARGO_FETCH_ATTEMPT_S, env=_git_env())
+    if r.returncode == 0:
+        return _Step(True, None, "")
+    output = _plain((r.stderr or "") + (r.stdout or "")).strip()
+    if r.returncode == 124:
+        reason: str | None = f"cargo fetch: past its {_CARGO_FETCH_ATTEMPT_S} s bound"
+    else:
+        classified = _cargo_transient(output)
+        reason = f"cargo fetch: {classified}" if classified else None
+    return _Step(False, reason, f"`cargo fetch --locked --manifest-path {manifest}` failed (exit {r.returncode}):\n"
+                                f"{output}")
+
+
+def _run_cargo_deny(manifest: Path) -> str | None:
+    """The live G18 tier (the comment above _ANSI_RE): the advisory databases refreshed and the crates fetched under
+    the retry policy, then one `cargo deny check --disable-fetch`. Returns None when the check passed, else the
+    finding, which names the step that failed: a fetch that failed for good, or that was still transient once its
+    retry window had ended (the gate fails closed), and the check's own failure, never retried."""
+    for what, attempt in (("advisory database fetch", lambda: _fetch_advisory_db(manifest)),
+                          ("crate fetch", lambda: _fetch_crates(manifest))):
+        try:
+            done = _RETRY.run(attempt, what=what, transient_result=lambda step: step.transient)
+        except _NET.WindowSpent as e:
+            return f"the {what} was not attempted - G18 fails closed (build-gates §0 *Offline tolerance*): {e}"
+        if not done.ok:
+            how = f"through its {_NET.WINDOW_S} s retry window" if done.transient else "at once (a final failure)"
+            return (f"the {what} failed {how} - G18 fails closed (build-gates §0 *Offline tolerance*): "
+                    f"{done.detail}")
+    r = _NET.run_bounded(["cargo", "deny", "--color", "never", "--manifest-path", str(manifest), "check",
+                          "--disable-fetch"], _DENY_CHECK_S, env=_git_env())
+    if r.returncode == 0:
+        return None
+    bound = f", past its {_DENY_CHECK_S} s bound" if r.returncode == 124 else ""
+    return (f"`cargo deny check --disable-fetch` failed (exit {r.returncode}{bound}; a policy verdict or a tool "
+            f"error, never retried):\n{_plain(r.stderr or r.stdout).strip()}")
 
 
 def _live_checks() -> list[str]:
@@ -370,9 +929,9 @@ def _live_checks() -> list[str]:
     problems: list[str] = []
     manifest_dir = manifest.parent
     if shutil.which("cargo-deny"):
-        r = _run_cargo_deny(manifest)
-        if r.returncode != 0:
-            problems.append("`cargo deny check` failed:\n" + (r.stderr or r.stdout))
+        problem = _run_cargo_deny(manifest)
+        if problem is not None:
+            problems.append(problem)
     else:
         print("[G18] a Cargo.lock exists but `cargo-deny` is not installed in this plane - the live "
               "cargo-deny check is skipped here (the frozen deny.toml policy stays fail-closed; the live "

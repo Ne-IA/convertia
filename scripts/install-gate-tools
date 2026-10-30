@@ -11,6 +11,14 @@ secrets, so every gate tool is pinned by exact version and verified by content.
 stdlib-only (tomllib / hashlib / urllib), so it runs on a clean checkout with no
 bootstrap dependency beyond Python >= 3.11. Invoke as `python3 -P scripts/install-gate-tools`.
 
+A download that fails transiently (HTTP 429/5xx, a timeout, a connection error) is retried
+under the gate plane's one network retry policy (scripts/net-retry, build-gates §0): capped
+exponential backoff with jitter for a window after its first failure, each attempt under the
+bounds below (a stalled transfer, the request, the body's time scaled to its size). Any other
+HTTP status and a local file error fail at once, and once one download has failed through its
+window the run attempts no further download - every tool still missing then reports a failure
+(FAIL CLOSED).
+
 The recorded sha256 was CORROBORATED at pin-establishment (the tool's own
 signature/attestation OR >=2 independent origins; see each tool's `corroboration`
 in the manifest). This script enforces that pinned value at install time; a
@@ -30,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import platform
 import re
 import shutil
@@ -37,6 +46,7 @@ import stat
 import sys
 import tempfile
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -56,11 +66,29 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = REPO_ROOT / "scripts" / "gate-tools.toml"
 DEFAULT_DEST = REPO_ROOT / ".gate-tools"
 SCHEMA_VERSION = 1
-DOWNLOAD_TIMEOUT = 120  # seconds
+# One download attempt's bounds (build-gates §0 *Network fetches*). Each blocking step - a connect, a TLS step, each
+# read of the body - waits at most DOWNLOAD_STALL_S seconds for a byte (the socket timeout): a transfer that stalls
+# that long fails the attempt as a timeout. The request up to its response headers (the DNS lookup, the connects, the
+# redirects) gets DOWNLOAD_OPEN_S seconds. The body gets its declared size at DOWNLOAD_FLOOR_BPS (1 Mbit/s: the
+# largest pinned asset, osv-scanner's 58.7 MB Windows build, gets 448 s, twice what a 2 Mbit/s link needs), at
+# least DOWNLOAD_STALL_S; a body that declares no size, or more than DOWNLOAD_CAP_BYTES, gets the time of a
+# DOWNLOAD_CAP_BYTES one, and a body that grows past DOWNLOAD_CAP_BYTES is refused at once (final, no hash taken).
+# DOWNLOAD_ATTEMPT_S is the longest one attempt takes: the request's bound, the longest body time and the one read
+# still in flight at the body's deadline (g24-net-retry computes each retry job's timeout-minutes from it).
+DOWNLOAD_STALL_S = 60
+DOWNLOAD_OPEN_S = 60
+DOWNLOAD_FLOOR_BPS = 128 * 1024
+DOWNLOAD_CAP_BYTES = 64 * 1024 * 1024
+DOWNLOAD_ATTEMPT_S = DOWNLOAD_OPEN_S + max(DOWNLOAD_STALL_S, DOWNLOAD_CAP_BYTES / DOWNLOAD_FLOOR_BPS) + DOWNLOAD_STALL_S
 CHUNK = 1 << 16
-RETRY_ATTEMPTS = 3                                   # transient-download retries (the shellcheck-502 class)
-RETRY_BACKOFF = 2                                    # base backoff seconds, scaled by the attempt number
-_RETRIABLE_HTTP = frozenset({429, 500, 502, 503, 504})
+
+# The gate plane's one network retry policy (scripts/net-retry), compiled from its source into a fresh module: this
+# script runs `python3 -P`, so no scripts/ module is importable by name, and no bytecode cache is read or written.
+# One Retrier per run: a download whose failures outlast the window spends it, and no later download is attempted.
+_NET_PATH = REPO_ROOT / "scripts" / "net-retry"
+_NET = types.ModuleType("net_retry")
+exec(compile(_NET_PATH.read_bytes(), str(_NET_PATH), "exec"), _NET.__dict__)
+_RETRY = _NET.Retrier("install-gate-tools")
 
 
 class GateToolError(Exception):
@@ -110,28 +138,54 @@ def verify_origin(url: str, origin: str) -> None:
         )
 
 
+def declared_size(resp: object) -> int | None:
+    """(pure) The body size a response's Content-Length declares, or None when it declares none it can read."""
+    headers = getattr(resp, "headers", None)
+    value = headers.get("Content-Length") if headers is not None else None
+    return int(value) if isinstance(value, str) and value.strip().isdigit() else None
+
+
+def body_seconds(declared: int | None) -> float:
+    """(pure) The time a download's body gets (the comment above DOWNLOAD_STALL_S): its declared size at
+    DOWNLOAD_FLOOR_BPS, at least DOWNLOAD_STALL_S, a size it does not declare or one past DOWNLOAD_CAP_BYTES read as
+    DOWNLOAD_CAP_BYTES."""
+    size = DOWNLOAD_CAP_BYTES if declared is None else min(declared, DOWNLOAD_CAP_BYTES)
+    return max(DOWNLOAD_STALL_S, size / DOWNLOAD_FLOOR_BPS)
+
+
+def _close(resp: object) -> None:
+    resp.close()
+
+
 def download(url: str, dest_tmp: Path) -> None:
-    """Fetch url -> dest_tmp, retrying a TRANSIENT failure (a 429/5xx, a timeout, or a connection error)
-    up to RETRY_ATTEMPTS times with linear backoff. A PERMANENT HTTP error (404/403/...) is NOT retried
-    (it would never succeed). The caller's sha256 verification is the integrity control; this only hardens
-    against a flaky CDN/mirror reddening main for the wrong reason (the shellcheck-502 transient class)."""
-    req = urllib.request.Request(url, headers={"User-Agent": "convertia-install-gate-tools"})
-    for attempt in range(1, RETRY_ATTEMPTS + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as resp, dest_tmp.open("wb") as out:
-                shutil.copyfileobj(resp, out, CHUNK)
-            return
-        except urllib.error.HTTPError as e:
-            if e.code not in _RETRIABLE_HTTP or attempt == RETRY_ATTEMPTS:
-                raise
-            reason = f"HTTP {e.code}"
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            if attempt == RETRY_ATTEMPTS:
-                raise
-            reason = str(e)
-        print(f"[install-gate-tools] download attempt {attempt}/{RETRY_ATTEMPTS} failed ({reason}); "
-              f"retrying in {RETRY_BACKOFF * attempt}s", file=sys.stderr)
-        time.sleep(RETRY_BACKOFF * attempt)
+    """Fetch url -> dest_tmp under the run's Retrier (scripts/net-retry): a TRANSIENT failure (HTTP 429/5xx, a
+    timeout, a connection error, a dropped connection) is retried with capped exponential backoff and jitter until
+    the retry window ends, then re-raised; any other HTTP status (404/403/...) is raised at once, since it would
+    never succeed. Once a download has failed through its window the Retrier is spent and this raises WindowSpent
+    without a request. Each attempt builds its own request (urllib counts the redirects it followed on the request
+    object, so a reused one would refuse a redirect after a few attempts) under the bounds of the comment above
+    DOWNLOAD_STALL_S: the request runs on a worker under DOWNLOAD_OPEN_S (a response that arrives later is closed
+    unread), and the body is read here, chunk by chunk, until its deadline - an attempt that ended reads no further
+    byte, so it never competes with the next one. The file is written after the fetch, outside the classified
+    attempt, so a local write error is a GateToolError at once, never a retried outage. The caller's sha256
+    verification is the integrity control; the retry only keeps a release CDN burst from reddening main for the
+    wrong reason."""
+
+    def open_response() -> object:
+        req = urllib.request.Request(url, headers={"User-Agent": "convertia-install-gate-tools"})
+        return urllib.request.urlopen(req, timeout=DOWNLOAD_STALL_S)
+
+    def attempt() -> bytes:
+        resp = _NET.bounded(open_response, DOWNLOAD_OPEN_S, on_late=_close)()
+        with resp:
+            deadline = time.monotonic() + body_seconds(declared_size(resp))
+            return _NET.read_body(resp, deadline=deadline, limit=DOWNLOAD_CAP_BYTES, chunk=CHUNK)
+
+    data = _RETRY.run(attempt, what=url, transient_error=_NET.transient_urllib_error)
+    try:
+        dest_tmp.write_bytes(data)
+    except OSError as e:
+        raise GateToolError(f"cannot write the download to {dest_tmp}: {e}") from e
 
 
 def extract_binary(archive: Path, kind: str, out_path: Path, want_name: str) -> None:
@@ -230,7 +284,15 @@ def install_tool(name: str, entry: dict, dest: Path, platform_key: str, offline:
         tmp = Path(td) / "download"
         try:
             download(url, tmp)
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except _NET.WindowSpent as e:
+            raise GateToolError(f"download not attempted: {e}") from e
+        except _NET.BodyTooLarge as e:
+            raise GateToolError(f"download failed: {e}: {url}") from e
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+            # download() re-raises a transient failure only once its retry window has ended; the wording keeps
+            # that outage apart from a final failure, which the G24 canary never skips as infra
+            if _NET.transient_urllib_error(e) is not None:
+                raise GateToolError(f"download failed after its retry window: {e}") from e
             raise GateToolError(f"download failed: {e}") from e
         got = sha256_file(tmp)
         if got != want:

@@ -50,6 +50,7 @@ import argparse
 import contextlib
 import difflib
 import hashlib
+import http.client
 import importlib.machinery
 import importlib.util
 import io
@@ -57,10 +58,13 @@ import json
 import re
 import sys
 import tempfile
+import threading
 import tomllib
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
+import urllib.response
 from pathlib import Path
 from typing import Callable, NamedTuple
 
@@ -75,7 +79,8 @@ RAW_BASE = "https://raw.githubusercontent.com"
 # [Build-Session-Entscheidung: P4.97] the byte bars on fetched third-party files: 1 MiB (the largest pinned metadata file is 5 KiB),
 # strict UTF-8, no lone CR, and only 200 or 404 read as an answer - anything else is a refusal, never absent
 MAX_BYTES = 1 << 20                  # a metadata file or Dockerfile above 1 MiB is refused, never truncated
-TIMEOUT_S = 30
+TIMEOUT_S = 30                       # one blocking step of a request (the connect, a read)
+ATTEMPT_S = 60                       # one whole request attempt, the wall-clock bound around TIMEOUT_S
 DOCKER = "docker://"
 # the four manifest media types a registry may answer a tag with (an index or a single-platform manifest)
 MANIFEST_ACCEPT = (
@@ -151,20 +156,48 @@ def load_gate():
     return module
 
 
+# The gate plane's one network retry policy (scripts/net-retry, build-gates §0), compiled from its source into a
+# fresh module: this tool runs `python3 -P`, so no scripts/ module is importable by name, and no bytecode cache is
+# read or written. One Retrier per run: once a request has failed through its retry window, no later request of the
+# run is attempted.
+_NET_PATH = HERE / "net-retry"
+_NET = types.ModuleType("net_retry")
+exec(compile(_NET_PATH.read_bytes(), str(_NET_PATH), "exec"), _NET.__dict__)
+_RETRY = _NET.Retrier("record-action-pins")
+
+
+def _transient_status(response: Response) -> str | None:
+    """(pure) The policy's classifier for an answered request: HTTP 429 and every 5xx are transient, every other
+    status is an answer."""
+    return f"HTTP {response.status}" if response.status == 429 or 500 <= response.status <= 599 else None
+
+
 def real_http(method: str, url: str, headers: dict[str, str]) -> Response:
-    """One HTTPS request (urllib; redirects followed); an HTTP error status is a Response, a transport failure a
-    RecordError. The body is read to MAX_BYTES + 1 so an oversized reply is detectable."""
+    """One HTTPS request (urllib; redirects followed) under the retry policy: a transient failure - HTTP 429/5xx, a
+    timeout, a connection error - is retried with capped exponential backoff and jitter for the retry window. An HTTP
+    error status is a Response (a 429/5xx one once the window has ended), a transport failure a RecordError. The body
+    is read to MAX_BYTES + 1 so an oversized reply is detectable. Each attempt builds its own request (urllib counts
+    the redirects it followed on the request object, so a reused one would refuse a redirect after a few attempts)
+    and runs under the ATTEMPT_S wall-clock bound."""
     if not url.startswith("https://"):
         raise RecordError(f"refusing a non-https URL: {url}")
-    req = urllib.request.Request(url, method=method, headers=headers)
+
+    def attempt() -> Response:
+        req = urllib.request.Request(url, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+                body = resp.read(MAX_BYTES + 1) if method != "HEAD" else b""
+                return Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, body)
+        except urllib.error.HTTPError as err:
+            body = err.read(MAX_BYTES + 1) if method != "HEAD" else b""
+            return Response(err.code, {k.lower(): v for k, v in (err.headers or {}).items()}, body)
+
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
-            body = resp.read(MAX_BYTES + 1) if method != "HEAD" else b""
-            return Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, body)
-    except urllib.error.HTTPError as err:
-        body = err.read(MAX_BYTES + 1) if method != "HEAD" else b""
-        return Response(err.code, {k.lower(): v for k, v in (err.headers or {}).items()}, body)
-    except (urllib.error.URLError, OSError) as err:
+        return _RETRY.run(_NET.bounded(attempt, ATTEMPT_S), what=f"{method} {url}",
+                          transient_error=_NET.transient_urllib_error, transient_result=_transient_status)
+    except _NET.WindowSpent as err:
+        raise RecordError(str(err)) from None
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
         raise RecordError(f"{method} {url}: {err}") from None
 
 
@@ -694,6 +727,147 @@ def _legs() -> None:
     _record("--resolve-images refuses a reply without a sha256 digest",
             "Docker-Content-Digest" in _refusal(lambda: resolve_image(lambda m, u, h: Response(200, {}, b""), "docker://ghcr.io/a/b:1")))
     _record("the real HTTP function refuses a non-https URL", "non-https" in _refusal(lambda: real_http("GET", "http://x.invalid/a", {})))
+    _record("a request's bounds are the pinned 30 s per blocking step and 60 s per attempt (g24-net-retry pins the same)",
+            (TIMEOUT_S, ATTEMPT_S) == (30, 60))
+    _retry_legs()
+
+
+class _Answer:
+    """A urlopen() reply double: a 200 with a body (a context manager, `read(n)` honouring its bound)."""
+
+    status = 200
+    headers = {"content-type": "text/plain"}
+
+    def __init__(self, body: bytes) -> None:
+        self._body = io.BytesIO(body)
+
+    def read(self, n: int = -1) -> bytes:
+        return self._body.read(n)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+
+def _scripted_reply(url: str, code: int, location: str | None = None) -> urllib.response.addinfourl:
+    """An HTTP reply as urllib's handlers read it, without a socket: the status, an empty body and, for a redirect,
+    its Location header."""
+    headers = http.client.HTTPMessage()
+    if location is not None:
+        headers["Location"] = location
+    reply = urllib.response.addinfourl(io.BytesIO(b""), headers, url, code)
+    reply.msg = "scripted"
+    return reply
+
+
+class _RedirectTransport(urllib.request.BaseHandler):
+    """An https transport double inside a real urllib opener (its redirect and error handlers): the requested URL
+    answers 302 to a Location - the same one on every request, or a new one each time - and every Location answers
+    503, so a request rides the 302 into an outage with no socket opened."""
+
+    handler_order = 50          # ahead of the proxy handler (100) and the default https transport (500)
+
+    def __init__(self, same_location: bool) -> None:
+        self.same_location = same_location
+        self.redirects = 0
+
+    def https_open(self, request):
+        url = request.full_url
+        if url == "https://x.invalid/a":
+            self.redirects += 1
+            hop = "fixed" if self.same_location else str(self.redirects)
+            return _scripted_reply(url, 302, f"https://x.invalid/cdn/{hop}")
+        return _scripted_reply(url, 503)
+
+
+def _retry_legs() -> None:
+    """real_http under the gate plane's one network retry policy (scripts/net-retry, build-gates §0): urllib's
+    `urlopen` and `_RETRY` are swapped for doubles and restored in the finally, so no socket opens and no leg waits.
+    A transient status is retried with the policy's pauses (2 s doubling to a 60 s cap, until 300 s after the first
+    failure), any other status is an answer at once, a transport failure that outlasts the window is a refusal
+    that spends the run - the next request is not attempted -, a redirect into an outage rides the whole window
+    (each attempt builds its own request; a reused one is refused as a redirect loop after four attempts on the same
+    Location and ten on changing ones), and an attempt past its wall-clock bound is ended and retried."""
+    real_urlopen, real_retry, real_bound = urllib.request.urlopen, globals()["_RETRY"], globals()["ATTEMPT_S"]
+    clock = {"now": 0.0}
+    pauses: list[float] = []
+    calls = {"n": 0}
+
+    def sleep(seconds: float) -> None:
+        pauses.append(seconds)
+        clock["now"] += seconds
+
+    def fresh_retrier(rng: float) -> None:
+        pauses.clear()
+        clock["now"] = 0.0
+        calls["n"] = 0
+        globals()["_RETRY"] = _NET.Retrier("record-action-pins", clock=lambda: clock["now"], sleep=sleep,
+                                           rng=lambda: rng, log=lambda _message: None)
+
+    def arm(steps: list) -> None:
+        fresh_retrier(1.0)
+
+        def urlopen(req, timeout=None):
+            step = steps[min(calls["n"], len(steps) - 1)]
+            calls["n"] += 1
+            if isinstance(step, BaseException):
+                raise step
+            if isinstance(step, threading.Event):
+                step.wait(5)         # an attempt that hangs until the leg releases it (5 s at most: a red, never a hang)
+                return _Answer(b"late")
+            return _Answer(step)
+
+        urllib.request.urlopen = urlopen
+
+    def arm_redirects(same_location: bool) -> _RedirectTransport:
+        transport = _RedirectTransport(same_location)
+        fresh_retrier(0.0)          # the lowest jitter draw: the most attempts inside the window (15)
+        opener = urllib.request.OpenerDirector()
+        for handler in (transport, urllib.request.HTTPRedirectHandler(), urllib.request.HTTPDefaultErrorHandler(),
+                        urllib.request.HTTPErrorProcessor()):
+            opener.add_handler(handler)
+        urllib.request.urlopen = lambda req, timeout=None: opener.open(req, timeout=timeout)
+        return transport
+
+    def status(code: int) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError("https://x.invalid/a", code, "scripted", {}, io.BytesIO(b""))
+
+    try:
+        arm([status(503), status(503), b"answer"])
+        got = real_http("GET", "https://x.invalid/a", {})
+        _record("real_http retries a transient 503 with the policy's pauses (2 s, 4 s), then returns the answer",
+                (got.status, got.body) == (200, b"answer") and calls["n"] == 3 and pauses == [2.0, 4.0])
+        arm([status(404)])
+        got = real_http("GET", "https://x.invalid/a", {})
+        _record("real_http returns a 404 answer at once (no retry)", got.status == 404 and calls["n"] == 1 and pauses == [])
+        arm([urllib.error.URLError(ConnectionResetError("reset"))])
+        refusal = _refusal(lambda: real_http("GET", "https://x.invalid/a", {}))
+        _record("real_http refuses a transport failure that outlasts the 300 s retry window",
+                "GET https://x.invalid/a" in refusal and calls["n"] == 10 and clock["now"] == 300.0)
+        _record("after a request spent the window, the run's next request is not attempted",
+                "not attempted" in _refusal(lambda: real_http("GET", "https://x.invalid/b", {})) and calls["n"] == 10)
+        transport = arm_redirects(same_location=True)
+        got = real_http("GET", "https://x.invalid/a", {})
+        _record("real_http rides a 302 to the same Location into a 503 outage through the whole 300 s window",
+                got.status == 503 and transport.redirects == 15 and clock["now"] == 300.0)
+        transport = arm_redirects(same_location=False)
+        got = real_http("GET", "https://x.invalid/a", {})
+        _record("real_http rides a 302 to a new Location each time into a 503 outage through the whole 300 s window",
+                got.status == 503 and transport.redirects == 15 and clock["now"] == 300.0)
+        release = threading.Event()
+        globals()["ATTEMPT_S"] = 0.05
+        arm([release, b"answer"])
+        try:
+            got = real_http("GET", "https://x.invalid/a", {})
+        finally:
+            release.set()
+        _record("real_http ends an attempt with no result inside its wall-clock bound and retries it as a timeout",
+                (got.status, got.body) == (200, b"answer") and calls["n"] == 2 and pauses == [2.0])
+    finally:
+        urllib.request.urlopen, globals()["_RETRY"] = real_urlopen, real_retry
+        globals()["ATTEMPT_S"] = real_bound
 
 
 def _run_check(root: Path, http: Http, gate) -> int:

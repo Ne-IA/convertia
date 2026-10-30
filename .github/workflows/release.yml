@@ -26,7 +26,7 @@ jobs:
   guard:
     name: release-gate-guard
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 18    # 10 for the run + 8 for its slowest retried fetch, the git fetch loop (70 + 300 + 70 s; computed by g24-net-retry.py, build-gates §0)
     steps:
       - name: Checkout (full history, no credentials persisted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -34,7 +34,21 @@ jobs:
           persist-credentials: false
           fetch-depth: 0           # full history so the tag-ancestry check has a merge-base
       - name: Fetch origin/main (for the tag-ancestry check)
-        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+        # Each try runs under a coreutils `timeout` (git over https sets no stall timeout of its own), and a failed
+        # try is retried under the gate plane's one network retry policy (build-gates §0) - the same loop as
+        # ci.yml's apt-get step; the step fails CLOSED after the retry window.
+        run: |
+          delay=2 deadline=
+          until timeout -k 10 60 git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main; do
+            deadline=${deadline:-$((SECONDS + 300))}
+            left=$((deadline - SECONDS))
+            if [ "$left" -le 0 ]; then echo "::error::git fetch of origin/main failed through its retry window"; exit 1; fi
+            pause=$((delay / 2 + RANDOM % (delay / 2 + 1)))
+            if [ "$pause" -gt "$left" ]; then pause=$left; fi
+            echo "::warning::git fetch of origin/main failed; retrying in ${pause}s"
+            sleep "$pause"
+            delay=$((delay * 2 < 60 ? delay * 2 : 60))
+          done
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:

@@ -9,7 +9,10 @@ the `sast` CI job semgrep is installed and every leg runs.
 Order (the G24/check-16 "self-test prelude" discipline - the armed canary runs FIRST, in the SAME
 CI job, immediately before the real scan):
 
-  1. `semgrep --validate scripts/semgrep-rules/`            - the vendored packs + project rules parse.
+  1. `semgrep --validate scripts/semgrep-rules/`            - the vendored packs + project rules parse. The one
+     network step of this gate: semgrep fetches its rule-lint pack (`p/semgrep-rule-lints`) from semgrep.dev for
+     it, with no retry window of the gate plane and no warn-only split (build-gates §0 *Network fetches*; a
+     residual-ledger line).
   2. SELF-TEST PRELUDE: `semgrep --config scripts/semgrep-rules/project/ <fixtures>` - assert EVERY
      project rule fires on its planted-positive. A rule that stops matching its own planted violation
      FAILS, even on a clean run where no real code changed. PLUS the per-LINE pins (P4.85): fixture
@@ -43,7 +46,8 @@ CI job, immediately before the real scan):
      AFTER the semgrep legs (it is semgrep-independent, so it also runs when semgrep is absent locally).
   6. (retired) cargo-geiger - declined for v1 (docs/process/gate-status.md); no leg.
 
-`--config p/rust` (live registry fetch) is NEVER used - only the vendored `scripts/semgrep-rules/`.
+`--config p/rust` (a live registry ruleset) is NEVER used - every scan reads only the vendored
+`scripts/semgrep-rules/`; the rule-lint fetch of step 1 is the gate's one registry fetch.
 stdlib-only. L(-1) security-critical (matched by scripts/**).
 
 Usage: check-sast [--full]
@@ -431,8 +435,9 @@ def _semgrep() -> str | None:
 
 
 def run_semgrep(config: Path, targets: list[str], extra: list[str] | None = None) -> tuple[int, list[dict]]:
-    """Run semgrep --json offline; return (returncode, results). rc 0 = no findings, 1 = findings,
-    >=2 = a semgrep error. NEVER fetches the registry (local --config only)."""
+    """Run semgrep --json over a local --config; return (returncode, results). rc 0 = no findings,
+    1 = findings, >=2 = a semgrep error. A scan fetches no ruleset from the registry (the vendored
+    --config only; the rule-lint fetch is validate()'s)."""
     argv = ["semgrep", "--metrics", "off", "--disable-version-check", "--quiet", "--json",
             "--config", str(config)] + (extra or []) + targets
     try:
@@ -457,6 +462,9 @@ def run_semgrep(config: Path, targets: list[str], extra: list[str] | None = None
 
 
 def validate() -> int:
+    """`semgrep --validate` over the vendored rules. semgrep fetches its rule-lint pack from semgrep.dev for this
+    (measured: with semgrep.dev unreachable it exits 2 naming `/c/p/semgrep-rule-lints`), so an outage there fails
+    this step - the gate's one network step, on no retry window (module docstring, step 1)."""
     argv = ["semgrep", "--validate", "--metrics", "off", "--disable-version-check",
             "--config", str(RULES)]
     try:

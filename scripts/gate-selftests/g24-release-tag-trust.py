@@ -6,6 +6,8 @@ gate module and driving its pure + git-based functions:
   - tag_name_from_ref: ref normalization (a non-tag ref must NOT pass);
   - evaluate_check_runs: the green-history parse (the leg-2 logic, on fixture JSON - the live
     `gh api` call is release/owner-verified, as G56a's live calls are);
+  - gh_api: the transient classifier and its run under the gate plane's network retry policy
+    (scripts/net-retry), with a fake `gh` and a fake clock;
   - leg_ancestry: a tag on origin/main passes, a descendant-not-on-origin/main fails
     (real temp git repo);
   - leg_signed_tag: fail-SOFT when the allowed-signers file is absent, fail-CLOSED (unsigned
@@ -20,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -109,6 +112,75 @@ record("transient: 429 secondary rate limit -> retried",
        bool(crt._TRANSIENT_RE.search("HTTP 429: too many requests (secondary rate limit)")))
 record("non-transient: 404 NOT retried", not crt._TRANSIENT_RE.search("HTTP 404: Not Found"))
 record("non-transient: 403 forbidden NOT retried", not crt._TRANSIENT_RE.search("HTTP 403: Forbidden"))
+
+
+# --- gh_api under the gate plane's one network retry policy (scripts/net-retry, build-gates §0) ---
+# A fake `run_bounded` of the gate's own policy module (patched only inside the context manager) and a fake-clock
+# Retrier from it, so no leg waits: the pauses are the policy's (2 s doubling to a 60 s cap, until 300 s after the
+# first failure) - a gate back on its own fixed pauses reds here. gh's status is read from its status line only
+# (`gh_status`), so a `404` inside a request path names no status.
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.pauses: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.pauses.append(seconds)
+        self.now += seconds
+
+
+_BOUNDS_SEEN: list[float] = []      # the wall-clock bound of every gh run the fake answered
+
+
+def _gh(outcomes: list, fresh: bool = True) -> tuple[subprocess.CompletedProcess, int, _Clock]:
+    """gh_api over a scripted gh: each entry is (returncode, stdout, stderr); the last entry repeats. `fresh`
+    installs a new fake-clock Retrier first. Returns (the result, the gh runs, the clock); every run's bound is kept
+    in _BOUNDS_SEEN."""
+    fc = _Clock()
+    if fresh:
+        crt._RETRY = crt._NET.Retrier("G56b", clock=fc.clock, sleep=fc.sleep, rng=lambda: 1.0, log=lambda _m: None)
+    calls = {"n": 0}
+
+    def fake_run_bounded(cmd, seconds, *, env=None):
+        _BOUNDS_SEEN.append(seconds)
+        step = outcomes[min(calls["n"], len(outcomes) - 1)]
+        calls["n"] += 1
+        return subprocess.CompletedProcess(cmd, step[0], step[1], step[2])
+
+    with mock.patch.object(crt._NET, "run_bounded", fake_run_bounded):
+        result = crt.gh_api(["repos/o/r/commits/abc/check-runs"])
+    return result, calls["n"], fc
+
+
+_REAL_RETRY = crt._RETRY
+_GH_503 = (1, "", "gh: HTTP 503: Service Unavailable")
+res, n, fc = _gh([_GH_503, _GH_503, (0, "[]", "")])
+record("gh_api retry: a transient 503 is retried with the policy's pauses (2 s, 4 s) until the call succeeds",
+       res.returncode == 0 and n == 3 and fc.pauses == [2.0, 4.0])
+res, n, fc = _gh([(1, "", "gh: HTTP 404: Not Found")])
+record("gh_api retry: a 404 returns on the first call (no pause)", res.returncode == 1 and n == 1 and fc.pauses == [])
+res, n, fc = _gh([(124, "", "gh: timed out - no result within the 60 s bound of one attempt"), (0, "[]", "")])
+record("gh_api retry: a call past its wall-clock bound is a transient timeout, retried",
+       res.returncode == 0 and n == 2 and fc.pauses == [2.0])
+res, n, fc = _gh([(1, "", "gh: HTTP 503 (https://api.github.com/repos/o/r/commits/c404d/check-runs)"),
+                  (0, "[]", "")])
+record("gh_api retry: a 503 whose request path holds `404` is retried (the status comes from gh's status line)",
+       res.returncode == 0 and n == 2 and fc.pauses == [2.0])
+record("gh_status: gh's two status-line forms and none", (crt.gh_status("gh: Not Found (HTTP 404)"),
+       crt.gh_status("gh: HTTP 502"), crt.gh_status("fatal: a404b HTTP 404x")) == (404, 502, None))
+res, n, fc = _gh([_GH_503])
+record("gh_api retry: a transient that outlasts the 300 s window returns the last failed call (fail-closed)",
+       res.returncode == 1 and "503" in res.stderr and n == 10 and fc.now == 300.0)
+res, n, fc = _gh([(0, "[]", "")], fresh=False)
+record("gh_api retry: after a call spent the window, the run's next call is not attempted (a failed result)",
+       res.returncode == 1 and "not attempted" in res.stderr and n == 0)
+record("gh_api: every gh call runs under the module's wall-clock bound (_GH_ATTEMPT_TIMEOUT_S, 60 s)",
+       bool(_BOUNDS_SEEN) and all(s == crt._GH_ATTEMPT_TIMEOUT_S == 60 for s in _BOUNDS_SEEN),
+       f"bounds seen {sorted(set(_BOUNDS_SEEN))}")
+crt._RETRY = _REAL_RETRY
 
 # --- leg_ancestry + leg_signed_tag (real temp git repo) ---------------------
 with tempfile.TemporaryDirectory() as td:

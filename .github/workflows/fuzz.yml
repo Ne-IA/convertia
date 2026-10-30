@@ -63,7 +63,7 @@ jobs:
   fuzz:
     name: fuzz (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 80 # G56 outer wall-clock cap: 4 targets × -max_total_time=300 s + the cold instrumented compile of the Tauri tree + the macOS ASAN-canary's second (differently-flagged) compile
+    timeout-minutes: 100 # G56 outer wall-clock cap: 80 for the run (4 targets × -max_total_time=300 s + the cold instrumented compile of the Tauri tree + the macOS ASAN-canary's second, differently-flagged, compile) + 20 for its slowest retried fetch, the apt-get loop (440 + 300 + 440 s; computed by g24-net-retry.py, build-gates §0)
     strategy:
       fail-fast: false
       matrix:
@@ -111,16 +111,22 @@ jobs:
             libjavascriptcoregtk-4.1-dev
             libdbus-1-dev
           )
-          for try in 1 2 3; do
+          delay=2 deadline=
+          while :; do
             rc=0
             sudo timeout -k 10 120 apt-get "${apt_opts[@]}" update || rc=$?
             if [ "$rc" -eq 0 ]; then
               sudo timeout -k 10 300 apt-get "${apt_opts[@]}" install -y --download-only "${pkgs[@]}" || rc=$?
             fi
             if [ "$rc" -eq 0 ]; then break; fi
-            echo "::warning::apt try $try of 3 failed with exit $rc (124 = a wall bound fired)"
-            if [ "$try" -eq 3 ]; then exit 1; fi
-            sleep 5
+            deadline=${deadline:-$((SECONDS + 300))}
+            left=$((deadline - SECONDS))
+            if [ "$left" -le 0 ]; then echo "::error::apt failed with exit $rc through its retry window"; exit 1; fi
+            pause=$((delay / 2 + RANDOM % (delay / 2 + 1)))
+            if [ "$pause" -gt "$left" ]; then pause=$left; fi
+            echo "::warning::apt try failed with exit $rc (124 = a wall bound fired); retrying in ${pause}s"
+            sleep "$pause"
+            delay=$((delay * 2 < 60 ? delay * 2 : 60))
           done
           sudo apt-get install -y --no-download "${pkgs[@]}"
       - name: 'Node/pnpm toolchain via corepack'

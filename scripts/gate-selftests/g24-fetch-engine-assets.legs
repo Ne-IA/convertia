@@ -1,4 +1,5 @@
 an empty manifest is a valid container
+a fetch's bounds are the pinned 120 s per read and 600 s per attempt (g24-net-retry computes the engine-asset-populate job's timeout from them)
 a well-formed row parses
 a row's triples are preserved verbatim
 an unknown triple is refused
@@ -52,6 +53,17 @@ a body under the ceiling reads back whole
 a multi-chunk payload reads back in ORDER, not as a repeated prefix
 an empty download is refused
 a transport failure is reported as a fetch violation, not a traceback
+the real opener retries a transient 503 with the policy's pauses, then returns the body
+the real opener raises a final 404 at once, reported as a fetch violation
+a refused redirect hop is final - the real opener never retries it
+a fetch that stays transient fails closed once its 300 s retry window has ended
+after a fetch spent the window, the run's next fetch is not attempted
+a 302 to the same Location into a 503 outage rides the whole 300 s window (a request per attempt)
+a 302 to a new Location each time into a 503 outage rides the whole 300 s window
+an attempt with no result inside its wall-clock bound is ended and retried as a timeout
+a response that arrives after the attempt's bound is closed unread, never handed on
+a body still arriving at the attempt's bound is ended there and retried, and no byte of it is read after the attempt ended
+an attempt's bound runs from the attempt's start, not from its response: a response 1.2 s into a 2 s bound leaves its body the time that remains, then the attempt is retried
 a matching digest verifies
 an UPPERCASE pin still verifies
 a mismatching digest is refused, as a MISMATCH

@@ -67,6 +67,21 @@ recurred and never turned `main` red; a class that does gets a mechanical catche
   pushing.
 - **A new doc linked only inside backticks** (`` `[x](y)` ``) — `plan-lint` check 25 strips inline code
   before reading links, so the doc is an orphan — link it with a plain markdown link.
+- **A commit or push without a route to GitHub** — `check-supply-chain` (G18, pre-commit and pre-push) fails
+  closed once its RustSec advisory-database fetch has failed through the 300 s retry window of build-gates §0,
+  which holds locally as in CI (decided; G18 has no offline flag), and a push that runs `run-gate-selftests`
+  waits the window in its network legs too — commit and push with the network up. A first clone of the 45 MB
+  database has to finish inside one 120 s attempt, about 3 Mbit/s; on a slower link G18 fails closed after the
+  window, and a fetch past its bound removes a warm clone too: clone the database once by hand into
+  `<db root>/advisory-db-<16 hex>` (by default `$CARGO_HOME/advisory-dbs/advisory-db-3157b0e258782691`), or
+  fetch on a faster link. Behind a proxy that re-signs TLS, G18 fails at once on git's rejected certificate
+  (OpenSSL's, schannel's or Secure Transport's words): give git the proxy's CA (`http.sslCAInfo`). G18 removes
+  a database clone after a fetch attempt past its bound or failed, and after a clone found behind the remote
+  head; a clone it may not remove (a link, a mount point, another user's) fails it at once, naming the path:
+  remove that one by hand. `run-gate-selftests` runs each canary without git's network settings (it drops every
+  `GIT_*` variable but `GIT_EXEC_PATH`), and the canaries' network legs reach out through the proxy variables
+  only: with a proxy set only in git's configuration, g24-install-gate-tools' pip leg fails a push that touches
+  the gate plane — export `HTTPS_PROXY` as well.
 - **`lefthook run <hook>` on a clean tree** — lefthook skips every command and exits 0 — add `--force`
   (`.gate-tools/bin/lefthook run pre-push --force`); nothing is committed or pushed, so every leg that
   reads the unpushed range sees no commit.

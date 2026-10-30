@@ -32,3 +32,11 @@ the render parses as TOML: schema_version 1 and the rows sorted by (uses, sha)
 --resolve-images refuses a reference without a registry host or a tag
 --resolve-images refuses a reply without a sha256 digest
 the real HTTP function refuses a non-https URL
+a request's bounds are the pinned 30 s per blocking step and 60 s per attempt (g24-net-retry pins the same)
+real_http retries a transient 503 with the policy's pauses (2 s, 4 s), then returns the answer
+real_http returns a 404 answer at once (no retry)
+real_http refuses a transport failure that outlasts the 300 s retry window
+after a request spent the window, the run's next request is not attempted
+real_http rides a 302 to the same Location into a 503 outage through the whole 300 s window
+real_http rides a 302 to a new Location each time into a 503 outage through the whole 300 s window
+real_http ends an attempt with no result inside its wall-clock bound and retries it as a timeout

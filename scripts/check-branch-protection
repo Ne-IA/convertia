@@ -57,7 +57,7 @@ import os
 import re
 import subprocess
 import sys
-import time
+import types
 from pathlib import Path
 for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
     if hasattr(_stream, "reconfigure"):
@@ -201,45 +201,90 @@ def evaluate_workflow_perms(data: dict) -> list[str]:
 
 # --- live gh api (owner/CI-verified) ----------------------------------------------------------
 # Transient gh/network failures worth retrying BEFORE the gate fails-CLOSED: a TLS/connection
-# hiccup or a server-side 5xx/429 must not turn a one-off API stumble into a spurious red main
-# (the same transient class as the sast-502 shellcheck-download). A 404, a non-transient HTTP error
-# (403/auth), or a JSON parse error is NOT retried (retrying cannot help). A transient that persists
-# across all attempts still returns 'error', so --enforce stays fail-CLOSED: the retry absorbs a
-# hiccup, it NEVER weakens the posture.
+# hiccup or a server-side 5xx/429 must not turn an API stumble into a spurious red main (the same
+# transient class as the sast-502 shellcheck-download). They are retried under the gate plane's one
+# network retry policy (scripts/net-retry, build-gates §0: capped exponential backoff with jitter for a
+# window after the first failure). A 404, a non-transient HTTP error (403/auth), or a JSON parse error is
+# NOT retried (retrying cannot help). A transient that outlasts the window still returns 'error', so
+# --enforce stays fail-CLOSED, and the run's later reads are not attempted (each reports 'error'): the
+# retry absorbs a burst, it NEVER weakens the posture.
 _TRANSIENT_RE = re.compile(
     r"timeout|timed out|TLS handshake|connection reset|connection refused|EOF|no such host|"
     r"temporary failure|i/o timeout|\b5\d\d\b|\b429\b|rate limit|secondary rate",
     re.IGNORECASE,
 )
-_API_MAX_ATTEMPTS = 3
-_API_BACKOFF_S = (2, 5)  # seconds slept before retry 2 and retry 3
+# gh's status line for an answered request: `gh: <message> (HTTP <code>)`, or `gh: HTTP <code>` when the reply
+# carried no message; a line led by `HTTP <code>:` (go-gh's error text) reads the same. The status comes from that
+# line alone - a `404` or `502` elsewhere in the output (a SHA, a path) names no status - and a request that got
+# no answer has no status line, so only the transient phrases of `_TRANSIENT_RE` decide it.
+_GH_STATUS_RE = re.compile(r"^(?:gh: )?(?:HTTP (?P<lead>\d{3})\b.*|.*\(HTTP (?P<tail>\d{3})\))$", re.MULTILINE)
+_RATE_LIMIT_RE = re.compile(r"rate limit", re.IGNORECASE)
+# One `gh api` read's wall-clock bound: a read answers in seconds, so one still running after a minute is a
+# stalled connection - a transient timeout, retried like any other (gh sets no response timeout of its own).
+_GH_ATTEMPT_TIMEOUT_S = 60
+
+# The gate plane's one network retry policy (scripts/net-retry), compiled from its source into a fresh module: this
+# gate runs `python3 -P`, so no scripts/ module is importable by name, and no bytecode cache is read or written.
+_NET_PATH = Path(__file__).resolve().parent / "net-retry"
+_NET = types.ModuleType("net_retry")
+exec(compile(_NET_PATH.read_bytes(), str(_NET_PATH), "exec"), _NET.__dict__)
+_RETRY = _NET.Retrier("G56a")
+
+
+def _gh_error(p: subprocess.CompletedProcess) -> str:
+    return (p.stderr or "").strip() or (p.stdout or "").strip()
+
+
+def gh_status(err: str) -> int | None:
+    """(pure) The HTTP status of gh's status line in `err` (`_GH_STATUS_RE`), or None when gh got no answer."""
+    m = _GH_STATUS_RE.search(err)
+    return int(m.group("lead") or m.group("tail")) if m else None
+
+
+def _gh_transient(p: subprocess.CompletedProcess) -> str | None:
+    """(pure) The policy's classifier for one `gh api` result: a reason for a transient failure, None for a
+    success, a 404 or a non-transient error. An answered request is transient as HTTP 429, a 5xx, or a 403 whose
+    message names a rate limit (GitHub answers a secondary rate limit with 403 or 429); one that got no answer is
+    transient when its error names a transport failure."""
+    if p.returncode == 0:
+        return None
+    err = _gh_error(p)
+    status = gh_status(err)
+    if status is not None:
+        transient = status == 429 or 500 <= status <= 599 or (status == 403 and bool(_RATE_LIMIT_RE.search(err)))
+        return f"HTTP {status}" if transient else None
+    if not _TRANSIENT_RE.search(err):
+        return None
+    return err.splitlines()[0][:160]
 
 
 def api_json(path: str) -> tuple[str, object, str]:
     """('ok', data, '') | ('notfound', None, err) | ('error', None, err).
 
-    Retries a TRANSIENT failure (network/TLS hiccup, server 5xx/429) up to _API_MAX_ATTEMPTS with a
-    short backoff so a single API stumble does not fail-CLOSE the gate. A success, a 404 (a real
-    signal), a non-transient HTTP error (403/auth), or a parse error returns on its first occurrence;
-    a transient that persists across all attempts returns 'error', leaving the gate fail-CLOSED under
-    --enforce (the retry absorbs a hiccup, it never weakens the posture)."""
-    err = ""
-    for attempt in range(_API_MAX_ATTEMPTS):
-        if attempt:
-            time.sleep(_API_BACKOFF_S[attempt - 1])
-        p = subprocess.run(["gh", "api", path], capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if p.returncode == 0:
-            try:
-                return "ok", json.loads(p.stdout or "null"), ""
-            except json.JSONDecodeError as e:
-                return "error", None, f"unparseable JSON from {path}: {e}"
-        err = p.stderr.strip() or p.stdout.strip()
-        if "404" in err or "Not Found" in err:
-            return "notfound", None, err
-        if not _TRANSIENT_RE.search(err):
-            return "error", None, err  # non-transient (403/auth/...): retrying cannot help
-        # transient: fall through to the next attempt after backoff (unless exhausted)
-    return "error", None, err  # a transient persisted across all attempts -> fail-closed
+    Retries a TRANSIENT failure (network/TLS hiccup, server 5xx/429, an attempt past its bound) under the
+    retry policy so an API burst does not fail-CLOSE the gate. A success, a 404 (a real signal), a
+    non-transient HTTP error (403/auth), or a parse error returns on its first occurrence; a transient that
+    outlasts the window returns 'error', leaving the gate fail-CLOSED under --enforce, and every later read
+    of the run returns 'error' unattempted (the retry absorbs a burst, it never weakens the posture)."""
+    cmd = ["gh", "api", path]
+
+    def attempt() -> subprocess.CompletedProcess:
+        # run_bounded's wall-clock bound: past it the call is exit 124 with a `timed out` line, a transient timeout
+        return _NET.run_bounded(cmd, _GH_ATTEMPT_TIMEOUT_S)
+
+    try:
+        p = _RETRY.run(attempt, what=f"gh api {path}", transient_result=_gh_transient)
+    except _NET.WindowSpent as e:
+        return "error", None, str(e)
+    if p.returncode == 0:
+        try:
+            return "ok", json.loads(p.stdout or "null"), ""
+        except json.JSONDecodeError as e:
+            return "error", None, f"unparseable JSON from {path}: {e}"
+    err = _gh_error(p)
+    if gh_status(err) == 404:
+        return "notfound", None, err
+    return "error", None, err  # non-transient (403/auth/...), or a transient that outlasted the window
 
 
 def fetch_branch_rulesets(repo: str, branch: str) -> tuple[str, list[dict] | None, str]:
