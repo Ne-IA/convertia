@@ -16,7 +16,7 @@
 # ============================================================================
 # Semgrep - the SAST gate (G29, P0.4.2), the FIRST pip-installed gate tool.
 # ============================================================================
-# Pinned EXACT-version `semgrep==1.179.0` + its COMPLETE transitive dependency
+# Pinned EXACT-version `semgrep==1.182.1` + its COMPLETE transitive dependency
 # tree, every distribution hash-locked. Two version axes are kept distinct (G29):
 #   - the Semgrep BINARY version is pinned HERE (this file, --require-hashes);
 #   - the RULE-PACK version is pinned by VENDORING under scripts/semgrep-rules/.
@@ -965,7 +965,7 @@ semantic-version==2.10.0 \
     --hash=sha256:bdabb6d336998cbb378d4b9db3a4b56a1e3235701dc05ea2690d9a997ed5041c \
     --hash=sha256:de78a3b8e0feda74cabc54aab2da702113e33ac9d9eb9d2389bcf1f58b7d9177
     # via semgrep
-semgrep==1.179.0 \
+semgrep==1.182.1 \
     --hash=sha256:34b5e801e3f4325c93014124ccfab6da96857f74aae68458d2a07defd4727b0f \
     --hash=sha256:9b57026f587a4bc7833bca2b6e4d6778072a79dcf0b9f2e5e01d3d5df39c7759 \
     --hash=sha256:b529c4db63f293918989b84ce4640f12f1b1e4680d9e7fcab5f3554f9113dfc5 \
