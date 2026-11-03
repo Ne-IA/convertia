@@ -24,7 +24,8 @@ spent run, a 302 to the CDN that rides the whole window (a request per attempt),
 local write error that is final at once, a request ended at its bound (its late
 response closed unread), and in real time, on scaled-down bounds, a stalled transfer
 ended at the socket timeout, a slow body above the floor rate completing at two
-sizes, and a body still arriving at its deadline ended there with no byte read
+sizes (and at its rate when every sleep overshoots fourfold), and a body still
+arriving at its deadline ended there with no byte read
 after; the hermetic decision legs pin the reference fetch's ok / outage / refusal
 split (behind a CDN redirect too), the four-way network decision and each install
 leg's verdict on its own run. The pip leg resolves its hashless requirement against the package index
@@ -419,16 +420,18 @@ def _opener(seq, fc: _FakeClock | None = None, stall: float = 0.0):
 
 
 class _Paced(io.BytesIO):
-    """A urlopen() response double in real time: read1 hands out `step` bytes of `body` per call, `gap` seconds
-    apart, and records each call's time; its headers declare `declared` bytes. With `stall_after`, the read after that
-    many bytes waits the socket timeout urlopen() was given, then raises TimeoutError - a stalled socket's error. read()
-    raises: the installer reads its body with read1, one system call per chunk."""
+    """A urlopen() response double in real time: read1 hands out `step` bytes of `body` per call, the n-th call's
+    chunk due n `gap` seconds after the first call, so a sleep that overshoots delays its own chunk and never the
+    ones after it (the schedule, not the wake-up, sets the rate); it records each call's time, and `sleep` is the
+    sleep it waits with. Its headers declare `declared` bytes. With `stall_after`, the read after that many bytes
+    waits the socket timeout urlopen() was given, then raises TimeoutError - a stalled socket's error. read() raises:
+    the installer reads its body with read1, one system call per chunk."""
 
     def __init__(self, body: bytes, *, step: int, gap: float, declared: int | None = None,
-                 stall_after: int | None = None, timeout: float | None = None) -> None:
+                 stall_after: int | None = None, timeout: float | None = None, sleep=time.sleep) -> None:
         super().__init__(body)
         self.headers = {"Content-Length": str(declared)} if declared is not None else {}
-        self.step, self.gap, self.stall_after, self.timeout = step, gap, stall_after, timeout
+        self.step, self.gap, self.stall_after, self.timeout, self.sleep = step, gap, stall_after, timeout, sleep
         self.reads: list[float] = []
         self.stalled = False
 
@@ -446,7 +449,7 @@ class _Paced(io.BytesIO):
             time.sleep(self.timeout or 0)
             raise TimeoutError("timed out")
         if self.gap:
-            time.sleep(self.gap)
+            self.sleep(max(0.0, self.reads[0] + len(self.reads) * self.gap - time.monotonic()))
         return super().read1(self.step)
 
     def read(self, *_a) -> bytes:
@@ -678,6 +681,21 @@ def retry_leg() -> None:
                        err is None and out.read_bytes() == body and calls["n"] == 1 and fc.pauses == []
                        and took >= size / 200 * 0.8, f"{type(err).__name__ if err else 'ok'} calls={calls['n']} "
                                                      f"{took:.2f} s")
+            # The pacing holds on a runner whose sleeps overshoot: each sleep of this body takes four times what it
+            # asks, and the 200-byte body still completes in one attempt, inside 3.0 s: three times its paced time,
+            # below its 4.0 s bound.
+            fc, _logs = _fake_retrier(igt)
+            body = bytes(range(200))
+            paced, calls = _paced_opener([dict(body=body, step=2, gap=0.01, declared=200,
+                                               sleep=lambda s: time.sleep(s * 4))])
+            t0 = time.monotonic()
+            err = _download(igt, paced, out)
+            took = time.monotonic() - t0
+            record("a body at four times the floor rate keeps its rate when every sleep overshoots fourfold: the "
+                   "200-byte body completes in one attempt, inside 3.0 s (three times its paced 1.0 s, below its 4.0 s "
+                   "bound)",
+                   err is None and out.read_bytes() == body and calls["n"] == 1 and fc.pauses == [] and took < 3.0,
+                   f"{type(err).__name__ if err else 'ok'} calls={calls['n']} {took:.2f} s")
             fc, _logs = _fake_retrier(igt)
             paced, calls = _paced_opener([dict(body=b"0123456789" * 4, step=10, gap=0.0, declared=40, stall_after=10),
                                           dict(body=_MOCK_PAYLOAD, step=len(_MOCK_PAYLOAD), gap=0.0)])
