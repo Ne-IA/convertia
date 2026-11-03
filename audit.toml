@@ -13,8 +13,11 @@
 # Co-Pilot under owner ack): the ten gtk-rs "unmaintained" ids RUSTSEC-2024-0411..0420 (WITHDRAWN upstream
 # 2026-08-14 — gtk-rs unarchived; cargo audit no longer reports them), the quick-xml DoS pair
 # RUSTSEC-2026-0194/-0195 (quick-xml moved 0.39.4 → 0.42.0, past the >=0.41 fix) and the rkyv OOB-read
-# RUSTSEC-2026-0235 (rust_decimal and its inert optional rkyv left the lock). A vulnerable re-entry is caught by
-# cargo-audit's raw-lock scan (cargo-deny reports only compiled dependencies), never re-ignored.
+# RUSTSEC-2026-0235 (rust_decimal and its inert optional rkyv left the lock). Retired 2026-10-29 (the Tauri 2.12
+# re-land, Co-Pilot under owner ack): the five unic-* "unmaintained" ids RUSTSEC-2025-0075, -0080, -0081,
+# -0098 and -0100 (tauri-utils 2.10 takes urlpattern 0.6, which no longer pulls the unic-* crates; cargo
+# audit no longer reports them). A vulnerable re-entry is caught by cargo-audit's raw-lock scan (cargo-deny
+# reports only compiled dependencies), never re-ignored.
 # [Build-Session-Entscheidung: P1.59]
 
 [advisories]
@@ -23,14 +26,9 @@ ignore = [
   # (LINUX-ONLY, transitive via webkit2gtk-4.1). The ten gtk-rs "unmaintained" ids RUSTSEC-2024-0411..0420
   # were WITHDRAWN upstream on 2026-08-14 (gtk-rs unarchived) and retired here 2026-09-24.
   "RUSTSEC-2024-0429",  # glib
-  # unmaintained build-time proc-macro + unicode transitive crates
+  # unmaintained build-time proc-macro transitive crates
   "RUSTSEC-2024-0370",  # proc-macro-error
   "RUSTSEC-2024-0436",  # paste
-  "RUSTSEC-2025-0075",  # unic-char-range
-  "RUSTSEC-2025-0080",  # unic-common
-  "RUSTSEC-2025-0081",  # unic-char-property
-  "RUSTSEC-2025-0098",  # unic-ucd-version
-  "RUSTSEC-2025-0100",  # unic-ucd-ident
   # zbus 5.x `unmaintained` crates, merged upstream into zbus 6.0.0: LINUX-ONLY, transitive via
   # tauri-plugin-opener and tauri-plugin-single-instance, whose stable releases require zbus ^5.9
   "RUSTSEC-2026-0370",  # zvariant
