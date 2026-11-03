@@ -148,6 +148,22 @@ per-user-`$TMPDIR` macOS socket (the §0.11 T13 row records that option as the h
 taken); the §6.6 macOS walkthrough confirms the normal single-`.app` AppleEvent path is
 single-instance-correct.
 
+**Fallback paths, read at source 2026-10-29** in the lockfile-pinned
+**`tauri-plugin-single-instance` 2.5.5** (the Co-Pilot Tauri 2.12 re-land); the no-clobber guarantee
+holds with two processes (the first bullet above). **Linux:** a launch whose D-Bus session address
+is invalid, or whose session-bus connection fails other than by the name being taken, starts
+normally without the lock, so the per-OS-user rule above does not hold for it (2.4.5 did the same
+on a failed connection and panicked on an invalid address); a second launch whose D-Bus call to the
+primary fails now stops with that error, `main` returning the plugin's setup error (2.4.5 ignored
+the failed call and exited 0). **Windows:** a second launch polls up to 1 s for the primary's
+message window, sends its `cwd` and `argv` NUL-separated (`dwData` 1543) through
+`SendMessageTimeoutW` with a 10 s timeout and exits 0 either way, logging a warning when no window
+appeared or the send failed (2.4.5 sent them `|`-joined through `SendMessageW` and started normally
+when it found no window); the primary still accepts the `|`-joined payload (`dwData` 1542) of
+older plugin versions. **macOS:** unchanged, a launch whose socket notify fails other than by
+`NotFound` or `ConnectionRefused` starts normally. On every OS an `argv` or `cwd` that is not valid
+Unicode now arrives with U+FFFD replacements (2.4.5's `std::env::args` panicked on such an `argv`).
+
 ### 7.1.2 `InstanceId` and `RunId` model `[DECIDED]`
 
 These two ids are the entities §0.6 lists as "defined in §7.1". Both are
@@ -975,6 +991,9 @@ record *what actually happened* without showing the user a stack trace.
   **`tauri-plugin-log` 2.9.2** (the Co-Pilot dependency refresh): the `KeepOne` arm is unchanged
   (`fs::remove_file(&self.path)?`) and `max_file_size` is still a `u128` byte cap — the ~1× bound
   stands for this pin.
+  **Re-verified 2026-10-29** against the lockfile-pinned **`tauri-plugin-log` 2.10.1** (the
+  Co-Pilot Tauri 2.12 re-land): the `KeepOne` arm is unchanged (`fs::remove_file(&self.path)?`)
+  and `max_file_size` is still a `u128` byte cap — the ~1× bound stands for this pin.
 
 ### 7.5.3 Redaction stance — reconciling diagnostics with privacy `[DECIDED + REC]`
 
