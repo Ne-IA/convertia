@@ -288,8 +288,12 @@ silent gap.
 is a silent watch, never an empty queue. GitHub pauses a version-update job after 15 consecutive failures;
 the fix plus an edit of `.github/dependabot.yml` (or a manual "Check for updates") restarts it. The npm job
 failed every run from 2026-06-23 — the committed `.npmrc` `frozen-lockfile` key froze its lockfile-only
-resolve — until it paused; `check-js-supply-chain` now refuses that key. npm minor and patch updates arrive
-as one grouped PR.
+resolve — until it paused; `check-js-supply-chain` now refuses that key. The cargo job stopped running after
+2026-10-12, while five PRs were open at `open-pull-requests-limit: 5`: each entry's limit stays above the
+version-update PRs it can hold open at once, one per group, one per direct dependency no group takes, and one per
+major of a dependency whose group takes only minor and patch updates. npm minor and patch updates arrive as one
+grouped PR, and the Tauri crates and `@tauri-apps/*` packages as one cargo and one npm PR, which the Co-Pilot
+re-lands as one commit (`tauri build` refuses crate and npm minors that differ).
 
 **Action re-land (DECIDED).** A github-actions bump re-land also runs
 `python3 -P scripts/record-action-pins --write`, reviews every row it writes against the raw metadata lines it

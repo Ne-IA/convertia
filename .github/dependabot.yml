@@ -29,16 +29,33 @@ updates:
     directory: "/"
     schedule: { interval: "weekly", day: "monday", time: "04:00" }
     commit-message: { prefix: "deps(cargo)" }
-    open-pull-requests-limit: 5
+    # above the version-update PRs this entry can hold open at once (one per direct dependency outside a
+    # group, one per group): at the limit the job stops, as the cargo job did after 2026-10-12 with five
+    # PRs open at a limit of five (roles-and-escalation sec 5a, watch health)
+    open-pull-requests-limit: 50
     labels: ["bot:dependabot", "type:dependencies"]
+    groups:
+      # the Tauri crates move together and with the npm entry's tauri-apps group: `tauri build` refuses a
+      # crate minor that differs from its @tauri-apps/* package (G30), so the Co-Pilot re-lands the two PRs
+      # as one commit (roles-and-escalation sec 5a); tauri-specta stays out: a specta-rs crate that requires
+      # specta and specta-typescript, which no group takes, and no @tauri-apps/* package matches it
+      tauri:
+        patterns: ["tauri", "tauri-*"]
+        exclude-patterns: ["tauri-specta"]
 
   - package-ecosystem: "npm"              # pnpm workspace + pnpm-lock.yaml  (LIVE)
     directory: "/"
     schedule: { interval: "weekly", day: "monday", time: "04:00" }
     commit-message: { prefix: "deps(npm)" }
-    open-pull-requests-limit: 5
+    # above the version-update PRs this entry can hold open at once, as for cargo (a major of a dependency
+    # npm-minor-patch takes arrives as its own PR)
+    open-pull-requests-limit: 50
     labels: ["bot:dependabot", "type:dependencies"]
     groups:
+      # the @tauri-apps/* packages move with the cargo entry's tauri group (G30), in every update type;
+      # listed first, because a dependency joins the first group whose patterns match it
+      tauri-apps:
+        patterns: ["@tauri-apps/*"]
       # minor + patch version updates arrive as ONE weekly PR, each re-landed by the Co-Pilot
       # (roles-and-escalation sec 5a); a major version and every security update stay their own PR.
       npm-minor-patch:
