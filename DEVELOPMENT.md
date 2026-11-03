@@ -14,8 +14,9 @@ contribution workflow, the quality bar, and how to run the checks, see
   channel by hand.
 - **Node.js + pnpm** — ConvertIA uses **pnpm**, pinned to `pnpm@10.34.7` through the
   `packageManager` field. The simplest way to get the pinned pnpm is Corepack, which ships
-  with Node: run `corepack enable`, then `pnpm install` in the repo root. Use a current
-  Node.js LTS.
+  with Node: run `corepack enable`, then `pnpm install` in the repo root. Use a Node.js
+  release inside `^22.22.2 || ^24.15.0 || >=26.0.0`, the `engines.node` range of jsdom 30,
+  the vitest test environment.
 
 ## Per-OS system prerequisites
 
