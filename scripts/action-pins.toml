@@ -60,9 +60,9 @@ image_exempt_reason = ""
 
 [[action]]
 uses = "step-security/harden-runner"
-sha = "e14015d583714f6e62063499dc959a02595150a1"
+sha = "46b06cea07f9e64621fdf066ba77ac6915163d43"
 metadata_file = "action.yml"
-metadata_sha256 = "8ccb449974d5f572567ae29026cd80a673afed4115568f742aed0f0904bbeca3"
+metadata_sha256 = "8512e61fd002ae43586094369a23c969597f518208ca1c30f4bc97e1e7d77d1f"
 using = "node24"
 nested_uses = []
 image = ""
