@@ -15,14 +15,14 @@ importers:
         specifier: 2.10.1
         version: 2.10.1
       react:
-        specifier: 19.2.7
-        version: 19.2.7
+        specifier: 19.3.1
+        version: 19.3.1
       react-dom:
-        specifier: 19.2.7
-        version: 19.2.7(react@19.2.7)
+        specifier: 19.3.1
+        version: 19.3.1(react@19.3.1)
       zustand:
-        specifier: 5.0.14
-        version: 5.0.14(@types/react@19.2.17)(react@19.2.7)
+        specifier: 5.0.16
+        version: 5.0.16(@types/react@19.3.0)(react@19.3.1)
     devDependencies:
       '@tailwindcss/vite':
         specifier: 4.3.3
@@ -35,13 +35,13 @@ importers:
         version: 10.4.1
       '@testing-library/react':
         specifier: 16.3.2
-        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@types/react':
-        specifier: 19.2.17
-        version: 19.2.17
+        specifier: 19.3.0
+        version: 19.3.0
       '@types/react-dom':
-        specifier: 19.2.3
-        version: 19.2.3(@types/react@19.2.17)
+        specifier: 19.3.0
+        version: 19.3.0(@types/react@19.3.0)
       '@vitejs/plugin-react-swc':
         specifier: 4.3.3
         version: 4.3.3(vite@8.3.5(jiti@2.7.0))
@@ -692,13 +692,13 @@ packages:
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
 
-  '@types/react-dom@19.2.3':
-    resolution: {integrity: sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ==}
+  '@types/react-dom@19.3.0':
+    resolution: {integrity: sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q==}
     peerDependencies:
-      '@types/react': ^19.2.0
+      '@types/react': ^19.3.0
 
-  '@types/react@19.2.17':
-    resolution: {integrity: sha512-MXfmqaVPEVgkBT/aY0aGCkRWWtByiYQXo3xdQ8r5RzuFrPiRn8Gar2tQdXSUQ2GKV3bkXckek89V8wQBY2Q/Aw==}
+  '@types/react@19.3.0':
+    resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
 
   '@typescript-eslint/eslint-plugin@8.62.0':
     resolution: {integrity: sha512-o+mpz7EYiMzXoySXiKmzlabIvTVqUuK5yLrAedRPRDA0IpPFMUV1IXt6OqljIxX/kumN6EjUYp41Hqelh6p/Dw==}
@@ -1936,10 +1936,10 @@ packages:
   queue-microtask@1.2.3:
     resolution: {integrity: sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A==}
 
-  react-dom@19.2.7:
-    resolution: {integrity: sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ==}
+  react-dom@19.3.1:
+    resolution: {integrity: sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==}
     peerDependencies:
-      react: ^19.2.7
+      react: ^19.3.1
 
   react-is@16.13.1:
     resolution: {integrity: sha512-24e6ynE2H+OKt4kqsOvNd8kBpV65zoxbA4BVsEOB3ARVWQki/DHzaUoC5KuON/BiccDaCCTZBuOcfZs70kR8bQ==}
@@ -1947,8 +1947,8 @@ packages:
   react-is@17.0.2:
     resolution: {integrity: sha512-w2GsyukL62IJnlaff/nRegPQR94C/XXamvMWmSHRJ4y7Ts/4ocGRmTHvOs8PSE6pB3dWOrD/nueuU5sduBsQ4w==}
 
-  react@19.2.7:
-    resolution: {integrity: sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==}
+  react@19.3.1:
+    resolution: {integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==}
     engines: {node: '>=0.10.0'}
 
   redent@3.0.0:
@@ -2004,8 +2004,8 @@ packages:
     resolution: {integrity: sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==}
     engines: {node: '>=v12.22.7'}
 
-  scheduler@0.27.0:
-    resolution: {integrity: sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q==}
+  scheduler@0.28.0:
+    resolution: {integrity: sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==}
 
   semver@6.3.1:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
@@ -2414,8 +2414,8 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
-  zustand@5.0.14:
-    resolution: {integrity: sha512-/8tAspM5LMPr28b3fwLYrtdj77ECpfZviaP75CMTnwO8ISyaE4GDIG/9rDDYq/cH9D2Xw2A2RXglLInmVBQB/g==}
+  zustand@5.0.16:
+    resolution: {integrity: sha512-Uv7e327ihlCfayfja3hDc0M64Upev1LWBKpRobdK4NyovDDPeeX4imWXc/wzC1yc6fkYPoAY/ncKVPAs2jrtQw==}
     engines: {node: '>=12.20.0'}
     peerDependencies:
       '@types/react': '>=18.0.0'
@@ -2862,15 +2862,15 @@ snapshots:
       picocolors: 1.1.1
       pretty-format: 27.5.1
 
-  '@testing-library/react@16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@testing-library/react@16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@babel/runtime': 7.29.7
       '@testing-library/dom': 10.4.1
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
     optionalDependencies:
-      '@types/react': 19.2.17
-      '@types/react-dom': 19.2.3(@types/react@19.2.17)
+      '@types/react': 19.3.0
+      '@types/react-dom': 19.3.0(@types/react@19.3.0)
 
   '@types/aria-query@5.0.4': {}
 
@@ -2887,11 +2887,11 @@ snapshots:
 
   '@types/json-schema@7.0.15': {}
 
-  '@types/react-dom@19.2.3(@types/react@19.2.17)':
+  '@types/react-dom@19.3.0(@types/react@19.3.0)':
     dependencies:
-      '@types/react': 19.2.17
+      '@types/react': 19.3.0
 
-  '@types/react@19.2.17':
+  '@types/react@19.3.0':
     dependencies:
       csstype: 3.2.3
 
@@ -4267,16 +4267,16 @@ snapshots:
 
   queue-microtask@1.2.3: {}
 
-  react-dom@19.2.7(react@19.2.7):
+  react-dom@19.3.1(react@19.3.1):
     dependencies:
-      react: 19.2.7
-      scheduler: 0.27.0
+      react: 19.3.1
+      scheduler: 0.28.0
 
   react-is@16.13.1: {}
 
   react-is@17.0.2: {}
 
-  react@19.2.7: {}
+  react@19.3.1: {}
 
   redent@3.0.0:
     dependencies:
@@ -4366,7 +4366,7 @@ snapshots:
     dependencies:
       xmlchars: 2.2.0
 
-  scheduler@0.27.0: {}
+  scheduler@0.28.0: {}
 
   semver@6.3.1: {}
 
@@ -4828,7 +4828,7 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zustand@5.0.14(@types/react@19.2.17)(react@19.2.7):
+  zustand@5.0.16(@types/react@19.3.0)(react@19.3.1):
     optionalDependencies:
-      '@types/react': 19.2.17
-      react: 19.2.7
+      '@types/react': 19.3.0
+      react: 19.3.1
