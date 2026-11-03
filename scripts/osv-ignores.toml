@@ -16,3 +16,7 @@
 # check hands the scanner an empty `--config`, so a committed osv-scanner.toml is never read.
 
 schema_version = 1
+
+[[ignore]]
+id = "GHSA-g3hv-75wg-m249"
+reason = "minimatch below 11.0.1 (CVE-2026-118764, MODERATE: denial of service through glob patterns whose parts amplify) is fixed only in 11.0.1, outside the ranges its dependents declare (eslint, @eslint/config-array and @typescript-eslint/typescript-estree ^10, eslint-plugin-react ^3, each so in its latest release); here its 10.x and 3.x copies are dev-only transitives of the lint toolchain, absent from the production dependency graph, and they match only the repo's own patterns (the files and ignores globs of eslint.config.mjs, the `eslint .` of the lint script, the `*` customComponentNames of react/no-danger)"
