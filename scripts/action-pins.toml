@@ -49,9 +49,9 @@ image_exempt_reason = ""
 
 [[action]]
 uses = "actions/setup-python"
-sha = "5fda3b95a4ea91299a34e894583c3862153e4b97"
+sha = "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0"
 metadata_file = "action.yml"
-metadata_sha256 = "e6dc8046c02bd3c9f7bf2fea6ba2e59b4e83c7de2b26ec2149a1627f5d66f96c"
+metadata_sha256 = "0829b3f54d769f8b25cefd4d856c735bc8e097d6597835b838ebb4da497c838d"
 using = "node24"
 nested_uses = []
 image = ""
