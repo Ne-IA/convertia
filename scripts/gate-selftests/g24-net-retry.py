@@ -15,7 +15,9 @@ Pins the policy both where it lives and where it is copied:
    run_bounded() closes stdin and ends a hung subprocess and every process of its group with SIGTERM - a group that
    cleans up on it ends at once - and with SIGKILL once KILL_GRACE_S has passed, the bound measured from the moment
    its child reported its grandchildren, and returns with its output read from files although a grandchild that left
-   the group with setsid() still holds them.
+   the group with setsid() still holds them; replayed on a POSIX host (NET reading os.name as nt, a stand-in
+   taskkill on PATH), its Windows kill path runs `taskkill /F /T /PID <pid>` once for a run past its bound, the
+   bound measured from the child's report.
 2. The workflow retry loops (.github/workflows/*.yml and *.yaml), which run the same schedule in shell, read by regex
    over the lines of each run: value (check-ci-supply-chain's own reader; quoted text, escapes and ${...} blanked):
    every loop around a `sleep "$pause"` line opens with `until ...; do` or `while :; do`, has its schedule reset on
@@ -499,14 +501,20 @@ _REAL_POPEN = subprocess.Popen
 
 
 class _ReportedPopen(_REAL_POPEN):
-    """subprocess.Popen for the leg's run_bounded call: it returns once the child wrote its report file (30 s at
-    most), so the bound run_bounded starts after it is measured from the report."""
+    """subprocess.Popen for the legs' run_bounded calls: the process whose arguments name the leg's report file
+    returns once the child wrote it (30 s at most), so the bound run_bounded starts after it is measured from the
+    report. Any other process passes through untouched - subprocess.run starts its process through
+    subprocess.Popen, and run_bounded's Windows kill path runs taskkill with it once the bound has passed. Each leg
+    sets reported_at to NaN with its report path, so a leg whose own process never names the report fails its bound
+    instead of reading an earlier leg's time."""
 
     report: Path = Path()
     reported_at = 0.0
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        if str(type(self).report) not in self.args:
+            return
         end = time.monotonic() + 30
         while time.monotonic() < end:
             with contextlib.suppress(OSError):
@@ -517,7 +525,7 @@ class _ReportedPopen(_REAL_POPEN):
 
 
 with tempfile.TemporaryDirectory() as _td:
-    _ReportedPopen.report = Path(_td) / "report"
+    _ReportedPopen.report, _ReportedPopen.reported_at = Path(_td) / "report", math.nan
     subprocess.Popen = _ReportedPopen
     try:
         _hang = NET.run_bounded([sys.executable, "-c", _HANG_GROUP, str(_ReportedPopen.report)], 1.0)
@@ -559,11 +567,12 @@ else:
     # ends the tree, and the leg pins the exit, the bound and the report read from the files
     _left_alive, _ended = True, bool(_inside)
 _GRACE = NET.KILL_GRACE_S if os.name == "posix" else 0.0     # Windows: taskkill /F /T at once, no grace
+_TICKS = 0.0 if os.name == "posix" else 0.032   # Windows: the lower bound allows two 15.6 ms ticks of the system timer
 record("run_bounded: a run past its bound whose group ignores SIGTERM returns exit 124 with a `timed out` line once "
        "KILL_GRACE_S has passed after its bound (then SIGKILL; Windows: taskkill /F /T at once), the grandchild of its "
        "process group ended, and the report read from the output files although the grandchild that left the group "
        "(setsid) still held them",
-       _hang.returncode == 124 and "timed out" in _hang.stderr and 1.0 + _GRACE <= _took < 1.0 + _GRACE + 8.0
+       _hang.returncode == 124 and "timed out" in _hang.stderr and 1.0 + _GRACE - _TICKS <= _took < 1.0 + _GRACE + 8.0
        and _ended and _left_alive and _inside > 0,
        f"exit {_hang.returncode} {_took:.1f} s after the report; in-group grandchild {_inside} ended: {_ended}; "
        f"grandchild {_left} out of the group still running at the return: {_left_alive}")
@@ -596,7 +605,7 @@ _TERM_GROUP = ("import os, signal, subprocess, sys, time\n"
                "time.sleep(120)\n")
 with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as _td:
     _mark = Path(_td) / "mark"
-    _ReportedPopen.report = Path(_td) / "report"
+    _ReportedPopen.report, _ReportedPopen.reported_at = Path(_td) / "report", math.nan
     subprocess.Popen = _ReportedPopen
     try:
         _term = NET.run_bounded([sys.executable, "-c", _TERM_GROUP, str(_mark), str(_ReportedPopen.report),
@@ -628,7 +637,7 @@ _TERM_LEADER = ("import os, signal, subprocess, sys, time\n"
                 "time.sleep(120)\n")
 with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as _td:
     _mark = Path(_td) / "mark"
-    _ReportedPopen.report = Path(_td) / "report"
+    _ReportedPopen.report, _ReportedPopen.reported_at = Path(_td) / "report", math.nan
     subprocess.Popen = _ReportedPopen
     try:
         _lead = NET.run_bounded([sys.executable, "-c", _TERM_LEADER, str(_mark), str(_ReportedPopen.report),
@@ -646,6 +655,50 @@ record("run_bounded: after SIGTERM it waits for every process of the group, not 
        "call returns (Windows: taskkill /F /T ends the tree at once)",
        _lead.returncode == 124 and _lead_ok, f"exit {_lead.returncode} {_lead_took:.1f} s after the report; "
                                             f"grandchild marker {_lead_marked}")
+# The Windows kill path, replayed on a POSIX host so the local gates run it as well: NET reads os.name as nt and
+# finds a stand-in taskkill on PATH that logs its arguments. That taskkill starts through subprocess.Popen while the
+# legs' double stands in, so the bound reads as measured from the child's report only if the double passes it
+# through.
+if os.name == "posix":
+    class _AsWindows:
+        """`os` as NET reads it on Windows: os.name is nt, every other name is this host's."""
+
+        name = "nt"
+
+        def __getattr__(self, attr: str) -> object:
+            return getattr(os, attr)
+
+    _REPORT_HANG = ("import os, sys, time\n"
+                    "print(os.getpid(), flush=True)\n"
+                    "with open(sys.argv[1], 'w', encoding='utf-8') as fh:\n"
+                    "    fh.write(f'{os.getpid()}\\n')\n"
+                    "time.sleep(120)\n")
+    with tempfile.TemporaryDirectory() as _td:
+        _calls = Path(_td) / "taskkill.calls"
+        _taskkill = Path(_td) / "taskkill"
+        _taskkill.write_text(f'#!/bin/sh\necho "$*" >> "{_calls}"\n', encoding="utf-8")
+        _taskkill.chmod(0o700)
+        _ReportedPopen.report, _ReportedPopen.reported_at = Path(_td) / "report", math.nan
+        _path = os.environ.get("PATH")
+        os.environ["PATH"] = _td + os.pathsep + (_path or os.defpath)
+        NET.os, subprocess.Popen = _AsWindows(), _ReportedPopen
+        try:
+            _win = NET.run_bounded([sys.executable, "-c", _REPORT_HANG, str(_ReportedPopen.report)], 1.0)
+        finally:
+            NET.os, subprocess.Popen = os, _REAL_POPEN
+            if _path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = _path
+        _win_took = time.monotonic() - _ReportedPopen.reported_at
+        _win_calls = _calls.read_text(encoding="utf-8").splitlines() if _calls.is_file() else []
+    record("run_bounded: its Windows kill path (replayed here: NET reads os.name as nt, a stand-in taskkill on PATH) "
+           "runs `taskkill /F /T /PID <the child's pid>` once for a run past its bound and returns exit 124 with a "
+           "`timed out` line, the bound measured from the child's report: the taskkill passes through the legs' "
+           "double",
+           _win.returncode == 124 and "timed out" in _win.stderr and 1.0 <= _win_took < 1.0 + 8.0
+           and _win_calls == [f"/F /T /PID {_win.stdout.strip()}"],
+           f"exit {_win.returncode} {_win_took:.1f} s after the report; taskkill calls {_win_calls}")
 
 # --- 2. the workflow retry loops -------------------------------------------------------------------------------
 # The canonical shell lines of a workflow retry loop, built from the module's constants: a loop that drifts from the

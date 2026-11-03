@@ -137,6 +137,12 @@ recurred and never turned `main` red; a class that does gets a mechanical catche
 - **A source-scan test** (a `.rs` file read through `include_str!`) — a needle that also occurs in a
   comment, a string or another file passes on the wrong site — strip comments and strings before
   cutting at `#[cfg(test)]`, and use a needle that occurs once in the scanned file.
+- **A self-test double that stands in process-wide** (a stdlib name rebound, as `subprocess.Popen = X` or
+  `time.sleep = X`, or a stand-in on `PATH`) — the stdlib reaches it too, some of it on one OS only
+  (`subprocess.run` starts its process through `subprocess.Popen`, as run_bounded's Windows kill path does
+  for taskkill; POSIX `Popen.wait(timeout)` sleeps through `time.sleep`), so that OS's G10 canary reads the
+  wrong call, on its L4 lane alone — let the double act only on the call its leg means (match its
+  arguments) and pass every other call through, or hand the code under test its double as a parameter.
 
 ## How to contribute
 
