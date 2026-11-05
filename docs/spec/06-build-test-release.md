@@ -751,8 +751,12 @@ change-reviewed in-repo `engines.lock`** before staging AND **re-verified on
 cache-restore** (an Actions cache is not integrity-protected — on mismatch, delete +
 refetch from the pinned upstream URL); `cargo audit` / `cargo deny` run in CI over
 the Rust graph (advisory + licence-policy enforcement, non-release-blocking
-advisory-wise but licence-policy-blocking), and `osv-scanner` runs offline over
-`pnpm-lock.yaml` against the Lane-A-refreshed OSV database (the JS advisory half).
+advisory-wise but licence-policy-blocking), `cargo audit` also over the fuzz harness's
+`fuzz/Cargo.lock`; `osv-scanner` runs offline over every other committed lockfile —
+`pnpm-lock.yaml` and the gate-tool `requirements-ci.txt` and `requirements-yamllint.txt` —
+and over the pnpm release `package.json`'s `packageManager` pins, against the
+Lane-A-refreshed OSV databases (the OSV advisory half); a tracked lockfile neither scan
+reads fails the check unless it is a declared non-graph file.
 Engine **currency** (keeping decoders
 patched) is a **best-effort posture, not a gate** (SSOT) — owned by §3.8; this file
 only ensures a bumped engine is re-validated against the corpus (§6.4/§6.5) before it
@@ -1665,8 +1669,9 @@ gate tooling and compile-sanity on the three-OS matrix:
    fast — runs every push; any jsdom-leg violation fails the lane.
 5. **Compile-sanity on the matrix:** `cargo check` / a debug `tauri build` on all
    three legs to catch platform-specific breakage early (no full corpus run here).
-6. **`cargo audit` / `cargo deny`** (Rust) and **`osv-scanner`** over `pnpm-lock.yaml` (JS)
-   (advisory + licence policy, §6.3.4).
+6. **`cargo audit`** (Rust, the fuzz lock included) / **`cargo deny`** (the root graph) and
+   **`osv-scanner`** over `pnpm-lock.yaml`, the two pip gate-tool locks and the pinned pnpm (advisory +
+   licence policy, §6.3.4).
 The enforcement is **CI green on `main` via required status checks on every push to
 `main`** (single-branch model, security-concept §2) — a red Lane A **fails the push /
 reddens `main`** and is **fixed immediately**, never bypassed; there is **no merge step

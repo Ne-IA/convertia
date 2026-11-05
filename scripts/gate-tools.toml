@@ -202,9 +202,10 @@ macos-x86_64   = { url = "https://github.com/rustsec/rustsec/releases/download/c
 macos-aarch64  = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-aarch64-apple-darwin-v0.22.2.tgz",       sha256 = "ec7ca4263769593df4d909be85b94a6b79efa2897be5d2bb8ebd516e823175af" }
 windows-x86_64 = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-pc-windows-msvc-v0.22.2.zip",      sha256 = "0a7316540862c13d954f648917ceacca593747baed6eec180fafa590be2710ab", asset_kind = "zip" }
 
-# --- osv-scanner - the OSV advisory scanner over pnpm-lock.yaml (G17's JS half, P4.96). Run by
-# scripts/check-js-advisories as `osv-scanner scan source --offline` against the local OSV npm database
-# under .gate-tools/osv-db; only that script's `--refresh` mode downloads the database. Ships RAW
+# --- osv-scanner - the OSV advisory scanner over every committed npm and PyPI lockfile and the pinned pnpm
+# (G17's OSV half, P4.96 and push 4). Run by scripts/check-osv-advisories as `osv-scanner scan source
+# --offline` against the local OSV npm and PyPI databases under .gate-tools/osv-db; only that script's
+# `--refresh` mode downloads them. Ships RAW
 # per-platform binaries (the downloaded asset IS the executable; no archive to extract). ---
 [tools.osv-scanner]
 version       = "2.6.0"

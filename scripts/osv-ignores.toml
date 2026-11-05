@@ -1,16 +1,24 @@
-# scripts/osv-ignores.toml - the accepted JS advisories of G17's JS half (scripts/check-js-advisories, P4.96).
+# scripts/osv-ignores.toml - the accepted advisories of G17's OSV half (scripts/check-osv-advisories, P4.96 and
+# push 4): the osv-scanner scan of every committed npm and PyPI lockfile (pnpm-lock.yaml, requirements-ci.txt,
+# requirements-yamllint.txt; the census in check-osv-advisories names them) and of the pnpm that package.json's
+# `packageManager` pins. The Rust half's accepted advisories live in audit.toml.
 #
-# An entry accepts ONE advisory that the osv-scanner scan of pnpm-lock.yaml reports:
+# An entry accepts ONE advisory that the scan reports:
 #
 #   [[ignore]]
 #   id = "<the OSV id, e.g. a GHSA id, or any of its aliases, e.g. the CVE id>"
 #   reason = "<why the advisory does not apply to ConvertIA, or why no fixed version can be taken>"
+#   held_by = "<package>@<version>"   # optional: the held package's own pin
 #
-# Exactly these two keys; the reason is required. An entry whose advisory the scan no longer reports is stale
-# and fails the check, so the list only ever holds live acceptances.
+# `id` and `reason` are required. With `held_by`, the entry accepts the advisory only on that package at that
+# version (a PyPI name compared in its PEP 503 normal form): the same advisory on another package or version reds,
+# and once the pin moves the entry no longer accepts anything and reds as stale. `held_by` names the vulnerable
+# package's pin, never the tool that holds it (plan-lint check 32 keeps the Semgrep version in
+# requirements-ci.txt alone). An entry whose advisory the scan no longer reports is stale and fails the check, so
+# the list only ever holds live acceptances.
 #
 # Growth guard: the check fails when this file holds more entries than EXPECTED_IGNORE_COUNT in
-# scripts/check-js-advisories, so accepting an advisory takes two reviewed edits (the entry here, the count
+# scripts/check-osv-advisories, so accepting an advisory takes two reviewed edits (the entry here, the count
 # there). Both files are caged (scripts/**), so the commit carries the G71 `L-neg1-ack: owner` trailer - the
 # owner ack, with no per-entry ack field (the audit.toml discipline). This file is the only ignore list: the
 # check hands the scanner an empty `--config`, so a committed osv-scanner.toml is never read.
@@ -20,3 +28,28 @@ schema_version = 1
 [[ignore]]
 id = "GHSA-g3hv-75wg-m249"
 reason = "minimatch below 11.0.1 (CVE-2026-118764, MODERATE: denial of service through glob patterns whose parts amplify) is fixed only in 11.0.1, outside the ranges its dependents declare (eslint, @eslint/config-array and @typescript-eslint/typescript-estree ^10, eslint-plugin-react ^3, each so in its latest release); here its 10.x and 3.x copies are dev-only transitives of the lint toolchain, absent from the production dependency graph, and they match only the repo's own patterns (the files and ignores globs of eslint.config.mjs, the `eslint .` of the lint script, the `*` customComponentNames of react/no-danger)"
+
+[[ignore]]
+id = "GHSA-84m7-p3x7-pcfv"
+reason = "mcp 1.29.0 in requirements-ci.txt (CVE-2026-59951, MODERATE: the stateful Streamable HTTP server never reclaims its sessions; fixed in 1.30.0) is held there by the pinned Semgrep, whose every release on PyPI requires mcp==1.29.0 (read 2026-11-03); Semgrep starts an MCP server only under `semgrep mcp`, and the sast job's check-sast --full runs only --validate and --config scans, which import mcp at start-up and start no function of server/streamable_http.py or server/streamable_http_manager.py (measured on 2026-10-29); alert #17, dismissed as vulnerable_code_not_used on 2026-11-03 under the owner direction of 2026-10-29"
+held_by = "mcp@1.29.0"
+
+[[ignore]]
+id = "GHSA-rwrf-2pqf-9j8j"
+reason = "mcp 1.29.0 in requirements-ci.txt (CVE-2026-116686, MODERATE: the client session fetches server-chosen $ref URLs while it validates tool results; fixed in 1.30.0) is held there by the pinned Semgrep's mcp==1.29.0 requirement; Semgrep uses mcp as a server only, and check-sast --full starts no function of client/session.py (measured on 2026-10-29); alert #32, dismissed as vulnerable_code_not_used on 2026-11-03 under the owner direction of 2026-10-29"
+held_by = "mcp@1.29.0"
+
+[[ignore]]
+id = "GHSA-5h93-6whr-6q8j"
+reason = "mcp 1.29.0 in requirements-ci.txt (CVE-2026-116685, MODERATE: the HTTP client transports follow cross-origin redirects with custom headers and bodies; fixed in 1.30.0) is held there by the pinned Semgrep's mcp==1.29.0 requirement; Semgrep opens no MCP client transport, and check-sast --full starts no function of client/streamable_http.py, client/sse.py, client/session_group.py, client/auth/ or shared/_httpx_utils.py (measured on 2026-10-29); alert #33, dismissed as vulnerable_code_not_used on 2026-11-03 under the owner direction of 2026-10-29"
+held_by = "mcp@1.29.0"
+
+[[ignore]]
+id = "GHSA-w4fh-qvv9-3v23"
+reason = "mcp 1.29.0 in requirements-ci.txt (CVE-2026-116684, MODERATE: the server's bearer authentication accepts tokens issued for another audience; fixed in 1.30.0) is held there by the pinned Semgrep's mcp==1.29.0 requirement; Semgrep configures MCP authentication only inside `semgrep mcp --transport streamable-http`, which check-sast --full never runs, and no function of server/auth/ starts (measured on 2026-10-29); alert #34, dismissed as vulnerable_code_not_used on 2026-11-03 under the owner direction of 2026-10-29"
+held_by = "mcp@1.29.0"
+
+[[ignore]]
+id = "GHSA-xcq7-p3pf-p88h"
+reason = "opentelemetry-api 1.37.0 in requirements-ci.txt (CVE-2026-114603, MODERATE: TraceState.from_header parses an inbound tracestate in quadratic time; fixed in 1.45.1) is held there by the pinned Semgrep, whose every release on PyPI requires opentelemetry-api~=1.37.0 (read 2026-11-03); check-sast --full never turns Semgrep's tracing on, and Semgrep's one trace-context extraction carries only `traceparent` from two environment variables, so TraceState.from_header and TraceContextTextMapPropagator.extract never run (measured on 2026-10-29); alert #30, dismissed as vulnerable_code_not_used on 2026-11-03 under the owner direction of 2026-10-29"
+held_by = "opentelemetry-api@1.37.0"

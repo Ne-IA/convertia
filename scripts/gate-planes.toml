@@ -101,10 +101,10 @@ reason = "the stale-base check skips when origin/main is unknown (fresh clone / 
 
 [[fail_open]]
 gate = "G17"
-leg = "offline advisory scans without a local database (check-js-advisories; check-rust-lint-contract's cargo audit --no-fetch)"
+leg = "offline advisory scans without a local database (check-osv-advisories, per ecosystem; check-rust-lint-contract's cargo audit --no-fetch over Cargo.lock and fuzz/Cargo.lock)"
 fail_open_at = "L1/L2"
 covered_by = "L4"
-reason = "a local plane never downloads an advisory database, so without one each scan skips with a notice naming the fix (a partial OSV database still reds); Lane A's gate-tooling job on Linux warms the RustSec database and refreshes the OSV npm database, then runs both scans fail-closed over the OS-agnostic Cargo.lock and pnpm-lock.yaml (check-js-advisories --require-db reds an absent or partial database; the macOS/Windows legs of the matrix skip the Rust audit the same way and leave the JS scan to the Linux leg) (pattern d)"
+reason = "a local plane never downloads an advisory database, so without one each scan skips with a notice naming the fix (an OSV ecosystem without its database skips its sources only; a partial OSV database still reds, and the lockfile census, the pnpm pin and the ignore file are checked in every plane); Lane A's gate-tooling job and the daily advisories workflow on Linux warm the RustSec database and refresh the OSV npm and PyPI databases, then run both scans fail-closed over the OS-agnostic locks and the pin (check-osv-advisories --require-db reds an absent, partial or old database and a failed refresh; the macOS/Windows legs of the matrix skip the Rust audit the same way and leave the OSV scan to the Linux leg) (pattern d)"
 
 [[fail_open]]
 gate = "G8"

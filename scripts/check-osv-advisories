@@ -1,0 +1,871 @@
+#!/usr/bin/env python3
+"""check-osv-advisories - G17's OSV half: osv-scanner offline over every committed npm and PyPI lockfile and
+the pinned pnpm, with the lockfile census (P4.96, widened by push 4).
+
+The Rust half of G17 is `cargo audit --no-fetch` over CARGO_AUDIT_LOCKS in check-rust-lint-contract; this script
+is its OSV mirror. It runs the PINNED osv-scanner (scripts/gate-tools.toml, installed into .gate-tools/bin by
+install-gate-tools; a binary on PATH is unpinned and never used) in ONE offline call over every source below
+against the local OSV databases, and fails closed on every advisory that scripts/osv-ignores.toml does not accept.
+
+The scan set (the lockfile census; offline, every mode and plane, before any database is read):
+  * The tracked tree (`git ls-files`) is the input, never a hand list. A tracked file is lockfile-named when its
+    basename, compared case-insensitively, is a known lockfile name (LOCK_NAMES) or matches LOCK_GLOBS, or when it
+    is a `.txt` file in a directory named `requirements`.
+  * A tracked file is READ by this script when osv_parser() names its osv-scanner parser (pnpm-lock.yaml and
+    package-lock.json for npm; every requirements-style `.txt` as `requirements.txt` for PyPI). A lockfile-named
+    file is otherwise read by the Rust half when its path is in check-rust-lint-contract's CARGO_AUDIT_LOCKS (read
+    from that file's syntax tree, never run), or declared in DECLARED_UNSCANNED with its reason. Anything else
+    fails: "unread lockfile". A declared or Rust-half path that is not tracked fails, and so does a REQUIRED_SOURCES
+    path this scan no longer reads (the presence list).
+  * The pnpm release package.json's `packageManager` pins is a source too: the value must be exactly
+    `pnpm@X.Y.Z`, optionally with corepack's `+sha<bits>.<hex>` suffix (an absent, ranged or other value fails
+    closed), and is scanned as a one-package npm v3 lock written into the scan's own temp dir.
+
+Contract (each value measured against osv-scanner 2.6.0):
+  * One database per ecosystem: `<DB_DIR>/osv-scalibr/<npm|PyPI>/all.zip`, DB_DIR = .gate-tools/osv-db
+    (gitignored), handed to the scanner as OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY. Each zip is tested before any
+    scan: `ok` = a readable zip with at least one file member whose CRCs all verify. The test is load-bearing: the
+    scanner scans a zero-member zip and reports it clean (exit 0).
+  * The check argv is `scan source --offline --all-packages --format json --config <empty file>` and one
+    `--lockfile <parser>:<path>` per source. `--all-packages` lists every package of every source the scanner read,
+    so a source it read no package from (an emptied or unparsable lockfile, which beside other sources no longer
+    exits 128) fails instead of scanning clean. The explicit empty config stops the scanner's config discovery, so a committed
+    osv-scanner.toml can never ignore an advisory silently; the one ignore list is scripts/osv-ignores.toml. The
+    child runs in an empty temp dir with the HTTP(S) proxy variables pointed at a closed local port, so a
+    connection attempt `--offline` should never make fails instead of leaving the machine.
+  * The exit code is decided before the JSON is trusted: 0 = clean, 1 = findings, anything else fails closed.
+    127 (no usable database, or an absent lockfile) still prints a clean-looking `{"results": []}`, and 128 (a
+    lockfile without packages) prints nothing.
+  * osv-ignores.toml holds `schema_version = 1` and `[[ignore]]` tables with `id` (the OSV id or any of its
+    aliases), a non-empty `reason` and an optional `held_by = "<package>@<version>"`. An entry with `held_by`
+    accepts its advisory only on that package at that version (a PyPI name compared in its PEP 503 normal form):
+    the same id on another package or version reds, and once the pin moves the entry reds as stale. A duplicate
+    id, an unknown key, bad TOML, an entry whose advisory the scan no longer reports (stale) and a count above
+    EXPECTED_IGNORE_COUNT all fail. Growth is two reviewed edits, the entry there and EXPECTED_IGNORE_COUNT here,
+    both in caged files (the G71 owner-ack).
+  * The database-age floor (--require-db only): the refresh step's record (REFRESH_STATE in DB_DIR, written by
+    --refresh, cached with the databases) must say that its last download completed no longer than MAX_DB_AGE_S
+    ago, with each needed ecosystem's database `ok` at the sha256 of the zip on disk. A failed or missing refresh,
+    or an older database, fails: the L4 scan never passes on a database it cannot date.
+  * The download (--refresh only) runs under the gate plane's one network retry policy (scripts/net-retry,
+    build-gates §0 *Network fetches*): each attempt is the refresh argv under run_bounded's REFRESH_ATTEMPT_S bound,
+    and a failed attempt is classified by the scanner's own words (refresh_transient(), measured on 2.6.0): its
+    `unable to fetch OSV database:` line names a host status (`db host returned <code>`), an HTTP proxy's answer to
+    the CONNECT (its reason phrase alone, after the request's `Get "<url>":` or `Head "<url>":`) or a Go transport
+    error. Transient, so retried inside the 300 s window: an attempt past its bound, a status or proxy answer of 429
+    or 5xx, a refused, reset or dropped connection (`EOF`), no route, a DNS failure, a timeout and a TLS failure other
+    than a rejected certificate. Final at once: any other status or proxy answer, a rejected certificate, a scanner
+    that cannot be started, and a failure that names no download error. A failed attempt leaves a present zip
+    byte-identical, and one ended at its bound leaves no partial zip (measured), so the next attempt starts from the
+    database the last good download left.
+
+Planes and modes:
+  (default)     L2 lefthook pre-push. No pinned binary -> a notice naming the fix, exit 0; an ecosystem without a
+                local database -> a notice, its sources skipped, the others scanned (the G17 [[fail_open]] row in
+                gate-planes.toml: a local plane never downloads a database). The census, the pnpm pin and the
+                ignore file are checked in every mode. A PARTIAL database (present, not `ok`) fails in every mode:
+                the scanner would pass a zero-member zip, so it can be neither scanned nor excused as absent. The
+                stale rule needs every ecosystem scanned, so a skipped ecosystem suspends it with a notice.
+  --require-db  L4 (Lane A gate-tooling and the daily advisories workflow, Linux): an absent binary, an absent,
+                partial or old database and a failed or missing refresh fail.
+  --refresh     the L4 download step: runs `scan source --offline-vulnerabilities --download-offline-databases`
+                over the same sources (findings discarded) under the retry policy above, records the outcome in
+                REFRESH_STATE, reports the database states and exits 0 whatever the download's outcome, so the
+                steps between it and the --require-db check still run; a download that failed at once or through
+                its retry window is recorded as failed, and the --require-db check reds on it. The last record is
+                removed before the first attempt, so a record that cannot be written leaves none and the
+                --require-db check reds on that; a last record that cannot be removed fails this step (exit 1)
+                before any download, since it would date the database by an older refresh. The only mode that
+                opens a socket.
+
+stdlib-only. L(-1) security-critical (scripts/**, scripts/l-neg1-files.toml, G71).
+
+Usage: check-osv-advisories [--require-db | --refresh]
+Exit:  0 = no advisory outside the ignore file, a skip with a notice, or any --refresh download outcome;
+       1 = an advisory, a stale or malformed ignore entry, a grown ignore file, a scanner failure, a partial
+           database, an unread or missing lockfile, an unusable packageManager pin, (--require-db) an absent
+           binary, an absent or old database or a failed refresh, or (--refresh) a last refresh record that
+           cannot be removed;
+       2 = usage error.
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import datetime as dt
+import fnmatch
+import hashlib
+import http
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+import tempfile
+import types
+import zipfile
+import zlib
+from pathlib import Path, PurePosixPath
+from typing import NamedTuple
+for _stream in (sys.stdout, sys.stderr):          # the console's codepage is not this script's concern (G9 invariant i)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
+if sys.version_info < (3, 11):
+    sys.exit(f"check-osv-advisories requires Python >= 3.11 (tomllib); found {platform.python_version()}.")
+import tomllib  # noqa: E402  - stdlib since 3.11, imported after the version guard
+
+ROOT = Path(__file__).resolve().parents[1]
+IGNORES = ROOT / "scripts" / "osv-ignores.toml"
+BIN_DIR = ROOT / ".gate-tools" / "bin"
+DB_DIR = ROOT / ".gate-tools" / "osv-db"
+REFRESH_STATE = "refresh-state.json"   # the --refresh record, in DB_DIR (cached with the databases)
+EXPECTED_IGNORE_COUNT = 6   # accepted advisories in osv-ignores.toml; growth raises it in the same reviewed edit
+SCHEMA_VERSION = 1
+CLEAN, FINDINGS = 0, 1      # the scanner's two verdict exit codes; every other code fails closed
+SCAN_TIMEOUT = 120          # seconds; one scan of every source against both databases takes about 9 s
+# seconds, one download attempt of both databases (about 258 MB): measured 16 s to 36 s cold in the gate container
+# behind the kit proxy (push 4); 300 s ends a transfer slower than about 0.9 MB/s, which the next attempt retries
+REFRESH_ATTEMPT_S = 300
+GIT_TIMEOUT = 60            # seconds; `git ls-files -z` over this tree takes well under 1 s
+MAX_DB_AGE_S = 3 * 86400    # --require-db: the oldest database (and refresh record) a scan accepts
+ECOSYSTEMS = ("npm", "PyPI")
+# [Build-Session-Entscheidung: P4.96] the check's child gets every HTTP(S) proxy variable pointed at a closed
+# local port (and no NO_PROXY), so the "a gate opens no socket" rule is enforced, not only trusted to --offline.
+_CLOSED_PROXY = "http://127.0.0.1:9"
+_PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+_NO_PROXY_VARS = ("NO_PROXY", "no_proxy")
+_REFRESH_HINT = "python3 -P scripts/check-osv-advisories --refresh"
+_INSTALL_HINT = "python3 -P scripts/install-gate-tools --tool osv-scanner"
+# The gate plane's one network retry policy (scripts/net-retry), compiled from its source into a fresh module: this
+# gate runs `python3 -P`, so no scripts/ module is importable by name, and no bytecode cache is read or written.
+_NET_PATH = ROOT / "scripts" / "net-retry"
+_NET = types.ModuleType("net_retry")
+exec(compile(_NET_PATH.read_bytes(), str(_NET_PATH), "exec"), _NET.__dict__)
+# osv-scanner 2.6.0's words for a failed download (measured in the gate container: a refused and a reset connection,
+# no DNS, an HTTP proxy's 403, 407, 429, 502, 503 and 504 to the CONNECT, the host's 403, 404, 429, 500, 502 and 503,
+# a transfer cut short, a certificate the trust store rejects): the error after `unable to fetch OSV database:`, the
+# host's status, the request's Go error and, inside it, a rejected certificate.
+_FETCH_ERROR_RE = re.compile(r"unable to fetch OSV database: (?:could not retrieve OSV database archive: )?(.+?)\s*$",
+                             re.MULTILINE)
+_HOST_STATUS_RE = re.compile(r"db host returned (\d{3})\b")
+_REQUEST_ERROR_RE = re.compile(r'(?:Get|Head) "[^"]*": (.+)$')
+_CERT_RE = re.compile(r"x509: |failed to verify certificate")
+# Go's net/http reports a proxy's non-200 answer to a CONNECT as its reason phrase alone (measured), so the phrase is
+# the status: 429 and every 5xx phrase transient, every other phrase final (a proxy's refusal).
+_TRANSIENT_PHRASES = frozenset(st.phrase for st in http.HTTPStatus if st == 429 or 500 <= st <= 599)
+_ALL_PHRASES = frozenset(st.phrase for st in http.HTTPStatus)
+# Go's transport words for the transient classes of build-gates §0: a refused, reset or dropped connection (`EOF`,
+# `broken pipe`), no route, a DNS failure, a timeout and a TLS failure other than a rejected certificate.
+_TRANSPORT_RE = re.compile(r"connection refused|connection reset|broken pipe|^(?:unexpected )?EOF$|no route to host|"
+                           r"network is unreachable|lookup [^ ]+.*(?:no such host|server misbehaving|"
+                           r"temporary failure)|timeout|deadline exceeded|tls: |TLS handshake")
+
+# --- the census -------------------------------------------------------------------------------------------------
+# Lockfile names (compared on the lower-cased basename) and basename globs: the lock and pin files of the package
+# managers osv-scanner or cargo-audit could read, so a new one cannot enter the tree unread.
+LOCK_NAMES = frozenset(n.lower() for n in (
+    "Cargo.lock", "pnpm-lock.yaml", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock", "bun.lockb",
+    "deno.lock", "poetry.lock", "Pipfile.lock", "pdm.lock", "uv.lock", "pylock.toml", "go.mod", "go.sum",
+    "Gemfile.lock", "composer.lock", "packages.lock.json", "gradle.lockfile", "pubspec.lock", "mix.lock",
+    "conan.lock", "renv.lock"))
+LOCK_GLOBS = ("*.lock", "*.lockfile", "*requirements*.txt", "constraints*.txt", "pylock.*.toml")
+# The tracked lockfile-named files no half scans, each with its reason (a declaration of an untracked path fails).
+DECLARED_UNSCANNED = {
+    "tests/g53-fixture/Cargo.lock": "the planted G53 negative fixture; no build reads it",
+    "src-tauri/engines.lock": "the bundled-engine digests (spec §3.7.2), owned by G17b once engines land (P10.24/P10.25)",
+}
+# The presence list: sources whose disappearance (a rename, a deletion) must red, not silently shrink the scan.
+REQUIRED_SOURCES = ("pnpm-lock.yaml", "requirements-ci.txt", "requirements-yamllint.txt")
+_PIN_RE = re.compile(r"pnpm@(\d+\.\d+\.\d+)(?:\+sha(?:1|224|256|384|512)\.[0-9a-f]+)?")
+PIN_SOURCE = "package.json packageManager"   # how the report names a finding on the pin
+_PIN_DIR = "packagemanager-pin"              # the pin lock's directory in the scan's temp dir
+
+
+class Source(NamedTuple):
+    """One census source: its tracked path, the osv-scanner parser and the ecosystem whose database it needs."""
+    path: str
+    parser: str
+    ecosystem: str
+
+
+class Finding(NamedTuple):
+    id: str
+    aliases: tuple[str, ...]
+    name: str
+    version: str
+    ecosystem: str
+    source: str
+
+
+class Ignore(NamedTuple):
+    reason: str
+    held_by: tuple[str, str] | None    # (package, version) or None
+
+
+def lockfile_named(path: str) -> bool:
+    """(pure) Whether a tracked path is lockfile-named: its lower-cased basename is in LOCK_NAMES or matches a
+    LOCK_GLOBS pattern, or it is a `.txt` file directly in a directory named `requirements` (requirements/dev.txt)."""
+    p = PurePosixPath(path)
+    base = p.name.lower()
+    if base in LOCK_NAMES or any(fnmatch.fnmatchcase(base, g) for g in LOCK_GLOBS):
+        return True
+    return base.endswith(".txt") and p.parent.name.lower() == "requirements"
+
+
+def osv_parser(path: str) -> tuple[str, str] | None:
+    """(pure) (osv-scanner parser, ecosystem) for a path this script scans, else None. Only the parsers measured on
+    2.6.0 are named; another lockfile-named file stays unread, and reds, until a reviewed edit names its parser."""
+    p = PurePosixPath(path)
+    base = p.name.lower()
+    if base == "pnpm-lock.yaml":
+        return "pnpm-lock.yaml", "npm"
+    if base == "package-lock.json":
+        return "package-lock.json", "npm"
+    if base.endswith(".txt") and (fnmatch.fnmatchcase(base, "*requirements*.txt")
+                                  or fnmatch.fnmatchcase(base, "constraints*.txt")
+                                  or p.parent.name.lower() == "requirements"):
+        return "requirements.txt", "PyPI"
+    return None
+
+
+def rust_audit_locks(source: str) -> tuple[str, ...] | None:
+    """(pure) check-rust-lint-contract's CARGO_AUDIT_LOCKS as its module-level assignment reads (a non-empty tuple of
+    string literals; the file is parsed, never run), else None. The Rust half keeps the one copy of its lock set."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    for stmt in tree.body:
+        if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)
+                and stmt.targets[0].id == "CARGO_AUDIT_LOCKS" and isinstance(stmt.value, ast.Tuple)
+                and stmt.value.elts
+                and all(isinstance(e, ast.Constant) and isinstance(e.value, str) for e in stmt.value.elts)):
+            return tuple(e.value for e in stmt.value.elts)
+    return None
+
+
+def census(tracked: list[str], rust_locks: tuple[str, ...], declared: dict[str, str] | None = None,
+           required: tuple[str, ...] = REQUIRED_SOURCES) -> tuple[list[Source], list[str]]:
+    """(pure) The tracked tree -> (the OSV sources, problems): every lockfile-named file is scanned here, audited by
+    the Rust half or declared; every declared and Rust-half path is tracked; every required source is scanned."""
+    declared = DECLARED_UNSCANNED if declared is None else declared
+    files = sorted(set(tracked))
+    present = set(files)
+    sources: list[Source] = []
+    problems: list[str] = []
+    for path in files:
+        reader = osv_parser(path)
+        if reader is not None:
+            sources.append(Source(path, *reader))
+        elif lockfile_named(path) and path not in rust_locks and path not in declared:
+            problems.append(f"unread lockfile {path}: neither half of G17 scans it and DECLARED_UNSCANNED does not "
+                            "name it - name its parser in osv_parser(), add it to CARGO_AUDIT_LOCKS in "
+                            "scripts/check-rust-lint-contract, or declare it with its reason")
+    for path in rust_locks:
+        if path not in present:
+            problems.append(f"CARGO_AUDIT_LOCKS names {path}, which is not tracked - the Rust half would audit "
+                            "nothing there")
+    for path, reason in declared.items():
+        if path not in present:
+            problems.append(f"DECLARED_UNSCANNED names {path}, which is not tracked - drop the declaration")
+        elif not lockfile_named(path) or osv_parser(path) is not None or path in rust_locks:
+            problems.append(f"DECLARED_UNSCANNED names {path}, which the census would not leave unread - drop the "
+                            "declaration")
+        elif not reason.strip():
+            problems.append(f"DECLARED_UNSCANNED names {path} without a reason")
+    scanned = {s.path for s in sources}
+    for path in required:
+        if path not in scanned:
+            problems.append(f"the required source {path} is not a tracked file this scan reads - a renamed or "
+                            "deleted lockfile moves REQUIRED_SOURCES in the same reviewed edit")
+    return sources, problems
+
+
+def tracked_files(root: Path) -> tuple[list[str] | None, str]:
+    """`git ls-files -z` at `root` -> (paths, '') or (None, why); a failure fails the census closed."""
+    try:
+        proc = subprocess.run(["git", "-c", "core.quotepath=off", "ls-files", "-z"], cwd=str(root),
+                              capture_output=True, timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, f"git ls-files did not finish within {GIT_TIMEOUT} s"
+    except OSError as e:
+        return None, f"cannot run git: {e}"
+    if proc.returncode != 0:
+        return None, f"git ls-files exited {proc.returncode}: {proc.stderr.decode('utf-8', 'replace').strip()}"
+    return [p for p in proc.stdout.decode("utf-8", "replace").split("\0") if p], ""
+
+
+def pnpm_pin(text: str) -> tuple[str | None, str | None]:
+    """(pure) package.json text -> (the pinned pnpm version, None) or (None, problem): `packageManager` must be
+    exactly `pnpm@X.Y.Z`, optionally `+sha<bits>.<hex>` (corepack's integrity form)."""
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        return None, f"package.json is not valid JSON ({e}) - the pinned pnpm cannot be scanned (fail-closed)"
+    value = data.get("packageManager") if isinstance(data, dict) else None
+    if not isinstance(value, str):
+        return None, "package.json has no `packageManager` string - the pinned pnpm cannot be scanned (fail-closed)"
+    match = _PIN_RE.fullmatch(value)
+    if match is None:
+        return None, (f"package.json `packageManager` is {value!r}, not an exact `pnpm@X.Y.Z` (optionally "
+                      "`+sha<bits>.<hex>`) - fail-closed")
+    return match.group(1), None
+
+
+def pin_lock(version: str) -> str:
+    """(pure) The one-package npm v3 lock the pin is scanned as (the shape osv-scanner 2.6.0 reads; measured)."""
+    return json.dumps({"name": "convertia-packagemanager-pin", "lockfileVersion": 3, "requires": True,
+                       "packages": {"": {"name": "convertia-packagemanager-pin",
+                                         "devDependencies": {"pnpm": version}},
+                                    "node_modules/pnpm": {"version": version, "dev": True}}}, indent=2) + "\n"
+
+
+def osv_binary(bin_dir: Path = BIN_DIR) -> Path | None:
+    """The pinned scanner install-gate-tools placed in `bin_dir`, else None.
+    [Build-Session-Entscheidung: P4.96] never a binary found on PATH: its version and bytes are unpinned."""
+    for name in ("osv-scanner.exe", "osv-scanner"):
+        cand = bin_dir / name
+        if cand.is_file():
+            return cand
+    return None
+
+
+def db_zip(db_dir: Path, ecosystem: str) -> Path:
+    """The database file osv-scanner 2.6.0 reads for an ecosystem under its cache directory (measured: `osv-scalibr/`)."""
+    return db_dir / "osv-scalibr" / ecosystem / "all.zip"
+
+
+def db_state(db_dir: Path, ecosystem: str) -> str:
+    """'absent' (no zip file), 'partial' (not a readable zip, no file member, or a member failing its CRC) or 'ok'."""
+    path = db_zip(db_dir, ecosystem)
+    if not path.is_file():
+        return "absent"
+    try:
+        with zipfile.ZipFile(path) as zf:
+            if not any(not info.is_dir() for info in zf.infolist()):
+                return "partial"
+            if zf.testzip() is not None:
+                return "partial"
+    except (zipfile.BadZipFile, zlib.error, OSError, EOFError, RuntimeError, NotImplementedError, ValueError):
+        return "partial"
+    return "ok"
+
+
+def _utc(ts: float) -> str:
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_utc(text: object) -> float | None:
+    if not isinstance(text, str):
+        return None
+    try:
+        return dt.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def zip_sha256(path: Path) -> str | None:
+    """The sha256 of a database zip, None when it cannot be read."""
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def refresh_record(db_dir: Path, ecosystems: tuple[str, ...], rc: int | None, now: float) -> dict[str, object]:
+    """The REFRESH_STATE record a refresh at `now` with scanner exit `rc` leaves: `ok` only when the scanner gave a
+    verdict code and every needed ecosystem's database is `ok`, each `ok` database with the sha256 of its zip."""
+    states = {e: db_state(db_dir, e) for e in ecosystems}
+    ok = rc in (CLEAN, FINDINGS) and bool(ecosystems) and all(st == "ok" for st in states.values())
+    return {"schema": 1, "refreshed_at": _utc(now), "ok": ok, "scanner_exit": rc,
+            "ecosystems": {e: {"state": st, "sha256": zip_sha256(db_zip(db_dir, e)) if st == "ok" else None}
+                           for e, st in states.items()}}
+
+
+def age_problems(db_dir: Path, ecosystems: tuple[str, ...], now: float) -> list[str]:
+    """(--require-db) The database-age floor. The refresh record must say that the last refresh completed, no longer
+    than MAX_DB_AGE_S ago (and not in the future beyond a 300 s clock skew), with each needed ecosystem's database
+    `ok` and recorded at the sha256 of the zip on disk, so the record dates exactly the bytes the scan reads.
+    The record, not the zip's mtime, is the age (measured on 2.6.0, push 4 C2a): a refresh whose remote
+    database did not change since the last download receives a 6.7 KB conditional answer and leaves the zip and its
+    mtime untouched, so the mtime dates the last change upstream, not the last confirmation."""
+    record_path = db_dir / REFRESH_STATE
+    limit_h = MAX_DB_AGE_S // 3600
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return [f"no readable refresh record at {record_path} ({e}) - the database cannot be dated "
+                f"(run `{_REFRESH_HINT}` first)"]
+    at = _parse_utc(record.get("refreshed_at") if isinstance(record, dict) else None)
+    states = record.get("ecosystems") if isinstance(record, dict) else None
+    if at is None or not isinstance(states, dict) or not isinstance(record.get("ok"), bool):
+        return [f"the refresh record at {record_path} is malformed - the database cannot be dated"]
+    problems: list[str] = []
+    if not record["ok"]:
+        problems.append(f"the last refresh ({record['refreshed_at']}) did not complete its download (scanner exit "
+                        f"{record.get('scanner_exit')!r}) - a scan would pass on a database it cannot date")
+    if now - at > MAX_DB_AGE_S or at - now > 300:
+        problems.append(f"the last refresh ran {record['refreshed_at']}, outside the {limit_h} h age floor - a scan "
+                        f"against its database misses what was published since (run `{_REFRESH_HINT}`)")
+    for eco in ecosystems:
+        entry = states.get(eco)
+        if not isinstance(entry, dict) or entry.get("state") != "ok":
+            problems.append(f"the last refresh did not leave the OSV {eco} database ok "
+                            f"({entry.get('state') if isinstance(entry, dict) else 'unrecorded'})")
+        elif entry.get("sha256") != zip_sha256(db_zip(db_dir, eco)):
+            problems.append(f"the OSV {eco} database at {db_zip(db_dir, eco)} is not the one the last refresh "
+                            "recorded - the record cannot date it")
+    return problems
+
+
+def _pypi_norm(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()    # PEP 503
+
+
+def same_package(ecosystem: str, a: str, b: str) -> bool:
+    """(pure) Package-name identity in an ecosystem: PyPI names in their PEP 503 normal form, npm names exactly."""
+    return _pypi_norm(a) == _pypi_norm(b) if ecosystem == "PyPI" else a == b
+
+
+def load_ignores(text: str, limit: int | None = None) -> tuple[dict[str, Ignore], list[str]]:
+    """(pure) osv-ignores.toml -> ({advisory id: Ignore}, problems); `limit` defaults to EXPECTED_IGNORE_COUNT.
+    There is no per-entry ack field: the owner ack is G71's trailer on the caged file (the audit.toml discipline)."""
+    cap = EXPECTED_IGNORE_COUNT if limit is None else limit
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        return {}, [f"scripts/osv-ignores.toml is not valid TOML: {e}"]
+    problems: list[str] = []
+    extra = sorted(set(data) - {"schema_version", "ignore"})
+    if extra:
+        problems.append(f"scripts/osv-ignores.toml: unknown top-level key(s) {extra} "
+                        "(only `schema_version` and the [[ignore]] tables)")
+    if data.get("schema_version") != SCHEMA_VERSION:
+        problems.append(f"scripts/osv-ignores.toml: schema_version must be {SCHEMA_VERSION}, "
+                        f"found {data.get('schema_version')!r}")
+    entries = data.get("ignore", [])
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        problems.append("scripts/osv-ignores.toml: `ignore` must be an array of tables ([[ignore]])")
+        return {}, problems
+    ignores: dict[str, Ignore] = {}
+    for n, entry in enumerate(entries, 1):
+        unknown = sorted(set(entry) - {"id", "reason", "held_by"})
+        if unknown:
+            problems.append(f"[[ignore]] #{n}: unknown key(s) {unknown} - an entry holds `id`, `reason` and an "
+                            "optional `held_by`")
+        adv = entry.get("id")
+        if not isinstance(adv, str) or not adv or any(c.isspace() for c in adv):
+            problems.append(f"[[ignore]] #{n}: `id` must be one advisory id (the OSV id or an alias), no white space")
+            continue
+        reason = entry.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            problems.append(f"[[ignore]] {adv}: `reason` is required - why the advisory does not apply, "
+                            "or why no fixed version can be taken")
+            continue
+        held: tuple[str, str] | None = None
+        if "held_by" in entry:
+            raw = entry["held_by"]
+            name, sep, version = raw.rpartition("@") if isinstance(raw, str) else ("", "", "")
+            if not sep or not name or not version or name.endswith("@") or any(c.isspace() for c in str(raw)):
+                problems.append(f"[[ignore]] {adv}: `held_by` must be `<package>@<version>`, the held package's own "
+                                f"pin, found {raw!r}")
+                continue
+            held = (name, version)
+        if adv in ignores:
+            problems.append(f"[[ignore]] {adv}: duplicate id")
+            continue
+        ignores[adv] = Ignore(reason.strip(), held)
+    if len(entries) > cap:
+        problems.append(f"scripts/osv-ignores.toml holds {len(entries)} entr(ies), above EXPECTED_IGNORE_COUNT = {cap} "
+                        "- raise EXPECTED_IGNORE_COUNT in scripts/check-osv-advisories in the same reviewed edit "
+                        "(the growth guard; both files are caged)")
+    return ignores, problems
+
+
+def scan_argv(binary: Path, inputs: list[tuple[str, Path]], config: Path) -> list[str]:
+    """(pure) The check invocation over (parser, path) inputs, the single home of its CLI spelling (measured on
+    2.6.0). [Build-Session-Entscheidung: P4.96] `--config` names an empty file, so no osv-scanner.toml is ever read."""
+    argv = [str(binary), "scan", "source", "--offline", "--all-packages", "--format", "json", "--config", str(config)]
+    for parser, path in inputs:
+        argv += ["--lockfile", f"{parser}:{path}"]
+    return argv
+
+
+def refresh_argv(binary: Path, inputs: list[tuple[str, Path]], config: Path) -> list[str]:
+    """(pure) The download invocation (--refresh only): it fetches the database of every ecosystem the inputs need
+    into the cache directory; the scan it also runs is discarded. The empty `--config` keeps a committed
+    osv-scanner.toml out of this step too."""
+    argv = [str(binary), "scan", "source", "--offline-vulnerabilities", "--download-offline-databases",
+            "--format", "json", "--config", str(config)]
+    for parser, path in inputs:
+        argv += ["--lockfile", f"{parser}:{path}"]
+    return argv
+
+
+def child_env(base: dict[str, str], db_dir: Path, *, offline: bool) -> dict[str, str]:
+    """(pure) The scanner's environment: the database directory, plus, for the offline check, the closed proxy."""
+    env = dict(base)
+    env["OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY"] = str(db_dir)
+    if offline:
+        for var in _NO_PROXY_VARS:
+            env.pop(var, None)
+        for var in _PROXY_VARS:
+            env[var] = _CLOSED_PROXY
+    return env
+
+
+def findings(stdout: str) -> list[Finding]:
+    """(pure) Every reported vulnerability as a Finding; ValueError on any other JSON shape."""
+    data = json.loads(stdout)                        # json.JSONDecodeError is a ValueError
+    results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(results, list):
+        raise ValueError("no `results` list")
+    out: list[Finding] = []
+    for result in results:
+        packages = result.get("packages", []) if isinstance(result, dict) else None
+        if not isinstance(packages, list):
+            raise ValueError("a result without a `packages` list")
+        src = result.get("source")
+        source = str(src.get("path", "?")) if isinstance(src, dict) else "?"
+        for pkg in packages:
+            meta = pkg.get("package") if isinstance(pkg, dict) else None
+            vulns = pkg.get("vulnerabilities", []) if isinstance(pkg, dict) else None
+            if not isinstance(meta, dict) or not isinstance(vulns, list):
+                raise ValueError("a package entry without its `package` object or `vulnerabilities` list")
+            for vuln in vulns:
+                vid = vuln.get("id") if isinstance(vuln, dict) else None
+                aliases = vuln.get("aliases", []) if isinstance(vuln, dict) else None
+                if not isinstance(vid, str) or not vid or not isinstance(aliases, list):
+                    raise ValueError("a vulnerability without an id or with a malformed `aliases` list")
+                out.append(Finding(vid, tuple(str(a) for a in aliases), str(meta.get("name", "?")),
+                                   str(meta.get("version", "?")), str(meta.get("ecosystem", "?")), source))
+    return out
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
+
+
+def source_packages(stdout: str) -> dict[str, int]:
+    """(pure) {normalised source path: the number of packages the scanner read from it} from an `--all-packages`
+    report; {} for any other shape (interpret() has already refused it)."""
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return {}
+    counts: dict[str, int] = {}
+    for result in data.get("results", []) if isinstance(data, dict) else []:
+        src = result.get("source") if isinstance(result, dict) else None
+        pkgs = result.get("packages") if isinstance(result, dict) else None
+        if isinstance(src, dict) and isinstance(src.get("path"), str) and isinstance(pkgs, list):
+            key = _norm(src["path"])
+            counts[key] = counts.get(key, 0) + len(pkgs)
+    return counts
+
+
+def unread_sources(inputs: list[tuple[str, Path]], counts: dict[str, int]) -> list[str]:
+    """(pure) The inputs the scanner read no package from, as problems (the pin lock named by PIN_SOURCE)."""
+    return [f"osv-scanner read no package from {PIN_SOURCE if _PIN_DIR in path.parts else path} - an emptied or "
+            "unparsable lockfile is never a clean scan (fail-closed)"
+            for _parser, path in inputs if counts.get(_norm(str(path)), 0) == 0]
+
+
+def interpret(rc: int, stdout: str) -> tuple[list[Finding], list[str]]:
+    """(pure) The scanner's verdict: the exit code first, the JSON only after it (127 prints a clean-looking result)."""
+    if rc not in (CLEAN, FINDINGS):
+        return [], [f"osv-scanner exited {rc}, outside its verdict codes 0 (clean) and 1 (findings) - fail-closed "
+                    "(127: no usable database or an absent lockfile; 128: no package found in a lockfile)"]
+    try:
+        found = findings(stdout)
+    except ValueError as e:
+        return [], [f"osv-scanner printed no readable JSON verdict ({e}) - fail-closed"]
+    if rc == FINDINGS and not found:
+        return [], ["osv-scanner exited 1 (findings) but its JSON lists none - fail-closed"]
+    return found, []
+
+
+def _accepts(entry: Ignore, f: Finding) -> bool:
+    return entry.held_by is None or (same_package(f.ecosystem, entry.held_by[0], f.name)
+                                     and entry.held_by[1] == f.version)
+
+
+def evaluate(found: list[Finding], ignores: dict[str, Ignore], *, judge_stale: bool = True) -> list[str]:
+    """(pure) A finding no entry accepts is a problem: its id and aliases all miss the ignore ids, or every entry it
+    hits holds `held_by` for another package or version. An entry that accepts no finding is stale (judged only when
+    every ecosystem was scanned). [Build-Session-Entscheidung: P4.96] the alias match lets an entry name the CVE a
+    reviewer knows while the scanner reports the GHSA (or the reverse)."""
+    problems: list[str] = []
+    used: set[str] = set()
+    for f in dict.fromkeys(found):
+        hits = [i for i in (f.id, *f.aliases) if i in ignores]
+        accepting = [i for i in hits if _accepts(ignores[i], f)]
+        if accepting:
+            used.update(accepting)
+            continue
+        also = f" (aliases: {', '.join(f.aliases)})" if f.aliases else ""
+        if hits:
+            held = ", ".join(f"{i} held_by {'@'.join(ignores[i].held_by or ())}" for i in hits)
+            problems.append(f"{f.name}@{f.version} ({f.source}): advisory {f.id}{also} is accepted only on another "
+                            f"pin ({held}) - the holder moved or the advisory reached another package: re-triage")
+            continue
+        problems.append(f"{f.name}@{f.version} ({f.source}): advisory {f.id}{also} - bump the dependency to a fixed "
+                        "version, or accept the advisory with an [[ignore]] entry and its reason in "
+                        "scripts/osv-ignores.toml")
+    if judge_stale:
+        for stale in sorted(set(ignores) - used):
+            problems.append(f"stale ignore {stale}: the scan reports no advisory with this id or alias that the "
+                            "entry accepts - remove the entry")
+    return problems
+
+
+def _stderr_tail(err: str) -> list[str]:
+    return [f"  osv-scanner: {ln}" for ln in err.splitlines()[-5:] if ln.strip()]
+
+
+def scan_inputs(root: Path, sources: list[Source], pin_version: str | None, td: Path) -> list[tuple[str, Path]]:
+    """(parser, absolute path) per source; the pin's one-package lock is written under the temp dir `td`."""
+    inputs = [(s.parser, root / s.path) for s in sources]
+    if pin_version is not None:
+        lock = td / _PIN_DIR / "package-lock.json"
+        lock.parent.mkdir()
+        lock.write_text(pin_lock(pin_version), encoding="utf-8")
+        inputs.append(("package-lock.json", lock))
+    return inputs
+
+
+def run_scan(binary: Path, root: Path, sources: list[Source], pin_version: str | None,
+             db_dir: Path) -> tuple[int, str, str, list[tuple[str, Path]]]:
+    """One offline scan from an empty temp dir holding only the empty config file and the pin lock's directory:
+    (exit code, stdout, stderr, the (parser, path) inputs it was given)."""
+    with tempfile.TemporaryDirectory(prefix="osv-check-") as td:
+        config = Path(td) / "empty-config.toml"
+        config.write_bytes(b"")
+        inputs = scan_inputs(root, sources, pin_version, Path(td))
+        proc = subprocess.run(scan_argv(binary, inputs, config), cwd=td,
+                              env=child_env(dict(os.environ), db_dir, offline=True),
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=SCAN_TIMEOUT)
+    return proc.returncode, proc.stdout, proc.stderr, inputs
+
+
+def name_pin(found: list[Finding]) -> list[Finding]:
+    """(pure) A finding from the pin's temp lock carries PIN_SOURCE as its source, so the report names package.json."""
+    return [f._replace(source=PIN_SOURCE) if f"{_PIN_DIR}/" in f.source.replace("\\", "/") else f for f in found]
+
+
+def check(*, binary: Path | None, root: Path, ignores_file: Path, db_dir: Path, require_db: bool,
+          tracked: list[str] | None = None, now: float | None = None) -> tuple[int, list[str]]:
+    """The gate: (exit code, report lines). The ignore file, the census and the pnpm pin are checked in every mode,
+    with or without a binary or a database. `tracked` (the census input) defaults to `git ls-files` at `root`."""
+    try:
+        text = ignores_file.read_text(encoding="utf-8")
+    except OSError as e:
+        return 1, [f"FAIL: cannot read {ignores_file}: {e}"]
+    ignores, problems = load_ignores(text)
+    if problems:
+        return 1, [f"FAIL: {p}" for p in problems]
+    if tracked is None:
+        tracked, why = tracked_files(root)
+        if tracked is None:
+            return 1, [f"FAIL: the lockfile census cannot list the tracked tree ({why}) - fail-closed"]
+    rust_path = root / "scripts" / "check-rust-lint-contract"
+    try:
+        rust_locks = rust_audit_locks(rust_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as e:
+        return 1, [f"FAIL: cannot read {rust_path}: {e} - the census cannot tell what the Rust half audits"]
+    if rust_locks is None:
+        return 1, [f"FAIL: {rust_path} assigns no CARGO_AUDIT_LOCKS tuple of paths - the census cannot tell what the "
+                   "Rust half audits (fail-closed)"]
+    sources, problems = census(tracked, rust_locks)
+    try:
+        pin_version, pin_problem = pnpm_pin((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as e:
+        pin_version, pin_problem = None, f"cannot read package.json: {e} - the pinned pnpm cannot be scanned"
+    if pin_problem:
+        problems.append(pin_problem)
+    problems += [f"{s.path} is tracked but absent from the working tree - it cannot be scanned"
+                 for s in sources if not (root / s.path).is_file()]
+    if problems:
+        return 1, [f"FAIL: {p}" for p in problems]
+    if binary is None:
+        if require_db:
+            return 1, [f"FAIL: the pinned osv-scanner is not installed in .gate-tools/bin (run `{_INSTALL_HINT}`)"]
+        return 0, [f"NOTICE: the pinned osv-scanner is not installed in .gate-tools/bin (run `{_INSTALL_HINT}`) - "
+                   "the OSV advisory scan is skipped here (the census, the pin and the ignore file passed); CI (L4) "
+                   "runs it fail-closed"]
+    needed = tuple(e for e in ECOSYSTEMS if e == "npm" or any(s.ecosystem == e for s in sources))
+    states = {e: db_state(db_dir, e) for e in needed}
+    partial = [e for e in needed if states[e] == "partial"]
+    if partial:
+        return 1, [f"FAIL: the OSV {e} database at {db_zip(db_dir, e)} is partial (not a readable zip, no file member, "
+                   f"or a member failing its CRC) and the scanner would pass it silently - run `{_REFRESH_HINT}`"
+                   for e in partial]
+    absent = [e for e in needed if states[e] == "absent"]
+    if absent and require_db:
+        return 1, [f"FAIL: no OSV {e} database at {db_zip(db_dir, e)} after the refresh step - fail-closed"
+                   for e in absent]
+    lines = [f"NOTICE: no local OSV {e} database at {db_zip(db_dir, e)} - its sources are skipped here (a gate "
+             f"never downloads; `{_REFRESH_HINT}` fetches it); CI (L4) refreshes it and scans them fail-closed"
+             for e in absent]
+    if require_db:
+        problems = age_problems(db_dir, needed, dt.datetime.now(dt.timezone.utc).timestamp() if now is None else now)
+        if problems:
+            return 1, [f"FAIL: {p}" for p in problems]
+    scan_sources = [s for s in sources if s.ecosystem not in absent]
+    scan_pin = pin_version if "npm" not in absent else None
+    if not scan_sources and scan_pin is None:
+        return 0, lines + ["NOTICE: no source has a local database - the OSV advisory scan is skipped here"]
+    try:
+        rc, out, err, inputs = run_scan(binary, root, scan_sources, scan_pin, db_dir)
+    except subprocess.TimeoutExpired:
+        return 1, [f"FAIL: osv-scanner did not finish within {SCAN_TIMEOUT} s - fail-closed"]
+    except OSError as e:
+        return 1, [f"FAIL: cannot run {binary}: {e}"]
+    found, problems = interpret(rc, out)
+    if problems:
+        return 1, [f"FAIL: {p}" for p in problems] + _stderr_tail(err)
+    relative = {_norm(str(root / s.path)): s.path for s in scan_sources}
+    found = [f._replace(source=relative.get(_norm(f.source), f.source)) for f in name_pin(found)]
+    problems = unread_sources(inputs, source_packages(out)) + evaluate(found, ignores, judge_stale=not absent)
+    if problems:
+        return 1, [f"FAIL: {p}" for p in problems]
+    if absent:
+        lines.append("NOTICE: the stale-entry rule is suspended while an ecosystem is skipped (CI (L4) scans both)")
+    names = [s.path for s in scan_sources] + ([PIN_SOURCE] if scan_pin else [])
+    accepted = len({f.id for f in found})
+    return 0, lines + [f"OK: no advisory over {', '.join(names)} outside scripts/osv-ignores.toml "
+                       f"({accepted} advisory(ies) accepted by an entry)"]
+
+
+class RefreshTry(NamedTuple):
+    """One download attempt: the scanner's exit code (None: it could not be started), its stderr, and the reason its
+    failure is transient (None: a success or a final failure)."""
+    rc: int | None
+    err: str
+    transient: str | None
+
+
+def refresh_transient(rc: int, err: str) -> str | None:
+    """(pure) The reason a failed download attempt (scanner exit `rc`, stderr `err`) is transient, None when it is
+    final (the contract above): an attempt run_bounded ended at its bound (exit 124), else the scanner's first
+    `unable to fetch OSV database:` line - a host status or a proxy's CONNECT answer of 429 or 5xx, or a transport
+    error other than a rejected certificate. A failure without that line is final."""
+    if rc == 124:
+        return f"past its {REFRESH_ATTEMPT_S} s bound"
+    found = _FETCH_ERROR_RE.search(err)
+    if found is None:
+        return None
+    detail = found.group(1)
+    status = _HOST_STATUS_RE.search(detail)
+    if status is not None:
+        code = int(status.group(1))
+        return f"db host returned {code}" if code == 429 or 500 <= code <= 599 else None
+    request = _REQUEST_ERROR_RE.search(detail)
+    error = request.group(1) if request is not None else detail
+    if _CERT_RE.search(error):
+        return None
+    if error in _TRANSIENT_PHRASES:
+        return f"proxy CONNECT {error}"
+    return error if _TRANSPORT_RE.search(error) and error not in _ALL_PHRASES else None
+
+
+def refresh(*, binary: Path | None, root: Path, db_dir: Path, tracked: list[str] | None = None,
+            now: float | None = None, retrier: object | None = None) -> tuple[int, list[str]]:
+    """The download step: exit 0 whatever the download's outcome. It removes the last REFRESH_STATE record, downloads
+    the databases the census's sources and the pin need under the retry policy (`retrier`, default a fresh net-retry
+    Retrier for this one fetch), records the outcome in REFRESH_STATE (the --require-db age floor reads it) and names
+    the databases the check after it will scan. A record that cannot be written thus leaves none, and the check after
+    it reds; a last record that cannot be removed would date the database by an older refresh, so it is exit 1 before
+    any download. A census or pin problem narrows the inputs to what can be read, never stops the download."""
+    if binary is None:
+        return 0, ["NOTICE: the pinned osv-scanner is not installed - nothing refreshed (the check after this step "
+                   "fails closed under --require-db)"]
+    if tracked is None:
+        tracked = tracked_files(root)[0]
+    sources = [s for s in census(tracked if tracked is not None else list(REQUIRED_SOURCES), ())[0]
+               if (root / s.path).is_file()]
+    try:
+        pin_version = pnpm_pin((root / "package.json").read_text(encoding="utf-8"))[0]
+    except (OSError, UnicodeDecodeError):
+        pin_version = None
+    needed = tuple(e for e in ECOSYSTEMS if any(s.ecosystem == e for s in sources)
+                   or (e == "npm" and pin_version is not None))
+    db_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        (db_dir / REFRESH_STATE).unlink(missing_ok=True)
+    except OSError as e:
+        return 1, [f"FAIL: cannot remove the last refresh record ({e}) - it would date the database by an older "
+                   "refresh, so nothing is downloaded and this step fails"]
+    with tempfile.TemporaryDirectory(prefix="osv-refresh-") as td:
+        config = Path(td) / "empty-config.toml"
+        config.write_bytes(b"")
+        inputs = scan_inputs(root, sources, pin_version, Path(td))
+        argv, env = refresh_argv(binary, inputs, config), child_env(dict(os.environ), db_dir, offline=False)
+        tries = 0
+
+        def attempt() -> RefreshTry:
+            nonlocal tries
+            tries += 1
+            try:
+                proc = _NET.run_bounded(argv, REFRESH_ATTEMPT_S, env=env, cwd=td)
+            except OSError as e:          # the scanner cannot be started: final
+                return RefreshTry(None, str(e), None)
+            if proc.returncode in (CLEAN, FINDINGS):
+                return RefreshTry(proc.returncode, proc.stderr, None)
+            return RefreshTry(proc.returncode, proc.stderr, refresh_transient(proc.returncode, proc.stderr))
+
+        policy = _NET.Retrier("G17 OSV") if retrier is None else retrier
+        try:
+            done = policy.run(attempt, what="the OSV database download", transient_result=lambda t: t.transient)
+        except _NET.WindowSpent as e:
+            done = RefreshTry(None, str(e), None)
+    record = refresh_record(db_dir, needed, done.rc,
+                            dt.datetime.now(dt.timezone.utc).timestamp() if now is None else now)
+    lines = [f"refresh: osv-scanner exit {done.rc} after {tries} attempt(s)"
+             + "".join(f"; {e} database {v['state']} at {db_zip(db_dir, e)}" for e, v in record["ecosystems"].items())]
+    try:
+        (db_dir / REFRESH_STATE).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        recorded = "recorded, so the --require-db check after this step fails closed on the age floor"
+    except OSError as e:
+        lines.append(f"NOTICE: cannot write the refresh record ({e}) - none is left (the last one was removed before "
+                     "the download), so the --require-db check after this step fails closed")
+        recorded = "not recorded, so the --require-db check after this step fails closed on the missing record"
+    if not record["ok"]:
+        how = (f"through its {_NET.WINDOW_S} s retry window ({done.transient})" if done.transient else
+               "at once (a final failure)" if done.rc not in (CLEAN, FINDINGS) else
+               "to leave every needed database ok")
+        lines.append(f"NOTICE: the download failed {how} - {recorded}, while the default mode scans the database "
+                     "already present")
+        lines += _stderr_tail(done.err or "")
+    return 0, lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G17 OSV half - osv-scanner offline over every committed npm and PyPI "
+                                             "lockfile and the pinned pnpm, with the lockfile census")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--require-db", action="store_true",
+                      help="L4: an absent binary, an absent, partial or old database, or a failed refresh fails")
+    mode.add_argument("--refresh", action="store_true",
+                      help="L4 download step under the retry policy, its outcome recorded for --require-db (exit 0; "
+                           "1 when the last record cannot be removed; the only mode that opens a socket)")
+    args = ap.parse_args(argv)
+    binary = osv_binary()
+    if args.refresh:
+        rc, lines = refresh(binary=binary, root=ROOT, db_dir=DB_DIR)
+    else:
+        rc, lines = check(binary=binary, root=ROOT, ignores_file=IGNORES, db_dir=DB_DIR,
+                          require_db=args.require_db)
+    for line in lines:
+        print(f"[G17 OSV] {line}", file=sys.stderr if rc else sys.stdout)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

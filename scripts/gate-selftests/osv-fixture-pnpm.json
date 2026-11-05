@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.9.0",
+  "id": "GHSA-7vhp-vf5g-r2fw",
+  "aliases": [
+    "CVE-2025-69263"
+  ],
+  "modified": "2026-02-03T03:16:20.731152Z",
+  "published": "2026-01-07T19:06:59Z",
+  "affected": [
+    {
+      "package": {
+        "name": "pnpm",
+        "ecosystem": "npm",
+        "purl": "pkg:npm/pnpm"
+      },
+      "ranges": [
+        {
+          "type": "SEMVER",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "10.26.0"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

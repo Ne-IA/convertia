@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.9.0",
+  "id": "GHSA-8q59-q68h-6hv4",
+  "aliases": [
+    "CVE-2020-14343",
+    "PYSEC-2021-142"
+  ],
+  "modified": "2026-02-04T03:33:10.792778Z",
+  "published": "2021-03-25T21:26:26Z",
+  "affected": [
+    {
+      "package": {
+        "name": "pyyaml",
+        "ecosystem": "PyPI",
+        "purl": "pkg:pypi/pyyaml"
+      },
+      "ranges": [
+        {
+          "type": "ECOSYSTEM",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "5.4"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

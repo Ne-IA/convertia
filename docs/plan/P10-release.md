@@ -311,6 +311,7 @@
 - [ ] **P10.59** [GATE] Run the deferred cargo-vet first-party crate-trust live vetting — `init`/`import` (≥2 DBs) / `check --locked` over the full `Cargo.lock`, commit `imports.lock`, populate `audits.toml` · §3.8 · G18b G18a G9
   needs: P1.7
   > the live cargo-vet run that P0.3.6 authored the config/protocol for and **P1.59 deferred** ("a separate P10 vetting effort"): pin cargo-vet (`gate-tools.toml`), `cargo vet init`, `cargo vet import` the ≥2 declared DBs (Mozilla + Google, `supply-chain/config.toml`), `cargo vet suggest` then certify/exempt the full tree (~471 crates) with documented reasons, commit `supply-chain/imports.lock` (Co-Pilot-reviewed, never auto-fetched — G9 invariant (e) / G18a `--locked`), and populate `supply-chain/audits.toml`. This flips the G18b live tier from skip-with-warning to fail-closed (a clean `cargo vet check --locked` becomes release-blocking). **Authored as the owning box at P1.68** so the deferred work is plan-owned (the obligation-as-prose lesson the P1.66 G71 fix taught — an unowned, unverified deferral silently never happens). Runs in the P10 supply-chain stage, before P10.58 publish.
+  > [Co-Pilot, push 4 C2a] committing `supply-chain/imports.lock` reds G17's lockfile census (`*.lock` is lockfile-named, and no G17 half reads cargo-vet's trust data) until the same commit declares it in `scripts/check-osv-advisories` `DECLARED_UNSCANNED` with its reason, a caged edit under `L-neg1-ack: owner` (G71); `g24-osv-advisories.py` pins that red.
 
 ---
 

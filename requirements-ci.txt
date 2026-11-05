@@ -23,8 +23,15 @@
 # The gate invokes `semgrep --config scripts/semgrep-rules/` (vendored, offline);
 # it NEVER uses `--config p/rust` (which network-fetches the live registry and
 # breaks under network isolation). Semgrep's tree includes network/telemetry
-# libraries (requests/httpx/opentelemetry/mcp); the gate ALWAYS runs offline -
-# `--metrics off --disable-version-check`, local --config only, no auto-update.
+# libraries (requests/httpx/opentelemetry/mcp); the scan runs offline -
+# `--metrics off --disable-version-check`, local --config only, no auto-update -
+# while the `--validate` leg fetches Semgrep's rule-lint pack p/semgrep-rule-lints
+# from semgrep.dev (build-gates G29 and §0 *Network fetches*).
+#
+# ADVISORIES: G17 scans this file offline against the OSV PyPI database
+# (scripts/check-osv-advisories). An advisory on a package the Semgrep pin holds is
+# accepted only as an [[ignore]] entry in scripts/osv-ignores.toml whose `held_by`
+# names that package's own pin here, never the Semgrep version (plan-lint check 32).
 #
 # REGENERATION (on a version bump - an L(-1), owner-acked change): in the pinned
 # CI environment (clean python:3.12 on a manylinux glibc>=2.34 base == the

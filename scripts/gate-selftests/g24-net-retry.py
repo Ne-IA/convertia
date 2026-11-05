@@ -45,7 +45,8 @@ Pins the policy both where it lives and where it is copied:
    above the computed one, an unbudgeted retry job and a drifted bound each red.
 
 The sites that USE the policy pin their wiring in their own canaries (g24-install-gate-tools, g24-supply-chain,
-g24-branch-protection, g24-release-tag-trust, and the --selftest of fetch-engine-assets and record-action-pins).
+g24-branch-protection, g24-release-tag-trust, g24-osv-advisories, and the --selftest of fetch-engine-assets and
+record-action-pins).
 
 Run:  python3 scripts/gate-selftests/g24-net-retry.py
 Exit: 0 = every assertion held; 1 = a self-test assertion FAILED, or a leg hung past _HANG_S (the watchdog's exit).
@@ -480,6 +481,11 @@ record("run_bounded: stdin is the null device, so a command that reads it gets e
 _env = NET.run_bounded([sys.executable, "-c", "import os; print(os.environ.get('NR_PROBE', '-'))"], 30,
                        env={**os.environ, "NR_PROBE": "set"})
 record("run_bounded: the environment passed is the child's", _env.stdout.strip() == "set", _env.stdout.strip())
+# the working directory the G17 OSV refresh runs its download in (check-osv-advisories)
+with tempfile.TemporaryDirectory() as _cwd_dir:
+    _cwd = NET.run_bounded([sys.executable, "-c", "import os; print(os.getcwd())"], 30, cwd=_cwd_dir)
+    record("run_bounded: the cwd passed is the child's working directory",
+           os.path.samefile(_cwd.stdout.strip() or os.devnull, _cwd_dir), _cwd.stdout.strip())
 # A child that ignores SIGTERM and starts two grandchildren that ignore it too, both holding the same output: one in
 # its process group, and (POSIX) one that leaves the group with setsid(); it reports their pids, then hangs. The bound
 # starts once the child has reported them (the Popen of run_bounded waits for the report file, so a slow runner's
@@ -1231,16 +1237,16 @@ _BOUNDS = {
     ("scripts/check-release-tag-trust", "_GH_ATTEMPT_TIMEOUT_S"): 60,
     (_FEA, "FETCH_TIMEOUT_SECONDS"): 120, (_FEA, "FETCH_ATTEMPT_SECONDS"): 600,
     ("scripts/record-action-pins", "TIMEOUT_S"): 30, ("scripts/record-action-pins", "ATTEMPT_S"): 60,
-    ("scripts/check-js-advisories", "REFRESH_TIMEOUT"): 900,
+    ("scripts/check-osv-advisories", "REFRESH_ATTEMPT_S"): 300,
     (_CANARY_IGT, "PROBE_TIMEOUT_S"): 20, (_CANARY_IGT, "PROBE_ATTEMPT_S"): 60,
     (_CANARY_IGT, "ASSET_TIMEOUT_S"): 60, (_CANARY_IGT, "ASSET_ATTEMPT_S"): 120,
     ("scripts/net-retry", "KILL_GRACE_S"): 5,
 }
 # Each retried fetch a workflow's run: line starts: the bounds one attempt of it runs in sequence (its try bound is
 # their sum), whether it retries inside the window (its worst case: the first try at its bound, the 300 s window,
-# the last try at its bound) or runs once (the G17 OSV refresh, fail-open with one attempt: its bound alone), and
-# whether its steps are subprocesses under net-retry's run_bounded, each of which may outlast its bound by
-# KILL_GRACE_S (SIGTERM, then SIGKILL once the grace has passed).
+# the last try at its bound) or runs once (its bound alone), and whether its steps are subprocesses under
+# net-retry's run_bounded, each of which may outlast its bound by KILL_GRACE_S (SIGTERM, then SIGKILL once the grace
+# has passed).
 _FETCH_SITES = {
     "the gate-tool install": (((_IGT, "DOWNLOAD_ATTEMPT_S"),), True, False),
     "G18's advisory fetch": (((_CSC, "_DENY_FETCH_ATTEMPT_S"), (_CSC, "_LS_REMOTE_ATTEMPT_S"),
@@ -1249,7 +1255,7 @@ _FETCH_SITES = {
     "a G56a gh read": ((("scripts/check-branch-protection", "_GH_ATTEMPT_TIMEOUT_S"),), True, True),
     "a G56b gh read": ((("scripts/check-release-tag-trust", "_GH_ATTEMPT_TIMEOUT_S"),), True, True),
     "an engine-asset fetch": (((_FEA, "FETCH_ATTEMPT_SECONDS"), (_FEA, "FETCH_TIMEOUT_SECONDS")), True, False),
-    "the OSV database refresh": ((("scripts/check-js-advisories", "REFRESH_TIMEOUT"),), False, False),
+    "the OSV database refresh": ((("scripts/check-osv-advisories", "REFRESH_ATTEMPT_S"),), True, True),
     "the canary's network probe": (((_CANARY_IGT, "PROBE_ATTEMPT_S"),), True, False),
     "the canary's reference fetch": (((_CANARY_IGT, "ASSET_ATTEMPT_S"),), True, False),
 }
@@ -1264,7 +1270,7 @@ _SITE_SCRIPTS = (
     (re.compile(r"\bscripts/check-branch-protection\b"), ("a G56a gh read",)),
     (re.compile(r"\bscripts/check-release-tag-trust\b"), ("a G56b gh read",)),
     (re.compile(r"\bscripts/fetch-engine-assets\b(?!.*--check\b)"), ("an engine-asset fetch",)),
-    (re.compile(r"\bscripts/check-js-advisories\b.*--refresh\b"), ("the OSV database refresh",)),
+    (re.compile(r"\bscripts/check-osv-advisories\b.*--refresh\b"), ("the OSV database refresh",)),
 )
 # Each job that runs a retried fetch, with the timeout-minutes its run with no outage had before the policy (its
 # budget): its timeout-minutes is that budget plus its slowest retried fetch's worst case, rounded up to the minute.

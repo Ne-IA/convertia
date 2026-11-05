@@ -14,9 +14,12 @@ Two tiers, the same pattern as the supply-chain skeleton (P0.3.6):
   REQUIRED_ATTRS deny-set is present at its module root, then run `cargo fmt --check` (G3),
   `cargo clippy -D warnings` / `--all-targets --all-features` (G4/G14), `cargo test`, and
   `cargo audit` (G17 — PLAIN, no `--locked`; `--no-fetch` for the offline leg, skipped when the local
-  advisory-db is absent — a fresh machine / clean CI runner has none). Skips-with-notice while no
-  workspace manifest exists, fail-closes the moment one lands (the G47/G22/G23 bootstrap posture).
-  cargo-audit's binary pin + the live audit leg activate in P1 with the lockfile.
+  advisory-db is absent — a fresh machine / clean CI runner has none) once per CARGO_AUDIT_LOCKS lock
+  (`--file`: the workspace Cargo.lock and the fuzz harness's fuzz/Cargo.lock, whose fuzz-only crates no
+  other advisory scan reads; vulnerabilities only, as plain cargo audit reports warnings without failing).
+  Skips-with-notice while no workspace manifest exists, fail-closes the moment one lands (the G47/G22/G23
+  bootstrap posture); cargo-audit's binary pin and the live audit leg are live since P1. The OSV half of
+  G17 (check-osv-advisories) reads CARGO_AUDIT_LOCKS from this file for its lockfile census.
   The `cargo audit` flag set of the pinned cargo-audit 0.22.2 (`cargo-audit audit --help`, measured;
   re-measured on every bump - the G17 row): `-c/--color`, `-d/--db`, `-D/--deny`, `-f/--file`,
   `--ignore`, `--no-yanked`, `-n/--no-fetch`, `--stale`, `--target-arch`, `--target-os`,
@@ -47,6 +50,9 @@ for _stream in (sys.stdout, sys.stderr):          # the console's codepage is no
 ROOT = Path(__file__).resolve().parents[1]
 RUSTFMT = ROOT / "rustfmt.toml"
 CLIPPY = ROOT / "clippy.toml"
+# The locks the G17 audit reads, one `cargo audit --file` each (repo-relative; the single copy of the Rust half's
+# lock set: check-osv-advisories' lockfile census reads this tuple from the file's syntax tree).
+CARGO_AUDIT_LOCKS = ("Cargo.lock", "fuzz/Cargo.lock")
 AUDIT_TOML = ROOT / "audit.toml"   # the G17 cargo-audit ignore config (P1.59); read here so the live audit
                                    # leg APPLIES its ignores via `--ignore` (cargo-audit does NOT auto-read a
                                    # repo-root audit.toml — its default config path is `.cargo/audit.toml`)
@@ -180,10 +186,11 @@ def _audit_ignores() -> list[str]:
     return [x for x in ignore if isinstance(x, str)] if isinstance(ignore, list) else []
 
 
-def _audit_argv() -> list[str]:
-    """(pure) the `cargo audit` argv: the offline `--no-fetch` leg + `--ignore <id>` for every audit.toml
-    ignore id (sourced via _audit_ignores, since cargo-audit does not auto-read a repo-root audit.toml)."""
-    argv = ["cargo", "audit", "--no-fetch"]
+def _audit_argv(lock: str) -> list[str]:
+    """(pure) the `cargo audit` argv for one CARGO_AUDIT_LOCKS lock: the offline `--no-fetch` leg, `--file <lock>`
+    (the pinned 0.22.2's `-f/--file`) + `--ignore <id>` for every audit.toml ignore id (sourced via
+    _audit_ignores, since cargo-audit does not auto-read a repo-root audit.toml) - the same ignore set per lock."""
+    argv = ["cargo", "audit", "--no-fetch", "--file", lock]
     for adv_id in _audit_ignores():
         argv += ["--ignore", adv_id]
     return argv
@@ -292,7 +299,8 @@ def run_live_tools(full: bool) -> int:
     if have_audit and _advisory_db_present():
         # cargo-audit does not auto-read the repo-root audit.toml (default config path is .cargo/audit.toml),
         # so the ignore set is applied on the CLI, sourced from audit.toml (the single source; == deny.toml).
-        problems += _run("G17 cargo audit", _audit_argv())
+        for lock in CARGO_AUDIT_LOCKS:
+            problems += _run(f"G17 cargo audit ({lock})", _audit_argv(lock))
     elif have_audit:
         # cargo-audit is installed but the offline `--no-fetch` leg needs a local advisory-db that a
         # fresh machine / clean CI runner does not have (it would error, not find an advisory). Skip

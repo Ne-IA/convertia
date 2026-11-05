@@ -204,12 +204,20 @@ with tempfile.TemporaryDirectory() as _td:
         m.AUDIT_TOML = _syn
         record("audit-ignore: _audit_ignores() reads [advisories].ignore verbatim",
                m._audit_ignores() == ["RUSTSEC-2099-0001", "RUSTSEC-2099-0002"])
-        record("audit-argv: _audit_argv() = `cargo audit --no-fetch` + a `--ignore <id>` pair per ignore",
-               m._audit_argv() == ["cargo", "audit", "--no-fetch",
-                                   "--ignore", "RUSTSEC-2099-0001", "--ignore", "RUSTSEC-2099-0002"])
+        # [Test-Change: push 4 C2a - old-obsolete+new-correct, build-gates G17 row] old: one argv, `cargo audit
+        # --no-fetch` + the ignores, read Cargo.lock alone. new: one argv per CARGO_AUDIT_LOCKS lock, `--file <lock>`
+        # after `--no-fetch`, the same ignore pairs after it, so fuzz/Cargo.lock is audited with the same ignore set.
+        record("audit-argv: _audit_argv(lock) = `cargo audit --no-fetch --file <lock>` + a `--ignore <id>` pair per "
+               "ignore, the same pairs for each lock",
+               all(m._audit_argv(_l) == ["cargo", "audit", "--no-fetch", "--file", _l,
+                                         "--ignore", "RUSTSEC-2099-0001", "--ignore", "RUSTSEC-2099-0002"]
+                   for _l in ("Cargo.lock", "fuzz/Cargo.lock")))
         m.AUDIT_TOML = Path(_td) / "__absent__.toml"
+        # [Test-Change: push 4 C2a - old-obsolete+new-correct, build-gates G17 row] old: the argv without ignores was
+        # `cargo audit --no-fetch`; new: it is `cargo audit --no-fetch --file <lock>`, still with no --ignore.
         record("audit-ignore: an ABSENT audit.toml -> [] + argv has NO --ignore (target-absent, graceful)",
-               m._audit_ignores() == [] and m._audit_argv() == ["cargo", "audit", "--no-fetch"])
+               m._audit_ignores() == []
+               and m._audit_argv("Cargo.lock") == ["cargo", "audit", "--no-fetch", "--file", "Cargo.lock"])
         _bad = Path(_td) / "bad.toml"; _bad.write_text("this = = not toml [[\n", encoding="utf-8")
         m.AUDIT_TOML = _bad
         record("audit-ignore: a MALFORMED audit.toml -> [] (tomllib guarded, not a crash)",
@@ -224,8 +232,119 @@ with tempfile.TemporaryDirectory() as _td:
                m._audit_ignores() == [])
     finally:
         m.AUDIT_TOML = _saved_at
-record("audit-ignore: the REAL committed audit.toml -> non-empty set, every id passed as a --ignore value",
-       len(m._audit_ignores()) > 0 and all(a in m._audit_argv() for a in m._audit_ignores()))
+# [Test-Change: push 4 C2a - old-obsolete+new-correct, build-gates G17 row] old: the one argv carried every ignore;
+# new: the argv of each CARGO_AUDIT_LOCKS lock carries every ignore.
+record("audit-ignore: the REAL committed audit.toml -> non-empty set, every id passed as a --ignore value for each lock",
+       len(m._audit_ignores()) > 0
+       and all(a in m._audit_argv(_l) for a in m._audit_ignores() for _l in m.CARGO_AUDIT_LOCKS))
+
+# --- the G17 lock set: the workspace lock and the fuzz harness's lock, each audited (push 4 C2a) -------------------
+_ROOT = SCRIPT.parents[1]
+record("CARGO_AUDIT_LOCKS is frozen at (Cargo.lock, fuzz/Cargo.lock), each a file of this tree (the fuzz-only "
+       "crates are read by no other advisory scan; check-osv-advisories' census reads this tuple)",
+       m.CARGO_AUDIT_LOCKS == ("Cargo.lock", "fuzz/Cargo.lock")
+       and all((_ROOT / _l).is_file() for _l in m.CARGO_AUDIT_LOCKS))
+
+
+def _audits_run(*, db_present: bool) -> list[list[str]] | str:
+    """run_live_tools(False) with cargo present, cargo-audit answering `--version`, the advisory-db present or not and
+    every live tool recorded instead of run (no child starts): the argvs of the G17 audit legs it ran."""
+    calls: list[list[str]] = []
+    saved = (m._run, m.shutil.which, m.subprocess.run, m._advisory_db_present)
+
+    def fake_run(label: str, argv: list[str]) -> int:
+        calls.append(list(argv))
+        return 0
+
+    m._run = fake_run
+    m.shutil.which = lambda name, *a, **k: "/planted/" + name
+    m.subprocess.run = lambda argv, **kw: m.subprocess.CompletedProcess(argv, 0, b"", b"")
+    m._advisory_db_present = lambda: db_present
+    try:
+        m.run_live_tools(False)
+    except Exception as e:                       # a crash is a red leg with its reason, never a pass
+        return f"<run_live_tools raised {type(e).__name__}: {e}>"
+    finally:
+        m._run, m.shutil.which, m.subprocess.run, m._advisory_db_present = saved
+    return [c for c in calls if c[:2] == ["cargo", "audit"]]
+
+
+_ran = _audits_run(db_present=True)
+record("run_live_tools: with cargo-audit and a local advisory-db, one audit per CARGO_AUDIT_LOCKS lock, in order, "
+       "each the lock's _audit_argv",
+       _ran == [m._audit_argv(_l) for _l in m.CARGO_AUDIT_LOCKS])
+record("run_live_tools: without a local advisory-db, no audit runs (the --no-fetch skip with its notice)",
+       _audits_run(db_present=False) == [])
+
+# --- binary leg: the pinned cargo-audit honours --file against a one-advisory RustSec database ---------------------
+# A planted two-crate lock and a database holding one advisory for its second crate: the lock's _audit_argv (plus
+# `--db` for the planted database) must exit 1 naming the advisory, so a cargo-audit that ignored `--file` (and read
+# the empty temp dir's absent Cargo.lock, exit 2) or the database reds this leg; the fixed version exits 0. Skips
+# with a notice when the pinned cargo-audit or cargo is absent (the L4 Linux gate-tooling leg has both).
+_AUDIT_BIN = next((p for p in (_ROOT / ".gate-tools" / "bin" / n for n in ("cargo-audit", "cargo-audit.exe"))
+                   if p.is_file()), None)
+_ADVISORY = """```toml
+[advisory]
+id = "RUSTSEC-2099-0001"
+package = "g24-fixture-vuln"
+date = "2099-01-01"
+url = "https://example.invalid/RUSTSEC-2099-0001"
+categories = ["memory-corruption"]
+
+[versions]
+patched = [">= 0.2.0"]
+```
+
+# A planted advisory for the G24 self-test
+
+One advisory, one crate, so the binary leg never depends on the live RustSec database.
+"""
+_FIXTURE_LOCK = """# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 4
+
+[[package]]
+name = "g24-fixture-root"
+version = "0.1.0"
+dependencies = [
+ "g24-fixture-vuln",
+]
+
+[[package]]
+name = "g24-fixture-vuln"
+version = "{v}"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"
+"""
+if _AUDIT_BIN is None or m.shutil.which("cargo") is None:
+    print("[g24-rust-lint-contract] SKIP the cargo-audit binary leg - the pinned cargo-audit (.gate-tools/bin) or "
+          "cargo is absent here; the L4 Linux gate-tooling leg runs it.")
+else:
+    with tempfile.TemporaryDirectory() as _td:
+        _T = Path(_td)
+        (_T / "db" / "crates" / "g24-fixture-vuln").mkdir(parents=True)
+        (_T / "db" / "crates" / "g24-fixture-vuln" / "RUSTSEC-2099-0001.md").write_text(_ADVISORY, encoding="utf-8")
+        (_T / "empty").mkdir()
+        _env = dict(os.environ, PATH=os.pathsep.join([str(_AUDIT_BIN.parent), os.environ.get("PATH", "")]))
+
+        def _audit(version: str) -> tuple[int | None, str]:
+            lock = _T / f"lock-{version}" / "Cargo.lock"
+            lock.parent.mkdir(exist_ok=True)
+            lock.write_text(_FIXTURE_LOCK.format(v=version), encoding="utf-8")
+            try:
+                p = m.subprocess.run(m._audit_argv(str(lock)) + ["--db", str(_T / "db")], cwd=str(_T / "empty"),
+                                     env=_env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                     timeout=300)
+            except (OSError, m.subprocess.TimeoutExpired) as e:
+                return None, f"{type(e).__name__}: {e}"
+            return p.returncode, p.stdout + p.stderr
+
+        _rc, _out = _audit("0.1.0")
+        record("binary: the pinned cargo-audit over a planted lock pinning g24-fixture-vuln 0.1.0 (--file, from an "
+               "empty cwd) against the one-advisory database -> exit 1 naming RUSTSEC-2099-0001",
+               _rc == 1 and "RUSTSEC-2099-0001" in _out)
+        _rc, _out = _audit("0.2.0")
+        record("binary: the same lock at the patched 0.2.0 -> exit 0", _rc == 0)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-rust-lint-contract] {len(results) - len(failed)}/{len(results)} assertions passed.")

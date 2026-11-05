@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.9.0",
+  "id": "GHSA-6q48-6c7w-9gw2",
+  "aliases": [
+    "PYSEC-2026-4320"
+  ],
+  "modified": "2026-10-26T16:15:35.371128995Z",
+  "published": "2026-10-20T19:35:05Z",
+  "affected": [
+    {
+      "package": {
+        "name": "certifi",
+        "ecosystem": "PyPI",
+        "purl": "pkg:pypi/certifi"
+      },
+      "ranges": [
+        {
+          "type": "ECOSYSTEM",
+          "events": [
+            {
+              "introduced": "2019.03.09"
+            },
+            {
+              "fixed": "2026.10.18"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

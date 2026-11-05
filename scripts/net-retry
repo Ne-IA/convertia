@@ -201,9 +201,10 @@ def read_body(response: object, *, deadline: float, limit: int | None = None, ch
     return b"".join(parts)
 
 
-def run_bounded(cmd: list[str], seconds: float, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+def run_bounded(cmd: list[str], seconds: float, *, env: dict[str, str] | None = None,
+                cwd: str | os.PathLike | None = None) -> subprocess.CompletedProcess:
     """One run of `cmd` under a wall-clock bound that holds on every OS, as text (UTF-8, undecodable bytes replaced),
-    in `env` (None: this process's environment). Its output goes to temporary files, never pipes, so a process that
+    in `env` (None: this process's environment) and `cwd` (None: this process's working directory). Its output goes to temporary files, never pipes, so a process that
     inherited them cannot hold the call open past the bound (subprocess.run's timeout path waits on its pipes without
     a bound on Windows), not even one that left the process group and outlives the kill. Past `seconds`, on POSIX,
     the process and every process in its process group get SIGTERM, and SIGKILL once KILL_GRACE_S seconds have passed
@@ -214,7 +215,7 @@ def run_bounded(cmd: list[str], seconds: float, *, env: dict[str, str] | None = 
     group = {"process_group": 0} if os.name == "posix" else {}
     note = ""
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env, **group)
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env, cwd=cwd, **group)
         try:
             code = proc.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
