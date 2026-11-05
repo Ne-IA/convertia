@@ -28,9 +28,12 @@ permissions:
   contents: read
 
 # Per-push/PR concurrency so a newer push supersedes an in-flight run. NEVER added to
-# the release/tag workflow (P0.2.5).
+# the release/tag workflow (P0.2.5). The group carries the event name, so a run of one event
+# cancels only a run of the same event on the same ref: the weekly schedule run and a push run
+# on `main` never cancel each other (a cancelled push run would never run its push-only legs:
+# G11, G12, the G27 decrease guard, the G28 diff coverage).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

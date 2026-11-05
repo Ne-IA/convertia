@@ -276,6 +276,48 @@ record("run_live_tools: with cargo-audit and a local advisory-db, one audit per 
 record("run_live_tools: without a local advisory-db, no audit runs (the --no-fetch skip with its notice)",
        _audits_run(db_present=False) == [])
 
+# --- --audit-only: the daily advisories workflow's entry point runs G17's audit alone and never skips green ---------
+def _main_recorded(argv: list[str], *, audit: bool, db_present: bool, manifest: bool = True) -> tuple[object, list[list[str]]]:
+    """m.main(argv) with every live tool recorded instead of run (each answers exit 0), `cargo audit --version`
+    answering as `audit`, the advisory-db present or not and the workspace manifest present or not: (its exit code,
+    or argparse's SystemExit code, and the argvs of the tools it ran)."""
+    calls: list[list[str]] = []
+    saved = (m._run, m.shutil.which, m.subprocess.run, m._advisory_db_present, m._workspace_manifest)
+
+    def fake_run(label: str, argv: list[str]) -> int:
+        calls.append(list(argv))
+        return 0
+
+    m._run = fake_run
+    m.shutil.which = lambda name, *a, **k: "/planted/" + name
+    m.subprocess.run = lambda argv, **kw: m.subprocess.CompletedProcess(argv, 0 if audit else 1, b"", b"")
+    m._advisory_db_present = lambda: db_present
+    m._workspace_manifest = (lambda: m.ROOT / "Cargo.toml") if manifest else (lambda: None)
+    try:
+        rc: object = m.main(argv)
+    except SystemExit as e:
+        rc = e.code
+    except Exception as e:                       # a crash is a red leg with its reason, never a pass
+        rc = f"<main raised {type(e).__name__}: {e}>"
+    finally:
+        m._run, m.shutil.which, m.subprocess.run, m._advisory_db_present, m._workspace_manifest = saved
+    return rc, calls
+
+
+_rc, _calls = _main_recorded(["--audit-only"], audit=True, db_present=True)
+record("--audit-only: exit 0 after exactly one audit per CARGO_AUDIT_LOCKS lock and no other tool (no fmt, clippy or "
+       "test: the advisories workflow runs the advisory legs only)",
+       _rc == 0 and _calls == [m._audit_argv(_l) for _l in m.CARGO_AUDIT_LOCKS])
+_rc, _calls = _main_recorded(["--audit-only"], audit=True, db_present=False)
+record("--audit-only: no local advisory-db -> exit 1 and no audit (fail-closed, never the live tier's green skip)",
+       _rc == 1 and _calls == [])
+_rc, _calls = _main_recorded(["--audit-only"], audit=False, db_present=True)
+record("--audit-only: cargo-audit absent -> exit 1 (fail-closed)", _rc == 1 and _calls == [])
+_rc, _calls = _main_recorded(["--audit-only"], audit=True, db_present=True, manifest=False)
+record("--audit-only: no workspace Cargo.toml -> exit 1 (nothing to audit is no pass)", _rc == 1 and _calls == [])
+_rc, _calls = _main_recorded(["--audit-only", "--full"], audit=True, db_present=True)
+record("usage: --audit-only together with --full -> exit 2", _rc == 2 and _calls == [])
+
 # --- binary leg: the pinned cargo-audit honours --file against a one-advisory RustSec database ---------------------
 # A planted two-crate lock and a database holding one advisory for its second crate: the lock's _audit_argv (plus
 # `--db` for the planted database) must exit 1 naming the advisory, so a cargo-audit that ignored `--file` (and read

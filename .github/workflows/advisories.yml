@@ -1,0 +1,99 @@
+# .github/workflows/advisories.yml - the daily advisory watch: G17 and G18's advisory legs alone (push 4, C2b).
+#
+# WHAT: once a day, on Linux, over the default branch: G17's Rust half (`check-rust-lint-contract --audit-only`:
+# cargo-audit over Cargo.lock and fuzz/Cargo.lock against a fresh RustSec clone), G17's OSV half
+# (`check-osv-advisories`: every committed npm and PyPI lockfile and the pnpm pin, against OSV databases refreshed
+# in this run, with the lockfile census) and G18 (`check-supply-chain`, whose cargo-deny check reads the RustSec
+# database and the crates.io yank state it fetches itself). A new advisory against an unchanged lock reds this
+# run within a day of its database holding it, with no push and no Dependabot alert.
+#
+# WHY its own workflow: a scheduled red here can only come from the advisory legs (a new advisory, a yank, or a
+# database that could not be fetched through its retry window - each a finding), never from the flake surface of
+# ci.yml's full 3-OS run (apt, the 3-OS compile, the sast job's live rule-lint fetch), which keeps its weekly
+# schedule. build-loop Step 0 reads the latest run of this workflow, and a red one is §6 stop (3). GitHub mails
+# the failure of a scheduled run to the account that last changed its cron.
+#
+# NO CACHE: each run downloads the OSV databases afresh (about 260 MB, 16 s to 36 s measured), so there is no
+# restored database to fall back on: the refresh step retries a transient failure inside the 300 s window of the
+# gate plane's one retry policy (build-gates §0), records a download that failed at once or through that window,
+# and the `--require-db` check after it reds on that record (the OSV database-age floor); the RustSec clone fails
+# its step after its retry window. This job reads NO secret; harden-runner in egress-block mode still confines it to the hosts its
+# fetches need: GitHub (the checkout, the pinned gate-tool release assets, the RustSec clones), the Rust
+# toolchain host (rustup installs rust-toolchain.toml's channel on the first cargo call), crates.io (G18's
+# crate fetch) and the OSV bucket.
+#
+# This file is L(-1) security-critical (.github/**, scripts/l-neg1-files.toml, G71).
+
+name: advisories
+
+on:
+  schedule:
+    - cron: '41 2 * * *'   # daily, 02:41 UTC (offset minutes — GitHub thundering-herd guidance)
+  workflow_dispatch:       # manual re-run (e.g. after an advisory fix landed)
+
+# Least privilege: read-only (G49/G56). The scans need only the checkout.
+permissions:
+  contents: read
+
+# A watch run is never cancelled mid-run (a dispatch while a scheduled run is in flight waits for it); this
+# workflow has no push trigger.
+concurrency:
+  group: advisories-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  advisories:
+    name: advisories
+    runs-on: ubuntu-22.04   # every lock is OS-agnostic, so one Linux run reads them all (G56 cost discipline)
+    timeout-minutes: 42     # 15 for the run + 27 for its slowest retried fetch, a gate-tool download (632 + 300 + 632 s; computed by g24-net-retry.py, build-gates §0)
+    steps:
+      - name: 'Harden the runner — egress block (the advisory sources only)'
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            codeload.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            static.rust-lang.org:443
+            index.crates.io:443
+            static.crates.io:443
+            osv-vulnerabilities.storage.googleapis.com:443
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install + verify the pinned advisory scanners (cargo-audit, osv-scanner, cargo-deny)
+        run: python3 -P scripts/install-gate-tools --tool cargo-audit --tool osv-scanner --tool cargo-deny
+      # The RustSec advisory-db for G17's `cargo audit --no-fetch`: each try runs under a coreutils `timeout` (git over
+      # https sets no stall timeout of its own) and clears a partial clone first; a failed try is retried under the
+      # gate plane's one network retry policy (build-gates §0; g24-net-retry.py binds this loop to scripts/net-retry),
+      # and the step fails CLOSED (exit 1) after the retry window, so the audit never runs against an empty database.
+      - name: 'G17: clone the RustSec advisory-db (fresh, shallow)'
+        run: |
+          db="${CARGO_HOME:-$HOME/.cargo}/advisory-db"
+          delay=2 deadline=
+          until rm -rf "$db" && timeout -k 10 120 git clone --depth 1 https://github.com/rustsec/advisory-db "$db"; do
+            deadline=${deadline:-$((SECONDS + 300))}
+            left=$((deadline - SECONDS))
+            if [ "$left" -le 0 ]; then echo "::error::advisory-db clone failed through its retry window"; exit 1; fi
+            pause=$((delay / 2 + RANDOM % (delay / 2 + 1)))
+            if [ "$pause" -gt "$left" ]; then pause=$left; fi
+            echo "::warning::advisory-db clone failed; retrying in ${pause}s"
+            sleep "$pause"
+            delay=$((delay * 2 < 60 ? delay * 2 : 60))
+          done
+      - name: 'G17 (Rust): cargo-audit over Cargo.lock and fuzz/Cargo.lock (fail-closed without cargo-audit or the advisory-db)'
+        run: python3 -P scripts/check-rust-lint-contract --audit-only
+      - name: 'G17: download the OSV npm and PyPI databases (retried under the 300 s window, its outcome recorded for the check after it)'
+        run: python3 -P scripts/check-osv-advisories --refresh
+      - name: 'G17 (OSV): osv-scanner offline over every npm and PyPI lockfile and the pnpm pin, with the lockfile census (fail-closed on an absent, partial or undated database)'
+        run: python3 -P scripts/check-osv-advisories --require-db
+      - name: 'G18: cargo-deny over the RustSec database and the crates.io yank state it fetches (with the policy freeze)'
+        run: python3 -P scripts/check-supply-chain

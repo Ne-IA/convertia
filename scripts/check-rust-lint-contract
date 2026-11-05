@@ -30,7 +30,9 @@ Two tiers, the same pattern as the supply-chain skeleton (P0.3.6):
 stdlib-only. L(-1) security-critical (matched by scripts/**). The configs it freezes
 (rustfmt.toml / clippy.toml) are themselves L(-1).
 
-Usage: check-rust-lint-contract [--full]   (--full = the G14 whole-tree clippy leg, P1)
+Usage: check-rust-lint-contract [--full | --audit-only]   (--full = the G14 whole-tree clippy leg, P1;
+       --audit-only = G17's cargo audit over CARGO_AUDIT_LOCKS alone, fail-closed when it cannot run: the daily
+       advisories workflow, which runs no other Rust leg)
 Exit:  0 = contract intact (or target-absent); 1 = a violation; 2 = a config is missing/malformed.
 """
 from __future__ import annotations
@@ -290,6 +292,14 @@ def run_live_tools(full: bool) -> int:
     clippy = ["cargo", "clippy", "--all-targets", "--all-features"] if full else ["cargo", "clippy"]
     problems += _run("G4/G14 clippy -D warnings", clippy + ["--", "-D", "warnings"])
     problems += _run("cargo test", ["cargo", "test", "--all-targets"])
+    problems += run_audit(required=False)
+    return problems
+
+
+def run_audit(*, required: bool) -> int:
+    """G17's Rust half: one `cargo audit` per CARGO_AUDIT_LOCKS lock. Without cargo-audit or the local advisory-db
+    it skips with a notice (the live tier's posture), unless `required` (--audit-only, the daily advisories
+    workflow, whose one job this audit is): there each absence is a violation, never a green skip."""
     # G17: cargo audit is PLAIN (no --locked — not a cargo-audit flag); --no-fetch = the offline leg.
     try:
         have_audit = subprocess.run(["cargo", "audit", "--version"], cwd=str(ROOT),
@@ -299,9 +309,17 @@ def run_live_tools(full: bool) -> int:
     if have_audit and _advisory_db_present():
         # cargo-audit does not auto-read the repo-root audit.toml (default config path is .cargo/audit.toml),
         # so the ignore set is applied on the CLI, sourced from audit.toml (the single source; == deny.toml).
+        problems = 0
         for lock in CARGO_AUDIT_LOCKS:
             problems += _run(f"G17 cargo audit ({lock})", _audit_argv(lock))
-    elif have_audit:
+        return problems
+    if required:
+        fail("G17 --audit-only: " + ("no local advisory-db (~/.cargo/advisory-db) to audit against - the step "
+                                     "before this one clones it" if have_audit else
+                                     "cargo or the pinned cargo-audit is not installed (run `python3 -P "
+                                     "scripts/install-gate-tools --tool cargo-audit`)") + " - fail-closed")
+        return 1
+    if have_audit:
         # cargo-audit is installed but the offline `--no-fetch` leg needs a local advisory-db that a
         # fresh machine / clean CI runner does not have (it would error, not find an advisory). Skip
         # WITH a notice (never silently): the audit enforces at L1/L2 where a dev's db is warm + the
@@ -311,13 +329,26 @@ def run_live_tools(full: bool) -> int:
               "Rust CI audit leg)")
     else:
         print("[G17] cargo-audit not installed yet (binary pin lands in P1) — audit leg skipped")
-    return problems
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="G3/G4/G14/G17 Rust lint/format/test/audit contract (P0.4.1)")
-    ap.add_argument("--full", action="store_true", help="the G14 whole-tree clippy leg (P1, push)")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--full", action="store_true", help="the G14 whole-tree clippy leg (P1, push)")
+    mode.add_argument("--audit-only", action="store_true",
+                      help="G17's cargo audit alone, fail-closed without cargo-audit or the advisory-db (the daily "
+                           "advisories workflow)")
     args = ap.parse_args(argv)
+    if args.audit_only:
+        if _workspace_manifest() is None:
+            fail("G17 --audit-only: no workspace Cargo.toml - there is no lock to audit (fail-closed)")
+            return 1
+        if run_audit(required=True):
+            print("[G17] cargo audit found a violation (see above)", file=sys.stderr)
+            return 1
+        print(f"[G17] cargo audit over {', '.join(CARGO_AUDIT_LOCKS)} OK (no unignored vulnerability)")
+        return 0
 
     structural = (freeze_config(RUSTFMT, RUSTFMT_REQUIRED, "rustfmt") +
                   freeze_config(CLIPPY, CLIPPY_REQUIRED, "clippy") +

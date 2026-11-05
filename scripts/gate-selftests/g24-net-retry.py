@@ -754,7 +754,7 @@ _GIT_VALUED = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", 
 _CARGO_VALUED = frozenset({"-C", "-Z", "--config", "--color", "--explain"})
 # The retry loops each workflow holds: a loop added or removed, or a workflow whose loops this reader stops seeing,
 # reds here until the pin names the new count.
-_LOOPS_PINNED = {"ci.yml": 5, "fuzz.yml": 1, "release.yml": 1}
+_LOOPS_PINNED = {"advisories.yml": 1, "ci.yml": 5, "fuzz.yml": 1, "release.yml": 1}
 
 
 def _workflow_files(directory: Path) -> list[Path]:
@@ -1197,13 +1197,18 @@ with tempfile.TemporaryDirectory() as _td:
     _picked = [p.name for p in _workflow_files(Path(_td))]
 record("the workflow files read are G56's: every *.yml, then every *.yaml", _picked == ["a.yml", "b.yaml"],
        ", ".join(_picked))
+# [Test-Change: push 4 C2b - old-obsolete+new-correct, build-gates §0 *Network fetches*] old: the planted counts were
+# the three workflows that held a loop; new: advisories.yml, the daily advisory watch, holds its RustSec clone loop,
+# so each planted count set carries `"advisories.yml": 1` and the same four cases red as before.
+_PIN_OK = {"advisories.yml": 1, "ci.yml": 5, "fuzz.yml": 1, "release.yml": 1}
 record("the loop-count pin: the pinned counts read clean, and a loop lost, a loop added and a loop in an unpinned "
        "workflow each red",
-       not count_findings({"ci.yml": 5, "fuzz.yml": 1, "release.yml": 1, "scorecard.yml": 0})
-       and count_findings({"ci.yml": 4, "fuzz.yml": 1, "release.yml": 1}) == ["ci.yml: 4 retry loop(s), the canary pins 5"]
-       and count_findings({"ci.yml": 5, "fuzz.yml": 2, "release.yml": 1}) == ["fuzz.yml: 2 retry loop(s), the canary pins 1"]
-       and count_findings({"ci.yml": 5, "fuzz.yml": 1, "release.yml": 1, "new.yaml": 1})
-       == ["new.yaml: 1 retry loop(s), the canary pins 0"])
+       not count_findings({**_PIN_OK, "scorecard.yml": 0})
+       and count_findings({**_PIN_OK, "ci.yml": 4}) == ["ci.yml: 4 retry loop(s), the canary pins 5"]
+       and count_findings({**_PIN_OK, "fuzz.yml": 2}) == ["fuzz.yml: 2 retry loop(s), the canary pins 1"]
+       and count_findings({**_PIN_OK, "new.yaml": 1}) == ["new.yaml: 1 retry loop(s), the canary pins 0"]
+       and count_findings({k: v for k, v in _PIN_OK.items() if k != "advisories.yml"})
+       == ["advisories.yml: 0 retry loop(s), the canary pins 1"])
 
 _LIVE_FINDINGS: list[str] = []
 _LIVE_LOOPS: dict[str, int] = {}
@@ -1278,6 +1283,7 @@ _JOB_BUDGET_MIN = {
     ("ci.yml", "gate-tooling"): 30, ("ci.yml", "workflow-security"): 10, ("ci.yml", "sast"): 15,
     ("ci.yml", "compile-sanity"): 25, ("ci.yml", "engine-asset-populate"): 30, ("ci.yml", "engine-asset-compile"): 45,
     ("fuzz.yml", "fuzz"): 80, ("release.yml", "guard"): 10, ("secrets-history.yml", "gitleaks-history"): 15,
+    ("advisories.yml", "advisories"): 15,
 }
 _JOB_HEAD_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
 _JOB_TIMEOUT_RE = re.compile(r"^    timeout-minutes:\s*(\d+)\b")

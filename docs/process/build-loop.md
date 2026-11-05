@@ -115,6 +115,19 @@ check is §6 stop (4):
 - **CI health:** the last `gh run list --workflow ci --branch main --event push` run: success →
   go; in progress → Steps 1–3 only until it concludes (Step 6); red → attribute it (Step 6);
   unreachable → warn and go.
+- **Advisory watch:** the last `gh run list --workflow advisories --branch main` run, the daily
+  run of G17's and G18's advisory legs alone: success → go; queued, waiting and in progress alike
+  → Steps 1–3 only until it concludes, as for CI health, and this bullet then reads its
+  conclusion; any other conclusion (failure, cancelled, skipped, timed out, startup failure) is
+  red → §6 stop (3) (a new advisory, a yank, or a database its 300 s retry window could not
+  fetch, against an unchanged tree); a red run older than the newest push to `main` that touched
+  a lockfile or an acceptance file (`package.json`, `audit.toml`, `deny.toml`,
+  `scripts/osv-ignores.toml`) is re-run first: the loop dispatches `gh workflow run advisories`
+  with the same `gh` login this step reads with, and a dispatch that is refused or fails is red →
+  §6 stop (3), never unreachable; only a run created after that dispatch counts, and until one has
+  concluded the loop stays at Steps 1–3; no run in the last 48 h while the workflow is older than
+  that → §6 stop (3) (the schedule is off: GitHub disables a public repository's scheduled
+  workflows after 60 days without activity); unreachable → warn and go.
 - **Parks:** list `$(git rev-parse --git-common-dir)/parked/` (§6 park procedure): Step 1
   re-selects a resumable park when its box is selectable; the patch of a box that is `[x]` on
   `main` is deleted.
@@ -568,7 +581,8 @@ A change is **done** only when:
    re-selects it;
 2. **nothing buildable** — zero open boxes (§9), or every open box inside a parked, escalated or
    `[!extern]` closure;
-3. **a red `main` not attributable to its own last push** (Step 6);
+3. **a red `main` not attributable to its own last push** (Step 6), a red or silent advisory
+   watch included (Step 0);
 4. **a hard-stop class** — `>= 3 consecutive push failures`, a second red after the
    fix-forward, a rebase conflict, reviewer unavailability (Step 5), an anomalous cancel, the
    GitHub API unreachable while a run is unobserved, a Step 0 mismatch, no throwaway container

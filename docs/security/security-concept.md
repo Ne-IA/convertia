@@ -199,11 +199,11 @@ drop the inherited `GIT_*` variables except `GIT_EXEC_PATH` (G24).
     produces findings) — and every bump is reviewed and re-landed, never auto-merged. G17
     scans every committed dependency lockfile — the Rust, npm and pip graphs, the fuzz
     harness's lock included — and the pnpm that `package.json` pins for known advisories
-    offline, on every push, against OSV databases its refresh dated within 72 h, and a tracked
-    lockfile outside its scan set fails it unless it is declared with its reason (the G53
-    fixture's lock, `engines.lock`). Every gate, SAST and SBOM tool is pinned by exact version
-    and verified by checksum or image digest at install, through a verify step that is itself
-    self-tested (a wrong checksum must fail the install; pip tools install
+    offline, on every push and daily, against OSV databases its refresh dated within 72 h,
+    and a tracked lockfile outside its scan set fails it unless it is declared with its
+    reason (the G53 fixture's lock, `engines.lock`). Every gate, SAST and SBOM tool is pinned
+    by exact version and verified by checksum or image digest at install, through a verify
+    step that is itself self-tested (a wrong checksum must fail the install; pip tools install
     `--require-hashes`), because a poisoned gate tool both misses a real finding and reads
     the CI secrets. The build toolchain that
     produces the shipped artifact is in the same trust boundary (everything that touches the

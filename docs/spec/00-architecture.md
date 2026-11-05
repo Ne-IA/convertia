@@ -1501,7 +1501,7 @@ convertia/
 │     └─ vendor/                   # vendored Semgrep rule packs
 └─ .github/                        # CI (Lane A §6.7.1) + release (Lane B §6.7.2) workflows + dependabot; SHA-pinned actions
    ├─ ISSUE_TEMPLATE/              # issue templates
-   └─ workflows/                   # ci.yml / release.yml / scorecard.yml / secrets-history.yml
+   └─ workflows/                   # ci.yml / release.yml / scorecard.yml / secrets-history.yml / advisories.yml
 ```
 
 **Engine registry is a module `[DECIDED]`:** the §3.2 seam lives in

@@ -756,7 +756,8 @@ advisory-wise but licence-policy-blocking), `cargo audit` also over the fuzz har
 `pnpm-lock.yaml` and the gate-tool `requirements-ci.txt` and `requirements-yamllint.txt` —
 and over the pnpm release `package.json`'s `packageManager` pins, against the
 Lane-A-refreshed OSV databases (the OSV advisory half); a tracked lockfile neither scan
-reads fails the check unless it is a declared non-graph file.
+reads fails the check unless it is a declared non-graph file, and a daily run repeats both
+scans (§6.7.1 step 6).
 Engine **currency** (keeping decoders
 patched) is a **best-effort posture, not a gate** (SSOT) — owned by §3.8; this file
 only ensures a bumped engine is re-validated against the corpus (§6.4/§6.5) before it
@@ -1670,8 +1671,10 @@ gate tooling and compile-sanity on the three-OS matrix:
 5. **Compile-sanity on the matrix:** `cargo check` / a debug `tauri build` on all
    three legs to catch platform-specific breakage early (no full corpus run here).
 6. **`cargo audit`** (Rust, the fuzz lock included) / **`cargo deny`** (the root graph) and
-   **`osv-scanner`** over `pnpm-lock.yaml`, the two pip gate-tool locks and the pinned pnpm (advisory +
-   licence policy, §6.3.4).
+   **`osv-scanner`** over `pnpm-lock.yaml`, the two pip gate-tool locks and the pinned pnpm
+   (advisory + licence policy, §6.3.4). The advisory legs of this step (the Rust audit, the OSV scan
+   and cargo-deny) also run alone once a day on Linux (`advisories.yml`), so a new
+   advisory against an unchanged lockfile reds within a day without a push.
 The enforcement is **CI green on `main` via required status checks on every push to
 `main`** (single-branch model, security-concept §2) — a red Lane A **fails the push /
 reddens `main`** and is **fixed immediately**, never bypassed; there is **no merge step
