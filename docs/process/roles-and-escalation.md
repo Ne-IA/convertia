@@ -38,7 +38,7 @@ signal, not the thing that keeps insecure code out (the gates do that on a clean
 checkout regardless of who is watching).
 
 **Clones and landing.** **Two sessions commit to `main`, each from its own clone**: the Co-Pilot
-pushes only while no loop `ci` run is queued or in progress, and re-checks that window after any
+pushes only while every loop `ci` run is completed, and re-checks that window after any
 rebase (a newer push cancels an in-progress `ci` run); the loop fast-forwards every iteration and
 rebases before its signing hop ([build-loop.md §0](build-loop.md#0-who-runs-this-and-what-it-is-not)).
 Each session runs repo code only in a throwaway container ([CLAUDE.md](../../CLAUDE.md) §10), and

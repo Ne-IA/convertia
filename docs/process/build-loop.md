@@ -26,7 +26,7 @@
 | **Co-Pilot** | Works with the owner: escalations and rulings, the caged part of a parked box, owner acts, the phase-end sweep boxes ([test-strategy §11](test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)), and incoming PRs and Dependabot bumps ([roles-and-escalation.md §5a](roles-and-escalation.md#5a-incoming-pull-requests--dependabot-bumps--owned-by-co-pilot-never-the-loop)). |
 
 Single branch `main`, no merge step, no worktrees. **Two sessions commit to `main`, each from its
-own clone**: the Co-Pilot pushes only while no loop `ci` run is queued or in progress; the loop
+own clone**: the Co-Pilot pushes only while every loop `ci` run is completed; the loop
 fast-forwards every iteration (Step 0) and rebases before its signing hop (Step 6). Every command
 below that runs repo code — a gate, a hook (`git commit` runs them), a test, `plan-lint`,
 `setup-dev` — runs in a throwaway container, never on the session's host (CLAUDE.md §10), and a
@@ -113,21 +113,29 @@ check is §6 stop (4):
   `python3 -P scripts/setup-dev` before the next commit: it is the one hook installer, and no lefthook
   run installs a newly declared hook (DEVELOPMENT.md "Windows host notes").
 - **CI health:** the last `gh run list --workflow ci --branch main --event push` run: success →
-  go; in progress → Steps 1–3 only until it concludes (Step 6); red → attribute it (Step 6);
-  unreachable → warn and go.
+  go; a run that is not completed → Steps 1–3 only until it completes (Step 6); red → attribute
+  it (Step 6); unreachable → warn and go.
 - **Advisory watch:** the last `gh run list --workflow advisories --branch main` run, the daily
-  run of G17's and G18's advisory legs alone: success → go; queued, waiting and in progress alike
-  → Steps 1–3 only until it concludes, as for CI health, and this bullet then reads its
-  conclusion; any other conclusion (failure, cancelled, skipped, timed out, startup failure) is
-  red → §6 stop (3) (a new advisory, a yank, or a database its 300 s retry window could not
-  fetch, against an unchanged tree); a red run older than the newest push to `main` that touched
-  a lockfile or an acceptance file (`package.json`, `audit.toml`, `deny.toml`,
+  run of G17's and G18's advisory legs alone. Every run that is not completed holds the loop at
+  Steps 1–3, as for CI health: `queued`, `waiting`, `pending`, `requested` and `in_progress`
+  (GitHub's run statuses; `pending` is a run held by advisories.yml's concurrency group, as
+  GitHub's "Control the concurrency of workflows and jobs" describes it), and this bullet then
+  reads its conclusion. Only a completed run carries a conclusion: `success` → go, and any other
+  conclusion is red → §6 stop (3) (a new advisory, a yank, or a database its 300 s retry window
+  could not fetch, against an unchanged tree). A red run older than the newest push to `main` that
+  touched a lockfile or an acceptance file (`package.json`, `audit.toml`, `deny.toml`,
   `scripts/osv-ignores.toml`) is re-run first: the loop dispatches `gh workflow run advisories`
   with the same `gh` login this step reads with, and a dispatch that is refused or fails is red →
   §6 stop (3), never unreachable; only a run created after that dispatch counts, and until one has
-  concluded the loop stays at Steps 1–3; no run in the last 48 h while the workflow is older than
+  completed the loop stays at Steps 1–3. No run in the last 48 h while the workflow is older than
   that → §6 stop (3) (the schedule is off: GitHub disables a public repository's scheduled
   workflows after 60 days without activity); unreachable → warn and go.
+  - **The `gh` login's rights** (GitHub's REST reference): reading the runs needs read access to
+    the repository, and for a private repository a fine-grained token's "Actions" permission at
+    read or an OAuth or classic token's `repo` scope (Ne-IA/convertia is public); `gh workflow run
+    advisories` needs the right to create a workflow-dispatch event on Ne-IA/convertia, a
+    fine-grained token's "Actions" at "Read and write" or an OAuth or classic token's `repo`
+    scope.
 - **Parks:** list `$(git rev-parse --git-common-dir)/parked/` (§6 park procedure): Step 1
   re-selects a resumable park when its box is selectable; the patch of a box that is `[x]` on
   `main` is deleted.
@@ -644,7 +652,7 @@ Build-Loop: follow docs/process/build-loop.md; one iteration = §3 Step 0 to Ste
 
 **Cadence: `== 1 box per iteration`.** Each iteration runs Step 0 to Step 7 for one box, hands its
 commit to the Step 6 landing path, and schedules its next wake-up. A wake-up whose Step 0 finds
-the previous push's `ci` run still in progress runs Steps 1–3 only, prints the §8 waiting line and
+the previous push's `ci` run not yet completed runs Steps 1–3 only, prints the §8 waiting line and
 schedules the next wake-up at the run's expected end; one that finds the previous commit still
 waiting for its Freigabe or its push runs Steps 1–3 only as well. Compaction carries the loop
 across boxes; after one it re-reads §2 and resumes the step in progress, since Step 0 runs only
