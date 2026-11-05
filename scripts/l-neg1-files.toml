@@ -25,6 +25,25 @@ patterns = [
 
   # --- the enforcement-plane config ---
   "lefthook.yml",                 # the L1/L2/L3 git-hook executor
+  # lefthook's other config names (lefthook 2.1.9, measured): it merges the 15 local ones over lefthook.yml
+  # and reads the main ones at the root and in .config/ when there is no lefthook.yml, so a tracked one swaps or
+  # skips a hook's commands (CLAUDE.md §5); the dot-names in .config/ it reads in no tree, caged with the rest
+  # so that the rule is lefthook.yml and nothing else. None is tracked: check-l-neg1-ack declares each
+  # target-less (LEFTHOOK_OTHER_CONFIGS), so a commit adding one needs the ack and reds as a stale declaration.
+  "lefthook.yaml", "lefthook.json", "lefthook.jsonc", "lefthook.toml",
+  ".lefthook.yml", ".lefthook.yaml", ".lefthook.json", ".lefthook.jsonc", ".lefthook.toml",
+  "lefthook-local.yml", "lefthook-local.yaml", "lefthook-local.json", "lefthook-local.jsonc", "lefthook-local.toml",
+  ".lefthook-local.yml", ".lefthook-local.yaml", ".lefthook-local.json", ".lefthook-local.jsonc",
+  ".lefthook-local.toml",
+  ".config/lefthook.yml", ".config/lefthook.yaml", ".config/lefthook.json", ".config/lefthook.jsonc",
+  ".config/lefthook.toml",
+  ".config/.lefthook.yml", ".config/.lefthook.yaml", ".config/.lefthook.json", ".config/.lefthook.jsonc",
+  ".config/.lefthook.toml",
+  ".config/lefthook-local.yml", ".config/lefthook-local.yaml", ".config/lefthook-local.json",
+  ".config/lefthook-local.jsonc", ".config/lefthook-local.toml",
+  ".config/.lefthook-local.yml", ".config/.lefthook-local.yaml", ".config/.lefthook-local.json",
+  ".config/.lefthook-local.jsonc", ".config/.lefthook-local.toml",
+  ".config",                      # a tracked .config that is no folder (a symlink, a file or a gitlink): lefthook 2.1.9 reads .config/lefthook-local.<ext> through a symlink there (measured); a real .config/ folder's files do not match this exact path; declared in AUDIT_DECLARED_TARGETLESS
   ".github/**",                   # all CI workflows + composite actions + the G56b allowed-signers file
 
   # --- supply-chain trust configs ---

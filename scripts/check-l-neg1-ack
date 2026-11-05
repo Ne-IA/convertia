@@ -259,11 +259,27 @@ def orphan_escapes(loop_tools: Mapping[str, str], pattern_strs: list[str]) -> li
 # glob is the dead-glob class and fails). If a declared glob's target lands, stale_declarations()
 # flags the entry so its removal rides that landing act (this file is L(-1)) - the removal
 # obligation is mechanical, never a prose promise.
+# lefthook's config names besides lefthook.yml, each a cage glob: the pinned lefthook 2.1.9 merges the 15 local
+# ones (lefthook-local.<ext> and .lefthook-local.<ext> at the root, .config/lefthook-local.<ext>) over
+# lefthook.yml and reads the main ones at the root and in .config/ when there is no lefthook.yml (measured), so a
+# tracked one swaps or skips what a hook runs (CLAUDE.md §5, security-concept §3 bypass (g)). None may ever be
+# tracked, so all 39 are declared target-less: they pre-cage the name, and the one that lands is a stale
+# declaration besides the ack it needs.
+LEFTHOOK_OTHER_CONFIGS: frozenset[str] = frozenset(
+    f"{folder}{stem}.{ext}" for folder in ("", ".config/")
+    for stem in ("lefthook", ".lefthook", "lefthook-local", ".lefthook-local")
+    for ext in ("yml", "yaml", "json", "jsonc", "toml")) - {"lefthook.yml"}
+# A commit that adds any path declared here needs the owner's `L-neg1-ack: owner` and removes that path
+# from this declaration in the same commit (with the ack alone it stays red as a stale declaration).
 AUDIT_DECLARED_TARGETLESS: frozenset[str] = frozenset({
     ".lfsconfig",   # a git-LFS ENDPOINT OVERRIDE, not required to use LFS (the default endpoint
                     # needs no such file) - so this glob may legitimately never have a target;
                     # it pre-cages the trust-relevant override the moment one is introduced.
-})
+    ".config",      # a tracked .config that is no folder (a symlink, a file or a gitlink): lefthook
+                    # 2.1.9 reads .config/lefthook-local.<ext> through a .config symlink (measured),
+                    # and no pattern names the target, so the exact path pre-cages it; the files of
+                    # a real .config/ folder do not match it.
+}) | LEFTHOOK_OTHER_CONFIGS
 
 
 def dead_globs(pattern_strs: list[str], tracked_paths: list[str]) -> list[str]:

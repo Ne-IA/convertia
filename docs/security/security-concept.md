@@ -41,9 +41,10 @@ keeps the two security rules.
   carry the power to silently weaken an enforcement plane are the **L(-1)
   security-critical-file set** (the cage the gates live in): every file under `scripts/`
   except the declared Loop build tools, the hook and CI planes (`lefthook.yml`,
-  `.github/**`), the supply-chain, secret-scan and toolchain trust configs, the
-  text-hygiene and lint policies, the caged ratchets, the Tauri capabilities, the pinned
-  engine manifest, the G53 negative fixture and the security/process docs. The
+  lefthook's other config names and the `.config` path, `.github/**`), the supply-chain,
+  secret-scan and toolchain trust configs, the text-hygiene and lint policies, the caged
+  ratchets, the Tauri capabilities, the pinned engine manifest, the G53 negative fixture
+  and the security/process docs. The
   authoritative list is `scripts/l-neg1-files.toml`; this paragraph names its categories
   and never enumerates it. **The autonomous Build-Loop NEVER edits an L(-1) file:** a box
   that needs one is **parked and escalated**

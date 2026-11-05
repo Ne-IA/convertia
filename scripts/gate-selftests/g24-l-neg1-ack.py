@@ -59,6 +59,10 @@ CJS = _load_gate("check-js-supply-chain")     # the JS floor reader (G18c)
 REGEXES = m.load_patterns(m.DEFAULT_CAGE)
 CAGE = m._read_cage(m.DEFAULT_CAGE)
 ESCAPES = m.honoured_escapes(CAGE.loop_tools) if CAGE is not None else frozenset()
+# Every fixture cage below carries every AUDIT_DECLARED_TARGETLESS glob: the set is a module constant that applies
+# to whichever cage the gate runs, so a fixture cage without one would trip the orphan leg.
+_DECL = sorted(m.AUDIT_DECLARED_TARGETLESS)
+_DECLARED = ", ".join(f'"{p}"' for p in _DECL)
 results: list[tuple[str, bool]] = []
 
 
@@ -89,6 +93,35 @@ for p in ("lefthook.yml", "scripts/check-l-neg1-ack", "scripts/check-branch-prot
           "scripts/Stage-Engines"):                    # ...and so does a case variant (git paths are case-sensitive)
     record(f"L(-1) POSITIVE: {p}", m.is_l_neg1(p, REGEXES, ESCAPES))
 
+# --- lefthook's other config names (push 5 e2) -----------------------------------------------
+# [Test-Change: G71 lefthook config names — new-test:the cage names lefthook's 39 other config names, which the
+# pinned lefthook 2.1.9 merges over lefthook.yml or reads without it, security-concept §3 (g)] Spelled here
+# independently of the gate's LEFTHOOK_OTHER_CONFIGS, so a name dropped from either side reds a leg.
+_LH_OTHER = [f"{d}{s}.{e}" for d in ("", ".config/")
+             for s in ("lefthook", ".lefthook", "lefthook-local", ".lefthook-local")
+             for e in ("yml", "yaml", "json", "jsonc", "toml") if f"{d}{s}.{e}" != "lefthook.yml"]
+record("lefthook: 39 other config names, each once", len(_LH_OTHER) == 39 == len(set(_LH_OTHER)))
+for p in _LH_OTHER:
+    record(f"L(-1) POSITIVE (a lefthook config name): {p}", m.is_l_neg1(p, REGEXES, ESCAPES))
+record("lefthook: the REAL cage names exactly lefthook.yml and the 39 others, each as its exact path",
+       CAGE is not None and sorted(p for p in CAGE.patterns if "lefthook" in p) == sorted(_LH_OTHER + ["lefthook.yml"]))
+record("lefthook: the gate declares exactly the 39 target-less, beside .lfsconfig and .config",
+       m.LEFTHOOK_OTHER_CONFIGS == frozenset(_LH_OTHER)
+       and m.AUDIT_DECLARED_TARGETLESS == frozenset(_LH_OTHER) | {".lfsconfig", ".config"})
+record("lefthook: a config name below the root is NOT caged (lefthook reads the root and .config/ only)",
+       not m.is_l_neg1("src/lefthook-local.yml", REGEXES, ESCAPES)
+       and not m.is_l_neg1("docs/.config/lefthook.toml", REGEXES, ESCAPES))
+# [Test-Change: G71 .config — new-test:the cage names the exact path .config, because lefthook 2.1.9 reads
+# .config/lefthook-local.<ext> through a tracked .config symlink whose target no pattern names,
+# security-concept §3 (g)]
+record("lefthook: the REAL cage names .config as its exact path (no glob character)",
+       CAGE is not None and ".config" in CAGE.patterns and m.glob_to_regex(".config").pattern == r"^\.config$")
+record("lefthook: a tracked .config that is no folder is caged, the target of a symlink there is NOT",
+       m.is_l_neg1(".config", REGEXES, ESCAPES) and not m.is_l_neg1("cfgx/lefthook-local.yml", REGEXES, ESCAPES))
+record("lefthook: an unrelated file of a real .config/ folder is NOT caged and does not stale the .config declaration",
+       not m.is_l_neg1(".config/some-tool.toml", REGEXES, ESCAPES)
+       and m.stale_declarations([".config"], [".config/some-tool.toml"]) == [])
+
 # --- is_l_neg1: NEGATIVES (NOT caged) ---------------------------------------------------------
 for p in ("README.md", "src/main.rs", "src/ui.ts", "Cargo.toml", "Cargo.lock", "package.json",
           "docs/plan/P0-build-and-security.md",        # the plan is NOT L(-1) (only security/process docs are)
@@ -118,10 +151,13 @@ record("audit: a declared glob with no landed target is NOT stale",
        m.stale_declarations([".lfsconfig"], _TRACKED) == [])
 record("audit: an undeclared live glob is neither dead nor stale",
        m.dead_globs(["lefthook.yml"], _TRACKED) == [] and m.stale_declarations(["lefthook.yml"], _TRACKED) == [])
+# [Test-Change: G71 lefthook config names — old-obsolete+new-correct, security-concept §2] the declared set grew
+# from .lfsconfig alone to .lfsconfig, .config and the 39 lefthook names, so a cage naming lefthook.yml alone now
+# orphans all 41: the legs keep their exact shape with every other declared glob present.
 record("audit: a declaration whose GLOB left the cage is an orphan",
-       m.orphan_declarations(["lefthook.yml"]) == [".lfsconfig"])
+       m.orphan_declarations(["lefthook.yml", *(p for p in _DECL if p != ".lfsconfig")]) == [".lfsconfig"])
 record("audit: a declaration whose glob is present is NOT an orphan",
-       m.orphan_declarations(["lefthook.yml", ".lfsconfig"]) == [])
+       m.orphan_declarations(["lefthook.yml", *_DECL]) == [])
 _ls = subprocess.run(["git", "ls-files"], capture_output=True, text=True, encoding="utf-8",
                      cwd=SCRIPT.parents[1])
 _real_pats = CAGE.patterns if CAGE is not None else []
@@ -414,14 +450,15 @@ with tempfile.TemporaryDirectory() as td:
     _git(repo, "config", "core.hooksPath", str(repo / ".nohooks"))   # no hooks fire in the throwaway repo
     # the mini cage + every cage-target file land in the base commit, so the cage-liveness audit is
     # green inside the fixture from the start; the legs below then EDIT these files (diff semantics
-    # identical - is_l_neg1 is add-vs-modify agnostic). Every fixture cage ALSO carries the
-    # `.lfsconfig` glob: AUDIT_DECLARED_TARGETLESS is a module constant that applies to whichever
-    # cage the gate runs, so a fixture cage WITHOUT the declared glob would trip the orphan leg.
+    # identical - is_l_neg1 is add-vs-modify agnostic). Every fixture cage ALSO carries every
+    # declared glob (_DECLARED: `.lfsconfig`, `.config` and lefthook's 39 other config names):
+    # AUDIT_DECLARED_TARGETLESS is a module constant that applies to whichever cage the gate runs, so a
+    # fixture cage WITHOUT a declared glob would trip the orphan leg.
     # The mini cage mirrors the production shape: `scripts/**` plus one [[loop_tool]] escape
     # (scripts/buildtool), with a gate-shaped scripts/check-x tracked beside it, and two [[monotone]]
     # ratchets over uncaged data (floors.toml / pkg.json, the Cargo.toml / package.json shapes).
     (repo / "cage.toml").write_text(
-        'patterns = ["lefthook.yml", "docs/security/**", "rust-toolchain.toml", ".lfsconfig", "scripts/**"]\n'
+        'patterns = ["lefthook.yml", "docs/security/**", "rust-toolchain.toml", ' + _DECLARED + ', "scripts/**"]\n'
         '\n[[loop_tool]]\npath = "scripts/buildtool"\nreason = "the fixture build tool"\n'
         + _MONO.format(f="floors.toml", t="a.floors", d="raise-only", c="semver")
         + _MONO.format(f="pkg.json", t="b.floors", d="raise-only", c="semver"), encoding="utf-8")
@@ -576,7 +613,7 @@ with tempfile.TemporaryDirectory() as td:
     # `engines.lock`, which no tracked temp-repo path matches - the root-anchored-mis-spelling
     # shape) reds the gate under --enforce even though the audited tip commit itself is clean
     (repo / "cage-dead.toml").write_text(
-        'patterns = ["lefthook.yml", "engines.lock", ".lfsconfig"]\n', encoding="utf-8")
+        'patterns = ["lefthook.yml", "engines.lock", ' + _DECLARED + ']\n', encoding="utf-8")
     record("E2E: a dead cage glob (bare engines.lock) -> exit 1 under --enforce (clean tip)",
            run_gate(repo, "0" * 40, clean_tip, enforce=True, cage=repo / "cage-dead.toml") == 1)
     # the paired posture leg: the SAME dead cage without --enforce warns but exits 0 - this
@@ -586,11 +623,11 @@ with tempfile.TemporaryDirectory() as td:
            run_gate(repo, "0" * 40, clean_tip, enforce=False, cage=repo / "cage-dead.toml") == 0)
     # the escape audit end-to-end, each shape isolated on the clean tip: the escaped path is tracked
     # and caged by scripts/** unless the leg is about exactly that
-    _esc_pats = 'patterns = ["lefthook.yml", ".lfsconfig", "scripts/**"]\n'
+    _esc_pats = 'patterns = ["lefthook.yml", ' + _DECLARED + ', "scripts/**"]\n'
     for leg, body in (("a dead escape (untracked path)", _esc_pats + _LT.format(p="scripts/gone", r="r")),
                       ("a refused escape (gate-shaped, tracked)", _esc_pats + _LT.format(p="scripts/check-x", r="r")),
                       ("an orphan escape (no pattern cages it)",
-                       'patterns = ["lefthook.yml", ".lfsconfig"]\n' + _LT.format(p="scripts/buildtool", r="r"))):
+                       'patterns = ["lefthook.yml", ' + _DECLARED + ']\n' + _LT.format(p="scripts/buildtool", r="r"))):
         _c = repo / "cage-esc.toml"
         _c.write_text(body, encoding="utf-8")
         record(f"E2E: {leg} -> exit 1 under --enforce (clean tip)",
@@ -608,7 +645,7 @@ with tempfile.TemporaryDirectory() as td:
     record("E2E: a refused escape stays caged in the trailer audit (the unacked edit to it is still named)",
            _rc == 0 and "[scripts/check-x] without an `L-neg1-ack: owner` trailer" in _err.getvalue())
     # the monotone audit end-to-end, each shape isolated on the clean tip
-    _mono_pats = 'patterns = ["lefthook.yml", ".lfsconfig", "rust-toolchain.toml"]\n'
+    _mono_pats = 'patterns = ["lefthook.yml", ' + _DECLARED + ', "rust-toolchain.toml"]\n'
     for leg, body in (("a dead monotone entry (untracked file)",
                        _mono_pats + _MONO.format(f="nothere.toml", t="a.floors", d="raise-only", c="semver")),
                       ("a dead monotone entry (the table is not in the tracked file)",
@@ -648,9 +685,61 @@ with tempfile.TemporaryDirectory() as td:
     # declaration - never masked by a trailer violation on the same commit)
     lfs_tip = _commit(repo, ".lfsconfig", "[lfs]\n", "chore: land the lfs override\n\nL-neg1-ack: owner")
     (repo / "cage-stale.toml").write_text(
-        'patterns = ["lefthook.yml", ".lfsconfig"]\n', encoding="utf-8")
+        'patterns = ["lefthook.yml", ' + _DECLARED + ']\n', encoding="utf-8")
     record("E2E: a declared-targetless glob whose target landed -> exit 1 under --enforce (stale declaration)",
            run_gate(repo, "0" * 40, lfs_tip, enforce=True, cage=repo / "cage-stale.toml") == 1)
+
+# --- the .config route end-to-end (push 5 e2), in a temp repo of its own ----------------------------
+# [Test-Change: G71 .config — new-test:a no-ack commit adding a .config symlink (mode 120000) to an uncaged
+# folder holding lefthook-local.yml reds under --enforce, a .config file or gitlink too, and a real .config/
+# folder with an unrelated file does not, security-concept §3 (g)] The symlink and the gitlink enter the index
+# by `git update-index --cacheinfo`, so no leg needs a file-system symlink.
+with tempfile.TemporaryDirectory() as td:
+    repo = Path(td)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t.t")
+    _git(repo, "config", "user.name", "t")
+    (repo / ".nohooks").mkdir()
+    _git(repo, "config", "core.hooksPath", str(repo / ".nohooks"))   # no hooks fire in the throwaway repo
+    (repo / "cage.toml").write_text('patterns = ["lefthook.yml", ' + _DECLARED + ']\n', encoding="utf-8")
+    (repo / "lefthook.yml").write_text("x: 0\n", encoding="utf-8")
+    c_base = _commit(repo, "README.md", "# base\n", "chore: base")
+    c_folder = _commit(repo, ".config/some-tool.toml", "a = 1\n", "chore: a tool's config folder")
+    record("E2E .config: a real .config/ folder with an unrelated file, NO trailer, --enforce -> exit 0",
+           run_gate(repo, c_base, c_folder, enforce=True) == 0)
+    _git(repo, "rm", "-q", "-r", "--", ".config")
+    _git(repo, "commit", "-q", "-m", "chore: drop the folder")
+    c_gone = _git(repo, "rev-parse", "HEAD")
+    (repo / "cfgx").mkdir()
+    (repo / "cfgx" / "lefthook-local.yml").write_text(
+        "pre-push:\n  commands:\n    l-neg1-ack:\n      skip: true\n", encoding="utf-8")
+    _git(repo, "add", "--", "cfgx/lefthook-local.yml")
+
+    def _blob(content: str) -> str:
+        return subprocess.run(["git", "-C", str(repo), "hash-object", "-w", "--stdin"], input=content,
+                              capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
+
+    _git(repo, "update-index", "--add", "--cacheinfo", f"120000,{_blob('cfgx')},.config")
+    _git(repo, "commit", "-q", "-m", "chore: plant a .config symlink")
+    c_plant = _git(repo, "rev-parse", "HEAD")
+    record("E2E .config: the plant holds .config as a symlink (mode 120000) beside cfgx/lefthook-local.yml",
+           _git(repo, "ls-tree", c_plant, "--", ".config").startswith("120000 blob ")
+           and "cfgx/lefthook-local.yml" in _git(repo, "ls-tree", "-r", "--name-only", c_plant).splitlines())
+    record("E2E .config: a .config symlink to an uncaged folder holding lefthook-local.yml, NO trailer, "
+           "--enforce -> exit 1", run_gate(repo, c_gone, c_plant, enforce=True) == 1)
+    _err = io.StringIO()
+    with contextlib.redirect_stderr(_err):
+        _rc = run_gate(repo, c_gone, c_plant, enforce=False)
+    record("E2E .config: the same plant, no --enforce -> exit 0, naming the stale .config declaration and the "
+           "unacked .config", _rc == 0
+           and "declared-targetless cage glob '.config' NOW matches a tracked path" in _err.getvalue()
+           and "[.config] without an `L-neg1-ack: owner` trailer" in _err.getvalue())
+    for _leg, _mode, _obj in (("a .config file", "100644", _blob("x\n")), ("a .config gitlink", "160000", c_base)):
+        _git(repo, "reset", "-q", c_gone)
+        _git(repo, "update-index", "--add", "--cacheinfo", f"{_mode},{_obj},.config")
+        _git(repo, "commit", "-q", "-m", f"chore: add {_leg}")
+        record(f"E2E .config: {_leg}, NO trailer, --enforce -> exit 1",
+               run_gate(repo, c_gone, _git(repo, "rev-parse", "HEAD"), enforce=True) == 1)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-l-neg1-ack] {len(results) - len(failed)}/{len(results)} assertions passed.")
